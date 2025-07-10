@@ -35,6 +35,7 @@ dependencies = [
     "numpy>=1.25.2",
     "python-multipart>=0.0.6",
     "modal>=0.57.0",
+    "streamlit>=1.28.0",
 ]
 
 [project.optional-dependencies]
@@ -70,6 +71,7 @@ Issues = "https://github.com/your-org/llmtracefx/issues"
 [project.scripts]
 llmtracefx = "llmtracefx.main:main"
 llmtracefx-serve = "llmtracefx.api.serve:main"
+llmtracefx-dashboard = "llmtracefx.realtime_dashboard:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -104,7 +106,7 @@ profile = "black"
 multi_line_output = 3
 line_length = 88
 known_first_party = ["llmtracefx"]
-known_third_party = ["fastapi", "uvicorn", "aiohttp", "plotly", "pandas", "numpy", "modal"]
+known_third_party = ["fastapi", "uvicorn", "aiohttp", "plotly", "pandas", "numpy", "modal", "streamlit"]
 
 # MyPy configuration
 [tool.mypy]
@@ -129,6 +131,7 @@ module = [
     "numpy.*",
     "modal.*",
     "uvicorn.*",
+    "streamlit.*",
 ]
 ignore_missing_imports = true
 

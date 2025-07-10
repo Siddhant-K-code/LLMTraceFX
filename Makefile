@@ -46,8 +46,17 @@ run-sample:  ## Run analysis on sample trace
 run-server:  ## Run FastAPI server
 	uv run llmtracefx-serve
 
+run-dashboard:  ## Run Real-Time Dashboard
+	uv run streamlit run llmtracefx/realtime_dashboard.py --server.port=8501 --server.address=0.0.0.0
+
 create-sample:  ## Create sample trace file
 	uv run llmtracefx --create-sample
+
+generate-traces:  ## Generate various example trace files
+	uv run python generate_trace.py --profile optimized --tokens "Fast" "optimized" "inference" --output llmtracefx/test_traces/fast_trace.json
+	uv run python generate_trace.py --profile memory_bound --tokens "Slow" "memory" "bound" "workload" --output llmtracefx/test_traces/slow_trace.json
+	uv run python generate_trace.py --profile balanced --tokens "Normal" "balanced" "performance" "example" --output llmtracefx/test_traces/balanced_trace.json
+	@echo "✅ Generated example trace files in llmtracefx/test_traces/"
 
 # Modal deployment
 deploy-modal:  ## Deploy to Modal

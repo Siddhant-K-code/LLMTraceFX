@@ -68,6 +68,7 @@ app.add_middleware(
 # Global state for storing analyses
 analyses_store: Dict[str, List[TokenAnalysis]] = {}
 explanations_store: Dict[str, Dict[int, str]] = {}
+gpu_results_store: Dict[str, Dict[str, Any]] = {}  # Store GPU results for dashboard/export
 
 # Initialize components
 parser = TraceParser()
@@ -204,8 +205,62 @@ async def analyze_trace(
     request: AnalysisRequest,
     background_tasks: BackgroundTasks = BackgroundTasks()
 ):
-    """Analyze trace data directly"""
+    """Analyze trace data directly - uses GPU when available"""
     try:
+        # Check if we should use Modal GPU functions
+        try:
+            # Try to import Modal and get the GPU function
+            import modal
+            
+            # Try to get Modal app and function
+            try:
+                from llmtracefx.modal_app import app as modal_app
+                
+                # Call the GPU function remotely
+                gpu_result = modal_app.analyze_trace_modal.remote(
+                    trace_data=request.trace_data,
+                    gpu_type=request.gpu_type,
+                    enable_claude=request.enable_claude
+                )
+                
+                # Check if successful and has required fields
+                if gpu_result and gpu_result.get("status") == "completed" and "total_tokens" in gpu_result:
+                    # Generate analysis ID and store the results for later retrieval
+                    analysis_id = f"analysis_{len(analyses_store)}"
+                    
+                    # Create dummy analyses for storage (we'll reconstruct from GPU result when needed)
+                    # This is a simplified approach - in production you'd want to store full analysis objects
+                    analyses_store[analysis_id] = []  # Placeholder
+                    
+                    # Store GPU results for dashboard/export
+                    gpu_results_store[analysis_id] = gpu_result
+                    
+                    # Store explanations if available
+                    if gpu_result.get("explanations"):
+                        explanations_store[analysis_id] = gpu_result["explanations"]
+                    
+                    return AnalysisResponse(
+                        analysis_id=analysis_id,
+                        total_tokens=gpu_result["total_tokens"],
+                        total_latency_ms=gpu_result["total_latency_ms"],
+                        avg_performance_score=gpu_result["avg_performance_score"],
+                        bottleneck_summary=gpu_result["bottleneck_summary"],
+                        status=gpu_result["status"]
+                    )
+                elif gpu_result and gpu_result.get("status") == "error":
+                    print(f"GPU analysis failed: {gpu_result.get('error')}, using CPU fallback")
+                else:
+                    print("GPU analysis returned unexpected result, using CPU fallback")
+                    
+            except Exception as gpu_error:
+                # Log GPU error but continue with CPU fallback
+                print(f"GPU analysis failed: {gpu_error}, using CPU fallback")
+                    
+        except ImportError:
+            # Modal not available, use local processing
+            print("Modal not available, using CPU processing")
+        
+        # CPU fallback processing (original code)
         # Parse trace data
         tokens = parser.parse_trace_data(request.trace_data)
         
@@ -348,6 +403,11 @@ async def get_dashboard(analysis_id: str):
     if analysis_id not in analyses_store:
         raise HTTPException(status_code=404, detail="Analysis not found")
     
+    # Check if we have GPU-generated dashboard
+    if analysis_id in gpu_results_store and "dashboard_html" in gpu_results_store[analysis_id]:
+        return HTMLResponse(content=gpu_results_store[analysis_id]["dashboard_html"])
+    
+    # Fallback to local generation
     analyses = analyses_store[analysis_id]
     
     try:
@@ -363,6 +423,11 @@ async def export_analysis(analysis_id: str):
     if analysis_id not in analyses_store:
         raise HTTPException(status_code=404, detail="Analysis not found")
     
+    # Check if we have GPU-generated export data
+    if analysis_id in gpu_results_store and "export_json" in gpu_results_store[analysis_id]:
+        return JSONResponse(content=json.loads(gpu_results_store[analysis_id]["export_json"]))
+    
+    # Fallback to local generation
     analyses = analyses_store[analysis_id]
     
     try:
