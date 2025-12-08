@@ -1,0 +1,734 @@
+[
+  {
+    "token_id": 0,
+    "token_text": "",
+    "total_latency_ms": 8132.7734375,
+    "performance_score": 71.70206208300701,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8132.7734375,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 29.339044238439676,
+      "launch_delay_ms": 0.26144009649465,
+      "memory_latency_ms": 2294.0116004513184,
+      "sm_occupancy_pct": 84.76911609471249,
+      "cache_hit_rate": 77.62566146235082,
+      "compute_utilization": 80.77873650593827
+    }
+  },
+  {
+    "token_id": 1,
+    "token_text": "",
+    "total_latency_ms": 8134.916015625,
+    "performance_score": 66.31307365234068,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8134.916015625,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 30.81630838614224,
+      "launch_delay_ms": 0.37669267517305016,
+      "memory_latency_ms": 1887.0485448563704,
+      "sm_occupancy_pct": 80.29487708127536,
+      "cache_hit_rate": 72.84912806555104,
+      "compute_utilization": 75.94577173329918
+    }
+  },
+  {
+    "token_id": 2,
+    "token_text": "",
+    "total_latency_ms": 8134.1298828125,
+    "performance_score": 69.72132585952963,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8134.1298828125,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 30.244663221742808,
+      "launch_delay_ms": 0.4050212198091755,
+      "memory_latency_ms": 1730.0333694262351,
+      "sm_occupancy_pct": 89.7839001896044,
+      "cache_hit_rate": 83.12057500716543,
+      "compute_utilization": 76.32774033216498
+    }
+  },
+  {
+    "token_id": 3,
+    "token_text": "",
+    "total_latency_ms": 8141.720703125,
+    "performance_score": 75.55590655641403,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8141.720703125,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 23.69815855088102,
+      "launch_delay_ms": 0.24761378818939006,
+      "memory_latency_ms": 852.5878935480125,
+      "sm_occupancy_pct": 74.33120284698622,
+      "cache_hit_rate": 84.41656618506549,
+      "compute_utilization": 94.2956997575449
+    }
+  },
+  {
+    "token_id": 4,
+    "token_text": "",
+    "total_latency_ms": 8140.3994140625,
+    "performance_score": 55.8153823041065,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8140.3994140625,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 29.813319862091888,
+      "launch_delay_ms": 0.3716371526319392,
+      "memory_latency_ms": 1096.1185777845471,
+      "sm_occupancy_pct": 61.25467911667909,
+      "cache_hit_rate": 73.10964709461712,
+      "compute_utilization": 70.80544008343679
+    }
+  },
+  {
+    "token_id": 5,
+    "token_text": "",
+    "total_latency_ms": 8138.8798828125,
+    "performance_score": 68.07906322090547,
+    "bottleneck_type": "cache_miss",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8138.8798828125,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 16.4090438245484,
+      "launch_delay_ms": 0.6195628319181156,
+      "memory_latency_ms": 2179.420121122277,
+      "sm_occupancy_pct": 67.86689600193978,
+      "cache_hit_rate": 63.228261995851526,
+      "compute_utilization": 94.67022759031325
+    }
+  },
+  {
+    "token_id": 6,
+    "token_text": "",
+    "total_latency_ms": 8140.00439453125,
+    "performance_score": 55.65249277260939,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8140.00439453125,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 34.42133061865718,
+      "launch_delay_ms": 0.6821724897378025,
+      "memory_latency_ms": 2088.0031799385947,
+      "sm_occupancy_pct": 61.52317564509893,
+      "cache_hit_rate": 82.49898114121231,
+      "compute_utilization": 92.43072114287546
+    }
+  },
+  {
+    "token_id": 7,
+    "token_text": "",
+    "total_latency_ms": 8141.244140625,
+    "performance_score": 62.855500459809704,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8141.244140625,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 26.8480430129111,
+      "launch_delay_ms": 0.39606075200622093,
+      "memory_latency_ms": 1682.9322565096186,
+      "sm_occupancy_pct": 63.01491051559893,
+      "cache_hit_rate": 74.29029044133773,
+      "compute_utilization": 93.9848863882138
+    }
+  },
+  {
+    "token_id": 8,
+    "token_text": "",
+    "total_latency_ms": 8143.03125,
+    "performance_score": 71.12244669116359,
+    "bottleneck_type": "cache_miss",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8143.03125,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 27.304235529781995,
+      "launch_delay_ms": 0.20606362974311881,
+      "memory_latency_ms": 2232.0342125723914,
+      "sm_occupancy_pct": 88.22108319146554,
+      "cache_hit_rate": 68.4215713747346,
+      "compute_utilization": 80.90122250353646
+    }
+  },
+  {
+    "token_id": 9,
+    "token_text": "",
+    "total_latency_ms": 8143.13720703125,
+    "performance_score": 65.51791426237097,
+    "bottleneck_type": "cache_miss",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8143.13720703125,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 20.079473385152355,
+      "launch_delay_ms": 0.43474236482969386,
+      "memory_latency_ms": 2069.0790727769086,
+      "sm_occupancy_pct": 61.43045470710508,
+      "cache_hit_rate": 69.04563088412418,
+      "compute_utilization": 92.66374660101735
+    }
+  },
+  {
+    "token_id": 10,
+    "token_text": "",
+    "total_latency_ms": 8142.00537109375,
+    "performance_score": 70.17779865574636,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8142.00537109375,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 21.843949899086237,
+      "launch_delay_ms": 0.49793340757295756,
+      "memory_latency_ms": 1975.4040786943433,
+      "sm_occupancy_pct": 71.36405714604138,
+      "cache_hit_rate": 76.80473972436974,
+      "compute_utilization": 78.52210540103327
+    }
+  },
+  {
+    "token_id": 11,
+    "token_text": "",
+    "total_latency_ms": 8146.9482421875,
+    "performance_score": 73.7435929091064,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8146.9482421875,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 15.649548677517524,
+      "launch_delay_ms": 0.44070274980750435,
+      "memory_latency_ms": 894.042756198463,
+      "sm_occupancy_pct": 62.723397314192525,
+      "cache_hit_rate": 82.69520230699727,
+      "compute_utilization": 86.3864058531568
+    }
+  },
+  {
+    "token_id": 12,
+    "token_text": "",
+    "total_latency_ms": 8141.93408203125,
+    "performance_score": 74.94507179553635,
+    "bottleneck_type": "cache_miss",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8141.93408203125,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 15.735043302201387,
+      "launch_delay_ms": 0.3586573400631575,
+      "memory_latency_ms": 1194.7439052020452,
+      "sm_occupancy_pct": 73.3103281205448,
+      "cache_hit_rate": 69.09379284643431,
+      "compute_utilization": 78.09094480931587
+    }
+  },
+  {
+    "token_id": 13,
+    "token_text": "",
+    "total_latency_ms": 8146.37109375,
+    "performance_score": 54.16342308918199,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8146.37109375,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 34.33317135131846,
+      "launch_delay_ms": 0.6847571557592562,
+      "memory_latency_ms": 852.7351277840218,
+      "sm_occupancy_pct": 68.19316083537721,
+      "cache_hit_rate": 72.47448388573791,
+      "compute_utilization": 75.34651536104838
+    }
+  },
+  {
+    "token_id": 14,
+    "token_text": "",
+    "total_latency_ms": 8144.1455078125,
+    "performance_score": 69.29346745706148,
+    "bottleneck_type": "cache_miss",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8144.1455078125,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 28.23248961380826,
+      "launch_delay_ms": 0.27975380553680396,
+      "memory_latency_ms": 1221.468103805425,
+      "sm_occupancy_pct": 80.29096452860423,
+      "cache_hit_rate": 67.25665734492047,
+      "compute_utilization": 83.60924423103603
+    }
+  },
+  {
+    "token_id": 15,
+    "token_text": "",
+    "total_latency_ms": 8143.30712890625,
+    "performance_score": 61.62989211354065,
+    "bottleneck_type": "cache_miss",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8143.30712890625,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 21.862130153163346,
+      "launch_delay_ms": 0.6095369085081801,
+      "memory_latency_ms": 1455.2448528284322,
+      "sm_occupancy_pct": 62.886489315686745,
+      "cache_hit_rate": 64.23906887769918,
+      "compute_utilization": 88.09301473731202
+    }
+  },
+  {
+    "token_id": 16,
+    "token_text": "",
+    "total_latency_ms": 8142.47265625,
+    "performance_score": 67.02194960071415,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8142.47265625,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 28.20687203887275,
+      "launch_delay_ms": 0.5307711232495197,
+      "memory_latency_ms": 2365.369100434979,
+      "sm_occupancy_pct": 88.73351399313728,
+      "cache_hit_rate": 71.4525289368232,
+      "compute_utilization": 77.39849945815143
+    }
+  },
+  {
+    "token_id": 17,
+    "token_text": "",
+    "total_latency_ms": 8147.5244140625,
+    "performance_score": 72.02751041216901,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8147.5244140625,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 22.462347212601653,
+      "launch_delay_ms": 0.6061143550977776,
+      "memory_latency_ms": 1874.107806028548,
+      "sm_occupancy_pct": 81.42968387123128,
+      "cache_hit_rate": 71.86177244409369,
+      "compute_utilization": 92.24029181026854
+    }
+  },
+  {
+    "token_id": 18,
+    "token_text": "",
+    "total_latency_ms": 8146.75927734375,
+    "performance_score": 64.62166285300464,
+    "bottleneck_type": "cache_miss",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8146.75927734375,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 24.42982999518521,
+      "launch_delay_ms": 0.3488789060826411,
+      "memory_latency_ms": 2325.7182288114545,
+      "sm_occupancy_pct": 68.2245642689649,
+      "cache_hit_rate": 63.47344591832251,
+      "compute_utilization": 80.84422885609341
+    }
+  },
+  {
+    "token_id": 19,
+    "token_text": "",
+    "total_latency_ms": 8145.2802734375,
+    "performance_score": 78.8952222693944,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8145.2802734375,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 15.682746928496142,
+      "launch_delay_ms": 0.42984847757544153,
+      "memory_latency_ms": 1437.8335793129716,
+      "sm_occupancy_pct": 72.54661260405713,
+      "cache_hit_rate": 83.2219942863906,
+      "compute_utilization": 89.28934410978586
+    }
+  },
+  {
+    "token_id": 20,
+    "token_text": "",
+    "total_latency_ms": 8143.26123046875,
+    "performance_score": 59.10973026680574,
+    "bottleneck_type": "cache_miss",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8143.26123046875,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 26.601600614730437,
+      "launch_delay_ms": 0.5177188662026613,
+      "memory_latency_ms": 1472.0491827026353,
+      "sm_occupancy_pct": 63.17182785170401,
+      "cache_hit_rate": 64.94095164921566,
+      "compute_utilization": 83.16771806954813
+    }
+  },
+  {
+    "token_id": 21,
+    "token_text": "",
+    "total_latency_ms": 8149.2109375,
+    "performance_score": 67.17141099871847,
+    "bottleneck_type": "cache_miss",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8149.2109375,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 20.38767934885284,
+      "launch_delay_ms": 0.29689473850770687,
+      "memory_latency_ms": 1841.1965002694324,
+      "sm_occupancy_pct": 65.66382952530117,
+      "cache_hit_rate": 63.72862366742409,
+      "compute_utilization": 81.76210170357956
+    }
+  },
+  {
+    "token_id": 22,
+    "token_text": "",
+    "total_latency_ms": 8144.32763671875,
+    "performance_score": 60.685050859835904,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8144.32763671875,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 30.573942331817065,
+      "launch_delay_ms": 0.3058347544366498,
+      "memory_latency_ms": 2009.0669857182058,
+      "sm_occupancy_pct": 66.20314541796655,
+      "cache_hit_rate": 72.2366279144934,
+      "compute_utilization": 77.32497796581194
+    }
+  },
+  {
+    "token_id": 23,
+    "token_text": "",
+    "total_latency_ms": 8143.958984375,
+    "performance_score": 71.65415728042723,
+    "bottleneck_type": "cache_miss",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8143.958984375,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 16.59938890643716,
+      "launch_delay_ms": 0.5452178154762507,
+      "memory_latency_ms": 2426.8243602016178,
+      "sm_occupancy_pct": 83.18587030466605,
+      "cache_hit_rate": 60.91296787882954,
+      "compute_utilization": 74.02989049172649
+    }
+  },
+  {
+    "token_id": 24,
+    "token_text": "",
+    "total_latency_ms": 8145.53662109375,
+    "performance_score": 49.830153004246064,
+    "bottleneck_type": "cache_miss",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8145.53662109375,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 32.19540772665003,
+      "launch_delay_ms": 0.5969868528028727,
+      "memory_latency_ms": 1441.9379848936658,
+      "sm_occupancy_pct": 63.14735981528116,
+      "cache_hit_rate": 62.25565532733279,
+      "compute_utilization": 72.01492801938598
+    }
+  },
+  {
+    "token_id": 25,
+    "token_text": "",
+    "total_latency_ms": 8144.39453125,
+    "performance_score": 61.26741928005162,
+    "bottleneck_type": "cache_miss",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8144.39453125,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 30.27482247403347,
+      "launch_delay_ms": 0.5842633622610359,
+      "memory_latency_ms": 2220.7070389502687,
+      "sm_occupancy_pct": 77.1331208240424,
+      "cache_hit_rate": 60.87783489955855,
+      "compute_utilization": 88.06454067469852
+    }
+  },
+  {
+    "token_id": 26,
+    "token_text": "",
+    "total_latency_ms": 8145.52734375,
+    "performance_score": 58.2668762108854,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8145.52734375,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 31.821490850390248,
+      "launch_delay_ms": 0.6905078665856864,
+      "memory_latency_ms": 1308.8528388207128,
+      "sm_occupancy_pct": 66.23609599399418,
+      "cache_hit_rate": 76.70366520019127,
+      "compute_utilization": 94.19062706444652
+    }
+  },
+  {
+    "token_id": 27,
+    "token_text": "",
+    "total_latency_ms": 8142.47509765625,
+    "performance_score": 64.54585770971381,
+    "bottleneck_type": "cache_miss",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8142.47509765625,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 25.897163002556926,
+      "launch_delay_ms": 0.22705964294865372,
+      "memory_latency_ms": 1627.820237808295,
+      "sm_occupancy_pct": 70.04610716296834,
+      "cache_hit_rate": 60.5662526047093,
+      "compute_utilization": 79.60313794587233
+    }
+  },
+  {
+    "token_id": 28,
+    "token_text": "",
+    "total_latency_ms": 8142.6279296875,
+    "performance_score": 79.89700913621293,
+    "bottleneck_type": "optimal",
+    "optimization_flags": [],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8142.6279296875,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 18.618368548343234,
+      "launch_delay_ms": 0.3648767945056227,
+      "memory_latency_ms": 1451.1853477239906,
+      "sm_occupancy_pct": 83.27268677200354,
+      "cache_hit_rate": 79.8015730664791,
+      "compute_utilization": 84.41307116641593
+    }
+  },
+  {
+    "token_id": 29,
+    "token_text": "",
+    "total_latency_ms": 8144.17138671875,
+    "performance_score": 70.5984724881854,
+    "bottleneck_type": "cache_miss",
+    "optimization_flags": [
+      "improve_data_locality"
+    ],
+    "operations": [
+      {
+        "name": "endtoendstep",
+        "duration": 8144.17138671875,
+        "start_time": 0.0
+      }
+    ],
+    "gpu_metrics": {
+      "stall_pct": 19.631383519902982,
+      "launch_delay_ms": 0.23913417765862,
+      "memory_latency_ms": 1198.2745902307931,
+      "sm_occupancy_pct": 70.53103423430443,
+      "cache_hit_rate": 63.0980132118059,
+      "compute_utilization": 93.5106003668136
+    }
+  }
+]

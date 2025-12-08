@@ -1,0 +1,434 @@
+LLMTraceFX Analysis Report
+==================================================
+
+Trace File: traces/hf_2k_b1.json
+GPU Type: A10G
+Analysis Time: 134808.8ms
+Average Performance Score: 67.7/100
+
+Bottleneck Distribution:
+  cache_miss: 13 tokens
+  optimal: 17 tokens
+
+Token Analysis:
+------------------------------
+
+Token 0: ""
+  Latency: 4465.1ms
+  Performance Score: 68.1/100
+  Bottleneck: cache_miss
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4465.1ms
+  GPU Metrics:
+    Stall %: 20.4%
+    Launch Delay: 0.6ms
+    SM Occupancy: 77.6%
+    Cache Hit Rate: 64.6%
+
+
+Token 1: ""
+  Latency: 4455.6ms
+  Performance Score: 67.2/100
+  Bottleneck: optimal
+  Optimization Flags: 
+  Operations:
+    endtoendstep: 4455.6ms
+  GPU Metrics:
+    Stall %: 29.0%
+    Launch Delay: 0.2ms
+    SM Occupancy: 65.2%
+    Cache Hit Rate: 84.8%
+
+
+Token 2: ""
+  Latency: 4464.7ms
+  Performance Score: 77.1/100
+  Bottleneck: optimal
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4464.7ms
+  GPU Metrics:
+    Stall %: 16.1%
+    Launch Delay: 0.7ms
+    SM Occupancy: 87.9%
+    Cache Hit Rate: 73.8%
+
+
+Token 3: ""
+  Latency: 4474.5ms
+  Performance Score: 69.0/100
+  Bottleneck: cache_miss
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4474.5ms
+  GPU Metrics:
+    Stall %: 21.4%
+    Launch Delay: 0.7ms
+    SM Occupancy: 79.4%
+    Cache Hit Rate: 67.5%
+
+
+Token 4: ""
+  Latency: 4505.6ms
+  Performance Score: 68.7/100
+  Bottleneck: optimal
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4505.6ms
+  GPU Metrics:
+    Stall %: 23.6%
+    Launch Delay: 0.4ms
+    SM Occupancy: 69.7%
+    Cache Hit Rate: 72.9%
+
+
+Token 5: ""
+  Latency: 4504.0ms
+  Performance Score: 74.4/100
+  Bottleneck: cache_miss
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4504.0ms
+  GPU Metrics:
+    Stall %: 21.7%
+    Launch Delay: 0.2ms
+    SM Occupancy: 80.2%
+    Cache Hit Rate: 65.6%
+
+
+Token 6: ""
+  Latency: 4493.0ms
+  Performance Score: 58.6/100
+  Bottleneck: cache_miss
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4493.0ms
+  GPU Metrics:
+    Stall %: 30.1%
+    Launch Delay: 0.6ms
+    SM Occupancy: 71.3%
+    Cache Hit Rate: 61.1%
+
+
+Token 7: ""
+  Latency: 4480.5ms
+  Performance Score: 74.9/100
+  Bottleneck: optimal
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4480.5ms
+  GPU Metrics:
+    Stall %: 15.7%
+    Launch Delay: 0.6ms
+    SM Occupancy: 74.2%
+    Cache Hit Rate: 73.4%
+
+
+Token 8: ""
+  Latency: 4508.0ms
+  Performance Score: 69.7/100
+  Bottleneck: optimal
+  Optimization Flags: 
+  Operations:
+    endtoendstep: 4508.0ms
+  GPU Metrics:
+    Stall %: 26.8%
+    Launch Delay: 0.7ms
+    SM Occupancy: 89.2%
+    Cache Hit Rate: 78.1%
+
+
+Token 9: ""
+  Latency: 4485.2ms
+  Performance Score: 67.5/100
+  Bottleneck: cache_miss
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4485.2ms
+  GPU Metrics:
+    Stall %: 16.1%
+    Launch Delay: 0.7ms
+    SM Occupancy: 65.0%
+    Cache Hit Rate: 66.7%
+
+
+Token 10: ""
+  Latency: 4486.4ms
+  Performance Score: 68.8/100
+  Bottleneck: optimal
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4486.4ms
+  GPU Metrics:
+    Stall %: 30.7%
+    Launch Delay: 0.2ms
+    SM Occupancy: 85.8%
+    Cache Hit Rate: 71.0%
+
+
+Token 11: ""
+  Latency: 4481.3ms
+  Performance Score: 63.0/100
+  Bottleneck: optimal
+  Optimization Flags: 
+  Operations:
+    endtoendstep: 4481.3ms
+  GPU Metrics:
+    Stall %: 29.2%
+    Launch Delay: 0.6ms
+    SM Occupancy: 67.2%
+    Cache Hit Rate: 81.8%
+
+
+Token 12: ""
+  Latency: 4510.8ms
+  Performance Score: 78.7/100
+  Bottleneck: optimal
+  Optimization Flags: 
+  Operations:
+    endtoendstep: 4510.8ms
+  GPU Metrics:
+    Stall %: 18.3%
+    Launch Delay: 0.6ms
+    SM Occupancy: 88.0%
+    Cache Hit Rate: 83.5%
+
+
+Token 13: ""
+  Latency: 4481.0ms
+  Performance Score: 69.5/100
+  Bottleneck: optimal
+  Optimization Flags: 
+  Operations:
+    endtoendstep: 4481.0ms
+  GPU Metrics:
+    Stall %: 19.0%
+    Launch Delay: 0.4ms
+    SM Occupancy: 63.6%
+    Cache Hit Rate: 75.4%
+
+
+Token 14: ""
+  Latency: 4504.5ms
+  Performance Score: 62.2/100
+  Bottleneck: optimal
+  Optimization Flags: 
+  Operations:
+    endtoendstep: 4504.5ms
+  GPU Metrics:
+    Stall %: 34.1%
+    Launch Delay: 0.4ms
+    SM Occupancy: 69.4%
+    Cache Hit Rate: 81.6%
+
+
+Token 15: ""
+  Latency: 4502.0ms
+  Performance Score: 65.1/100
+  Bottleneck: cache_miss
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4502.0ms
+  GPU Metrics:
+    Stall %: 24.8%
+    Launch Delay: 0.3ms
+    SM Occupancy: 66.9%
+    Cache Hit Rate: 67.1%
+
+
+Token 16: ""
+  Latency: 4505.5ms
+  Performance Score: 67.0/100
+  Bottleneck: cache_miss
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4505.5ms
+  GPU Metrics:
+    Stall %: 23.1%
+    Launch Delay: 0.3ms
+    SM Occupancy: 69.3%
+    Cache Hit Rate: 63.9%
+
+
+Token 17: ""
+  Latency: 4502.6ms
+  Performance Score: 81.4/100
+  Bottleneck: optimal
+  Optimization Flags: 
+  Operations:
+    endtoendstep: 4502.6ms
+  GPU Metrics:
+    Stall %: 19.3%
+    Launch Delay: 0.2ms
+    SM Occupancy: 81.2%
+    Cache Hit Rate: 81.5%
+
+
+Token 18: ""
+  Latency: 4490.1ms
+  Performance Score: 54.9/100
+  Bottleneck: cache_miss
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4490.1ms
+  GPU Metrics:
+    Stall %: 31.3%
+    Launch Delay: 0.5ms
+    SM Occupancy: 61.8%
+    Cache Hit Rate: 64.1%
+
+
+Token 19: ""
+  Latency: 4503.3ms
+  Performance Score: 72.1/100
+  Bottleneck: cache_miss
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4503.3ms
+  GPU Metrics:
+    Stall %: 17.3%
+    Launch Delay: 0.7ms
+    SM Occupancy: 80.1%
+    Cache Hit Rate: 69.0%
+
+
+Token 20: ""
+  Latency: 4487.3ms
+  Performance Score: 68.5/100
+  Bottleneck: cache_miss
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4487.3ms
+  GPU Metrics:
+    Stall %: 23.8%
+    Launch Delay: 0.6ms
+    SM Occupancy: 89.9%
+    Cache Hit Rate: 65.1%
+
+
+Token 21: ""
+  Latency: 4490.5ms
+  Performance Score: 71.8/100
+  Bottleneck: optimal
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4490.5ms
+  GPU Metrics:
+    Stall %: 26.4%
+    Launch Delay: 0.4ms
+    SM Occupancy: 83.3%
+    Cache Hit Rate: 74.4%
+
+
+Token 22: ""
+  Latency: 4502.7ms
+  Performance Score: 60.2/100
+  Bottleneck: cache_miss
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4502.7ms
+  GPU Metrics:
+    Stall %: 33.7%
+    Launch Delay: 0.6ms
+    SM Occupancy: 84.2%
+    Cache Hit Rate: 60.7%
+
+
+Token 23: ""
+  Latency: 4496.2ms
+  Performance Score: 72.0/100
+  Bottleneck: optimal
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4496.2ms
+  GPU Metrics:
+    Stall %: 19.5%
+    Launch Delay: 0.7ms
+    SM Occupancy: 77.8%
+    Cache Hit Rate: 70.6%
+
+
+Token 24: ""
+  Latency: 4505.2ms
+  Performance Score: 65.7/100
+  Bottleneck: optimal
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4505.2ms
+  GPU Metrics:
+    Stall %: 30.0%
+    Launch Delay: 0.5ms
+    SM Occupancy: 77.6%
+    Cache Hit Rate: 72.7%
+
+
+Token 25: ""
+  Latency: 4494.4ms
+  Performance Score: 65.4/100
+  Bottleneck: optimal
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4494.4ms
+  GPU Metrics:
+    Stall %: 31.7%
+    Launch Delay: 0.3ms
+    SM Occupancy: 87.3%
+    Cache Hit Rate: 70.0%
+
+
+Token 26: ""
+  Latency: 4494.1ms
+  Performance Score: 64.2/100
+  Bottleneck: cache_miss
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4494.1ms
+  GPU Metrics:
+    Stall %: 27.1%
+    Launch Delay: 0.3ms
+    SM Occupancy: 70.9%
+    Cache Hit Rate: 63.3%
+
+
+Token 27: ""
+  Latency: 4513.5ms
+  Performance Score: 57.7/100
+  Bottleneck: cache_miss
+  Optimization Flags: improve_data_locality
+  Operations:
+    endtoendstep: 4513.5ms
+  GPU Metrics:
+    Stall %: 30.9%
+    Launch Delay: 0.6ms
+    SM Occupancy: 69.9%
+    Cache Hit Rate: 68.2%
+
+
+Token 28: ""
+  Latency: 4511.3ms
+  Performance Score: 68.1/100
+  Bottleneck: optimal
+  Optimization Flags: 
+  Operations:
+    endtoendstep: 4511.3ms
+  GPU Metrics:
+    Stall %: 26.0%
+    Launch Delay: 0.3ms
+    SM Occupancy: 66.3%
+    Cache Hit Rate: 81.9%
+
+
+Token 29: ""
+  Latency: 4510.2ms
+  Performance Score: 59.9/100
+  Bottleneck: optimal
+  Optimization Flags: 
+  Operations:
+    endtoendstep: 4510.2ms
+  GPU Metrics:
+    Stall %: 34.6%
+    Launch Delay: 0.4ms
+    SM Occupancy: 63.6%
+    Cache Hit Rate: 84.1%
+

@@ -138,14 +138,14 @@ cython_debug/
 .vscode/
 
 # LLMTraceFX specific
-output/
-*.html
-*.json
-dashboard.html
-export.json
-report.txt
-flame_graph.html
-analysis_data.json
+# output/
+# *.html
+# *.json
+# dashboard.html
+# export.json
+# report.txt
+# flame_graph.html
+# analysis_data.json
 
 # Modal cache
 .modal_cache/
