@@ -4,7 +4,7 @@
 
 ## 🎬 Video Demo
 
-<!-- Add your video demo here -->
+[![LLMTraceFX Demo](https://img.youtube.com/vi/8tBpqgQIEG4/maxresdefault.jpg)](https://youtu.be/8tBpqgQIEG4)
 
 ## 🌐 **Live Demo**
 **Try it now:** https://siddhant-k-code--llmtracefx-web-app.modal.run (might be not available at all times due to Modal's free tier limitations 🙈)
