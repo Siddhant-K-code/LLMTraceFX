@@ -2,6 +2,10 @@
 
 **GPU-level LLM inference profiler** that analyzes token-level performance and provides AI-powered explanations.
 
+## 🎬 Video Demo
+
+<!-- Add your video demo here -->
+
 ## 🌐 **Live Demo**
 **Try it now:** https://siddhant-k-code--llmtracefx-web-app.modal.run (might be not available at all times due to Modal's free tier limitations 🙈)
 
@@ -17,6 +21,175 @@ curl -X POST "https://siddhant-k-code--llmtracefx-web-app.modal.run/analyze-trac
 curl -X POST "https://siddhant-k-code--llmtracefx-web-app.modal.run/upload-trace" \
      -F "file=@your_trace.json" -F "gpu_type=A10G" -F "enable_claude=true"
 ```
+
+---
+
+<details>
+<summary><strong>📋 Full Demo Walkthrough — CloudRift GPU (end-to-end)</strong></summary>
+
+This walkthrough runs LLMTraceFX on a real cloud GPU (CloudRift RTX 4090/5090) from scratch. All commands are copy-paste ready.
+
+---
+
+### Step 1 — Connect to the CloudRift instance
+
+```bash
+ssh riftuser@<YOUR_INSTANCE_IP> -o PreferredAuthentications=password -o PubkeyAuthentication=no
+```
+
+If you hit "Too many authentication failures":
+
+```bash
+ssh riftuser@<YOUR_INSTANCE_IP> \
+  -o PreferredAuthentications=password \
+  -o PubkeyAuthentication=no
+```
+
+---
+
+### Step 2 — Verify the GPU
+
+```bash
+nvidia-smi
+```
+
+---
+
+### Step 3 — Install uv and clone the repo
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh && source $HOME/.local/bin/env
+git clone https://github.com/Siddhant-K-code/LLMTraceFX.git && cd LLMTraceFX
+uv sync
+```
+
+---
+
+### Step 4 — Generate synthetic traces
+
+```bash
+# Memory-bound profile — simulates long-context decode bottleneck
+python generate_trace.py \
+  --tokens "The" "transformer" "model" "generates" "tokens" \
+            "auto" "regressively" "one" "at" "a" "time" \
+  --profile memory_bound \
+  --output demo_memory_bound.json
+
+# Optimized profile — for comparison
+python generate_trace.py \
+  --tokens "The" "transformer" "model" "generates" "tokens" \
+            "auto" "regressively" "one" "at" "a" "time" \
+  --profile optimized \
+  --output demo_optimized.json
+```
+
+---
+
+### Step 5 — Run the profiler
+
+```bash
+uv run llmtracefx \
+  --trace demo_memory_bound.json \
+  --gpu-type A10G \
+  --no-claude \
+  --output-dir output/memory_bound_run
+
+uv run llmtracefx \
+  --trace demo_optimized.json \
+  --gpu-type A10G \
+  --no-claude \
+  --output-dir output/optimized_run
+```
+
+---
+
+### Step 6 — Compare performance scores
+
+```bash
+grep "Avg performance" \
+  output/memory_bound_run/report.txt \
+  output/optimized_run/report.txt
+```
+
+---
+
+### Step 7 — Read the bottleneck report
+
+```bash
+cat output/memory_bound_run/report.txt
+```
+
+---
+
+### Step 8 — 4-way comparison across real experiment outputs
+
+```bash
+grep "Average Performance Score" \
+  output/output_hf_2k_b1/report.txt \
+  output/output_hf_8k_b1/report.txt \
+  output/output_opt_2k_b1/report.txt \
+  output/output_opt_8k_b1/report.txt
+```
+
+```bash
+for d in output/output_hf_2k_b1 output/output_hf_8k_b1 output/output_opt_2k_b1 output/output_opt_8k_b1; do
+  echo "--- $d ---"
+  grep -A3 "Bottleneck Distribution" $d/report.txt
+done
+```
+
+---
+
+### Step 9 — Serve the dashboard
+
+```bash
+cd output/output_hf_8k_b1 && python3 -m http.server 8080
+```
+
+Open an SSH tunnel on your **local machine** (new terminal tab):
+
+```bash
+ssh -L 8080:localhost:8080 riftuser@<YOUR_INSTANCE_IP> \
+  -o PreferredAuthentications=password \
+  -o PubkeyAuthentication=no -N
+```
+
+Then open in your browser: `http://localhost:8080/dashboard.html`
+
+---
+
+### Step 10 — Launch the real-time Streamlit dashboard
+
+On the remote instance (stop the http.server first with `Ctrl+C`):
+
+```bash
+cd ~/LLMTraceFX && uv run python launch_dashboard.py
+```
+
+SSH tunnel on your local machine:
+
+```bash
+ssh -L 8501:localhost:8501 riftuser@<YOUR_INSTANCE_IP> \
+  -o PreferredAuthentications=password \
+  -o PubkeyAuthentication=no -N
+```
+
+Then open: `http://localhost:8501`
+
+---
+
+### Both tunnels at once (optional)
+
+```bash
+ssh -L 8080:localhost:8080 -L 8501:localhost:8501 \
+  riftuser@<YOUR_INSTANCE_IP> \
+  -o PreferredAuthentications=password \
+  -o PubkeyAuthentication=no -N
+```
+
+</details>
+
+---
 
 ## 🎯 Features
 
