@@ -203,7 +203,7 @@ class FlameGraphGenerator:
         metrics = analysis.gpu_metrics
         
         categories = [
-            'SM Occupancy %',
+            f'{metrics.occupancy_label} %',
             'Cache Hit Rate %', 
             'Compute Utilization %',
             'Memory Efficiency %',
@@ -434,7 +434,10 @@ class FlameGraphGenerator:
                     "memory_latency_ms": analysis.gpu_metrics.memory_latency_ms,
                     "sm_occupancy_pct": analysis.gpu_metrics.sm_occupancy_pct,
                     "cache_hit_rate": analysis.gpu_metrics.cache_hit_rate,
-                    "compute_utilization": analysis.gpu_metrics.compute_utilization
+                    "memory_bandwidth_gb_s": analysis.gpu_metrics.memory_bandwidth_gb_s,
+                    "compute_utilization": analysis.gpu_metrics.compute_utilization,
+                    "occupancy_label": analysis.gpu_metrics.occupancy_label,
+                    "metrics_source": analysis.gpu_metrics.metrics_source
                 }
             })
         

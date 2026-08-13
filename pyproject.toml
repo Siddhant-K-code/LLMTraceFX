@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "llmtracefx"
 version = "1.0.0"
 description = "GPU-level LLM inference profiler with AI-powered explanations"
-readme = "llmtracefx/README.md"
+readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
@@ -54,6 +54,10 @@ test = [
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
     "httpx>=0.24.0",
+]
+
+mlx = [
+    "mlx>=0.25.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
 ]
 
 docs = [

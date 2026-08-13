@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from .hardware import normalize_hardware_name, supported_hardware
 from .profiler.trace_parser import TraceParser
 from .profiler.gpu_analyzer import GPUAnalyzer
 from .explainer.claude import ClaudeExplainer
@@ -66,7 +67,7 @@ async def analyze_trace(trace_file: str, gpu_type: str = "A10G", enable_claude: 
     
     # Create output directory
     output_path = Path(output_dir)
-    output_path.mkdir(exist_ok=True)
+    output_path.mkdir(parents=True, exist_ok=True)
     
     # Parse trace
     parser = TraceParser()
@@ -85,9 +86,13 @@ async def analyze_trace(trace_file: str, gpu_type: str = "A10G", enable_claude: 
         print(f"❌ Error parsing trace: {e}")
         return
     
+    if not tokens:
+        print("❌ Trace does not contain any tokens")
+        return
+
     # Analyze GPU performance
-    print(f"🔧 Analyzing GPU performance (GPU: {gpu_type})")
     analyzer = GPUAnalyzer(gpu_type)
+    print(f"🔧 Analyzing GPU performance ({analyzer.hardware.display_name})")
     analyses = analyzer.analyze_sequence(tokens)
     
     # Calculate summary stats
@@ -157,7 +162,7 @@ async def analyze_trace(trace_file: str, gpu_type: str = "A10G", enable_claude: 
         f.write("=" * 50 + "\n\n")
         
         f.write(f"Trace File: {trace_file}\n")
-        f.write(f"GPU Type: {gpu_type}\n")
+        f.write(f"Hardware: {analyzer.hardware.display_name}\n")
         f.write(f"Analysis Time: {total_latency:.1f}ms\n")
         f.write(f"Average Performance Score: {avg_performance:.1f}/100\n\n")
         
@@ -190,8 +195,9 @@ async def analyze_trace(trace_file: str, gpu_type: str = "A10G", enable_claude: 
             metrics = analysis.gpu_metrics
             f.write(f"    Stall %: {metrics.stall_pct:.1f}%\n")
             f.write(f"    Launch Delay: {metrics.launch_delay_ms:.1f}ms\n")
-            f.write(f"    SM Occupancy: {metrics.sm_occupancy_pct:.1f}%\n")
+            f.write(f"    {metrics.occupancy_label}: {metrics.sm_occupancy_pct:.1f}%\n")
             f.write(f"    Cache Hit Rate: {metrics.cache_hit_rate:.1f}%\n")
+            f.write(f"    Metrics Source: {metrics.metrics_source}\n")
             
             # Include Claude explanation if available
             if enable_claude and analysis.token_id in explanations:
@@ -221,6 +227,12 @@ Examples:
   
   # Analyze with specific GPU type
   python -m llmtracefx.main --trace sample --gpu-type H100
+
+  # Analyze on NVIDIA GB10 / DGX Spark
+  python -m llmtracefx.main --trace trace.json --gpu-type GB10
+
+  # Analyze a trace recorded with MLXTraceRecorder
+  python -m llmtracefx.main --trace mlx_trace.json --gpu-type MLX
   
   # Analyze without Claude explanations
   python -m llmtracefx.main --trace sample --no-claude
@@ -236,10 +248,10 @@ Examples:
     
     parser.add_argument(
         "--gpu-type",
-        type=str,
+        type=normalize_hardware_name,
         default="A10G",
-        choices=["A10G", "H100", "A100"],
-        help="GPU type for analysis"
+        choices=supported_hardware(),
+        help="Target hardware for analysis"
     )
     
     parser.add_argument(

@@ -199,6 +199,7 @@ ssh -L 8080:localhost:8080 -L 8501:localhost:8501 \
 - **Interactive visualizations** with flame graphs and dashboards
 - **Modal.com deployment** with GPU acceleration
 - **Multiple input formats** (vLLM, generic trace logs)
+- **Apple Silicon and NVIDIA GB10 profiles** with an optional MLX recorder
 
 ## 📦 Installation
 
@@ -216,6 +217,9 @@ uv sync
 
 # Or install in development mode with optional dependencies
 uv sync --extra dev --extra test
+
+# Apple Silicon only: install the optional MLX recorder dependency
+uv sync --extra mlx
 ```
 
 ### Using pip
@@ -249,6 +253,43 @@ python -m llmtracefx.main --trace sample
 python -m llmtracefx.main --trace your_trace.json --gpu-type A10G
 python -m llmtracefx.main --trace sample --no-claude
 ```
+
+### Apple Silicon with MLX
+
+`MLXTraceRecorder` evaluates and synchronizes lazy MLX work, records real
+per-operation durations, and writes JSON that the existing CLI can read.
+
+```bash
+uv sync --extra mlx
+uv run python examples/mlx_trace.py
+uv run llmtracefx --trace mlx_trace.json --gpu-type MLX --no-claude
+```
+
+Use the recorder around token generation in your own model:
+
+```python
+from llmtracefx.profiler import MLXTraceRecorder
+
+with MLXTraceRecorder("mlx_trace.json") as trace:
+    with trace.token(0, "Hello"):
+        logits = trace.measure("model_forward", model, input_ids)
+        next_token = trace.measure("sample", sample, logits)
+```
+
+For a native Xcode GPU capture of the same region, pass
+`metal_capture_path="mlx_trace.gputrace"` and run with
+`MTL_CAPTURE_ENABLED=1`. The `.gputrace` path must not already exist.
+
+### NVIDIA GB10 / DGX Spark
+
+Use the `GB10` profile with an existing LLMTraceFX, vLLM, or event trace:
+
+```bash
+uv run llmtracefx --trace trace.json --gpu-type GB10 --no-claude
+```
+
+`DGX-SPARK` is accepted as an alias. The profile uses the GB10's 128 GB
+coherent unified memory and 273 GB/s memory bandwidth.
 
 ### 2. FastAPI Server
 
@@ -466,14 +507,21 @@ dashboard = requests.get(f'http://localhost:8000/dashboard/{analysis_id}')
 ### GPU Metrics
 - **Stall Percentage**: Memory-bound bottlenecks
 - **Launch Delay**: Kernel launch overhead
-- **SM Occupancy**: Streaming multiprocessor utilization
+- **Occupancy**: SM occupancy on CUDA and GPU occupancy on Metal
 - **Cache Hit Rate**: Memory access efficiency
 - **Compute Utilization**: GPU computational usage
 
-### Supported GPUs
+Measured values can be supplied in operation metadata using `stall_pct`,
+`launch_delay_ms`, `memory_latency_ms`, `occupancy_pct`, `cache_hit_rate`, and
+`compute_utilization`. Missing fields use deterministic estimates, and each
+report labels the metrics as `measured`, `mixed`, or `estimated`.
+
+### Supported Hardware
 - **A10G**: 24GB VRAM, 600 GB/s bandwidth
 - **H100**: 80GB VRAM, 3350 GB/s bandwidth
 - **A100**: 80GB VRAM, 1935 GB/s bandwidth
+- **GB10 / DGX Spark**: 128GB coherent unified memory, 273 GB/s bandwidth
+- **MLX / Apple Silicon**: Metal backend with runtime device metadata
 
 ## 🤖 Claude Integration
 
