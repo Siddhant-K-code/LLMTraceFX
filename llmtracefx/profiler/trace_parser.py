@@ -3,7 +3,7 @@ Trace parser for LLM inference logs (vLLM format)
 """
 import json
 from typing import Dict, List, Any, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -13,14 +13,8 @@ class Operation:
     name: str
     start_time: float
     duration: float
-    dependencies: List[str] = None
-    metadata: Dict[str, Any] = None
-    
-    def __post_init__(self):
-        if self.dependencies is None:
-            self.dependencies = []
-        if self.metadata is None:
-            self.metadata = {}
+    dependencies: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -37,7 +31,7 @@ class TokenTrace:
 class TraceParser:
     """Parse vLLM trace logs into token-level operations"""
     
-    def __init__(self):
+    def __init__(self) -> None:
         self.known_ops = {
             "rmsnorm", "layernorm", "linear", "matmul", "softmax", 
             "kvload", "kvstore", "attention", "activation", "embedding"
@@ -68,9 +62,9 @@ class TraceParser:
             token_text = token_data.get("text", "")
             
             operations = []
-            total_latency = 0
+            total_latency = 0.0
             start_time = float('inf')
-            end_time = 0
+            end_time = 0.0
             
             for op_data in token_data.get("operations", []):
                 op = Operation(
@@ -182,8 +176,8 @@ class TraceParser:
         total_latency = sum(token.total_latency for token in tokens)
         avg_latency = total_latency / len(tokens)
         
-        op_counts = {}
-        op_times = {}
+        op_counts: Dict[str, int] = {}
+        op_times: Dict[str, float] = {}
         
         for token in tokens:
             for op in token.operations:

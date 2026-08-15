@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from ..hardware import hardware_profiles, normalize_hardware_name
 from ..profiler.trace_parser import TraceParser
 from ..profiler.gpu_analyzer import GPUAnalyzer, TokenAnalysis
 from ..explainer.claude import ClaudeExplainer
@@ -53,7 +54,7 @@ class TokenDetailResponse(BaseModel):
 app = FastAPI(
     title="LLMTraceFX API",
     description="GPU-level LLM inference profiler",
-    version="1.0.0"
+    version="1.1.0"
 )
 
 # Add CORS middleware
@@ -100,6 +101,11 @@ async def root():
         <p>GPU-level LLM inference profiler</p>
         
         <h2>Available Endpoints:</h2>
+
+        <div class="endpoint">
+            <span class="method">GET</span> /hardware
+            <br>List supported CUDA and Metal hardware profiles
+        </div>
         
         <div class="endpoint">
             <span class="method">POST</span> /upload-trace
@@ -140,6 +146,12 @@ async def root():
     """
 
 
+@app.get("/hardware")
+async def list_hardware():
+    """List supported hardware profiles."""
+    return {"hardware": hardware_profiles()}
+
+
 @app.post("/upload-trace", response_model=AnalysisResponse)
 async def upload_trace(
     file: UploadFile = File(...),
@@ -149,6 +161,7 @@ async def upload_trace(
 ):
     """Upload and analyze trace file"""
     try:
+        gpu_type = _validate_hardware(gpu_type)
         # Read uploaded file
         content = await file.read()
         
@@ -160,6 +173,7 @@ async def upload_trace(
         try:
             # Parse trace file
             tokens = parser.parse_trace_file(tmp_path)
+            _require_tokens(tokens)
             
             # Analyze tokens
             analyzer_instance = GPUAnalyzer(gpu_type)
@@ -196,6 +210,8 @@ async def upload_trace(
             # Clean up temp file
             os.unlink(tmp_path)
             
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing trace: {str(e)}")
 
@@ -207,6 +223,7 @@ async def analyze_trace(
 ):
     """Analyze trace data directly - uses GPU when available"""
     try:
+        gpu_type = _validate_hardware(request.gpu_type)
         # Check if we should use Modal GPU functions
         try:
             # Try to import Modal and get the GPU function
@@ -219,7 +236,7 @@ async def analyze_trace(
                 # Call the GPU function remotely
                 gpu_result = modal_app.analyze_trace_modal.remote(
                     trace_data=request.trace_data,
-                    gpu_type=request.gpu_type,
+                    gpu_type=gpu_type,
                     enable_claude=request.enable_claude
                 )
                 
@@ -263,9 +280,10 @@ async def analyze_trace(
         # CPU fallback processing (original code)
         # Parse trace data
         tokens = parser.parse_trace_data(request.trace_data)
+        _require_tokens(tokens)
         
         # Analyze tokens
-        analyzer_instance = GPUAnalyzer(request.gpu_type)
+        analyzer_instance = GPUAnalyzer(gpu_type)
         analyses = analyzer_instance.analyze_sequence(tokens)
         
         # Generate analysis ID
@@ -295,6 +313,8 @@ async def analyze_trace(
             status="completed" if not request.enable_claude else "processing_explanations"
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error analyzing trace: {str(e)}")
 
@@ -376,7 +396,10 @@ async def get_token_detail(analysis_id: str, token_id: int):
             "memory_latency_ms": token_analysis.gpu_metrics.memory_latency_ms,
             "sm_occupancy_pct": token_analysis.gpu_metrics.sm_occupancy_pct,
             "cache_hit_rate": token_analysis.gpu_metrics.cache_hit_rate,
-            "compute_utilization": token_analysis.gpu_metrics.compute_utilization
+            "memory_bandwidth_gb_s": token_analysis.gpu_metrics.memory_bandwidth_gb_s,
+            "compute_utilization": token_analysis.gpu_metrics.compute_utilization,
+            "occupancy_label": token_analysis.gpu_metrics.occupancy_label,
+            "metrics_source": token_analysis.gpu_metrics.metrics_source
         },
         claude_explanation=claude_explanation
     )
@@ -456,6 +479,20 @@ async def get_flame_graph(analysis_id: str):
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "analyses_count": len(analyses_store)}
+
+
+def _validate_hardware(gpu_type: str) -> str:
+    try:
+        return normalize_hardware_name(gpu_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _require_tokens(tokens: list[Any]) -> None:
+    if not tokens:
+        raise HTTPException(
+            status_code=400, detail="Trace does not contain any tokens"
+        )
 
 
 async def generate_claude_explanations(analysis_id: str, analyses: List[TokenAnalysis]):

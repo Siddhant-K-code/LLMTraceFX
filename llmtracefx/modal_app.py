@@ -153,7 +153,9 @@ def explain_token_modal(token_analysis_data: dict):
             sm_occupancy_pct=token_analysis_data["gpu_metrics"]["sm_occupancy_pct"],
             cache_hit_rate=token_analysis_data["gpu_metrics"]["cache_hit_rate"],
             memory_bandwidth_gb_s=token_analysis_data["gpu_metrics"]["memory_bandwidth_gb_s"],
-            compute_utilization=token_analysis_data["gpu_metrics"]["compute_utilization"]
+            compute_utilization=token_analysis_data["gpu_metrics"]["compute_utilization"],
+            occupancy_label=token_analysis_data["gpu_metrics"].get("occupancy_label", "SM occupancy"),
+            metrics_source=token_analysis_data["gpu_metrics"].get("metrics_source", "estimated")
         )
         
         analysis = TokenAnalysis(

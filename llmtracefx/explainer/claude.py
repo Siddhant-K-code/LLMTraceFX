@@ -70,9 +70,10 @@ GPU METRICS:
 - Stall Percentage: {metrics.stall_pct:.1f}%
 - Launch Delay: {metrics.launch_delay_ms:.1f}ms
 - Memory Latency: {metrics.memory_latency_ms:.1f}ms
-- SM Occupancy: {metrics.sm_occupancy_pct:.1f}%
+- {metrics.occupancy_label}: {metrics.sm_occupancy_pct:.1f}%
 - Cache Hit Rate: {metrics.cache_hit_rate:.1f}%
 - Compute Utilization: {metrics.compute_utilization:.1f}%
+- Metrics Source: {metrics.metrics_source}
 
 DETECTED BOTTLENECK: {analysis.bottleneck_type}
 OPTIMIZATION FLAGS: {', '.join(analysis.optimization_flags)}

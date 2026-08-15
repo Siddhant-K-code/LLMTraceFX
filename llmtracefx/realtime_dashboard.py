@@ -17,6 +17,8 @@ import logging
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 
+from llmtracefx.hardware import supported_hardware
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -660,7 +662,7 @@ def main():
     # GPU Type selection
     gpu_type = st.sidebar.selectbox(
         "GPU Type",
-        ["A10G", "H100", "A100"],
+        supported_hardware(),
         index=0
     )
     

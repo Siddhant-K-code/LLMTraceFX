@@ -18,8 +18,8 @@ curl -X POST "https://siddhant-k-code--llmtracefx-web-app.modal.run/analyze-trac
 
 **Upload your trace file:**
 ```bash
-curl -X POST "https://siddhant-k-code--llmtracefx-web-app.modal.run/upload-trace" \
-     -F "file=@your_trace.json" -F "gpu_type=A10G" -F "enable_claude=true"
+curl -X POST "https://siddhant-k-code--llmtracefx-web-app.modal.run/upload-trace?gpu_type=A10G&enable_claude=true" \
+     -F "file=@your_trace.json"
 ```
 
 ---
@@ -194,11 +194,12 @@ ssh -L 8080:localhost:8080 -L 8501:localhost:8501 \
 ## 🎯 Features
 
 - **Token-level profiling** of LLM inference with kernel timing analysis
-- **GPU bottleneck detection** (stall %, launch delays, memory issues)
+- **GPU bottleneck heuristics** from measured metadata or deterministic estimates
 - **AI explanations** using Claude API for performance insights
 - **Interactive visualizations** with flame graphs and dashboards
 - **Modal.com deployment** with GPU acceleration
 - **Multiple input formats** (vLLM, generic trace logs)
+- **Apple Silicon and NVIDIA GB10 profiles** with an optional MLX recorder
 
 ## 📦 Installation
 
@@ -214,8 +215,11 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Create virtual environment and install dependencies
 uv sync
 
-# Or install in development mode with optional dependencies
+# Install development and test tools
 uv sync --extra dev --extra test
+
+# Apple Silicon only: install the optional MLX recorder dependency
+uv sync --extra mlx
 ```
 
 ### Using pip
@@ -227,6 +231,9 @@ pip install -r llmtracefx/requirements.txt
 
 # Or install as editable package
 pip install -e .
+
+# Apple Silicon only
+pip install -e ".[mlx]"
 ```
 
 ## 🔧 Quick Start
@@ -235,20 +242,69 @@ pip install -e .
 
 ```bash
 # With uv
-uv run llmtracefx --trace sample
-uv run llmtracefx --trace your_trace.json --gpu-type A10G
 uv run llmtracefx --trace sample --no-claude
+uv run llmtracefx --trace your_trace.json --gpu-type A10G --no-claude
 
 # Or activate virtual environment first
 uv sync
 source .venv/bin/activate  # or .venv\Scripts\activate on Windows
-llmtracefx --trace sample
+llmtracefx --trace sample --no-claude
 
 # With pip/python
-python -m llmtracefx.main --trace sample
-python -m llmtracefx.main --trace your_trace.json --gpu-type A10G
+python -m llmtracefx.main --trace sample --no-claude
+python -m llmtracefx.main --trace your_trace.json --gpu-type A10G --no-claude
 python -m llmtracefx.main --trace sample --no-claude
 ```
+
+### Apple Silicon with MLX
+
+`MLXTraceRecorder` runs on Apple Silicon. It evaluates lazy MLX results,
+synchronizes the device, and writes JSON that the existing CLI can read.
+
+```bash
+uv sync --extra mlx
+uv run python examples/mlx_trace.py
+uv run llmtracefx --trace mlx_trace.json --gpu-type MLX --no-claude
+```
+
+Use the recorder around token generation in your own model:
+
+```python
+from llmtracefx.profiler import MLXTraceRecorder
+
+with MLXTraceRecorder("mlx_trace.json") as trace:
+    with trace.token(0, "Hello"):
+        logits = trace.measure("model_forward", model, input_ids)
+        next_token = trace.measure("sample", sample, logits)
+```
+
+Each duration is synchronized wall-clock time for the callable plus forced MLX
+evaluation. It is not an individual Metal kernel-counter measurement. The
+recorder also saves MLX allocator snapshots after each operation.
+
+For a native Xcode GPU capture of the same region:
+
+```bash
+MTL_CAPTURE_ENABLED=1 uv run python examples/mlx_trace.py \
+  --metal-capture mlx_trace.gputrace
+```
+
+The `.gputrace` path must not already exist. Open it in Xcode for kernel-level
+inspection. See the [MLX Metal debugger guide](https://ml-explore.github.io/mlx/build/html/dev/metal_debugger.html).
+
+### NVIDIA GB10 / DGX Spark
+
+No extra dependency is needed for GB10. Analyze an existing LLMTraceFX, vLLM,
+or event trace with the static GB10 hardware profile:
+
+```bash
+uv run llmtracefx --trace trace.json --gpu-type GB10 --no-claude
+```
+
+`DGX-SPARK` is accepted as an alias. The profile uses the GB10's 128 GB
+coherent unified memory and 273 GB/s memory bandwidth from the
+[NVIDIA DGX Spark hardware guide](https://docs.nvidia.com/dgx/dgx-spark/hardware.html).
+It does not capture a CUDA trace by itself.
 
 ### 2. FastAPI Server
 
@@ -309,7 +365,7 @@ curl -X POST "https://siddhant-k-code--llmtracefx-web-app.modal.run/analyze-trac
 
 ```bash
 export CLAUDE_API_KEY="your_claude_api_key"
-export DEFAULT_GPU_TYPE="A10G"  # or H100, A100
+export DEFAULT_GPU_TYPE="A10G"  # A10G, A100, H100, GB10, or MLX
 export ENABLE_CLAUDE="true"
 export DASHBOARD_PORT="8000"
 ```
@@ -326,7 +382,7 @@ export DASHBOARD_PORT="8000"
 ```
 🔍 Analyzing trace: sample
 📊 Using sample trace data
-🔧 Analyzing GPU performance (GPU: A10G)
+🔧 Analyzing GPU performance (NVIDIA A10G)
 📈 Analysis complete:
    Total tokens: 5
    Total latency: 120.5ms
@@ -349,6 +405,7 @@ Base URL: `https://siddhant-k-code--llmtracefx-web-app.modal.run`
 ```bash
 POST /upload-trace          # Upload trace file
 POST /analyze-trace         # Analyze trace data
+GET  /hardware              # List hardware profiles
 GET  /analysis/{id}         # Get analysis summary
 GET  /token/{id}/{token}    # Get token details
 GET  /explain/{id}/{token}  # Get Claude explanation
@@ -398,10 +455,8 @@ print(f"Performance score: {response.json()['avg_performance_score']:.1f}/100")
 #### **Upload Trace File**
 ```bash
 # Upload your vLLM trace file
-curl -X POST "https://siddhant-k-code--llmtracefx-web-app.modal.run/upload-trace" \
-     -F "file=@your_trace.json" \
-     -F "gpu_type=A10G" \
-     -F "enable_claude=true"
+curl -X POST "https://siddhant-k-code--llmtracefx-web-app.modal.run/upload-trace?gpu_type=A10G&enable_claude=true" \
+     -F "file=@your_trace.json"
 ```
 
 #### **Local Development**
@@ -466,14 +521,23 @@ dashboard = requests.get(f'http://localhost:8000/dashboard/{analysis_id}')
 ### GPU Metrics
 - **Stall Percentage**: Memory-bound bottlenecks
 - **Launch Delay**: Kernel launch overhead
-- **SM Occupancy**: Streaming multiprocessor utilization
+- **Occupancy**: SM occupancy on CUDA and GPU occupancy on Metal
 - **Cache Hit Rate**: Memory access efficiency
 - **Compute Utilization**: GPU computational usage
 
-### Supported GPUs
+Measured values can be supplied in operation metadata using `stall_pct`,
+`launch_delay_ms`, `memory_latency_ms`, `occupancy_pct`, `cache_hit_rate`, and
+`compute_utilization`. Missing fields use deterministic estimates. A report is
+`measured` only when every operation supplies all six metrics; otherwise it is
+labelled `mixed` or `estimated`. MLX recorder timings and memory snapshots are
+measured, but the six analyzer metrics remain estimated unless you add them.
+
+### Supported Hardware
 - **A10G**: 24GB VRAM, 600 GB/s bandwidth
 - **H100**: 80GB VRAM, 3350 GB/s bandwidth
 - **A100**: 80GB VRAM, 1935 GB/s bandwidth
+- **GB10 / DGX Spark**: 128GB coherent unified memory, 273 GB/s bandwidth
+- **MLX / Apple Silicon**: Metal backend with runtime device metadata
 
 ## 🤖 Claude Integration
 
@@ -569,7 +633,11 @@ python -m llmtracefx.main --create-sample
 ### Run Tests
 
 ```bash
-python -m llmtracefx.main --trace test_traces/sample_vllm_trace.json
+uv sync --extra dev --extra test
+uv run pytest
+uv run ruff check llmtracefx/hardware.py \
+  llmtracefx/profiler/mlx_tracer.py \
+  llmtracefx/profiler/gpu_analyzer.py tests
 ```
 
 ## 📄 License
