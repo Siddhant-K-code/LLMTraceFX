@@ -66,3 +66,59 @@ def test_partial_metadata_is_marked_mixed():
 def test_non_numeric_metadata_is_rejected():
     with pytest.raises(ValueError, match="must be numeric"):
         GPUAnalyzer("GB10").analyze_token(make_token({"stall_pct": "high"}))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_metadata_is_rejected(value):
+    with pytest.raises(ValueError, match="must be finite"):
+        GPUAnalyzer("MLX").analyze_token(make_token({"stall_pct": value}))
+
+
+def test_percentage_metadata_is_clamped_to_valid_range():
+    analysis = GPUAnalyzer("MLX").analyze_token(
+        make_token({"occupancy_pct": 110, "cache_hit_rate": -2})
+    )
+
+    assert analysis.gpu_metrics.sm_occupancy_pct == 100
+    assert analysis.gpu_metrics.cache_hit_rate == 0
+    assert analysis.gpu_metrics.metrics_source == "mixed"
+
+
+def test_empty_token_has_explicit_unavailable_analysis():
+    token = TokenTrace(
+        token_id=2,
+        token_text="",
+        total_latency=0,
+        operations=[],
+        start_time=0,
+        end_time=0,
+    )
+
+    analysis = GPUAnalyzer("GB10").analyze_token(token)
+
+    assert analysis.bottleneck_type == "no_operations"
+    assert analysis.performance_score == 0
+    assert analysis.gpu_metrics.metrics_source == "unavailable"
+
+
+def test_aggregate_metrics_are_duration_weighted():
+    operations = [
+        Operation(
+            name="matmul",
+            start_time=0,
+            duration=9,
+            metadata={"stall_pct": 10},
+        ),
+        Operation(
+            name="softmax",
+            start_time=9,
+            duration=1,
+            metadata={"stall_pct": 90},
+        ),
+    ]
+    token = TokenTrace(1, "test", 10, operations, 0, 10)
+
+    analysis = GPUAnalyzer("GB10").analyze_token(token)
+
+    assert analysis.gpu_metrics.stall_pct == pytest.approx(18)
+    assert analysis.gpu_metrics.metrics_source == "mixed"

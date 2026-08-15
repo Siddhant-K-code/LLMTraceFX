@@ -31,7 +31,7 @@ class MLXTraceRecorder:
         self.metal_capture_path = (
             Path(metal_capture_path) if metal_capture_path is not None else None
         )
-        self._mlx = mlx_module or self._load_mlx()
+        self._mlx = mlx_module if mlx_module is not None else self._load_mlx()
         self._clock_ns = clock_ns
         self._started_ns: int | None = None
         self._active_token: dict[str, Any] | None = None
@@ -57,7 +57,11 @@ class MLXTraceRecorder:
                     f"Metal capture path already exists: {self.metal_capture_path}"
                 )
             self.metal_capture_path.parent.mkdir(parents=True, exist_ok=True)
-            self._metal_api().start_capture(str(self.metal_capture_path))
+            metal = self._metal_api()
+            is_available = getattr(metal, "is_available", None)
+            if is_available is not None and not is_available():
+                raise RuntimeError("Metal capture requires an available Metal backend")
+            metal.start_capture(str(self.metal_capture_path))
             self._metal_capture_active = True
         return self
 
@@ -166,15 +170,8 @@ class MLXTraceRecorder:
         )
 
     def _evaluate(self, result: Any) -> None:
-        if isinstance(result, dict):
-            values = list(result.values())
-            if values:
-                self._mlx.eval(*values)
-            return
-        if isinstance(result, (list, tuple)):
-            if result:
-                self._mlx.eval(*result)
-            return
+        # mx.eval accepts an arbitrarily nested list, tuple, or dict of arrays.
+        # Passing the tree intact also lets MLX ignore non-array leaves.
         self._mlx.eval(result)
 
     def _synchronize(self) -> None:
@@ -192,7 +189,7 @@ class MLXTraceRecorder:
         return self._json_safe_dict(device_info()) if device_info else {}
 
     def _memory_snapshot(self) -> dict[str, int]:
-        snapshot = {}
+        snapshot: dict[str, int] = {}
         for function_name, output_name in (
             ("get_active_memory", "active_memory_bytes"),
             ("get_peak_memory", "peak_memory_bytes"),

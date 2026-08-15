@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "GPU-level LLM inference profiler with AI-powered explanations"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "GPL-3.0-only"
 authors = [
     {name = "LLMTraceFX Team", email = "info@llmtracefx.com"},
 ]
@@ -16,7 +16,6 @@ keywords = ["llm", "gpu", "profiler", "inference", "performance", "claude"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -47,6 +46,7 @@ dev = [
     "flake8>=6.0.0",
     "mypy>=1.5.0",
     "pre-commit>=3.3.0",
+    "ruff>=0.12.0",
 ]
 
 test = [
@@ -67,10 +67,9 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/your-org/llmtracefx"
-Documentation = "https://llmtracefx.readthedocs.io"
-Repository = "https://github.com/your-org/llmtracefx"
-Issues = "https://github.com/your-org/llmtracefx/issues"
+Homepage = "https://github.com/Siddhant-K-code/LLMTraceFX"
+Repository = "https://github.com/Siddhant-K-code/LLMTraceFX"
+Issues = "https://github.com/Siddhant-K-code/LLMTraceFX/issues"
 
 [project.scripts]
 llmtracefx = "llmtracefx.main:main"
@@ -190,6 +189,8 @@ exclude_lines = [
 [tool.ruff]
 target-version = "py310"
 line-length = 88
+
+[tool.ruff.lint]
 select = [
     "E",  # pycodestyle errors
     "W",  # pycodestyle warnings
@@ -205,6 +206,6 @@ ignore = [
     "C901",  # too complex
 ]
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "tests/*" = ["B011"]

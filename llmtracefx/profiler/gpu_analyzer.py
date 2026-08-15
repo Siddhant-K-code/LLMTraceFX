@@ -2,6 +2,7 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from math import isfinite
 from typing import Any, TypedDict
 
 from llmtracefx.hardware import HardwareProfile, get_hardware_profile
@@ -213,11 +214,16 @@ class GPUAnalyzer:
         for key in keys:
             if key in op.metadata:
                 try:
-                    return float(op.metadata[key]), True
+                    value = float(op.metadata[key])
                 except (TypeError, ValueError) as exc:
                     raise ValueError(
                         f"Operation '{op.name}' metadata '{key}' must be numeric"
                     ) from exc
+                if not isfinite(value):
+                    raise ValueError(
+                        f"Operation '{op.name}' metadata '{key}' must be finite"
+                    )
+                return value, True
         return float(default), False
 
     @staticmethod

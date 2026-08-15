@@ -2,6 +2,7 @@ import pytest
 
 from llmtracefx.hardware import (
     get_hardware_profile,
+    hardware_profiles,
     normalize_hardware_name,
     supported_hardware,
 )
@@ -36,3 +37,21 @@ def test_unknown_hardware_has_actionable_error():
 
 def test_supported_hardware_includes_new_profiles():
     assert supported_hardware() == ["A10G", "A100", "H100", "GB10", "MLX"]
+
+
+def test_hardware_profiles_are_json_ready_and_complete():
+    profiles = hardware_profiles()
+
+    assert [profile["name"] for profile in profiles] == supported_hardware()
+    assert all(profile["backend"] in {"CUDA", "Metal"} for profile in profiles)
+    assert next(profile for profile in profiles if profile["name"] == "MLX") == {
+        "name": "MLX",
+        "display_name": "Apple Silicon (MLX / Metal)",
+        "vendor": "Apple",
+        "backend": "Metal",
+        "memory_bandwidth_gb_s": None,
+        "memory_size_gb": None,
+        "compute_units": None,
+        "unified_memory": True,
+        "occupancy_label": "GPU occupancy",
+    }

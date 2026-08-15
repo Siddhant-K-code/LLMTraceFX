@@ -173,6 +173,7 @@ async def upload_trace(
         try:
             # Parse trace file
             tokens = parser.parse_trace_file(tmp_path)
+            _require_tokens(tokens)
             
             # Analyze tokens
             analyzer_instance = GPUAnalyzer(gpu_type)
@@ -279,6 +280,7 @@ async def analyze_trace(
         # CPU fallback processing (original code)
         # Parse trace data
         tokens = parser.parse_trace_data(request.trace_data)
+        _require_tokens(tokens)
         
         # Analyze tokens
         analyzer_instance = GPUAnalyzer(gpu_type)
@@ -484,6 +486,13 @@ def _validate_hardware(gpu_type: str) -> str:
         return normalize_hardware_name(gpu_type)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _require_tokens(tokens: list[Any]) -> None:
+    if not tokens:
+        raise HTTPException(
+            status_code=400, detail="Trace does not contain any tokens"
+        )
 
 
 async def generate_claude_explanations(analysis_id: str, analyses: List[TokenAnalysis]):
