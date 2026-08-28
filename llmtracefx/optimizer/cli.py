@@ -12,6 +12,8 @@ Subcommands:
                      aggregate results (``workloads summarize``).
     tune             Offline, evidence-constrained recommendation of the best
                      verified configuration for a workload/hardware target.
+    tune-report      Render a `tune` JSON report as a self-contained, portable
+                     HTML file for offline inspection (no Streamlit needed).
 """
 
 from __future__ import annotations
@@ -51,6 +53,8 @@ from .schema import (
 from .tune.explain import format_report_text
 from .tune.loader import TuneInputError
 from .tune.policy import TunePolicy, TunePolicyError
+from .tune.report import TuneReport, TuneReportValidationError
+from .tune.report_html import render_tune_report_html
 from .tune.tuner import tune
 from .workloads.aggregate import summarize_results, write_summary
 from .workloads.catalog import WORKLOADS, workload_by_id
@@ -595,6 +599,39 @@ def _cmd_tune(args: argparse.Namespace) -> int:
     return 0 if report.has_recommendation else 2
 
 
+def _cmd_tune_report(args: argparse.Namespace) -> int:
+    input_path = Path(args.input)
+    try:
+        report = TuneReport.read_json(input_path)
+    except (OSError, UnicodeError) as exc:
+        print(f"Could not read tune report input {input_path}: {exc}", file=sys.stderr)
+        return 1
+    except TuneReportValidationError as exc:
+        print(f"Invalid tune report in {input_path}: {exc}", file=sys.stderr)
+        return 1
+
+    html_document = render_tune_report_html(report, redact_paths=not args.include_paths)
+
+    output_path = Path(args.output)
+    try:
+        atomic_write_text(output_path, html_document)
+    except OSError as exc:
+        print(
+            f"Could not write tune report HTML to {output_path}: {exc}", file=sys.stderr
+        )
+        return 1
+
+    print(f"Tune report HTML written to {output_path}")
+    if args.include_paths:
+        print("Full local artifact paths are included (--include-paths was set).")
+    else:
+        print(
+            "Local artifact paths were redacted to basenames/stable labels; "
+            "rerun with --include-paths to include full paths."
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="llmtracefx-optimizer",
@@ -990,6 +1027,38 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     tune_parser.set_defaults(func=_cmd_tune)
+
+    tune_report_parser = subparsers.add_parser(
+        "tune-report",
+        help=(
+            "Render a `tune` JSON report as a single, self-contained, "
+            "portable HTML file (inline CSS, no JavaScript, no CDN, works "
+            "offline). Never re-scores or re-computes anything; purely a "
+            "read-only view over an already-produced tune report."
+        ),
+    )
+    tune_report_parser.add_argument(
+        "--input",
+        required=True,
+        help="Path to a `tune --output` JSON report",
+    )
+    tune_report_parser.add_argument(
+        "--output",
+        required=True,
+        help="Path to atomically write the rendered HTML report to",
+    )
+    tune_report_parser.add_argument(
+        "--include-paths",
+        action="store_true",
+        help=(
+            "Include full local artifact paths (results directories, "
+            "verification.json/final_record.json paths) as plain text. "
+            "Default: redact every path to a basename/stable "
+            "`runs/<run_id>/<file>` label so the report is safe to share "
+            "without leaking a user's home directory layout."
+        ),
+    )
+    tune_report_parser.set_defaults(func=_cmd_tune_report)
 
     return parser
 

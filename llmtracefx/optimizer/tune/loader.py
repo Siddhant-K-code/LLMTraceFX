@@ -45,6 +45,25 @@ class ExcludedRun:
             "reason": self.reason,
         }
 
+    @classmethod
+    def from_dict(cls, data: object) -> ExcludedRun:
+        if not isinstance(data, dict):
+            raise TuneInputError("excluded run entry must be a JSON object")
+        for key in ("run_id", "source_results_dir", "reason"):
+            if key not in data:
+                raise TuneInputError(
+                    f"excluded run entry is missing required field: {key!r}"
+                )
+            if not isinstance(data[key], str):
+                raise TuneInputError(
+                    f"excluded run entry.{key} must be a string, got {data[key]!r}"
+                )
+        return cls(
+            run_id=data["run_id"],
+            source_results_dir=data["source_results_dir"],
+            reason=data["reason"],
+        )
+
 
 @dataclass(frozen=True)
 class RunEvidence:
