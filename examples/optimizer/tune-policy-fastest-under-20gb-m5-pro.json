@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "name": "fastest-passing-under-20gb-m5-pro",
+  "description": "Example only, not a measured claim: recommend the fastest verified configuration for a workload/hardware target whose peak memory stays under a 20 GB cap, intended for an Apple M5 Pro-class accelerator. Grouping (workload/version, context tier, model id/family, accelerator, runtime/backend, workload prompt hash) already keeps this policy from ever comparing across different hardware; the memory cap here is an additional, explicit safety margin on top of that.",
+  "objective": "min_mean_total_latency_ms",
+  "constraints": {
+    "required_statuses": ["completed", "skipped"],
+    "min_pass_rate": 1.0,
+    "max_peak_memory_bytes": 21474836480,
+    "allowed_provenances": ["measured_native", "measured_wall_clock"],
+    "min_measured_repetitions": 2,
+    "max_coefficient_of_variation": 0.15
+  }
+}
