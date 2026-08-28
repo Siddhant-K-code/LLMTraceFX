@@ -58,6 +58,7 @@ test = [
 
 mlx = [
     "mlx>=0.25.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
+    "mlx-lm>=0.31.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
 ]
 
 docs = [

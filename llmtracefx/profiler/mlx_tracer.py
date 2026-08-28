@@ -10,6 +10,28 @@ from typing import Any
 PathLike = str | Path
 
 
+def mlx_memory_snapshot(mlx_module: Any) -> dict[str, int]:
+    """Best-effort MLX allocator memory snapshot for an ``mx``-like module.
+
+    Reads whichever of ``get_active_memory``/``get_peak_memory``/
+    ``get_cache_memory`` the installed MLX build exposes and omits the
+    rest, rather than guessing a value for an unavailable counter. Shared
+    by :class:`MLXTraceRecorder` and the ``llmtracefx.optimizer``
+    MLX collector so both report identical key names for the same
+    underlying allocator counters.
+    """
+    snapshot: dict[str, int] = {}
+    for function_name, output_name in (
+        ("get_active_memory", "active_memory_bytes"),
+        ("get_peak_memory", "peak_memory_bytes"),
+        ("get_cache_memory", "cache_memory_bytes"),
+    ):
+        function = getattr(mlx_module, function_name, None)
+        if function is not None:
+            snapshot[output_name] = int(function())
+    return snapshot
+
+
 class MLXTraceRecorder:
     """Record synchronized MLX operations at token granularity.
 
@@ -189,16 +211,7 @@ class MLXTraceRecorder:
         return self._json_safe_dict(device_info()) if device_info else {}
 
     def _memory_snapshot(self) -> dict[str, int]:
-        snapshot: dict[str, int] = {}
-        for function_name, output_name in (
-            ("get_active_memory", "active_memory_bytes"),
-            ("get_peak_memory", "peak_memory_bytes"),
-            ("get_cache_memory", "cache_memory_bytes"),
-        ):
-            function = getattr(self._mlx, function_name, None)
-            if function is not None:
-                snapshot[output_name] = int(function())
-        return snapshot
+        return mlx_memory_snapshot(self._mlx)
 
     def _metal_api(self) -> Any:
         metal = getattr(self._mlx, "metal", None)
