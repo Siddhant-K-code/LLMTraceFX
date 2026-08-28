@@ -603,7 +603,7 @@ def _cmd_tune_report(args: argparse.Namespace) -> int:
     input_path = Path(args.input)
     try:
         report = TuneReport.read_json(input_path)
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         print(f"Could not read tune report input {input_path}: {exc}", file=sys.stderr)
         return 1
     except TuneReportValidationError as exc:

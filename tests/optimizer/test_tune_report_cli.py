@@ -84,6 +84,24 @@ def test_tune_report_cli_exits_1_on_malformed_json(tmp_path):
     assert exit_code == 1
 
 
+def test_tune_report_cli_exits_1_on_non_utf8_input_without_traceback(tmp_path, capsys):
+    bad_path = tmp_path / "bad.json"
+    bad_path.write_bytes(b"\xff\xfe")
+
+    exit_code = _run_cli(
+        [
+            "tune-report",
+            "--input",
+            str(bad_path),
+            "--output",
+            str(tmp_path / "out.html"),
+        ]
+    )
+
+    assert exit_code == 1
+    assert "Could not read tune report" in capsys.readouterr().err
+
+
 def test_tune_report_cli_exits_1_on_invalid_report_schema(tmp_path):
     bad_path = tmp_path / "bad_report.json"
     bad_path.write_text(json.dumps({"not": "a tune report"}), encoding="utf-8")

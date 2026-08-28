@@ -327,6 +327,57 @@ def test_nested_identity_errors_are_wrapped_as_report_validation_errors(tmp_path
             TuneReport.from_dict(data)
 
 
+def test_group_report_rejects_inconclusive_group_with_recommended_candidate(
+    tmp_path,
+):
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+    data = report.to_dict()
+    group = data["groups"][0]
+    group["outcome"] = "inconclusive"
+    group["inconclusive_reason"] = "forced contradiction"
+
+    with pytest.raises(TuneReportValidationError, match="recommended is set"):
+        TuneReport.from_dict(data)
+
+
+def _report_with_baseline_comparison(tmp_path):
+    write_run(tmp_path, "r-ar1", speculative_enabled=False, total_ms=2000.0)
+    write_run(tmp_path, "r-ar2", speculative_enabled=False, total_ms=2000.0)
+    for run_id in ("r-spec1", "r-spec2"):
+        write_run(
+            tmp_path,
+            run_id,
+            speculative_enabled=True,
+            speculative_method="draft-model",
+            speculative_depth=2,
+            total_ms=1000.0,
+        )
+    return tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+
+def test_group_report_rejects_inconclusive_group_with_baseline_comparison(
+    tmp_path,
+):
+    data = _report_with_baseline_comparison(tmp_path).to_dict()
+    group = data["groups"][0]
+    group["outcome"] = "inconclusive"
+    group["inconclusive_reason"] = "forced contradiction"
+    group["recommended"] = None
+
+    with pytest.raises(TuneReportValidationError, match="baseline_comparison"):
+        TuneReport.from_dict(data)
+
+
+def test_group_report_rejects_baseline_comparison_for_wrong_winner(tmp_path):
+    data = _report_with_baseline_comparison(tmp_path).to_dict()
+    comparison = data["groups"][0]["baseline_comparison"]
+    comparison["speculative_candidate_key"] = comparison["baseline_candidate_key"]
+
+    with pytest.raises(TuneReportValidationError, match="recommended candidate"):
+        TuneReport.from_dict(data)
+
+
 # --- Non-finite numeric rejection ---------------------------------------------
 
 

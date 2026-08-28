@@ -457,6 +457,26 @@ class GroupReport:
                 f"{context} has outcome 'inconclusive' but 'inconclusive_reason' "
                 "is null"
             )
+        if group.outcome == GroupOutcome.INCONCLUSIVE:
+            if group.recommended is not None:
+                raise TuneReportValidationError(
+                    f"{context} has outcome 'inconclusive' but recommended is set"
+                )
+            if group.baseline_comparison is not None:
+                raise TuneReportValidationError(
+                    f"{context} has outcome 'inconclusive' but "
+                    "baseline_comparison is set"
+                )
+        if (
+            group.baseline_comparison is not None
+            and group.recommended is not None
+            and group.baseline_comparison.speculative_candidate_key
+            != group.recommended.candidate_key
+        ):
+            raise TuneReportValidationError(
+                f"{context}.baseline_comparison speculative candidate must "
+                "equal the recommended candidate"
+            )
         return group
 
 
