@@ -60,6 +60,7 @@ class MLXGenerationResponse(Protocol):
     from_draft: bool
     prompt_tokens: int
     generation_tokens: int
+    finish_reason: str | None
 
 
 class MLXRuntime(Protocol):
@@ -388,11 +389,15 @@ def collect_mlx(
             if first_token_at is None:
                 first_token_at = observed_at
             response_parts.append(response.text)
-            if response.generation_tokens > previous_generation_tokens:
+            is_eos_summary = response.finish_reason == "stop"
+            if (
+                response.generation_tokens > previous_generation_tokens
+                and not is_eos_summary
+            ):
                 if response.from_draft:
                     accepted_draft_tokens += 1
                 previous_generation_tokens = response.generation_tokens
-            generated_tokens = max(generated_tokens, response.generation_tokens)
+                generated_tokens = response.generation_tokens
 
         runtime.synchronize()
         generation_ended = clock()

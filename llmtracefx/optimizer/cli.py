@@ -81,7 +81,8 @@ def _collect_mlx_argv(args: argparse.Namespace) -> tuple[str, ...]:
     invocation = getattr(args, "_invocation", None)
     if invocation is not None:
         return tuple(invocation)
-    return (
+
+    reconstructed = [
         "llmtracefx-optimizer",
         "collect-mlx",
         "--run-id",
@@ -98,7 +99,19 @@ def _collect_mlx_argv(args: argparse.Namespace) -> tuple[str, ...]:
         str(args.max_tokens),
         "--seed",
         str(args.seed),
-    )
+        "--num-draft-tokens",
+        str(args.num_draft_tokens),
+    ]
+    for flag, value in (
+        ("--model-revision", args.model_revision),
+        ("--tokenizer-revision", args.tokenizer_revision),
+        ("--quantization", args.quantization),
+        ("--accelerator", args.accelerator),
+        ("--draft-model-path", args.draft_model_path),
+    ):
+        if value is not None:
+            reconstructed.extend((flag, value))
+    return tuple(reconstructed)
 
 
 def _cmd_collect_mlx(args: argparse.Namespace) -> int:

@@ -36,6 +36,7 @@ class FakeResponse:
     from_draft: bool
     prompt_tokens: int
     generation_tokens: int
+    finish_reason: str | None = None
 
 
 class FakeRuntime:
@@ -207,6 +208,40 @@ def test_collect_mlx_records_generic_draft_acceptance_without_inventing_proposal
     assert record.speculative.accepted_tokens == 1
     assert record.speculative.proposed_tokens is None
     assert record.speculative.verification_time is None
+
+
+def test_eos_summary_does_not_inflate_generated_or_accepted_tokens(tmp_path):
+    draft_path = tmp_path / "draft"
+    draft_path.mkdir()
+    runtime = FakeRuntime()
+    runtime.responses = [
+        FakeResponse("hello", False, 3, 1),
+        FakeResponse(" world", True, 3, 2),
+        FakeResponse("", True, 3, 3, finish_reason="stop"),
+    ]
+
+    result = collect_mlx(
+        make_config(tmp_path, draft_model_path=draft_path),
+        runtime=runtime,
+        clock=StepClock(),
+    )
+
+    assert result.response_text == "hello world"
+    assert result.record.tokens.generated_tokens == 2
+    assert result.record.speculative.accepted_tokens == 1
+
+
+def test_length_summary_counts_the_final_generated_token(tmp_path):
+    runtime = FakeRuntime()
+    runtime.responses = [
+        FakeResponse("hello", False, 3, 1),
+        FakeResponse(" world", False, 3, 2, finish_reason="length"),
+    ]
+
+    result = collect_mlx(make_config(tmp_path), runtime=runtime, clock=StepClock())
+
+    assert result.response_text == "hello world"
+    assert result.record.tokens.generated_tokens == 2
 
 
 def test_collect_mlx_leaves_unavailable_allocator_metrics_absent(tmp_path):

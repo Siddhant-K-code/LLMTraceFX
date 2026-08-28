@@ -14,6 +14,7 @@ class FakeResponse:
     from_draft: bool = False
     prompt_tokens: int = 2
     generation_tokens: int = 1
+    finish_reason: str | None = None
 
 
 class FakeTokenizer:
@@ -96,6 +97,66 @@ def test_collect_mlx_cli_uses_local_paths_and_writes_evidence(tmp_path, monkeypa
     assert record.model.quantization == "4bit"
     assert record.memory.active.value == 42
     assert Path(record.command.argv[0]).name == "llmtracefx-optimizer"
+
+
+def test_collect_mlx_cli_fallback_records_all_reproducibility_flags(
+    tmp_path, monkeypatch
+):
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    draft_path = tmp_path / "draft"
+    draft_path.mkdir()
+    prompt_path = tmp_path / "prompt.txt"
+    prompt_path.write_text("test prompt", encoding="utf-8")
+    output_dir = tmp_path / "artifacts"
+    monkeypatch.setattr(cli, "MLXLMRuntime", FakeRuntime)
+
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        [
+            "collect-mlx",
+            "--run-id",
+            "cli-mlx-2",
+            "--model-path",
+            str(model_path),
+            "--model-id",
+            "local/test-model",
+            "--model-revision",
+            "model-sha",
+            "--tokenizer-revision",
+            "tokenizer-sha",
+            "--quantization",
+            "4bit",
+            "--accelerator",
+            "Apple M5 Pro",
+            "--draft-model-path",
+            str(draft_path),
+            "--num-draft-tokens",
+            "4",
+            "--prompt-file",
+            str(prompt_path),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    assert args.func(args) == 0
+    argv = ExperimentRecord.read_json(output_dir / "record.json").command.argv
+    for expected in (
+        "--model-revision",
+        "model-sha",
+        "--tokenizer-revision",
+        "tokenizer-sha",
+        "--quantization",
+        "4bit",
+        "--accelerator",
+        "Apple M5 Pro",
+        "--draft-model-path",
+        str(draft_path),
+        "--num-draft-tokens",
+        "4",
+    ):
+        assert expected in argv
 
 
 def test_collect_mlx_cli_reports_missing_prompt_without_traceback(tmp_path, capsys):
