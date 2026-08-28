@@ -251,8 +251,80 @@ def test_from_dict_rejects_inconclusive_outcome_without_reason():
 def test_from_dict_rejects_excluded_run_missing_field():
     data = _minimal_report_dict()
     data["excluded_runs"] = [{"run_id": "r1", "reason": "x"}]
-    with pytest.raises(Exception, match="source_results_dir"):
+    with pytest.raises(TuneReportValidationError, match="source_results_dir"):
         TuneReport.from_dict(data)
+
+
+def test_group_report_canonicalizes_accepted_candidates_by_rank(tmp_path):
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    write_run(tmp_path, "r2", total_ms=2000.0, seed=1)
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+    data = report.to_dict()
+    data["groups"][0]["accepted"].reverse()
+
+    loaded = TuneReport.from_dict(data)
+
+    assert tuple(item.rank for item in loaded.groups[0].accepted) == (1, 2)
+    assert loaded.groups[0].recommended == loaded.groups[0].accepted[0]
+
+
+def test_group_report_canonicalization_round_trips_idempotently(tmp_path):
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    write_run(tmp_path, "r2", total_ms=2000.0, seed=1)
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+    data = report.to_dict()
+    data["groups"][0]["accepted"].reverse()
+
+    once = TuneReport.from_dict(data)
+    twice = TuneReport.from_json(once.to_json())
+
+    assert once.to_json() == twice.to_json()
+    assert tuple(item.rank for item in twice.groups[0].accepted) == (1, 2)
+
+
+@pytest.mark.parametrize("ranks", [(1, 1), (1, 3), (2, 3)])
+def test_group_report_rejects_invalid_accepted_rank_sequence(tmp_path, ranks):
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    write_run(tmp_path, "r2", total_ms=2000.0, seed=1)
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+    data = report.to_dict()
+    for item, rank in zip(data["groups"][0]["accepted"], ranks, strict=True):
+        item["rank"] = rank
+
+    with pytest.raises(TuneReportValidationError, match="ranks"):
+        TuneReport.from_dict(data)
+
+
+def test_group_report_rejects_recommended_candidate_that_is_not_rank_one(tmp_path):
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    write_run(tmp_path, "r2", total_ms=2000.0, seed=1)
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+    data = report.to_dict()
+    data["groups"][0]["recommended"] = data["groups"][0]["accepted"][1]
+
+    with pytest.raises(TuneReportValidationError, match="rank 1"):
+        TuneReport.from_dict(data)
+
+
+def test_nested_identity_errors_are_wrapped_as_report_validation_errors(tmp_path):
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+    for mutation in ("group", "candidate", "baseline"):
+        data = report.to_dict()
+        if mutation == "group":
+            del data["groups"][0]["group_key"]["workload_id"]
+        elif mutation == "candidate":
+            data["groups"][0]["accepted"][0]["candidate_key"][
+                "speculative_enabled"
+            ] = "yes"
+        else:
+            comparison = data["groups"][0]["baseline_comparison"]
+            if comparison is None:
+                continue
+            comparison["baseline_candidate_key"]["speculative_enabled"] = "yes"
+        with pytest.raises(TuneReportValidationError):
+            TuneReport.from_dict(data)
 
 
 # --- Non-finite numeric rejection ---------------------------------------------

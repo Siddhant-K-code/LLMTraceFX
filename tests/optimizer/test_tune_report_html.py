@@ -169,6 +169,109 @@ def test_full_paths_included_when_redact_paths_is_false(tmp_path):
     assert str(tmp_path) in html_out
 
 
+def test_redaction_uses_last_runs_boundary_without_leaking_parent_segments():
+    from llmtracefx.optimizer.tune.report_html import _redact_path
+
+    raw = (
+        "/Users/alice/runs/private-project/secret-experiment/"
+        "runs/run77/verification.json"
+    )
+
+    redacted = _redact_path(raw)
+
+    assert redacted == "runs/run77/verification.json"
+    assert "private-project" not in redacted
+    assert "secret-experiment" not in redacted
+
+
+def test_redaction_handles_windows_paths_and_escapes_labels():
+    from llmtracefx.optimizer.tune.report_html import _esc, _redact_path
+
+    raw = r"C:\Users\alice\runs\private\runs\run<script>\final_record.json"
+    redacted = _redact_path(raw)
+
+    assert redacted == "runs/run<script>/final_record.json"
+    assert "<script>" not in _esc(redacted)
+
+
+def test_redaction_falls_back_to_basename_without_runs_segment():
+    from llmtracefx.optimizer.tune.report_html import _redact_path
+
+    assert _redact_path("/Users/alice/private/report.json") == "report.json"
+
+
+def test_redaction_prefers_known_run_id_over_ambiguous_runs_segments():
+    from llmtracefx.optimizer.tune.report_html import _redact_path
+
+    # Two "runs" segments upstream of the real one; the run id itself is
+    # the ground truth and must never leave "secret-project"/"other-runs"
+    # in the label, regardless of which "runs" segment is "last".
+    raw = (
+        "/Users/alice/secret-project/runs/other-runs/results/"
+        "runs/run77/final_record.json"
+    )
+
+    assert _redact_path(raw, run_id="run77") == "runs/run77/final_record.json"
+
+
+def test_redaction_with_run_id_and_no_runs_segment_still_bounds_at_run_id():
+    from llmtracefx.optimizer.tune.report_html import _redact_path
+
+    raw = "/Users/alice/private-project/custom-layout/run77/final_record.json"
+
+    assert _redact_path(raw, run_id="run77") == "run77/final_record.json"
+
+
+def test_redaction_with_unmatched_run_id_falls_back_to_last_runs_segment():
+    from llmtracefx.optimizer.tune.report_html import _redact_path
+
+    raw = "/Users/alice/secret-project/runs/run1/final_record.json"
+
+    # The run id passed does not appear in the path at all (e.g. a
+    # verification/final-record path recorded under a different run than
+    # the one it is being rendered alongside); must not silently include
+    # the ancestor "secret-project" segment.
+    assert _redact_path(raw, run_id="some-other-run") == "runs/run1/final_record.json"
+
+
+def test_redaction_handles_traversal_like_segments_without_leaking_ancestors():
+    from llmtracefx.optimizer.tune.report_html import _redact_path
+
+    raw = "/Users/alice/../alice/secret/runs/run1/final_record.json"
+
+    assert _redact_path(raw) == "runs/run1/final_record.json"
+    assert _redact_path(raw, run_id="run1") == "runs/run1/final_record.json"
+
+
+def test_redaction_windows_path_with_run_id():
+    from llmtracefx.optimizer.tune.report_html import _redact_path
+
+    raw = r"C:\Users\alice\secret-project\results\runs\run1\final_record.json"
+
+    assert _redact_path(raw, run_id="run1") == "runs/run1/final_record.json"
+
+
+def test_candidate_evidence_paths_use_run_id_aware_redaction(tmp_path):
+    write_run(
+        tmp_path / "secret-project" / "runs" / "duplicate-runs-dir",
+        "r1",
+        total_ms=1000.0,
+    )
+    report = tune(
+        results_dirs=(tmp_path / "secret-project" / "runs" / "duplicate-runs-dir",),
+        policy=LATENCY_POLICY,
+    )
+
+    html_out = render_tune_report_html(report)
+
+    # The ancestor "secret-project" directory name must never leak, whether
+    # via the results-directory listing or via any per-candidate artifact
+    # path (which is redacted using the known run id and always bounds at
+    # the "runs" segment immediately preceding it).
+    assert "secret-project" not in html_out
+    assert "runs/r1/final_record.json" in html_out
+
+
 # --- Section coverage --------------------------------------------------------
 
 

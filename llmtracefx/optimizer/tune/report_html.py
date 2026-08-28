@@ -29,6 +29,7 @@ from __future__ import annotations
 import html
 import math
 from collections.abc import Iterable
+from itertools import zip_longest
 from pathlib import PurePosixPath
 
 from ..doctor.speculative import DoctorVerdict
@@ -48,25 +49,48 @@ def _esc(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
-def _redact_path(raw: str) -> str:
+def _redact_path(raw: str, *, run_id: str | None = None) -> str:
     """Replace a local artifact path with a stable, non-identifying label.
 
-    Every artifact this project ever links to lives under
-    ``<results_dir>/runs/<run_id>/...``; when that shape is recognizable the
-    label keeps the ``runs/<run_id>/<file>`` suffix (identifying which run
-    without leaking the absolute, possibly-home-directory-containing
-    prefix). Otherwise falls back to the final path component.
+    When ``run_id`` is known (the run this path belongs to), the label is
+    built by locating that exact run id as a path segment -- matching the
+    *last* occurrence, in case some unrelated ancestor directory happens to
+    share the run id string -- and keeping only that segment onward (plus
+    one leading ``runs`` segment when the run id is nested directly under
+    one, matching this project's own ``<results_dir>/runs/<run_id>/...``
+    layout). This never depends on guessing which occurrence of a literal
+    ``runs`` directory in the path is the canonical one, so it cannot leak
+    an intervening private project/experiment directory name even when the
+    path happens to contain more than one ``runs`` segment (e.g. because a
+    user's own directory tree is itself named ``runs`` somewhere above the
+    real results directory).
+
+    When no run id is given, or it is not found as an exact path segment,
+    falls back to the last ``runs`` segment (never the first, for the same
+    reason) or, failing that, to the final path component alone -- never
+    preserving any ancestor directory name.
     """
     posix_raw = raw.replace("\\", "/")
-    parts = PurePosixPath(posix_raw).parts
+    parts = tuple(p for p in PurePosixPath(posix_raw).parts if p not in ("/", ""))
+
+    if run_id:
+        matches = [index for index, part in enumerate(parts) if part == run_id]
+        if matches:
+            start = matches[-1]
+            if start > 0 and parts[start - 1] == "runs":
+                start -= 1
+            return "/".join(parts[start:])
+
     if "runs" in parts:
-        return "/".join(parts[parts.index("runs") :])
+        last_runs_index = len(parts) - 1 - parts[::-1].index("runs")
+        return "/".join(parts[last_runs_index:])
+
     name = PurePosixPath(posix_raw).name
     return name or raw
 
 
-def _path_label(raw: str, *, redact_paths: bool) -> str:
-    return raw if not redact_paths else _redact_path(raw)
+def _path_label(raw: str, *, redact_paths: bool, run_id: str | None = None) -> str:
+    return raw if not redact_paths else _redact_path(raw, run_id=run_id)
 
 
 def _fmt_number(value: float | None, *, digits: int = 4) -> str:
@@ -300,10 +324,18 @@ def _render_group_identity(group: GroupReport) -> str:
 def _candidate_evidence(candidate: CandidateReport, *, redact_paths: bool) -> str:
     run_ids = _list_items(candidate.run_ids)
     verification = _list_items(
-        _path_label(p, redact_paths=redact_paths) for p in candidate.verification_paths
+        _path_label(path, redact_paths=redact_paths, run_id=run_id)
+        for path, run_id in zip_longest(
+            candidate.verification_paths, candidate.run_ids, fillvalue=None
+        )
+        if path is not None
     )
     final_records = _list_items(
-        _path_label(p, redact_paths=redact_paths) for p in candidate.final_record_paths
+        _path_label(path, redact_paths=redact_paths, run_id=run_id)
+        for path, run_id in zip_longest(
+            candidate.final_record_paths, candidate.run_ids, fillvalue=None
+        )
+        if path is not None
     )
     return (
         "<details><summary>Source run IDs and artifact paths</summary>"
@@ -314,7 +346,9 @@ def _candidate_evidence(candidate: CandidateReport, *, redact_paths: bool) -> st
     )
 
 
-def _render_recommendation_rationale(group: GroupReport) -> str:
+def _render_recommendation_rationale(
+    group: GroupReport, *, ranked_accepted: tuple[CandidateReport, ...]
+) -> str:
     winner = group.recommended
     assert winner is not None
     parts = [
@@ -322,8 +356,10 @@ def _render_recommendation_rationale(group: GroupReport) -> str:
         f"<code>{_fmt_number(winner.objective_value)}</code>, backed by "
         f"{winner.evidence_count} accepted run(s)."
     ]
-    if len(group.accepted) > 1:
-        runner_up = group.accepted[1]
+    if len(ranked_accepted) > 1:
+        # ``ranked_accepted`` is sorted by rank, never by JSON/source list
+        # order, so index 1 is always the true rank-2 runner-up.
+        runner_up = ranked_accepted[1]
         parts.append(
             "Ranked ahead of runner-up "
             f"<code>{_esc(runner_up.candidate_key.label())}</code> "
@@ -349,7 +385,7 @@ def _render_accepted_table(
         "<th>Evidence</th><th>CV</th></tr>"
     )
     rows: list[str] = []
-    for candidate in accepted:
+    for candidate in sorted(accepted, key=lambda item: item.rank):
         row_class = (
             ' class="recommended-row"' if candidate.rank == recommended_rank else ""
         )
@@ -394,12 +430,18 @@ def _render_rejected(
         reasons = "".join(f"<li>{_esc(reason)}</li>" for reason in candidate.reasons)
         run_ids = _list_items(candidate.run_ids)
         verification = _list_items(
-            _path_label(p, redact_paths=redact_paths)
-            for p in candidate.verification_paths
+            _path_label(path, redact_paths=redact_paths, run_id=run_id)
+            for path, run_id in zip_longest(
+                candidate.verification_paths, candidate.run_ids, fillvalue=None
+            )
+            if path is not None
         )
         final_records = _list_items(
-            _path_label(p, redact_paths=redact_paths)
-            for p in candidate.final_record_paths
+            _path_label(path, redact_paths=redact_paths, run_id=run_id)
+            for path, run_id in zip_longest(
+                candidate.final_record_paths, candidate.run_ids, fillvalue=None
+            )
+            if path is not None
         )
         blocks.append(
             '<div class="panel panel-bad">'
@@ -443,13 +485,19 @@ def _render_group(group: GroupReport, *, redact_paths: bool) -> str:
     parts = [f"<h2>Group: {_esc(group.group_key.label())}</h2>"]
     parts.append(_render_group_identity(group))
 
+    # Rendering must always follow rank order, never whatever order the
+    # source JSON/list happened to be in -- computed once here and reused
+    # by both the recommendation rationale and the accepted table so a
+    # runner-up mention and its table row can never disagree.
+    ranked_accepted = tuple(sorted(group.accepted, key=lambda item: item.rank))
+
     if group.outcome == GroupOutcome.RECOMMENDED and group.recommended is not None:
         winner = group.recommended
         parts.append(
             '<div class="panel panel-good">'
             '<span class="badge badge-recommended">RECOMMENDED</span> '
             f"<strong>{_esc(winner.candidate_key.label())}</strong>"
-            f"<p>{_render_recommendation_rationale(group)}</p>"
+            f"<p>{_render_recommendation_rationale(group, ranked_accepted=ranked_accepted)}</p>"
             "</div>"
         )
     else:
@@ -464,7 +512,7 @@ def _render_group(group: GroupReport, *, redact_paths: bool) -> str:
     parts.append("<h3>Accepted candidate ranking</h3>")
     parts.append(
         _render_accepted_table(
-            group.accepted,
+            ranked_accepted,
             recommended_rank=recommended_rank,
             redact_paths=redact_paths,
         )
@@ -485,7 +533,7 @@ def _render_excluded_runs(report: TuneReport, *, redact_paths: bool) -> str:
     rows = "".join(
         "<tr>"
         f"<td><code>{_esc(run.run_id)}</code></td>"
-        f"<td><code>{_esc(_path_label(run.source_results_dir, redact_paths=redact_paths))}</code></td>"
+        f"<td><code>{_esc(_path_label(run.source_results_dir, redact_paths=redact_paths, run_id=run.run_id))}</code></td>"
         f"<td>{_esc(run.reason)}</td>"
         "</tr>"
         for run in report.excluded_runs

@@ -20,8 +20,8 @@ from pathlib import Path
 from typing import Any
 
 from ..doctor.speculative import DoctorVerdict, SpeculativeRegressionReport
-from .identity import CandidateKey, GroupKey
-from .loader import ExcludedRun
+from .identity import CandidateKey, GroupKey, IdentityValidationError
+from .loader import ExcludedRun, TuneInputError
 from .policy import TunePolicy, TunePolicyError
 
 TUNE_REPORT_SCHEMA_VERSION = "1"
@@ -29,6 +29,24 @@ TUNE_REPORT_SCHEMA_VERSION = "1"
 
 class TuneReportValidationError(ValueError):
     """Raised when a ``TuneReport`` loaded from JSON is invalid or malformed."""
+
+
+def _load_candidate_key(data: Any, *, context: str) -> CandidateKey:
+    try:
+        return CandidateKey.from_dict(data)
+    except IdentityValidationError as exc:
+        raise TuneReportValidationError(
+            f"{context}.candidate_key is invalid: {exc}"
+        ) from exc
+
+
+def _load_group_key(data: Any, *, context: str) -> GroupKey:
+    try:
+        return GroupKey.from_dict(data)
+    except IdentityValidationError as exc:
+        raise TuneReportValidationError(
+            f"{context}.group_key is invalid: {exc}"
+        ) from exc
 
 
 def _require(data: Any, key: str, *, context: str) -> Any:
@@ -173,8 +191,9 @@ class CandidateReport:
             raise TuneReportValidationError("candidate report must be a JSON object")
         context = "candidate report"
         return cls(
-            candidate_key=CandidateKey.from_dict(
-                _require(data, "candidate_key", context=context)
+            candidate_key=_load_candidate_key(
+                _require(data, "candidate_key", context=context),
+                context=context,
             ),
             rank=_require_int(data, "rank", context=context, minimum=1),
             run_ids=_string_tuple(data, "run_ids", context=context),
@@ -244,8 +263,9 @@ class RejectedCandidateReport:
             )
         context = "rejected candidate report"
         return cls(
-            candidate_key=CandidateKey.from_dict(
-                _require(data, "candidate_key", context=context)
+            candidate_key=_load_candidate_key(
+                _require(data, "candidate_key", context=context),
+                context=context,
             ),
             run_ids=_string_tuple(data, "run_ids", context=context),
             verification_paths=_string_tuple(
@@ -309,11 +329,13 @@ class BaselineComparison:
             delta_pct=_optional_finite_float(data, "delta_pct", context=context),
         )
         return cls(
-            baseline_candidate_key=CandidateKey.from_dict(
-                _require(data, "baseline_candidate_key", context=context)
+            baseline_candidate_key=_load_candidate_key(
+                _require(data, "baseline_candidate_key", context=context),
+                context=f"{context}.baseline",
             ),
-            speculative_candidate_key=CandidateKey.from_dict(
-                _require(data, "speculative_candidate_key", context=context)
+            speculative_candidate_key=_load_candidate_key(
+                _require(data, "speculative_candidate_key", context=context),
+                context=f"{context}.speculative",
             ),
             report=speculative_report,
         )
@@ -373,7 +395,18 @@ class GroupReport:
         accepted_raw = data.get("accepted", [])
         if not isinstance(accepted_raw, list):
             raise TuneReportValidationError(f"{context}.accepted must be a list")
-        accepted = tuple(CandidateReport.from_dict(item) for item in accepted_raw)
+        accepted = tuple(
+            sorted(
+                (CandidateReport.from_dict(item) for item in accepted_raw),
+                key=lambda candidate: candidate.rank,
+            )
+        )
+        accepted_ranks = tuple(candidate.rank for candidate in accepted)
+        if accepted_ranks != tuple(range(1, len(accepted) + 1)):
+            raise TuneReportValidationError(
+                f"{context}.accepted ranks must be unique and contiguous "
+                f"starting at 1, got {accepted_ranks!r}"
+            )
 
         rejected_raw = data.get("rejected", [])
         if not isinstance(rejected_raw, list):
@@ -390,7 +423,10 @@ class GroupReport:
         )
 
         group = cls(
-            group_key=GroupKey.from_dict(_require(data, "group_key", context=context)),
+            group_key=_load_group_key(
+                _require(data, "group_key", context=context),
+                context=context,
+            ),
             outcome=outcome,
             recommended=recommended,
             accepted=accepted,
@@ -404,6 +440,15 @@ class GroupReport:
             raise TuneReportValidationError(
                 f"{context} has outcome 'recommended' but 'recommended' is null"
             )
+        if group.outcome == GroupOutcome.RECOMMENDED:
+            if not group.accepted:
+                raise TuneReportValidationError(
+                    f"{context} has outcome 'recommended' but accepted is empty"
+                )
+            if group.recommended != group.accepted[0]:
+                raise TuneReportValidationError(
+                    f"{context}.recommended must equal the rank 1 accepted candidate"
+                )
         if (
             group.outcome == GroupOutcome.INCONCLUSIVE
             and group.inconclusive_reason is None
@@ -472,7 +517,12 @@ class TuneReport:
         excluded_raw = data.get("excluded_runs", [])
         if not isinstance(excluded_raw, list):
             raise TuneReportValidationError(f"{context}.excluded_runs must be a list")
-        excluded_runs = tuple(ExcludedRun.from_dict(item) for item in excluded_raw)
+        try:
+            excluded_runs = tuple(ExcludedRun.from_dict(item) for item in excluded_raw)
+        except TuneInputError as exc:
+            raise TuneReportValidationError(
+                f"{context}.excluded_runs is invalid: {exc}"
+            ) from exc
 
         return cls(
             schema_version=schema_version,

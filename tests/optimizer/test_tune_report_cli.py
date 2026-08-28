@@ -101,6 +101,125 @@ def test_tune_report_cli_exits_1_on_invalid_report_schema(tmp_path):
     assert exit_code == 1
 
 
+def test_tune_report_cli_wraps_nested_validation_errors_without_traceback(
+    tmp_path, capsys
+):
+    report_path = _write_report(tmp_path)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    del payload["groups"][0]["group_key"]["workload_id"]
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    exit_code = _run_cli(
+        [
+            "tune-report",
+            "--input",
+            str(report_path),
+            "--output",
+            str(tmp_path / "out.html"),
+        ]
+    )
+
+    assert exit_code == 1
+    stderr = capsys.readouterr().err
+    assert "Invalid tune report" in stderr
+    assert "Traceback" not in stderr
+
+
+def test_tune_report_cli_wraps_excluded_run_errors_without_traceback(tmp_path, capsys):
+    report_path = _write_report(tmp_path)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["excluded_runs"] = [{"run_id": "r1", "reason": "bad"}]
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    exit_code = _run_cli(
+        [
+            "tune-report",
+            "--input",
+            str(report_path),
+            "--output",
+            str(tmp_path / "out.html"),
+        ]
+    )
+
+    assert exit_code == 1
+    stderr = capsys.readouterr().err
+    assert "Invalid tune report" in stderr
+    assert "Traceback" not in stderr
+
+
+def test_tune_report_cli_wraps_malformed_candidate_key_without_traceback(
+    tmp_path, capsys
+):
+    report_path = _write_report(tmp_path)
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["groups"][0]["accepted"][0]["candidate_key"]["speculative_enabled"] = "yes"
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    exit_code = _run_cli(
+        [
+            "tune-report",
+            "--input",
+            str(report_path),
+            "--output",
+            str(tmp_path / "out.html"),
+        ]
+    )
+
+    assert exit_code == 1
+    stderr = capsys.readouterr().err
+    assert "Invalid tune report" in stderr
+    assert "Traceback" not in stderr
+
+
+def test_tune_report_cli_wraps_malformed_baseline_comparison_identity_without_traceback(
+    tmp_path, capsys
+):
+    results_dir = tmp_path / "results"
+    write_run(results_dir, "r-ar1", speculative_enabled=False, total_ms=2000.0)
+    write_run(results_dir, "r-ar2", speculative_enabled=False, total_ms=2000.0)
+    write_run(
+        results_dir,
+        "r-spec1",
+        speculative_enabled=True,
+        speculative_method="draft-model",
+        speculative_depth=2,
+        total_ms=1000.0,
+    )
+    write_run(
+        results_dir,
+        "r-spec2",
+        speculative_enabled=True,
+        speculative_method="draft-model",
+        speculative_depth=2,
+        total_ms=1000.0,
+    )
+    policy = TunePolicy(objective=TuneObjective.MIN_MEAN_TOTAL_LATENCY_MS)
+    report = tune(results_dirs=(results_dir,), policy=policy)
+    assert report.groups[0].baseline_comparison is not None
+
+    payload = report.to_dict()
+    payload["groups"][0]["baseline_comparison"]["baseline_candidate_key"][
+        "speculative_enabled"
+    ] = "yes"
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    exit_code = _run_cli(
+        [
+            "tune-report",
+            "--input",
+            str(report_path),
+            "--output",
+            str(tmp_path / "out.html"),
+        ]
+    )
+
+    assert exit_code == 1
+    stderr = capsys.readouterr().err
+    assert "Invalid tune report" in stderr
+    assert "Traceback" not in stderr
+
+
 def test_tune_report_cli_redacts_paths_by_default(tmp_path):
     report_path = _write_report(tmp_path)
     output_path = tmp_path / "report.html"
