@@ -132,6 +132,23 @@ _SPEC_TYPES_BY_CATEGORY: dict[WorkloadCategory, type[WorkloadSpec]] = {
 }
 
 
+class PaddingPlacement(str, Enum):
+    """Where context-padding filler must be inserted in a materialized prompt."""
+
+    APPEND_AFTER_BASE_PROMPT = "append_after_base_prompt"
+    """Filler goes after the full (already self-contained) base prompt.
+    Valid for workloads whose base prompt has no dangling continuation
+    point, e.g. structured JSON extraction or prose reasoning."""
+
+    BEFORE_CONTINUATION_STUB = "before_continuation_stub"
+    """Filler is inserted between the base prompt's instructions and its
+    fixed ``continuation_stub``, so the stub remains the very last text
+    the model sees. Required for code completion, where the model must
+    continue writing code immediately after an open function
+    signature/docstring; appending filler after that stub would corrupt
+    the completion point."""
+
+
 @dataclass(frozen=True)
 class Workload:
     """One versioned, deterministic workload definition."""
@@ -142,6 +159,16 @@ class Workload:
     title: str
     base_prompt: str
     spec: WorkloadSpec
+    continuation_stub: str = ""
+    """When non-empty, the exact trailing content of ``base_prompt`` that
+    must remain the very last text the model sees (e.g. an open function
+    signature/docstring for code completion). Context padding is inserted
+    *before* this stub rather than appended after the full base prompt,
+    so the model still continues immediately from the stub. Empty for
+    workloads (structured JSON, prose reasoning) whose ``base_prompt`` is
+    already a complete, self-contained instruction with no dangling
+    continuation point -- for those, padding appended after the full
+    base prompt does not change the task's meaning."""
 
     def __post_init__(self) -> None:
         if not self.workload_id:
@@ -157,6 +184,23 @@ class Workload:
                 f"{self.category.value} but spec type "
                 f"{type(self.spec).__name__}, expected {expected_type.__name__}"
             )
+        if self.continuation_stub and not self.base_prompt.endswith(
+            self.continuation_stub
+        ):
+            raise WorkloadSchemaError(
+                f"workload '{self.workload_id}' has a continuation_stub that "
+                "is not a suffix of base_prompt; padding placement requires "
+                "the stub to be the exact trailing content of the prompt"
+            )
+
+    @property
+    def padding_placement(self) -> PaddingPlacement:
+        """Where context-padding filler must be inserted for this workload."""
+        return (
+            PaddingPlacement.BEFORE_CONTINUATION_STUB
+            if self.continuation_stub
+            else PaddingPlacement.APPEND_AFTER_BASE_PROMPT
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -167,6 +211,7 @@ class Workload:
             "title": self.title,
             "base_prompt": self.base_prompt,
             "spec": self.spec.to_dict(),
+            "continuation_stub": self.continuation_stub,
         }
 
     def to_json(self, *, indent: int | None = 2) -> str:
@@ -184,6 +229,7 @@ class Workload:
                 title=data["title"],
                 base_prompt=data["base_prompt"],
                 spec=spec_type.from_dict(data["spec"]),
+                continuation_stub=data.get("continuation_stub", ""),
             )
         except KeyError as exc:
             raise WorkloadSchemaError(

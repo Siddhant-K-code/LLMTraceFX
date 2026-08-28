@@ -133,6 +133,26 @@ def test_validate_checkpoint_compatibility_unwraps_vlm_text_config():
     validate_checkpoint_compatibility(target, sidecar)  # must not raise
 
 
+def test_validate_checkpoint_compatibility_accepts_differing_layer_counts():
+    # A native-MTP sidecar/drafter legitimately has far fewer layers than
+    # its target model -- that must never be treated as an incompatibility.
+    target = {"hidden_size": 4096, "vocab_size": 151936, "num_hidden_layers": 48}
+    sidecar = {"hidden_size": 4096, "vocab_size": 151936, "num_hidden_layers": 1}
+    validate_checkpoint_compatibility(target, sidecar)  # must not raise
+
+
+def test_validate_checkpoint_compatibility_still_rejects_hidden_size_mismatch_with_differing_layers():
+    target = {"hidden_size": 4096, "vocab_size": 151936, "num_hidden_layers": 48}
+    sidecar = {"hidden_size": 2048, "vocab_size": 151936, "num_hidden_layers": 1}
+    with pytest.raises(NativeMTPCollectorError, match="hidden_size") as exc_info:
+        validate_checkpoint_compatibility(target, sidecar)
+    # Layer counts are surfaced as informational context, not as their own
+    # enforced requirement.
+    assert "informational, not enforced" in str(exc_info.value)
+    assert "num_hidden_layers=48" in str(exc_info.value)
+    assert "num_hidden_layers=1" in str(exc_info.value)
+
+
 # --- Config validation ---------------------------------------------------
 
 

@@ -22,7 +22,12 @@ from typing import Any
 
 from ..collectors._shared import sha256_text
 from .catalog import CONTEXT_FILLER_CORPUS
-from .schema import CONTEXT_TIER_TARGET_TOKENS, ContextTier, Workload
+from .schema import (
+    CONTEXT_TIER_TARGET_TOKENS,
+    ContextTier,
+    PaddingPlacement,
+    Workload,
+)
 
 #: Conservative, fixed approximation used only to decide how much filler
 #: to add when materializing a prompt for planning/matrix-generation
@@ -60,14 +65,45 @@ class MaterializedPrompt:
         }
 
 
+def _build_filler(remaining_chars: int) -> tuple[str, int]:
+    """Deterministically build filler text totalling >= ``remaining_chars``.
+
+    Returns the filler text and the number of segments used, numbered
+    from zero so the output is reproducible.
+    """
+    filler_parts: list[str] = []
+    index = 0
+    remaining = remaining_chars
+    while remaining > 0:
+        segment = CONTEXT_FILLER_CORPUS.format(index=index) + "\n"
+        filler_parts.append(segment)
+        remaining -= len(segment)
+        index += 1
+    return "".join(filler_parts), index
+
+
 def materialize_prompt(workload: Workload, tier: ContextTier) -> MaterializedPrompt:
     """Deterministically pad ``workload``'s base prompt toward ``tier``.
 
     The base prompt is always kept verbatim and never truncated -- if it
     already meets or exceeds the approximate target size, no filler is
-    added. Padding, when added, is deterministic filler text appended
-    after a blank-line separator, numbered from zero, so the exact
-    output is reproducible from ``(workload_id, version, tier)`` alone.
+    added. Padding, when added, is deterministic filler text numbered
+    from zero, so the exact output is reproducible from
+    ``(workload_id, version, tier)`` alone.
+
+    Placement depends on ``workload.padding_placement``:
+
+    * ``APPEND_AFTER_BASE_PROMPT``: filler is appended after the full
+      base prompt. Correct for workloads whose base prompt is already a
+      complete, self-contained instruction (structured JSON, prose
+      reasoning).
+    * ``BEFORE_CONTINUATION_STUB``: filler is inserted between the base
+      prompt's instructions and its fixed ``continuation_stub``, so the
+      stub -- e.g. an open function signature/docstring for code
+      completion -- remains the exact trailing content the model must
+      continue from. Appending filler after the stub would instead
+      leave irrelevant filler as the last thing the model sees,
+      corrupting the completion point.
     """
     target_tokens = CONTEXT_TIER_TARGET_TOKENS[tier]
     target_chars = target_tokens * APPROX_CHARS_PER_TOKEN
@@ -76,17 +112,14 @@ def materialize_prompt(workload: Workload, tier: ContextTier) -> MaterializedPro
     if len(base) >= target_chars:
         text = base
         filler_segments = 0
+    elif workload.padding_placement is PaddingPlacement.BEFORE_CONTINUATION_STUB:
+        stub = workload.continuation_stub
+        prefix = base[: -len(stub)]
+        filler_text, filler_segments = _build_filler(target_chars - len(base))
+        text = f"{prefix}{filler_text}\n{stub}"
     else:
-        remaining = target_chars - len(base)
-        filler_parts: list[str] = []
-        index = 0
-        while remaining > 0:
-            segment = CONTEXT_FILLER_CORPUS.format(index=index) + "\n"
-            filler_parts.append(segment)
-            remaining -= len(segment)
-            index += 1
-        text = base + "\n\n" + "".join(filler_parts)
-        filler_segments = index
+        filler_text, filler_segments = _build_filler(target_chars - len(base))
+        text = base + "\n\n" + filler_text
 
     return MaterializedPrompt(
         workload_id=workload.workload_id,

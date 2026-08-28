@@ -16,6 +16,11 @@ from .schema import (
     WorkloadCategory,
 )
 
+_PALINDROME_FUNCTION_STUB = (
+    "def is_palindrome(text: str) -> bool:\n"
+    '    """Return True if text is a palindrome, ignoring case and spaces."""\n'
+)
+
 CODE_COMPLETION_PALINDROME = Workload(
     workload_id="code-completion-palindrome-check",
     version="1",
@@ -26,14 +31,10 @@ CODE_COMPLETION_PALINDROME = Workload(
         "`text` reads the same forwards and backwards after lowercasing "
         "and removing spaces, and False otherwise. Respond with only the "
         "completed function body as valid Python code, no explanation.\n\n"
-        "def is_palindrome(text: str) -> bool:\n"
-        '    """Return True if text is a palindrome, ignoring case and spaces."""\n'
+        + _PALINDROME_FUNCTION_STUB
     ),
     spec=CodeCompletionSpec(
-        function_stub=(
-            "def is_palindrome(text: str) -> bool:\n"
-            '    """Return True if text is a palindrome, ignoring case and spaces."""\n'
-        ),
+        function_stub=_PALINDROME_FUNCTION_STUB,
         test_code=(
             "assert is_palindrome('Racecar') is True\n"
             "assert is_palindrome('was it a car or a cat i saw') is True\n"
@@ -42,6 +43,7 @@ CODE_COMPLETION_PALINDROME = Workload(
         ),
         entry_point="is_palindrome",
     ),
+    continuation_stub=_PALINDROME_FUNCTION_STUB,
 )
 
 STRUCTURED_JSON_PROFILE_EXTRACTION = Workload(

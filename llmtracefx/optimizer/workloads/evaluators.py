@@ -12,14 +12,38 @@ subprocess (never with ``shell=True`` and never via string
 interpolation into a shell command) to run a fixed, project-authored
 test suite against the candidate completion. This is inherent to
 executable-test evaluation (the same approach used by benchmarks like
-HumanEval) and should only be run in an already-trusted local
-environment, the same trust boundary as any other locally executed
-code.
+HumanEval). To reduce (not eliminate -- this is not a security
+sandbox) the blast radius of executing untrusted model output, the
+subprocess:
+
+* runs with its working directory set to a fresh, single-use temporary
+  directory that is removed afterward, so relative file writes by the
+  candidate land there instead of the caller's cwd;
+* runs with a minimal, explicit environment allowlist (``PATH`` plus a
+  handful of Windows system variables needed for the interpreter to
+  start) instead of the full inherited environment, so parent secrets
+  (API keys, tokens, credentials) are never visible to candidate code;
+* on POSIX, applies conservative ``resource.setrlimit`` bounds (CPU
+  time, address space, output file size) before exec via
+  ``preexec_fn``, scoped to that one process only, on a best-effort
+  basis (any single limit a given POSIX platform rejects -- notably
+  macOS/Darwin's ``RLIMIT_AS`` -- is skipped rather than aborting
+  subprocess creation). Process-count limits (``RLIMIT_NPROC``) are
+  deliberately left untouched because they are per-user, not
+  per-process, and could affect unrelated processes sharing this host.
+  ``preexec_fn``/``resource`` are POSIX-only (CPython raises
+  ``ValueError`` if ``preexec_fn`` is passed on Windows), so on Windows
+  only the cwd/environment isolation above applies and no CPU/memory/
+  file-size ceiling is enforced.
+
+This should still only be run in an already-trusted local environment;
+it is containment for a benchmarking tool, not a hostile-code sandbox.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -49,6 +73,73 @@ _JSON_TYPE_CHECKS: dict[str, type | tuple[type, ...]] = {
     "dict": dict,
 }
 
+#: Explicit allowlist for the candidate-code subprocess environment.
+#: Everything else from the caller's environment (API keys, tokens,
+#: credentials, unrelated config) is deliberately excluded.
+_ALLOWED_SUBPROCESS_ENV_VARS: tuple[str, ...] = (
+    "PATH",
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "PATHEXT",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
+)
+
+_IS_POSIX = os.name == "posix"
+
+#: Conservative POSIX-only resource ceilings for the candidate-code
+#: subprocess. Deliberately generous enough not to interfere with any
+#: legitimate small workload-catalog completion; see the module
+#: docstring for why ``RLIMIT_NPROC`` is not included.
+_MAX_CPU_SECONDS = 10
+_MAX_ADDRESS_SPACE_BYTES = 1 * 1024 * 1024 * 1024  # 1 GiB
+_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MiB
+
+
+def _minimal_subprocess_env() -> dict[str, str]:
+    """Build a minimal, explicit environment for the candidate subprocess."""
+    return {
+        name: os.environ[name]
+        for name in _ALLOWED_SUBPROCESS_ENV_VARS
+        if name in os.environ
+    }
+
+
+def _posix_preexec_resource_limits() -> None:
+    """Best-effort CPU/address-space/file-size limits before exec (POSIX).
+
+    Runs inside the freshly forked child, before the candidate program's
+    process image is loaded, so any limit that does apply bounds only
+    that one process. Each limit is applied independently and any
+    platform quirk that rejects it is swallowed rather than aborting the
+    whole subprocess launch: notably, macOS/Darwin's kernel rejects
+    ``RLIMIT_AS`` for reasons unrelated to the requested value (its
+    reported hard limit does not match what it actually enforces), so
+    treating a single unsupported limit as fatal would break code
+    evaluation entirely on that platform. Never call this on a
+    non-POSIX platform.
+    """
+    import resource
+
+    for limit, bounds in (
+        (resource.RLIMIT_CPU, (_MAX_CPU_SECONDS, _MAX_CPU_SECONDS)),
+        (
+            resource.RLIMIT_AS,
+            (_MAX_ADDRESS_SPACE_BYTES, _MAX_ADDRESS_SPACE_BYTES),
+        ),
+        (
+            resource.RLIMIT_FSIZE,
+            (_MAX_FILE_SIZE_BYTES, _MAX_FILE_SIZE_BYTES),
+        ),
+    ):
+        try:
+            resource.setrlimit(limit, bounds)
+        except (ValueError, OSError):
+            # Platform does not support (or rejects) this specific
+            # limit; skip it and keep applying the remaining ones.
+            continue
+
 
 def _extract_code(response_text: str) -> str:
     """Strip a single markdown code fence if present, else return as-is."""
@@ -65,7 +156,8 @@ def evaluate_code_completion(
     """Run ``spec.test_code`` against the candidate completion.
 
     ``success`` is True only if the combined program (candidate code
-    plus the fixed test assertions) exits with status 0.
+    plus the fixed test assertions) exits with status 0. See the module
+    docstring for the containment measures applied to this subprocess.
     """
     completion = _extract_code(response_text)
     program = f"{completion}\n\n{spec.test_code}\n"
@@ -76,11 +168,14 @@ def evaluate_code_completion(
         try:
             completed = subprocess.run(
                 [sys.executable, str(program_path)],
+                cwd=tmp_dir,
+                env=_minimal_subprocess_env(),
                 capture_output=True,
                 text=True,
                 timeout=timeout_seconds,
                 shell=False,
                 check=False,
+                preexec_fn=(_posix_preexec_resource_limits if _IS_POSIX else None),
             )
         except subprocess.TimeoutExpired:
             return OutcomeInfo(

@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import os
+import time
+
+import pytest
+
+from llmtracefx.optimizer.workloads import evaluators
 from llmtracefx.optimizer.workloads.catalog import (
     CODE_COMPLETION_PALINDROME,
     PROSE_REASONING_TRAIN_PROBLEM,
@@ -13,6 +19,7 @@ from llmtracefx.optimizer.workloads.evaluators import (
     evaluate_structured_json,
     evaluate_workload,
 )
+from llmtracefx.optimizer.workloads.schema import CodeCompletionSpec
 
 # --- Code completion -----------------------------------------------------
 
@@ -70,6 +77,104 @@ def test_evaluate_code_completion_times_out_on_infinite_loop():
     )
     assert outcome.success is False
     assert "timed out" in outcome.notes
+
+
+# --- Code completion sandboxing: cwd, environment, resource limits --------
+
+
+def test_evaluate_code_completion_isolates_cwd_from_the_caller(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    spec = CodeCompletionSpec(
+        function_stub="def f() -> None:\n    pass\n",
+        test_code="",
+        entry_point="f",
+    )
+    completion = (
+        "def f() -> None:\n"
+        "    with open('leaked.txt', 'w') as handle:\n"
+        "        handle.write('leaked')\n"
+        "\n"
+        "f()\n"
+    )
+    outcome = evaluate_code_completion(spec, completion)
+    assert outcome.success is True
+    # The candidate's relative file write must land in its own ephemeral
+    # temp directory, never in the caller's (here, the test's) cwd.
+    assert not (tmp_path / "leaked.txt").exists()
+
+
+def test_evaluate_code_completion_does_not_expose_parent_secrets(monkeypatch):
+    monkeypatch.setenv("LLMTRACEFX_TEST_FAKE_SECRET", "super-secret-value")
+    spec = CodeCompletionSpec(
+        function_stub="def f() -> None:\n    pass\n",
+        test_code=(
+            "import os\nassert os.environ.get('LLMTRACEFX_TEST_FAKE_SECRET') is None\n"
+        ),
+        entry_point="f",
+    )
+    completion = "def f() -> None:\n    pass\n"
+    outcome = evaluate_code_completion(spec, completion)
+    assert outcome.success is True
+
+
+def test_evaluate_code_completion_minimal_env_is_a_strict_allowlist():
+    env = evaluators._minimal_subprocess_env()
+    assert set(env).issubset(set(evaluators._ALLOWED_SUBPROCESS_ENV_VARS))
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="POSIX-only resource limits; not enforced on Windows (see module docstring)",
+)
+def test_evaluate_code_completion_posix_cpu_limit_kills_busy_loop(monkeypatch):
+    # Lower the CPU ceiling for this test only so it stays fast; the
+    # wall-clock timeout passed below is deliberately much larger so a
+    # pass here proves the RLIMIT_CPU kill fired, not the ordinary
+    # subprocess timeout path already covered above.
+    monkeypatch.setattr(evaluators, "_MAX_CPU_SECONDS", 1)
+    spec = CodeCompletionSpec(
+        function_stub="def f() -> None:\n    pass\n",
+        test_code="",
+        entry_point="f",
+    )
+    busy_loop = "x = 0\nwhile True:\n    x += 1\n"
+
+    started = time.perf_counter()
+    outcome = evaluate_code_completion(spec, busy_loop, timeout_seconds=15.0)
+    elapsed = time.perf_counter() - started
+
+    assert outcome.success is False
+    assert elapsed < 15.0
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="POSIX-only resource limits; not enforced on Windows (see module docstring)",
+)
+def test_evaluate_code_completion_posix_file_size_limit_kills_large_write(monkeypatch):
+    monkeypatch.setattr(evaluators, "_MAX_FILE_SIZE_BYTES", 1024)
+    spec = CodeCompletionSpec(
+        function_stub="def f() -> None:\n    pass\n",
+        test_code="",
+        entry_point="f",
+    )
+    oversized_write = (
+        "def f() -> None:\n"
+        "    pass\n"
+        "\n"
+        "with open('big.bin', 'wb') as handle:\n"
+        "    handle.write(b'x' * (10 * 1024 * 1024))\n"
+    )
+    outcome = evaluate_code_completion(spec, oversized_write)
+    assert outcome.success is False
+
+
+def test_evaluate_code_completion_ordinary_completion_still_evaluates_after_sandboxing():
+    outcome = evaluate_code_completion(
+        CODE_COMPLETION_PALINDROME.spec, _CORRECT_PALINDROME_COMPLETION
+    )
+    assert outcome.success is True
+    assert outcome.quality_score == 1.0
 
 
 # --- Structured JSON -------------------------------------------------------

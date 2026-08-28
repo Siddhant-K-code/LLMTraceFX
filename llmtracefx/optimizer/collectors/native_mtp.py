@@ -311,7 +311,12 @@ def _read_config_json(path: Path, *, label: str) -> dict[str, Any]:
 
 
 def _arch_signature(config: dict[str, Any]) -> dict[str, Any]:
-    """Extract comparable architecture fields, unwrapping VLM text_config."""
+    """Extract comparable architecture fields, unwrapping VLM text_config.
+
+    ``num_hidden_layers`` is extracted for informational/debugging
+    purposes only (see ``validate_checkpoint_compatibility``); it is
+    never compared for equality.
+    """
     source = config
     text_config = config.get("text_config")
     if isinstance(text_config, dict):
@@ -328,11 +333,20 @@ def validate_checkpoint_compatibility(
 ) -> None:
     """Fail clearly when the target/sidecar checkpoints look incompatible.
 
-    Compares the architecture fields public ``config.json`` metadata
-    exposes (hidden size, vocabulary size, layer count where present).
-    This is a best-effort, metadata-only check -- it cannot prove weight
-    compatibility, only rule out checkpoints that are structurally
-    mismatched.
+    Compares only ``hidden_size`` and ``vocab_size`` from public
+    ``config.json`` metadata; a mismatch there means the two checkpoints
+    cannot share a tokenizer/embedding space and are structurally
+    incompatible. This is a best-effort, metadata-only check -- it
+    cannot prove weight compatibility, only rule out checkpoints that
+    are structurally mismatched.
+
+    ``num_hidden_layers`` is deliberately **not** enforced: a native-MTP
+    sidecar/drafter checkpoint is expected to have a different (almost
+    always much smaller) layer count than its target model -- that is
+    the whole point of a lightweight MTP head/drafter. When available on
+    both checkpoints, it is surfaced as informational context in a
+    hidden/vocab mismatch error, never as a compatibility requirement by
+    itself.
     """
     target_sig = _arch_signature(target_config)
     sidecar_sig = _arch_signature(sidecar_config)
@@ -356,9 +370,17 @@ def validate_checkpoint_compatibility(
         and target_sig[key] != sidecar_sig[key]
     ]
     if mismatches:
+        layer_note = ""
+        if "num_hidden_layers" in target_sig or "num_hidden_layers" in sidecar_sig:
+            layer_note = (
+                " (informational, not enforced: target num_hidden_layers="
+                f"{target_sig.get('num_hidden_layers')!r}, sidecar "
+                f"num_hidden_layers={sidecar_sig.get('num_hidden_layers')!r})"
+            )
         raise NativeMTPCollectorError(
             "target/sidecar checkpoints are architecturally incompatible: "
             + "; ".join(mismatches)
+            + layer_note
         )
 
 
