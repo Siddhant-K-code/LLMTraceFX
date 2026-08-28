@@ -148,6 +148,13 @@ def test_validate_checkpoint_compatibility_rejects_layer_only_sidecar_signature(
         validate_checkpoint_compatibility(target, sidecar)
 
 
+def test_validate_checkpoint_compatibility_rejects_disjoint_comparable_fields():
+    target = {"hidden_size": 4096}
+    sidecar = {"vocab_size": 151936}
+    with pytest.raises(NativeMTPCollectorError, match="share no comparable"):
+        validate_checkpoint_compatibility(target, sidecar)
+
+
 def test_validate_checkpoint_compatibility_still_rejects_hidden_size_mismatch_with_differing_layers():
     target = {"hidden_size": 4096, "vocab_size": 151936, "num_hidden_layers": 48}
     sidecar = {"hidden_size": 2048, "vocab_size": 151936, "num_hidden_layers": 1}

@@ -363,12 +363,19 @@ def validate_checkpoint_compatibility(
             "vocab_size; cannot validate compatibility with the target"
         )
 
+    shared_fields = tuple(
+        key for key in comparable_fields if key in target_sig and key in sidecar_sig
+    )
+    if not shared_fields:
+        raise NativeMTPCollectorError(
+            "target and sidecar checkpoint metadata share no comparable "
+            "hidden_size or vocab_size field; cannot validate compatibility"
+        )
+
     mismatches = [
         f"{key}: target={target_sig[key]!r} sidecar={sidecar_sig[key]!r}"
-        for key in comparable_fields
-        if key in target_sig
-        and key in sidecar_sig
-        and target_sig[key] != sidecar_sig[key]
+        for key in shared_fields
+        if target_sig[key] != sidecar_sig[key]
     ]
     if mismatches:
         layer_note = ""
