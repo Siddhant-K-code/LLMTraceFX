@@ -147,6 +147,24 @@ class TuneConstraints:
             )
         if self.min_measured_repetitions < 1:
             raise TunePolicyError("constraints.min_measured_repetitions must be >= 1")
+        # Defense in depth: every numeric field must be finite even when a
+        # caller constructs ``TuneConstraints`` directly instead of going
+        # through ``from_dict``/``from_file`` (which already reject
+        # non-finite JSON/YAML input before this constructor ever runs). A
+        # NaN/Infinity threshold here would otherwise silently disable the
+        # ceiling it is supposed to enforce.
+        for field_name, numeric_value in (
+            ("min_pass_rate", self.min_pass_rate),
+            ("min_quality_score", self.min_quality_score),
+            ("max_peak_memory_bytes", self.max_peak_memory_bytes),
+            ("max_total_latency_ms", self.max_total_latency_ms),
+            ("max_coefficient_of_variation", self.max_coefficient_of_variation),
+        ):
+            if numeric_value is not None and not math.isfinite(numeric_value):
+                raise TunePolicyError(
+                    f"constraints.{field_name} must be a finite number, got "
+                    f"{numeric_value!r}"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         return {

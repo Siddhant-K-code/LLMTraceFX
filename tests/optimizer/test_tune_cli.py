@@ -199,3 +199,49 @@ def test_tune_cli_accepts_multiple_results_dirs(tmp_path, capsys):
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "evidence=2" in captured.out
+
+
+def test_tune_cli_rejects_non_finite_evidence_end_to_end(tmp_path, capsys):
+    # Real on-disk artifacts containing literal JSON NaN/Infinity for
+    # timing.total: must be rejected, never recommended, exit code 2.
+    results_dir = tmp_path / "results"
+    write_run(results_dir, "r-nan", total_ms=float("nan"))
+    on_disk = (results_dir / "runs" / "r-nan" / "final_record.json").read_text(
+        encoding="utf-8"
+    )
+    assert "NaN" in on_disk
+    policy_path = _write_policy(tmp_path, {"objective": "min_mean_total_latency_ms"})
+
+    exit_code = _run_tune(
+        [
+            "tune",
+            "--results",
+            str(results_dir),
+            "--policy",
+            str(policy_path),
+            "--explain",
+        ]
+    )
+
+    assert exit_code == 2
+    captured = capsys.readouterr()
+    assert "INCONCLUSIVE" in captured.out
+    assert "non-finite" in captured.out
+
+
+def test_tune_cli_rejects_non_finite_policy_threshold(tmp_path):
+    results_dir = tmp_path / "results"
+    write_run(results_dir, "r1", total_ms=1000.0)
+    policy_path = _write_policy(
+        tmp_path,
+        {
+            "objective": "min_mean_total_latency_ms",
+            "constraints": {"max_total_latency_ms": float("nan")},
+        },
+    )
+
+    exit_code = _run_tune(
+        ["tune", "--results", str(results_dir), "--policy", str(policy_path)]
+    )
+
+    assert exit_code == 1

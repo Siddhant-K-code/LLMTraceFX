@@ -115,6 +115,17 @@ def test_from_file_loads_yaml(tmp_path):
     assert policy.constraints.min_quality_score == 0.8
 
 
+def test_from_file_json_rejects_non_finite_threshold(tmp_path):
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(
+        '{"objective":"min_mean_total_latency_ms",'
+        '"constraints":{"max_peak_memory_bytes":Infinity}}',
+        encoding="utf-8",
+    )
+    with pytest.raises(TunePolicyError, match="max_peak_memory_bytes"):
+        TunePolicy.from_file(policy_path)
+
+
 def test_from_file_unsupported_extension_raises(tmp_path):
     policy_path = tmp_path / "policy.txt"
     policy_path.write_text("{}", encoding="utf-8")
@@ -163,13 +174,25 @@ def test_numeric_constraints_reject_non_finite_values(field, value):
         TuneConstraints.from_dict(data)
 
 
-@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
-def test_policy_json_rejects_non_standard_non_finite_numbers(token):
+@pytest.mark.parametrize(
+    ("field", "token", "extra"),
+    [
+        ("max_total_latency_ms", "NaN", ""),
+        ("max_total_latency_ms", "Infinity", ""),
+        ("max_total_latency_ms", "-Infinity", ""),
+        ("max_peak_memory_bytes", "NaN", ""),
+        ("max_peak_memory_bytes", "Infinity", ""),
+        ("max_coefficient_of_variation", "NaN", ""),
+        ("min_pass_rate", "NaN", ""),
+        ("min_quality_score", "Infinity", ',"required_quality_metric":"m1"'),
+    ],
+)
+def test_policy_json_rejects_non_standard_non_finite_numbers(field, token, extra):
     payload = (
         '{"objective":"min_mean_total_latency_ms",'
-        f'"constraints":{{"max_total_latency_ms":{token}}}}}'
+        f'"constraints":{{"{field}":{token}{extra}}}}}'
     )
-    with pytest.raises(TunePolicyError, match="max_total_latency_ms"):
+    with pytest.raises(TunePolicyError, match=field):
         TunePolicy.from_json(payload)
 
 

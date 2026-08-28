@@ -13,7 +13,12 @@ from _tune_fixtures import write_run
 
 from llmtracefx.optimizer.schema import MetricProvenance
 from llmtracefx.optimizer.tune.loader import TuneInputError, load_evidence
-from llmtracefx.optimizer.tune.policy import TuneConstraints, TuneObjective, TunePolicy
+from llmtracefx.optimizer.tune.policy import (
+    TuneConstraints,
+    TuneObjective,
+    TunePolicy,
+    TunePolicyError,
+)
 from llmtracefx.optimizer.tune.report import GroupOutcome
 from llmtracefx.optimizer.tune.tuner import tune
 from llmtracefx.optimizer.workloads.verify import RowStatus
@@ -339,6 +344,90 @@ def test_non_finite_quality_score_is_rejected(tmp_path):
     assert "quality_score is non-finite" in " ".join(
         report.groups[0].rejected[0].reasons
     )
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_non_finite_peak_memory_without_memory_constraint_does_not_reject(
+    tmp_path, value
+):
+    # No max_peak_memory_bytes configured: a non-finite peak measurement is
+    # excluded from memory reporting but must not, by itself, block an
+    # otherwise-valid candidate from being recommended (mirrors how a
+    # *missing* peak measurement is only a rejection reason when memory is
+    # actually a constrained axis).
+    write_run(tmp_path, "r1", peak_bytes=value, total_ms=1000.0)
+
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+    group = report.groups[0]
+    assert group.outcome == GroupOutcome.RECOMMENDED
+    assert group.recommended.mean_peak_memory_bytes is None
+
+
+def test_all_non_finite_evidence_across_axes_is_fully_inconclusive(tmp_path):
+    # Every numeric signal a candidate could offer is NaN/Infinity: no
+    # candidate may survive, and nothing may be recommended.
+    write_run(
+        tmp_path,
+        "r1",
+        total_ms=float("nan"),
+        peak_bytes=float("inf"),
+        quality_score=float("nan"),
+        quality_metric="m1",
+    )
+    policy = TunePolicy(
+        objective=TuneObjective.MIN_MEAN_TOTAL_LATENCY_MS,
+        constraints=TuneConstraints(
+            max_peak_memory_bytes=20 * 1024**3,
+            min_quality_score=0.5,
+            required_quality_metric="m1",
+        ),
+    )
+
+    report = tune(results_dirs=(tmp_path,), policy=policy)
+
+    group = report.groups[0]
+    assert group.outcome == GroupOutcome.INCONCLUSIVE
+    assert group.recommended is None
+    assert not group.accepted
+    reasons = " ".join(group.rejected[0].reasons)
+    assert "timing.total is non-finite" in reasons
+    assert "memory.peak is non-finite" in reasons
+    assert "quality_score is non-finite" in reasons
+
+
+def test_non_finite_evidence_never_produces_a_tie(tmp_path):
+    # A NaN total must never be treated as "equal" to a finite total by the
+    # tie-detection path; the finite candidate should win outright.
+    write_run(tmp_path, "r-nan", quantization="Q4", total_ms=float("nan"))
+    write_run(tmp_path, "r-inf", quantization="Q8", total_ms=float("inf"))
+    write_run(tmp_path, "r-finite", quantization="Q4K", total_ms=1000.0)
+
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+    group = report.groups[0]
+    assert group.outcome == GroupOutcome.RECOMMENDED
+    assert group.recommended.candidate_key.quantization == "Q4K"
+    assert len(group.accepted) == 1
+    assert len(group.rejected) == 2
+
+
+def test_direct_construction_rejects_non_finite_constraint_values():
+    for field_name, kwargs in (
+        ("min_pass_rate", {"min_pass_rate": float("nan")}),
+        ("max_peak_memory_bytes", {"max_peak_memory_bytes": float("inf")}),
+        ("max_total_latency_ms", {"max_total_latency_ms": float("-inf")}),
+        (
+            "max_coefficient_of_variation",
+            {"max_coefficient_of_variation": float("nan")},
+        ),
+        (
+            "min_quality_score",
+            {"min_quality_score": float("inf"), "required_quality_metric": "m1"},
+        ),
+    ):
+        with pytest.raises(TunePolicyError, match=field_name):
+            TuneConstraints(**kwargs)
 
 
 def test_missing_peak_memory_rejected_only_when_constrained(tmp_path):
