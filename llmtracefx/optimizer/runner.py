@@ -16,6 +16,7 @@ success for a run that failed, timed out, or could not be started.
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import time
@@ -42,6 +43,25 @@ class RepetitionOutcome(str, Enum):
 
     FAILED_TO_START = "failed_to_start"
     """The command could not be launched at all (e.g. binary not found)."""
+
+
+def _config_int(data: dict[str, Any], key: str, default: int) -> int:
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RunnerConfigError(f"config.{key} must be an integer")
+    return int(value)
+
+
+def _config_timeout(data: dict[str, Any]) -> float | None:
+    value = data.get("timeout_seconds")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RunnerConfigError("config.timeout_seconds must be a number or null")
+    timeout = float(value)
+    if not math.isfinite(timeout):
+        raise RunnerConfigError("config.timeout_seconds must be finite")
+    return timeout
 
 
 @dataclass(frozen=True)
@@ -80,15 +100,35 @@ class RunnerConfig:
                 "config is missing required field: command"
             ) from exc
         if not isinstance(command, list) or not all(
-            isinstance(part, str) for part in command
+            isinstance(part, str) and part for part in command
         ):
-            raise RunnerConfigError("config.command must be a list of strings")
+            raise RunnerConfigError(
+                "config.command must be a list of non-empty strings"
+            )
 
         try:
             run_id = data["run_id"]
             results_dir_raw = data["results_dir"]
         except KeyError as exc:
             raise RunnerConfigError(f"config is missing required field: {exc}") from exc
+        if not isinstance(run_id, str) or not run_id:
+            raise RunnerConfigError("config.run_id must be a non-empty string")
+        if not isinstance(results_dir_raw, str) or not results_dir_raw:
+            raise RunnerConfigError("config.results_dir must be a non-empty string")
+
+        cwd = data.get("cwd")
+        if cwd is not None and not isinstance(cwd, str):
+            raise RunnerConfigError("config.cwd must be a string or null")
+
+        env_raw = data.get("env", {})
+        if not isinstance(env_raw, dict) or not all(
+            isinstance(key, str) and key and isinstance(value, str)
+            for key, value in env_raw.items()
+        ):
+            raise RunnerConfigError(
+                "config.env must be an object with non-empty string keys "
+                "and string values"
+            )
 
         results_dir = Path(results_dir_raw)
         if not results_dir.is_absolute() and base_dir is not None:
@@ -98,11 +138,11 @@ class RunnerConfig:
             run_id=run_id,
             command=tuple(command),
             results_dir=results_dir,
-            warmup_repetitions=int(data.get("warmup_repetitions", 0)),
-            measured_repetitions=int(data.get("measured_repetitions", 1)),
-            timeout_seconds=data.get("timeout_seconds"),
-            cwd=data.get("cwd"),
-            env=dict(data.get("env", {})),
+            warmup_repetitions=_config_int(data, "warmup_repetitions", 0),
+            measured_repetitions=_config_int(data, "measured_repetitions", 1),
+            timeout_seconds=_config_timeout(data),
+            cwd=cwd,
+            env=dict(env_raw),
         )
 
     @classmethod

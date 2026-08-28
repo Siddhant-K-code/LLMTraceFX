@@ -232,6 +232,71 @@ def test_runner_config_from_dict_requires_command_list():
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("warmup_repetitions", "1"),
+        ("warmup_repetitions", True),
+        ("warmup_repetitions", 1.0),
+        ("measured_repetitions", "2"),
+        ("measured_repetitions", False),
+        ("measured_repetitions", 2.0),
+    ],
+)
+def test_runner_config_from_dict_rejects_non_integer_repetitions(field, value):
+    with pytest.raises(RunnerConfigError, match=field):
+        RunnerConfig.from_dict(
+            {
+                "run_id": "demo",
+                "results_dir": "out",
+                "command": ["true"],
+                field: value,
+            }
+        )
+
+
+@pytest.mark.parametrize("value", ["5", True, [], float("inf"), float("nan")])
+def test_runner_config_from_dict_rejects_invalid_timeout(value):
+    with pytest.raises(RunnerConfigError, match="timeout_seconds"):
+        RunnerConfig.from_dict(
+            {
+                "run_id": "demo",
+                "results_dir": "out",
+                "command": ["true"],
+                "timeout_seconds": value,
+            }
+        )
+
+
+@pytest.mark.parametrize("value", [None, [], "KEY=value", {"KEY": 1}, {"": "value"}])
+def test_runner_config_from_dict_rejects_invalid_env(value):
+    with pytest.raises(RunnerConfigError, match="config.env"):
+        RunnerConfig.from_dict(
+            {
+                "run_id": "demo",
+                "results_dir": "out",
+                "command": ["true"],
+                "env": value,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"run_id": 123},
+        {"results_dir": []},
+        {"cwd": 123},
+        {"command": ["true", ""]},
+    ],
+)
+def test_runner_config_from_dict_rejects_invalid_scalar_fields(overrides):
+    data = {"run_id": "demo", "results_dir": "out", "command": ["true"]}
+    data.update(overrides)
+    with pytest.raises(RunnerConfigError):
+        RunnerConfig.from_dict(data)
+
+
 def test_runner_config_from_file_json(tmp_path):
     config_path = tmp_path / "config.json"
     config_path.write_text(

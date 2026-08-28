@@ -693,11 +693,27 @@ uv run llmtracefx-optimizer parse-llama-cpp \
   --stdout-file tests/optimizer/fixtures/llama_cpp/qwen3_8b_baseline_run1.log \
   --output /tmp/baseline-1.json -- llama-cli -m qwen3.8-27b-q4.gguf
 
-# 3. Ask the doctor whether speculative decoding is a net regression
+uv run llmtracefx-optimizer parse-llama-cpp \
+  --run-id baseline-2 --model-id "Qwen/Qwen3.8-27B" --quantization Q4_K_M \
+  --stdout-file tests/optimizer/fixtures/llama_cpp/qwen3_8b_baseline_run2.log \
+  --output /tmp/baseline-2.json -- llama-cli -m qwen3.8-27b-q4.gguf
+
+uv run llmtracefx-optimizer parse-llama-cpp \
+  --run-id mtp-1 --model-id "Qwen/Qwen3.8-27B" --quantization Q4_K_M \
+  --speculative-method mtp \
+  --stdout-file tests/optimizer/fixtures/llama_cpp/qwen3_8b_mtp_improvement_run1.log \
+  --output /tmp/mtp-1.json -- llama-cli -m qwen3.8-27b-q4.gguf --spec-type draft-mtp
+
+uv run llmtracefx-optimizer parse-llama-cpp \
+  --run-id mtp-2 --model-id "Qwen/Qwen3.8-27B" --quantization Q4_K_M \
+  --speculative-method mtp \
+  --stdout-file tests/optimizer/fixtures/llama_cpp/qwen3_8b_mtp_improvement_run2.log \
+  --output /tmp/mtp-2.json -- llama-cli -m qwen3.8-27b-q4.gguf --spec-type draft-mtp
+
+# 3. Ask the doctor whether speculative decoding changed performance
 uv run llmtracefx-optimizer doctor speculative \
-  --baseline /tmp/baseline-1.json \
-  --speculative /tmp/baseline-1.json \
-  --min-repetitions 1
+  --baseline /tmp/baseline-1.json /tmp/baseline-2.json \
+  --speculative /tmp/mtp-1.json /tmp/mtp-2.json
 ```
 
 **Not yet included** (tracked as follow-up work): native Metal/CUDA
