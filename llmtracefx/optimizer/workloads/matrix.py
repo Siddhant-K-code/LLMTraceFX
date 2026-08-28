@@ -263,7 +263,9 @@ def generate_matrix(
     """
     resolved_target_path = target_model_path or "<TARGET_MODEL_PATH>"
     resolved_sidecar_path = mtp_sidecar_path or "<MTP_SIDECAR_PATH>"
-    output_dir_path = Path(output_dir)
+    # Persist absolute artifact paths so a manifest generated with a relative
+    # --output-dir remains consumable from any later working directory.
+    output_dir_path = Path(output_dir).expanduser().resolve()
 
     capability = detect_native_mtp_capability(
         model_family, mlx_lm_version=None, mlx_vlm_version=None

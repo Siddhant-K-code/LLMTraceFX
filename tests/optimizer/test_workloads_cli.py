@@ -226,6 +226,73 @@ def test_workloads_run_cli_executes_autoregressive_rows(tmp_path, monkeypatch):
     assert (run_dirs[0] / "verification.json").exists()
 
 
+def test_relative_matrix_output_can_be_dry_run_and_executed(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    parser = cli.build_parser()
+    generate_args = parser.parse_args(
+        [
+            "workloads",
+            "generate-matrix",
+            "--model-id",
+            "local/test-model",
+            "--model-family",
+            "qwen3_next",
+            "--output-dir",
+            "artifacts/qwen3.8-matrix",
+            "--context-tiers",
+            "2k",
+        ]
+    )
+    assert generate_args.func(generate_args) == 0
+
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    matrix_path = "artifacts/qwen3.8-matrix/manifest.json"
+    selection = [
+        "--category",
+        "structured_json",
+        "--context-tier",
+        "2k",
+        "--mode",
+        "autoregressive",
+    ]
+
+    dry_run_args = parser.parse_args(
+        [
+            "workloads",
+            "run",
+            "--matrix",
+            matrix_path,
+            "--model-path",
+            "model",
+            "--output-dir",
+            "results",
+            "--dry-run",
+            *selection,
+        ]
+    )
+    assert dry_run_args.func(dry_run_args) == 0
+
+    monkeypatch.setattr(cli, "MLXLMRuntime", lambda: _FakeMLXRuntime())
+    run_args = parser.parse_args(
+        [
+            "workloads",
+            "run",
+            "--matrix",
+            matrix_path,
+            "--model-path",
+            "model",
+            "--output-dir",
+            "results",
+            *selection,
+        ]
+    )
+    assert run_args.func(run_args) == 0
+    run_dirs = list((tmp_path / "results" / "runs").iterdir())
+    assert len(run_dirs) == 1
+    assert (run_dirs[0] / "final_record.json").exists()
+
+
 def test_workloads_run_cli_rejects_native_mtp_rows_as_unsupported(
     tmp_path, monkeypatch
 ):

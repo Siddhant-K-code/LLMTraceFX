@@ -419,6 +419,16 @@ def test_runtime_failure_is_preserved_and_not_overwritten_by_evaluator(tmp_path)
     assert result.final_record.error is not None
     assert result.final_record.error.category == "RuntimeError"
     assert "simulated model load failure" in result.verification.reason
+    final_record_path = Path(result.verification.final_record_path)
+    assert final_record_path.exists()
+    persisted = ExperimentRecord.read_json(final_record_path)
+    assert persisted.error is not None
+    assert persisted.error.category == "RuntimeError"
+    verification_path = (
+        tmp_path / "results" / "runs" / entry.run_id / "verification.json"
+    )
+    verification = json.loads(verification_path.read_text(encoding="utf-8"))
+    assert verification["final_record_path"] == str(final_record_path)
 
 
 # --- Inconclusive evaluator errors --------------------------------------------

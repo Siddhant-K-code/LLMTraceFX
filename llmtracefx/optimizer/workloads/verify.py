@@ -644,6 +644,7 @@ def execute_row(
 
     if not collected_record.outcome.success:
         # A runtime failure is never overwritten by an evaluator result.
+        collected_record.write_json(final_record_path)
         return _finish(
             RowStatus.FAILED,
             (
