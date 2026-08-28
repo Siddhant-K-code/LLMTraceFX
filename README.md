@@ -860,15 +860,67 @@ uv run llmtracefx-optimizer workloads evaluate \
   --response-file /tmp/response.txt
 ```
 
+### Executing the matrix: `workloads run` and `workloads summarize`
+
+`workloads generate-matrix` only plans; it never loads a model or downloads
+anything. `workloads run` consumes that manifest and actually executes the
+runnable rows through the same `collect-mlx` collector used above, evaluates
+each response with the deterministic evaluator, and writes a canonical
+result per row:
+
+```bash
+uv run llmtracefx-optimizer workloads run \
+  --matrix artifacts/qwen3.8-matrix/manifest.json \
+  --model-path /path/to/local/qwen3.8-checkpoint \
+  --output-dir artifacts/qwen3.8-run \
+  --mode autoregressive \
+  --context-tier 2k
+```
+
+- `--model-path` (and the optional `--draft-model-path` for generic
+  draft-model speculation) must already exist on disk; nothing is ever
+  downloaded.
+- `--run-id`/`--category`/`--context-tier`/`--mode` filter which manifest
+  rows are selected; omit all of them to select every row.
+- `native-mtp` rows are always rejected as `unsupported` and never
+  executed -- they are never silently downgraded to generic draft-model
+  speculation, matching the capability report above.
+- `--dry-run` prints every selected row's required local paths, expected
+  artifacts, and blockers (missing model path, a prompt file whose hash no
+  longer matches the manifest, workload catalog drift) without loading a
+  model.
+- Re-running with the same `--output-dir` resumes: a row is only skipped
+  if its prior `verification.json` is `completed`/`skipped` *and* its
+  prompt hash, run-binding hash (model paths, seed, `max_tokens`,
+  `num_draft_tokens`), and workload version all still match; any mismatch
+  reruns the row instead of trusting stale data.
+
+Each row writes `runs/<run_id>/collection/{record.json,response.txt,
+environment.json}` (the raw collector output), `final_record.json` (the
+canonical `ExperimentRecord`, with the evaluator's outcome layered onto a
+successful collection -- a runtime failure is always persisted as-is and
+never overwritten by an evaluator result), and `verification.json` (a
+machine-readable summary: status, hashes, quality, timing, and artifact
+paths). Aggregate a completed run:
+
+```bash
+uv run llmtracefx-optimizer workloads summarize --results artifacts/qwen3.8-run
+```
+
+which reports pass rate and "correct cases per minute" (computed only from
+rows that both passed and have measured timing) overall and broken down by
+decode mode and context tier -- deliberately not blended into one combined
+score.
+
 **Not yet included** (tracked as a follow-up PR): a genuinely capable
 native-MTP runtime adapter (none exists upstream today), native Metal/CUDA
-performance-counter ingestion, CUDA/vLLM/SGLang collectors, automatic
-tuning/search, and any actual Qwen3.8-27B benchmark results -- everything in
-this section was verified against fake runtimes and small local checkpoints,
-never a real Qwen3.8-27B run. The fixtures under
-`tests/optimizer/fixtures/llama_cpp/` are synthetic, hand-written logs for
-testing the parser and doctor rule — not benchmark evidence (see the
-`PROVENANCE.md` in that directory).
+performance-counter ingestion, CUDA/vLLM/SGLang collectors, an automatic
+tuning/recommendation command (`tune`) built on top of the evidence above,
+and any actual Qwen3.8-27B benchmark results -- everything in this section
+was verified against fake runtimes and small local checkpoints, never a real
+Qwen3.8-27B run. The fixtures under `tests/optimizer/fixtures/llama_cpp/` are
+synthetic, hand-written logs for testing the parser and doctor rule -- not
+benchmark evidence (see the `PROVENANCE.md` in that directory).
 
 ## 📄 License
 

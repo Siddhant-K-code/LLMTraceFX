@@ -7,7 +7,9 @@ Subcommands:
     native-mtp       Native Qwen MTP capability report / evidence collection.
     parse-llama-cpp  Convert llama.cpp text output into a canonical ExperimentRecord.
     doctor speculative  Diagnose whether speculative decoding/MTP is a net regression.
-    workloads        Generate a deterministic code/JSON/reasoning workload matrix.
+    workloads        Generate a deterministic code/JSON/reasoning workload matrix,
+                     execute selected runnable rows (``workloads run``), and
+                     aggregate results (``workloads summarize``).
 """
 
 from __future__ import annotations
@@ -43,10 +45,26 @@ from .schema import (
     SchemaValidationError,
     utc_now_iso,
 )
+from .workloads.aggregate import summarize_results, write_summary
 from .workloads.catalog import WORKLOADS, workload_by_id
 from .workloads.evaluators import evaluate_workload
-from .workloads.matrix import generate_matrix, write_matrix
-from .workloads.schema import ContextTier, WorkloadSchemaError
+from .workloads.matrix import (
+    DECODE_MODE_AUTOREGRESSIVE,
+    DECODE_MODE_NATIVE_MTP,
+    MatrixManifest,
+    MatrixSchemaError,
+    generate_matrix,
+    write_matrix,
+)
+from .workloads.schema import ContextTier, WorkloadCategory, WorkloadSchemaError
+from .workloads.verify import (
+    RowSelection,
+    RowStatus,
+    RunBinding,
+    VerifyError,
+    plan_selected_rows,
+    run_selected_rows,
+)
 
 
 def _platform_from_manifest(*, accelerator: str | None = None) -> PlatformInfo:
@@ -402,6 +420,144 @@ def _cmd_workloads_evaluate(args: argparse.Namespace) -> int:
     return 0 if outcome.success else 1
 
 
+def _row_selection_from_args(args: argparse.Namespace) -> RowSelection:
+    return RowSelection(
+        run_ids=frozenset(args.run_id) if args.run_id else None,
+        categories=frozenset(args.category) if args.category else None,
+        context_tiers=frozenset(args.context_tier) if args.context_tier else None,
+        decode_modes=frozenset(args.mode) if args.mode else None,
+    )
+
+
+def _optional_run_binding(args: argparse.Namespace) -> RunBinding | None:
+    """Best-effort binding for dry-run reporting: ``None`` on any problem.
+
+    Invalid/missing paths are surfaced as per-row blockers by
+    ``plan_selected_rows`` rather than aborting the dry run outright.
+    """
+    if not args.model_path:
+        return None
+    try:
+        return RunBinding(
+            target_model_path=Path(args.model_path),
+            draft_model_path=(
+                Path(args.draft_model_path) if args.draft_model_path else None
+            ),
+            seed=args.seed,
+            num_draft_tokens=args.num_draft_tokens,
+        )
+    except VerifyError:
+        return None
+
+
+def _cmd_workloads_run(args: argparse.Namespace) -> int:
+    matrix_path = Path(args.matrix)
+    try:
+        manifest = MatrixManifest.read_json(matrix_path)
+    except (OSError, MatrixSchemaError) as exc:
+        print(f"Failed to load matrix manifest: {exc}", file=sys.stderr)
+        return 1
+
+    selection = _row_selection_from_args(args)
+    output_dir = Path(args.output_dir)
+    manifest_dir = matrix_path.parent
+
+    if args.dry_run:
+        plans = plan_selected_rows(
+            manifest,
+            manifest_dir=manifest_dir,
+            output_dir=output_dir,
+            selection=selection,
+            binding=_optional_run_binding(args),
+        )
+        if not plans:
+            print("No matrix rows matched the selection filters", file=sys.stderr)
+            return 1
+
+        for plan in plans:
+            label = (
+                "UNSUPPORTED"
+                if plan.unsupported
+                else ("READY" if plan.ready else "BLOCKED")
+            )
+            print(
+                f"[{label}] {plan.entry.run_id} "
+                f"({plan.entry.decode_mode}, {plan.entry.context_tier})"
+            )
+            print(f"    prompt file: {plan.prompt_path}")
+            print(f"    collection dir: {plan.collection_dir}")
+            print(f"    final record: {plan.final_record_path}")
+            if plan.unsupported:
+                print(f"    unsupported reason: {plan.unsupported_reason}")
+            for blocker in plan.blockers:
+                print(f"    blocker: {blocker}")
+
+        blocked = sum(1 for plan in plans if not plan.unsupported and not plan.ready)
+        unsupported = sum(1 for plan in plans if plan.unsupported)
+        print(
+            f"{len(plans)} row(s) selected, {blocked} blocked, "
+            f"{unsupported} unsupported; no model was loaded or downloaded"
+        )
+        return 0 if blocked == 0 else 2
+
+    if not args.model_path:
+        print("--model-path is required unless --dry-run is set", file=sys.stderr)
+        return 1
+
+    try:
+        binding = RunBinding(
+            target_model_path=Path(args.model_path),
+            draft_model_path=(
+                Path(args.draft_model_path) if args.draft_model_path else None
+            ),
+            seed=args.seed,
+            num_draft_tokens=args.num_draft_tokens,
+        )
+    except VerifyError as exc:
+        print(f"Invalid model path binding: {exc}", file=sys.stderr)
+        return 1
+
+    results = run_selected_rows(
+        manifest,
+        manifest_dir=manifest_dir,
+        output_dir=output_dir,
+        selection=selection,
+        binding=binding,
+        resume=not args.no_resume,
+        runtime_factory=MLXLMRuntime,
+    )
+    if not results:
+        print("No matrix rows matched the selection filters", file=sys.stderr)
+        return 1
+
+    for result in results:
+        status = result.verification.status.value.upper()
+        suffix = f": {result.verification.reason}" if result.verification.reason else ""
+        print(f"[{status}] {result.entry.run_id}{suffix}")
+
+    failed = sum(1 for r in results if r.verification.status == RowStatus.FAILED)
+    inconclusive = sum(
+        1 for r in results if r.verification.status == RowStatus.INCONCLUSIVE
+    )
+    print(f"Artifacts written to {output_dir}")
+    if failed:
+        return 1
+    if inconclusive:
+        return 2
+    return 0
+
+
+def _cmd_workloads_summarize(args: argparse.Namespace) -> int:
+    results_dir = Path(args.results)
+    summary = summarize_results(results_dir)
+    if args.output:
+        write_summary(summary, Path(args.output))
+        print(f"Verification summary written to {args.output}")
+    else:
+        print(summary.to_json())
+    return 0 if summary.overall.total > 0 else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="llmtracefx-optimizer",
@@ -672,6 +828,94 @@ def build_parser() -> argparse.ArgumentParser:
         "--response-file", required=True, help="Path to the model's response text"
     )
     evaluate_parser.set_defaults(func=_cmd_workloads_evaluate)
+
+    run_parser = workloads_subparsers.add_parser(
+        "run",
+        help=(
+            "Execute selected runnable matrix rows through the MLX-LM "
+            "collector and evaluate them deterministically"
+        ),
+    )
+    run_parser.add_argument(
+        "--matrix",
+        required=True,
+        help="Path to a `workloads generate-matrix` manifest.json",
+    )
+    run_parser.add_argument(
+        "--model-path",
+        default=None,
+        help=(
+            "Existing local target MLX model directory; required unless "
+            "--dry-run (models are never downloaded)"
+        ),
+    )
+    run_parser.add_argument(
+        "--draft-model-path",
+        default=None,
+        help=(
+            "Optional existing local MLX draft model; enables generic "
+            "draft-model speculation on selected autoregressive rows, "
+            "never on native-mtp rows"
+        ),
+    )
+    run_parser.add_argument("--num-draft-tokens", type=int, default=2)
+    run_parser.add_argument("--output-dir", required=True)
+    run_parser.add_argument(
+        "--run-id", nargs="+", default=None, help="Select specific run_id(s)"
+    )
+    run_parser.add_argument(
+        "--category",
+        nargs="+",
+        default=None,
+        choices=[category.value for category in WorkloadCategory],
+        help="Filter selected rows by workload category",
+    )
+    run_parser.add_argument(
+        "--context-tier",
+        nargs="+",
+        default=None,
+        choices=[tier.value for tier in ContextTier],
+        help="Filter selected rows by context tier",
+    )
+    run_parser.add_argument(
+        "--mode",
+        nargs="+",
+        default=None,
+        choices=[DECODE_MODE_AUTOREGRESSIVE, DECODE_MODE_NATIVE_MTP],
+        help=(
+            "Filter selected rows by decode mode; native-mtp rows are "
+            "always rejected as unsupported, never executed"
+        ),
+    )
+    run_parser.add_argument("--seed", type=int, default=0)
+    run_parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Re-run all selected rows even if a hash-matching completed artifact exists",
+    )
+    run_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Print selected rows, required local model paths, expected "
+            "artifacts, and blockers without loading any model"
+        ),
+    )
+    run_parser.set_defaults(func=_cmd_workloads_run)
+
+    summarize_parser = workloads_subparsers.add_parser(
+        "summarize",
+        help="Aggregate pass rate/throughput/status counts across a `workloads run` results directory",
+    )
+    summarize_parser.add_argument(
+        "--results", required=True, help="The --output-dir passed to `workloads run`"
+    )
+    summarize_parser.add_argument(
+        "--output",
+        default=None,
+        help="Write the summary JSON to this path instead of stdout",
+    )
+    summarize_parser.set_defaults(func=_cmd_workloads_summarize)
 
     return parser
 

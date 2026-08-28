@@ -1,0 +1,180 @@
+"""Aggregation/reporting across executed verify-pipeline rows.
+
+Reads every ``verification.json`` written by ``verify.execute_row`` under a
+``workloads run --output-dir`` results directory and reports a small set of
+distinct, well-defined metrics: how many rows landed in each
+``RowStatus``, the pass rate among rows that were actually evaluated, and
+a throughput figure ("correct cases per minute") computed only from rows
+that both passed and have measured timing. Per-``decode_mode`` and
+per-``context_tier`` breakdowns use the same definitions.
+
+This module deliberately does **not** blend correctness and speed into a
+single combined "performance score" -- that would hide which axis (quality
+vs. throughput) any one number reflects. Callers that want an overall
+picture should read ``pass_rate`` and ``correct_cases_per_minute``
+side by side.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from ..collectors._shared import atomic_write_text
+from .verify import RowStatus, RowVerification, VerifyError
+
+AGGREGATE_SCHEMA_VERSION = "1"
+
+
+def _load_verifications(results_dir: Path) -> tuple[RowVerification, ...]:
+    runs_dir = results_dir / "runs"
+    if not runs_dir.is_dir():
+        return ()
+    verifications: list[RowVerification] = []
+    for verification_path in sorted(runs_dir.glob("*/verification.json")):
+        try:
+            verifications.append(RowVerification.read_json(verification_path))
+        except (OSError, json.JSONDecodeError, VerifyError):
+            # A corrupt/partial artifact must not silently skew aggregates;
+            # it is simply excluded rather than crashing the whole summary.
+            continue
+    return tuple(verifications)
+
+
+def _pass_rate(pass_count: int, evaluated_count: int) -> float | None:
+    return pass_count / evaluated_count if evaluated_count else None
+
+
+def _correct_cases_per_minute(pass_count: int, total_pass_ms: float) -> float | None:
+    if pass_count == 0 or total_pass_ms <= 0:
+        return None
+    minutes = total_pass_ms / 1000.0 / 60.0
+    return pass_count / minutes
+
+
+@dataclass(frozen=True)
+class GroupSummary:
+    """Aggregate metrics for one group (overall, one mode, or one tier)."""
+
+    key: str
+    total: int
+    completed: int
+    failed: int
+    unsupported: int
+    skipped: int
+    inconclusive: int
+    evaluated_total: int
+    evaluated_pass: int
+    pass_rate: float | None
+    correct_cases_per_minute: float | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "total": self.total,
+            "completed": self.completed,
+            "failed": self.failed,
+            "unsupported": self.unsupported,
+            "skipped": self.skipped,
+            "inconclusive": self.inconclusive,
+            "evaluated_total": self.evaluated_total,
+            "evaluated_pass": self.evaluated_pass,
+            "pass_rate": self.pass_rate,
+            "correct_cases_per_minute": self.correct_cases_per_minute,
+        }
+
+
+def _summarize_group(
+    key: str, verifications: Iterable[RowVerification]
+) -> GroupSummary:
+    items = list(verifications)
+    counts = dict.fromkeys(RowStatus, 0)
+    for item in items:
+        counts[item.status] += 1
+
+    # "Evaluated" rows are ones that actually produced a quality signal:
+    # freshly completed or trusted-and-skipped rows with a quality score.
+    # Failed/unsupported/inconclusive rows are excluded from pass rate and
+    # throughput so they cannot be misread as passing or failing quality
+    # checks they never ran.
+    evaluated = [
+        item
+        for item in items
+        if item.status in (RowStatus.COMPLETED, RowStatus.SKIPPED)
+        and item.quality_score is not None
+    ]
+    evaluated_pass = [item for item in evaluated if item.outcome_success]
+    total_pass_ms = sum(
+        item.total_ms for item in evaluated_pass if item.total_ms is not None
+    )
+
+    return GroupSummary(
+        key=key,
+        total=len(items),
+        completed=counts[RowStatus.COMPLETED],
+        failed=counts[RowStatus.FAILED],
+        unsupported=counts[RowStatus.UNSUPPORTED],
+        skipped=counts[RowStatus.SKIPPED],
+        inconclusive=counts[RowStatus.INCONCLUSIVE],
+        evaluated_total=len(evaluated),
+        evaluated_pass=len(evaluated_pass),
+        pass_rate=_pass_rate(len(evaluated_pass), len(evaluated)),
+        correct_cases_per_minute=_correct_cases_per_minute(
+            len(evaluated_pass), total_pass_ms
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class VerificationSummary:
+    """Aggregate report across every ``verification.json`` in a results dir."""
+
+    schema_version: str
+    results_dir: str
+    overall: GroupSummary
+    by_decode_mode: tuple[GroupSummary, ...]
+    by_context_tier: tuple[GroupSummary, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "results_dir": self.results_dir,
+            "overall": self.overall.to_dict(),
+            "by_decode_mode": [group.to_dict() for group in self.by_decode_mode],
+            "by_context_tier": [group.to_dict() for group in self.by_context_tier],
+        }
+
+    def to_json(self, *, indent: int | None = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent, sort_keys=False)
+
+
+def summarize_results(results_dir: Path) -> VerificationSummary:
+    """Aggregate every ``verification.json`` found under ``results_dir``."""
+    verifications = _load_verifications(results_dir)
+    overall = _summarize_group("overall", verifications)
+
+    by_mode: dict[str, list[RowVerification]] = {}
+    by_tier: dict[str, list[RowVerification]] = {}
+    for item in verifications:
+        by_mode.setdefault(item.decode_mode, []).append(item)
+        by_tier.setdefault(item.context_tier, []).append(item)
+
+    return VerificationSummary(
+        schema_version=AGGREGATE_SCHEMA_VERSION,
+        results_dir=str(results_dir),
+        overall=overall,
+        by_decode_mode=tuple(
+            _summarize_group(key, items) for key, items in sorted(by_mode.items())
+        ),
+        by_context_tier=tuple(
+            _summarize_group(key, items) for key, items in sorted(by_tier.items())
+        ),
+    )
+
+
+def write_summary(summary: VerificationSummary, path: Path) -> None:
+    """Atomically write ``summary`` as pretty JSON to ``path``."""
+    atomic_write_text(path, summary.to_json() + "\n")

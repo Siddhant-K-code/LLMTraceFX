@@ -44,6 +44,10 @@ DECODE_MODE_NATIVE_MTP = "native-mtp"
 DEFAULT_MAX_TOKENS = 128
 
 
+class MatrixSchemaError(ValueError):
+    """Raised when a persisted matrix manifest is malformed."""
+
+
 @dataclass(frozen=True)
 class MatrixEntry:
     """One planned (workload, context tier, decode mode) combination."""
@@ -62,6 +66,7 @@ class MatrixEntry:
     runnable: bool
     unsupported_reason: str | None
     command_argv: tuple[str, ...]
+    max_tokens: int = DEFAULT_MAX_TOKENS
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,7 +84,41 @@ class MatrixEntry:
             "runnable": self.runnable,
             "unsupported_reason": self.unsupported_reason,
             "command_argv": list(self.command_argv),
+            "max_tokens": self.max_tokens,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MatrixEntry:
+        try:
+            command_argv = data["command_argv"]
+            if isinstance(command_argv, (str, bytes)) or not isinstance(
+                command_argv, Sequence
+            ):
+                raise MatrixSchemaError(
+                    f"MatrixEntry.command_argv must be a list of strings, "
+                    f"got {command_argv!r}"
+                )
+            return cls(
+                run_id=data["run_id"],
+                workload_id=data["workload_id"],
+                workload_version=data["workload_version"],
+                category=data["category"],
+                context_tier=data["context_tier"],
+                decode_mode=data["decode_mode"],
+                configured_depth=data.get("configured_depth"),
+                prompt=MaterializedPrompt.from_dict(data["prompt"]),
+                prompt_path=data["prompt_path"],
+                runner_results_dir=data["runner_results_dir"],
+                collector_output_dir=data["collector_output_dir"],
+                runnable=bool(data["runnable"]),
+                unsupported_reason=data.get("unsupported_reason"),
+                command_argv=tuple(command_argv),
+                max_tokens=int(data.get("max_tokens", DEFAULT_MAX_TOKENS)),
+            )
+        except KeyError as exc:
+            raise MatrixSchemaError(
+                f"MatrixEntry is missing required field: {exc}"
+            ) from exc
 
 
 @dataclass(frozen=True)
@@ -103,6 +142,38 @@ class MatrixManifest:
 
     def to_json(self, *, indent: int | None = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, sort_keys=False)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MatrixManifest:
+        try:
+            entries_raw = data["entries"]
+            if not isinstance(entries_raw, list):
+                raise MatrixSchemaError("MatrixManifest.entries must be a list")
+            return cls(
+                schema_version=str(data.get("schema_version", MATRIX_SCHEMA_VERSION)),
+                model_id=data["model_id"],
+                model_family=data["model_family"],
+                output_dir=data["output_dir"],
+                entries=tuple(MatrixEntry.from_dict(entry) for entry in entries_raw),
+            )
+        except KeyError as exc:
+            raise MatrixSchemaError(
+                f"MatrixManifest is missing required field: {exc}"
+            ) from exc
+
+    @classmethod
+    def from_json(cls, payload: str) -> MatrixManifest:
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise MatrixSchemaError(f"Invalid JSON for MatrixManifest: {exc}") from exc
+        if not isinstance(data, dict):
+            raise MatrixSchemaError("MatrixManifest JSON must be an object")
+        return cls.from_dict(data)
+
+    @classmethod
+    def read_json(cls, path: str | Path) -> MatrixManifest:
+        return cls.from_json(Path(path).read_text(encoding="utf-8"))
 
 
 def _collect_mlx_argv(
@@ -192,7 +263,9 @@ def generate_matrix(
     """
     resolved_target_path = target_model_path or "<TARGET_MODEL_PATH>"
     resolved_sidecar_path = mtp_sidecar_path or "<MTP_SIDECAR_PATH>"
-    output_dir_path = Path(output_dir)
+    # Persist absolute artifact paths so a manifest generated with a relative
+    # --output-dir remains consumable from any later working directory.
+    output_dir_path = Path(output_dir).expanduser().resolve()
 
     capability = detect_native_mtp_capability(
         model_family, mlx_lm_version=None, mlx_vlm_version=None
@@ -233,6 +306,7 @@ def generate_matrix(
                         output_dir=ar_output_dir,
                         max_tokens=max_tokens,
                     ),
+                    max_tokens=max_tokens,
                 )
             )
 
@@ -269,6 +343,7 @@ def generate_matrix(
                             max_tokens=max_tokens,
                             configured_depth=depth,
                         ),
+                        max_tokens=max_tokens,
                     )
                 )
 
