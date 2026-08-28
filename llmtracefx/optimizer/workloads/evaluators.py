@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -147,6 +148,55 @@ def _extract_code(response_text: str) -> str:
     return match.group(1) if match else response_text
 
 
+def _terminate_candidate_process(process: subprocess.Popen[str]) -> None:
+    """Terminate the candidate and its descendants where the OS permits."""
+    if _IS_POSIX:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+    elif process.poll() is None:
+        process.kill()
+
+
+def _run_candidate(
+    program_path: Path,
+    *,
+    cwd: str,
+    timeout_seconds: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run candidate code while containing its process tree on POSIX."""
+    process = subprocess.Popen(
+        [sys.executable, str(program_path)],
+        cwd=cwd,
+        env=_minimal_subprocess_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        shell=False,
+        start_new_session=_IS_POSIX,
+        preexec_fn=(_posix_preexec_resource_limits if _IS_POSIX else None),
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        _terminate_candidate_process(process)
+        process.communicate()
+        raise
+    finally:
+        # A candidate can let its direct process exit while leaving detached
+        # workers in the new process group. Clean up the whole group before
+        # returning from the evaluator.
+        _terminate_candidate_process(process)
+
+    return subprocess.CompletedProcess(
+        args=process.args,
+        returncode=process.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
 def evaluate_code_completion(
     spec: CodeCompletionSpec,
     response_text: str,
@@ -166,16 +216,10 @@ def evaluate_code_completion(
         program_path = Path(tmp_dir) / "candidate.py"
         program_path.write_text(program, encoding="utf-8")
         try:
-            completed = subprocess.run(
-                [sys.executable, str(program_path)],
+            completed = _run_candidate(
+                program_path,
                 cwd=tmp_dir,
-                env=_minimal_subprocess_env(),
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                shell=False,
-                check=False,
-                preexec_fn=(_posix_preexec_resource_limits if _IS_POSIX else None),
+                timeout_seconds=timeout_seconds,
             )
         except subprocess.TimeoutExpired:
             return OutcomeInfo(

@@ -351,12 +351,13 @@ def validate_checkpoint_compatibility(
     target_sig = _arch_signature(target_config)
     sidecar_sig = _arch_signature(sidecar_config)
 
-    if not target_sig:
+    comparable_fields = ("hidden_size", "vocab_size")
+    if not any(key in target_sig for key in comparable_fields):
         raise NativeMTPCollectorError(
             "target checkpoint config.json does not expose hidden_size/"
             "vocab_size; cannot validate compatibility with the sidecar"
         )
-    if not sidecar_sig:
+    if not any(key in sidecar_sig for key in comparable_fields):
         raise NativeMTPCollectorError(
             "sidecar checkpoint config.json does not expose hidden_size/"
             "vocab_size; cannot validate compatibility with the target"
@@ -364,7 +365,7 @@ def validate_checkpoint_compatibility(
 
     mismatches = [
         f"{key}: target={target_sig[key]!r} sidecar={sidecar_sig[key]!r}"
-        for key in ("hidden_size", "vocab_size")
+        for key in comparable_fields
         if key in target_sig
         and key in sidecar_sig
         and target_sig[key] != sidecar_sig[key]

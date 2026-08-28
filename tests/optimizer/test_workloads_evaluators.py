@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import time
 
 import pytest
@@ -167,6 +169,52 @@ def test_evaluate_code_completion_posix_file_size_limit_kills_large_write(monkey
     )
     outcome = evaluate_code_completion(spec, oversized_write)
     assert outcome.success is False
+
+
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="POSIX-only process-group containment",
+)
+def test_evaluate_code_completion_timeout_kills_descendants(tmp_path):
+    child_pid_path = tmp_path / "child.pid"
+    spec = CodeCompletionSpec(
+        function_stub="def f() -> None:\n    pass\n",
+        test_code="",
+        entry_point="f",
+    )
+    completion = (
+        "import subprocess\n"
+        "import sys\n"
+        "import time\n"
+        f"pid_path = {str(child_pid_path)!r}\n"
+        "child = subprocess.Popen([\n"
+        "    sys.executable,\n"
+        "    '-c',\n"
+        "    'import time; time.sleep(60)',\n"
+        "])\n"
+        "with open(pid_path, 'w') as handle:\n"
+        "    handle.write(str(child.pid))\n"
+        "time.sleep(60)\n"
+    )
+
+    outcome = evaluate_code_completion(spec, completion, timeout_seconds=0.5)
+
+    assert outcome.success is False
+    assert "timed out" in outcome.notes
+    child_pid = int(child_pid_path.read_text())
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        subprocess.run(
+            [sys.executable, "-c", f"import os; os.kill({child_pid}, 9)"],
+            check=False,
+        )
+        pytest.fail("candidate descendant survived evaluator timeout")
 
 
 def test_evaluate_code_completion_ordinary_completion_still_evaluates_after_sandboxing():
