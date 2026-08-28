@@ -10,6 +10,8 @@ Subcommands:
     workloads        Generate a deterministic code/JSON/reasoning workload matrix,
                      execute selected runnable rows (``workloads run``), and
                      aggregate results (``workloads summarize``).
+    tune             Offline, evidence-constrained recommendation of the best
+                     verified configuration for a workload/hardware target.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from .collectors._shared import atomic_write_text
 from .collectors.mlx import (
     MLXCollectionConfig,
     MLXCollectorError,
@@ -45,6 +48,10 @@ from .schema import (
     SchemaValidationError,
     utc_now_iso,
 )
+from .tune.explain import format_report_text
+from .tune.loader import TuneInputError
+from .tune.policy import TunePolicy, TunePolicyError
+from .tune.tuner import tune
 from .workloads.aggregate import summarize_results, write_summary
 from .workloads.catalog import WORKLOADS, workload_by_id
 from .workloads.evaluators import evaluate_workload
@@ -558,6 +565,36 @@ def _cmd_workloads_summarize(args: argparse.Namespace) -> int:
     return 0 if summary.overall.total > 0 else 1
 
 
+def _cmd_tune(args: argparse.Namespace) -> int:
+    try:
+        policy = TunePolicy.from_file(args.policy)
+    except TunePolicyError as exc:
+        print(f"Invalid tune policy: {exc}", file=sys.stderr)
+        return 1
+
+    results_dirs = tuple(Path(path) for path in args.results)
+    try:
+        report = tune(results_dirs=results_dirs, policy=policy)
+    except TuneInputError as exc:
+        print(f"Invalid tuning input: {exc}", file=sys.stderr)
+        return 1
+
+    print(format_report_text(report, verbose=args.explain))
+
+    if args.output:
+        atomic_write_text(Path(args.output), report.to_json() + "\n")
+        print(f"\nTune report written to {args.output}")
+
+    if not report.groups:
+        print(
+            "\nNo comparable groups were found across the given results "
+            "directories.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0 if report.has_recommendation else 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="llmtracefx-optimizer",
@@ -916,6 +953,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write the summary JSON to this path instead of stdout",
     )
     summarize_parser.set_defaults(func=_cmd_workloads_summarize)
+
+    tune_parser = subparsers.add_parser(
+        "tune",
+        help=(
+            "Offline, evidence-constrained recommendation of the fastest "
+            "verified configuration for a workload/hardware target. Reads "
+            "already-collected `workloads run` verification.json + "
+            "final_record.json artifacts; never loads a model, requires a "
+            "GPU, or executes a benchmark."
+        ),
+    )
+    tune_parser.add_argument(
+        "--results",
+        nargs="+",
+        required=True,
+        help="One or more `workloads run --output-dir` results directories",
+    )
+    tune_parser.add_argument(
+        "--policy",
+        required=True,
+        help="Path to a tune policy JSON/YAML file (objective + constraints)",
+    )
+    tune_parser.add_argument(
+        "--output",
+        default=None,
+        help="Atomically write the full tune report JSON to this path",
+    )
+    tune_parser.add_argument(
+        "--explain",
+        action="store_true",
+        help=(
+            "Print every violated constraint for every rejected candidate "
+            "and the full accepted-candidate ranking (default: a concise "
+            "summary with only the top rejection reason per candidate)"
+        ),
+    )
+    tune_parser.set_defaults(func=_cmd_tune)
 
     return parser
 

@@ -1,0 +1,15 @@
+{
+  "schema_version": "1",
+  "name": "max-correct-cases-per-minute-structured-json",
+  "description": "Example only, not a measured claim: recommend the highest passing-cases-per-minute configuration for a structured-JSON extraction workload, requiring every accepted run to have been scored by the structured_json_exact_field_match evaluator (see workloads.evaluators) so throughput is never computed from evidence that used a different or absent quality metric.",
+  "objective": "max_correct_cases_per_minute",
+  "constraints": {
+    "required_statuses": ["completed", "skipped"],
+    "min_pass_rate": 0.95,
+    "min_quality_score": 1.0,
+    "required_quality_metric": "structured_json_exact_field_match",
+    "allowed_provenances": ["measured_native", "measured_wall_clock"],
+    "min_measured_repetitions": 2,
+    "max_coefficient_of_variation": 0.2
+  }
+}

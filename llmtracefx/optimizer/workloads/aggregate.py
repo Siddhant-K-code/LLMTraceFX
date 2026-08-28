@@ -44,11 +44,21 @@ def _load_verifications(results_dir: Path) -> tuple[RowVerification, ...]:
     return tuple(verifications)
 
 
-def _pass_rate(pass_count: int, evaluated_count: int) -> float | None:
+def pass_rate(pass_count: int, evaluated_count: int) -> float | None:
+    """Fraction of evaluated cases that passed, or ``None`` if none evaluated.
+
+    Public so other modules (e.g. ``optimizer.tune``) that need the exact
+    same pass-rate definition can reuse it instead of redefining it.
+    """
     return pass_count / evaluated_count if evaluated_count else None
 
 
-def _correct_cases_per_minute(pass_count: int, total_pass_ms: float) -> float | None:
+def correct_cases_per_minute(pass_count: int, total_pass_ms: float) -> float | None:
+    """Passing cases per minute of measured time, or ``None`` if undefined.
+
+    Public so other modules (e.g. ``optimizer.tune``) that need the exact
+    same throughput definition can reuse it instead of redefining it.
+    """
     if pass_count == 0 or total_pass_ms <= 0:
         return None
     minutes = total_pass_ms / 1000.0 / 60.0
@@ -121,8 +131,8 @@ def _summarize_group(
         inconclusive=counts[RowStatus.INCONCLUSIVE],
         evaluated_total=len(evaluated),
         evaluated_pass=len(evaluated_pass),
-        pass_rate=_pass_rate(len(evaluated_pass), len(evaluated)),
-        correct_cases_per_minute=_correct_cases_per_minute(
+        pass_rate=pass_rate(len(evaluated_pass), len(evaluated)),
+        correct_cases_per_minute=correct_cases_per_minute(
             len(evaluated_pass), total_pass_ms
         ),
     )
