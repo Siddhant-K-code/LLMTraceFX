@@ -86,6 +86,7 @@ __all__ = [
     "HEATMAP_SCALE",
     "LOCKUP_SVG",
     "MARK_SVG",
+    "PLOT_ANNOTATION",
     "PLOT_LAYOUT",
     "TOKENS_CSS",
 ]
@@ -164,6 +165,37 @@ PLOT_LAYOUT: dict[str, object] = {
         "tickcolor": _RULE,
         "title": {"font": {"size": 11, "color": _MUTED}},
     },
-    "legend": {"font": {"size": 11}, "bgcolor": "rgba(0,0,0,0)"},
+    # A legend boxed on the right eats a third of the plot area in a narrow
+    # column. Anchoring it to the figure container, flush left above the
+    # chart, matches the eyebrow grammar used elsewhere and stops a wide
+    # legend from reserving margin and squeezing the data.
+    "legend": {
+        "font": {"size": 11},
+        "bgcolor": "rgba(0,0,0,0)",
+        "orientation": "h",
+        "xref": "container",
+        "x": 0,
+        "xanchor": "left",
+        "yref": "container",
+        "y": 1,
+        "yanchor": "top",
+    },
     "hoverlabel": {"bgcolor": _INK, "font": {"color": _SHEET, "size": 12}},
+    # Charts are titled by the panel heading above them, so the 100px band
+    # Plotly reserves for a chart title is dead space. The base margins are
+    # deliberately tight; autoexpand still grows them to fit tick labels and
+    # axis titles, so wide layouts are unchanged while a narrow column gets
+    # the space back as plot area instead of blank paper.
+    "margin": {"t": 56, "l": 48, "r": 24, "b": 48},
+}
+
+#: Subplot titles arrive from Plotly as 16px paper annotations, which read as a
+#: second heading competing with the panel heading above the chart. Demote them
+#: to the same small muted eyebrow the rest of the page uses for labels.
+PLOT_ANNOTATION: dict[str, object] = {
+    "font": {
+        "family": 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
+        "size": 11,
+        "color": _MUTED,
+    },
 }

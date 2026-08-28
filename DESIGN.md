@@ -204,6 +204,14 @@ At `max-width: 520px`, the API route index collapses endpoint rows from a method
 
 Depth is minimal. The system is ruled and layered, not carded. The only persistent shadow is the sheet lift: `0 1px 1px #16181a0f, 0 26px 52px -30px #16181a5c` in the report, API index, and GPU performance shell. The social preview uses the same idea at image scale: `0 1px 1px #16181a0f, 0 30px 60px -34px #16181a66`. Plotly figures are themed onto the sheet with `PLOT_LAYOUT`, using `paper_bgcolor` and `plot_bgcolor` set to `#fbfaf7`.
 
+### Chart Titling and Frame
+
+Charts carry no figure title of their own. The panel heading in the surrounding page names the chart, so `PLOT_LAYOUT` reclaims the roughly 100px band the library reserves for a title it will never draw. The base margins are deliberately tight at `t: 56, l: 48, r: 24, b: 48`. Plotly's `autoexpand` still grows any side that genuinely needs room, so a wide layout keeps the space its tick labels and axis titles require while a narrow column spends the difference on plot area instead of blank paper.
+
+The legend runs horizontally, flush left, anchored to the figure container rather than the plot area. A legend boxed on the right takes a third of the width out of a narrow column, and even a top legend anchored to the plot reserves margin when it is wider than the plot itself. Container anchoring matches the flush-left eyebrow grammar used elsewhere and leaves the data the full frame.
+
+Subplot titles are the one titling exception, because they distinguish stacked panes inside a single figure. They do not arrive through `layout`, so the layout theme does not reach them and they would render at 16px, reading as a second heading competing with the panel heading above. `PLOT_ANNOTATION` demotes them to the same 11px muted mono eyebrow the rest of the system uses for labels, and the strings themselves are written uppercase to match that grammar. Apply it wherever `PLOT_LAYOUT` is applied.
+
 ### Named Rules
 
 **The Ruled Not Carded Rule.** Use hairline borders, table rules, division ticks, and sheet lift. Do not wrap every statistic or table in separate cards.
@@ -278,7 +286,7 @@ The tune report is a binding static artifact. It must remain one self-contained 
 
 Rendering must be byte identical for the same `TuneReport`, enforced by `tests/optimizer/test_tune_report_html.py::test_render_is_byte_identical_across_calls`. The only clock is `report.generated_at`, covered by `tests/optimizer/test_tune_report_html.py::test_render_has_no_new_timestamp_beyond_generated_at`. Every report-derived string passes through `html.escape(..., quote=True)`, covered by the escaping tests in `tests/optimizer/test_tune_report_html.py`. Paths are redacted by default, covered by the path redaction tests in that file.
 
-The older Plotly visualization methods in `llmtracefx/visualize/flame.py` call `to_html(include_plotlyjs='cdn')`. Treat that shell as a secondary visualization surface, not as the offline tune report artifact.
+The older Plotly visualization methods in `llmtracefx/visualize/flame.py` call `to_html(include_plotlyjs='cdn')`. Treat that shell as a secondary visualization surface, not as the offline tune report artifact. It already runs the library's own JavaScript, so it is the one surface allowed a script: charts are plotted with `{"responsive": True}` and the shell fires a single resize on load, because a chart inside `.chart-grid` can otherwise be measured before the grid resolves its track width and stay drawn wider than the column that holds it. The offline tune report remains scriptless.
 
 ## Do's and Don'ts
 
