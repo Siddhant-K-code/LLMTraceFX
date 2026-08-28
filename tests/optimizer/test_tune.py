@@ -290,6 +290,57 @@ def test_missing_timing_total_never_treated_as_zero(tmp_path):
     assert "cannot be computed" in reasons
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_non_finite_timing_never_enters_objective_or_wins(tmp_path, value):
+    write_run(tmp_path, "r-invalid", quantization="Q4", total_ms=value)
+    write_run(tmp_path, "r-valid", quantization="Q8", total_ms=1000.0)
+
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+    group = report.groups[0]
+
+    assert group.outcome == GroupOutcome.RECOMMENDED
+    assert group.recommended.candidate_key.quantization == "Q8"
+    rejected_reasons = " ".join(group.rejected[0].reasons)
+    assert "timing.total is non-finite" in rejected_reasons
+
+
+def test_all_non_finite_timing_is_inconclusive(tmp_path):
+    write_run(tmp_path, "r-nan", total_ms=float("nan"))
+
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+    assert report.groups[0].outcome == GroupOutcome.INCONCLUSIVE
+    assert report.groups[0].recommended is None
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_non_finite_peak_memory_is_rejected(tmp_path, value):
+    write_run(tmp_path, "r1", peak_bytes=value)
+    policy = TunePolicy(
+        objective=TuneObjective.MIN_MEAN_TOTAL_LATENCY_MS,
+        constraints=TuneConstraints(max_peak_memory_bytes=20 * 1024**3),
+    )
+
+    report = tune(results_dirs=(tmp_path,), policy=policy)
+
+    assert "memory.peak is non-finite" in " ".join(report.groups[0].rejected[0].reasons)
+
+
+def test_non_finite_quality_score_is_rejected(tmp_path):
+    write_run(
+        tmp_path,
+        "r1",
+        quality_score=float("nan"),
+        quality_metric="metric",
+    )
+
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+    assert "quality_score is non-finite" in " ".join(
+        report.groups[0].rejected[0].reasons
+    )
+
+
 def test_missing_peak_memory_rejected_only_when_constrained(tmp_path):
     write_run(tmp_path, "r1", peak_bytes=None)
 

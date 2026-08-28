@@ -20,6 +20,7 @@ this module:
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -49,6 +50,27 @@ def _provenance_allowed(
     if allowed is None:
         return True
     return measurement.provenance in allowed
+
+
+def _finite_measurement_value(measurement: Measurement | None) -> float | None:
+    if measurement is None or not math.isfinite(measurement.value):
+        return None
+    return measurement.value
+
+
+def _finite_or_none(value: float | None) -> float | None:
+    """Guard a derived (mean/stdev/ratio) computation against non-finite results.
+
+    Every input list feeding ``statistics.mean``/``pstdev`` and
+    ``correct_cases_per_minute`` is already filtered to finite values by
+    the time it reaches these computations, so this only guards against
+    the extreme, unrealistic case of the aggregation itself overflowing
+    (e.g. summing many near-``float`` max values); it never masks a
+    legitimate finite result.
+    """
+    if value is None or not math.isfinite(value):
+        return None
+    return value
 
 
 @dataclass(frozen=True)
@@ -100,25 +122,37 @@ def _evaluate_candidate(
     # at the first one.
     for run in runs:
         total = run.final_record.timing.total
+        total_value = _finite_measurement_value(total)
+        if total is not None and total_value is None:
+            reasons.append(f"run {run.run_id}: timing.total is non-finite and unusable")
         if (
-            total is not None
+            total_value is not None
+            and total is not None
             and _provenance_allowed(total, constraints.allowed_provenances)
             and constraints.max_total_latency_ms is not None
-            and total.value > constraints.max_total_latency_ms
+            and total_value > constraints.max_total_latency_ms
         ):
             reasons.append(
-                f"run {run.run_id}: total latency {total.value:.2f} ms exceeds "
+                f"run {run.run_id}: total latency {total_value:.2f} ms exceeds "
                 f"the maximum {constraints.max_total_latency_ms} ms"
             )
         peak = run.final_record.memory.peak
+        peak_value = _finite_measurement_value(peak)
         if (
             peak is not None
+            and peak_value is None
+            and constraints.max_peak_memory_bytes is not None
+        ):
+            reasons.append(f"run {run.run_id}: memory.peak is non-finite and unusable")
+        if (
+            peak_value is not None
+            and peak is not None
             and _provenance_allowed(peak, constraints.allowed_provenances)
             and constraints.max_peak_memory_bytes is not None
-            and peak.value > constraints.max_peak_memory_bytes
+            and peak_value > constraints.max_peak_memory_bytes
         ):
             reasons.append(
-                f"run {run.run_id}: peak memory {peak.value:.0f} bytes exceeds "
+                f"run {run.run_id}: peak memory {peak_value:.0f} bytes exceeds "
                 f"the maximum {constraints.max_peak_memory_bytes:.0f} bytes"
             )
 
@@ -172,7 +206,13 @@ def _evaluate_candidate(
                 f"{constraints.required_quality_metric!r}"
             )
         if score is not None:
-            quality_scores.append(score)
+            if math.isfinite(score):
+                quality_scores.append(score)
+            else:
+                reasons.append(
+                    f"run {run.run_id}: outcome.quality_score is non-finite "
+                    "and unusable"
+                )
         elif constraints.min_quality_score is not None:
             reasons.append(
                 f"run {run.run_id}: missing outcome.quality_score, required "
@@ -184,7 +224,9 @@ def _evaluate_candidate(
             f"{sorted(quality_metrics_seen)}; they cannot be treated as one "
             "candidate's quality evidence"
         )
-    mean_quality = statistics.mean(quality_scores) if quality_scores else None
+    mean_quality = (
+        _finite_or_none(statistics.mean(quality_scores)) if quality_scores else None
+    )
     if (
         constraints.min_quality_score is not None
         and mean_quality is not None
@@ -205,6 +247,9 @@ def _evaluate_candidate(
         if total is None:
             reasons.append(f"run {run.run_id}: missing timing.total measurement")
             continue
+        total_value = _finite_measurement_value(total)
+        if total_value is None:
+            continue
         if not _provenance_allowed(total, constraints.allowed_provenances):
             allowed = constraints.allowed_provenances or frozenset()
             reasons.append(
@@ -213,7 +258,7 @@ def _evaluate_candidate(
                 f"set {sorted(p.value for p in allowed)}"
             )
             continue
-        timed.append((run, total.value))
+        timed.append((run, total_value))
 
     mean_total: float | None
     stdev_total: float | None
@@ -228,9 +273,15 @@ def _evaluate_candidate(
         cv = None
     else:
         totals = [total_value for _run, total_value in timed]
-        mean_total = statistics.mean(totals)
-        stdev_total = statistics.pstdev(totals) if len(totals) > 1 else 0.0
-        cv = stdev_total / mean_total if mean_total > 0 else None
+        mean_total = _finite_or_none(statistics.mean(totals))
+        stdev_total = (
+            _finite_or_none(statistics.pstdev(totals)) if len(totals) > 1 else 0.0
+        )
+        cv = (
+            _finite_or_none(stdev_total / mean_total)
+            if mean_total is not None and stdev_total is not None and mean_total > 0
+            else None
+        )
         if (
             len(totals) > 1
             and constraints.max_coefficient_of_variation is not None
@@ -260,6 +311,9 @@ def _evaluate_candidate(
                     f"{constraints.max_peak_memory_bytes}"
                 )
             continue
+        peak_value = _finite_measurement_value(peak)
+        if peak_value is None:
+            continue
         if not _provenance_allowed(peak, constraints.allowed_provenances):
             if constraints.max_peak_memory_bytes is not None:
                 allowed = constraints.allowed_provenances or frozenset()
@@ -270,8 +324,8 @@ def _evaluate_candidate(
                     f"{sorted(p.value for p in allowed)}"
                 )
             continue
-        peaks.append(peak.value)
-    mean_peak = statistics.mean(peaks) if peaks else None
+        peaks.append(peak_value)
+    mean_peak = _finite_or_none(statistics.mean(peaks)) if peaks else None
     max_peak = max(peaks) if peaks else None
 
     # --- Objective ------------------------------------------------------
@@ -279,7 +333,7 @@ def _evaluate_candidate(
         total_value for run, total_value in timed if run.final_record.outcome.success
     ]
     pass_total_ms = sum(passing_timed)
-    ccpm = correct_cases_per_minute(len(passing_timed), pass_total_ms)
+    ccpm = _finite_or_none(correct_cases_per_minute(len(passing_timed), pass_total_ms))
 
     objective_value: float | None
     if objective == TuneObjective.MIN_MEAN_TOTAL_LATENCY_MS:

@@ -144,6 +144,35 @@ def test_min_pass_rate_must_be_within_unit_interval():
         TuneConstraints.from_dict({"min_pass_rate": 1.5})
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_peak_memory_bytes", float("nan")),
+        ("max_peak_memory_bytes", float("inf")),
+        ("max_total_latency_ms", float("-inf")),
+        ("max_coefficient_of_variation", float("nan")),
+        ("min_pass_rate", float("nan")),
+        ("min_quality_score", float("inf")),
+    ],
+)
+def test_numeric_constraints_reject_non_finite_values(field, value):
+    data = {field: value}
+    if field == "min_quality_score":
+        data["required_quality_metric"] = "metric"
+    with pytest.raises(TunePolicyError, match=field):
+        TuneConstraints.from_dict(data)
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+def test_policy_json_rejects_non_standard_non_finite_numbers(token):
+    payload = (
+        '{"objective":"min_mean_total_latency_ms",'
+        f'"constraints":{{"max_total_latency_ms":{token}}}}}'
+    )
+    with pytest.raises(TunePolicyError, match="max_total_latency_ms"):
+        TunePolicy.from_json(payload)
+
+
 EXAMPLES_DIR = Path(__file__).parent.parent.parent / "examples" / "optimizer"
 
 

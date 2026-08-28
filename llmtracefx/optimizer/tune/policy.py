@@ -18,6 +18,7 @@ one measured repetition).
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -73,7 +74,7 @@ def _coerce_optional_positive_float(
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TunePolicyError(f"{context}.{key} must be a number, got {value!r}")
     numeric = float(value)
-    if numeric <= 0:
+    if not math.isfinite(numeric) or numeric <= 0:
         raise TunePolicyError(f"{context}.{key} must be > 0, got {numeric!r}")
     return numeric
 
@@ -87,7 +88,7 @@ def _coerce_optional_unit_interval(
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TunePolicyError(f"{context}.{key} must be a number, got {value!r}")
     numeric = float(value)
-    if not (0.0 <= numeric <= 1.0):
+    if not math.isfinite(numeric) or not (0.0 <= numeric <= 1.0):
         raise TunePolicyError(f"{context}.{key} must be within [0, 1], got {numeric!r}")
     return numeric
 
@@ -101,7 +102,7 @@ def _coerce_optional_non_negative_float(
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TunePolicyError(f"{context}.{key} must be a number, got {value!r}")
     numeric = float(value)
-    if numeric < 0:
+    if not math.isfinite(numeric) or numeric < 0:
         raise TunePolicyError(f"{context}.{key} must be >= 0, got {numeric!r}")
     return numeric
 
