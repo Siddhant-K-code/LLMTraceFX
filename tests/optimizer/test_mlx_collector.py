@@ -113,6 +113,11 @@ class FailingRuntime(FakeRuntime):
         raise RuntimeError("model load failed")
 
 
+class MalformedModelRuntime(FakeRuntime):
+    def load_model(self, path):
+        raise KeyError("model_type")
+
+
 def make_config(tmp_path, **overrides):
     model_path = tmp_path / "model"
     model_path.mkdir(exist_ok=True)
@@ -281,6 +286,20 @@ def test_runtime_failure_is_persisted_without_success_fallback(tmp_path):
     assert result.record.timing.model_load is None
     persisted = ExperimentRecord.read_json(tmp_path / "artifacts" / "record.json")
     assert persisted.outcome.success is False
+
+
+def test_malformed_local_model_is_persisted_without_traceback(tmp_path):
+    result = collect_mlx(
+        make_config(tmp_path),
+        runtime=MalformedModelRuntime(),
+        clock=StepClock(),
+    )
+
+    assert result.record.outcome.success is False
+    assert result.record.error.category == "KeyError"
+    assert "model_type" in result.record.error.message
+    persisted = ExperimentRecord.read_json(tmp_path / "artifacts" / "record.json")
+    assert persisted.error.category == "KeyError"
 
 
 def test_missing_model_path_is_rejected_without_downloading(tmp_path):

@@ -402,7 +402,7 @@ def collect_mlx(
         runtime.synchronize()
         generation_ended = clock()
         memory = runtime.memory_snapshot()
-    except (RuntimeError, ValueError, OSError, MemoryError) as exc:
+    except (KeyError, RuntimeError, ValueError, OSError, MemoryError) as exc:
         generation_ended = clock()
         error = ErrorInfo(category=type(exc).__name__, message=str(exc))
 
