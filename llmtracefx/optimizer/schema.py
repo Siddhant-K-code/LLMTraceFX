@@ -223,6 +223,12 @@ class ModelInfo:
     model_revision: str | None = None
     tokenizer_revision: str | None = None
     quantization: str | None = None
+    model_family: str | None = None
+    """Architecture family (e.g. mlx-lm/mlx-vlm ``model_type`` such as
+    'qwen3_next' or 'qwen4_exp'), distinct from ``model_id`` (which is
+    often a user-chosen Hugging Face repo name). Native-MTP collectors use
+    this to label which architecture family a capability determination or
+    run applies to."""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -235,6 +241,7 @@ class ModelInfo:
                 model_revision=data.get("model_revision"),
                 tokenizer_revision=data.get("tokenizer_revision"),
                 quantization=data.get("quantization"),
+                model_family=data.get("model_family"),
             )
         except KeyError as exc:
             raise SchemaValidationError(
@@ -405,8 +412,16 @@ class SpeculativeDecodingInfo:
 
     enabled: bool = False
     method: str | None = None
-    """e.g. 'mtp', 'eagle', 'draft-model', 'lookahead'."""
+    """e.g. 'native-mtp', 'draft-model', 'eagle', 'lookahead'.
+
+    'native-mtp' must only be used when the runtime invoked its own
+    multi-token-prediction heads through a verified API path (see
+    ``llmtracefx.optimizer.collectors.native_mtp``); generic external
+    draft-model speculative decoding must be labeled 'draft-model' even
+    when the draft checkpoint happens to be an extracted MTP head, unless
+    the runtime is verified to keep the two paths distinguishable."""
     configured_depth: int | None = None
+    """Configured speculation/MTP block depth (e.g. draft tokens per step)."""
     proposed_tokens: int | None = None
     accepted_tokens: int | None = None
     verification_time: Measurement | None = None
