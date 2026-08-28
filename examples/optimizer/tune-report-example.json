@@ -1,0 +1,239 @@
+{
+  "schema_version": "1",
+  "generated_at": "2025-01-01T00:00:00.000000Z",
+  "results_dirs": [
+    "artifacts/example-results"
+  ],
+  "policy": {
+    "schema_version": "1",
+    "name": "synthetic-example-fastest-under-20gb",
+    "description": "SYNTHETIC EXAMPLE DATA ONLY. Not a real benchmark and not evidence about any actual model's performance. Exists solely to exercise every section of the `tune-report` HTML viewer: a recommended candidate, an accepted-candidate ranking, a rejected candidate, a speculative-decoding vs. autoregressive baseline comparison, and an excluded run.",
+    "objective": "min_mean_total_latency_ms",
+    "constraints": {
+      "required_statuses": [
+        "completed",
+        "skipped"
+      ],
+      "min_pass_rate": 1.0,
+      "min_quality_score": null,
+      "required_quality_metric": null,
+      "max_peak_memory_bytes": 21474836480.0,
+      "max_total_latency_ms": null,
+      "allowed_provenances": null,
+      "min_measured_repetitions": 1,
+      "max_coefficient_of_variation": 0.2
+    }
+  },
+  "groups": [
+    {
+      "group_key": {
+        "workload_id": "structured-json-profile-extraction",
+        "workload_version": "1",
+        "context_tier": "2k",
+        "model_id": "example/synthetic-demo-7b",
+        "model_family": "synthetic_demo_family",
+        "accelerator": "Example-Accelerator-X1",
+        "runtime_name": "mlx-lm",
+        "runtime_backend": "Metal",
+        "workload_prompt_hash": "sha256:promptabc"
+      },
+      "group_label": "structured-json-profile-extraction@v1 [2k] model=example/synthetic-demo-7b/synthetic_demo_family accelerator=Example-Accelerator-X1 runtime=mlx-lm/Metal",
+      "outcome": "recommended",
+      "recommended": {
+        "candidate_key": {
+          "decode_mode": "autoregressive",
+          "runtime_version": "0.31.3",
+          "quantization": "Q4",
+          "model_revision": null,
+          "tokenizer_revision": null,
+          "speculative_enabled": true,
+          "speculative_method": "draft-model",
+          "speculative_configured_depth": 2,
+          "seed": 0,
+          "config_hash": "cfg-hash"
+        },
+        "rank": 1,
+        "run_ids": [
+          "run-spec-001",
+          "run-spec-002"
+        ],
+        "verification_paths": [
+          "artifacts/example-results/runs/run-spec-001/verification.json",
+          "artifacts/example-results/runs/run-spec-002/verification.json"
+        ],
+        "final_record_paths": [
+          "artifacts/example-results/runs/run-spec-001/final_record.json",
+          "artifacts/example-results/runs/run-spec-002/final_record.json"
+        ],
+        "evidence_count": 2,
+        "objective_name": "min_mean_total_latency_ms",
+        "objective_value": 1165.0,
+        "mean_total_latency_ms": 1165.0,
+        "stdev_total_latency_ms": 15.0,
+        "coefficient_of_variation": 0.012875536480686695,
+        "correct_cases_per_minute": 51.50214592274678,
+        "pass_rate": 1.0,
+        "mean_quality_score": 1.0,
+        "quality_metric": "structured_json_exact_field_match",
+        "mean_peak_memory_bytes": 4294967296.0,
+        "max_peak_memory_bytes": 4294967296.0
+      },
+      "accepted": [
+        {
+          "candidate_key": {
+            "decode_mode": "autoregressive",
+            "runtime_version": "0.31.3",
+            "quantization": "Q4",
+            "model_revision": null,
+            "tokenizer_revision": null,
+            "speculative_enabled": true,
+            "speculative_method": "draft-model",
+            "speculative_configured_depth": 2,
+            "seed": 0,
+            "config_hash": "cfg-hash"
+          },
+          "rank": 1,
+          "run_ids": [
+            "run-spec-001",
+            "run-spec-002"
+          ],
+          "verification_paths": [
+            "artifacts/example-results/runs/run-spec-001/verification.json",
+            "artifacts/example-results/runs/run-spec-002/verification.json"
+          ],
+          "final_record_paths": [
+            "artifacts/example-results/runs/run-spec-001/final_record.json",
+            "artifacts/example-results/runs/run-spec-002/final_record.json"
+          ],
+          "evidence_count": 2,
+          "objective_name": "min_mean_total_latency_ms",
+          "objective_value": 1165.0,
+          "mean_total_latency_ms": 1165.0,
+          "stdev_total_latency_ms": 15.0,
+          "coefficient_of_variation": 0.012875536480686695,
+          "correct_cases_per_minute": 51.50214592274678,
+          "pass_rate": 1.0,
+          "mean_quality_score": 1.0,
+          "quality_metric": "structured_json_exact_field_match",
+          "mean_peak_memory_bytes": 4294967296.0,
+          "max_peak_memory_bytes": 4294967296.0
+        },
+        {
+          "candidate_key": {
+            "decode_mode": "autoregressive",
+            "runtime_version": "0.31.3",
+            "quantization": "Q4",
+            "model_revision": null,
+            "tokenizer_revision": null,
+            "speculative_enabled": false,
+            "speculative_method": null,
+            "speculative_configured_depth": null,
+            "seed": 0,
+            "config_hash": "cfg-hash"
+          },
+          "rank": 2,
+          "run_ids": [
+            "run-ar-001",
+            "run-ar-002"
+          ],
+          "verification_paths": [
+            "artifacts/example-results/runs/run-ar-001/verification.json",
+            "artifacts/example-results/runs/run-ar-002/verification.json"
+          ],
+          "final_record_paths": [
+            "artifacts/example-results/runs/run-ar-001/final_record.json",
+            "artifacts/example-results/runs/run-ar-002/final_record.json"
+          ],
+          "evidence_count": 2,
+          "objective_name": "min_mean_total_latency_ms",
+          "objective_value": 2025.0,
+          "mean_total_latency_ms": 2025.0,
+          "stdev_total_latency_ms": 25.0,
+          "coefficient_of_variation": 0.012345679012345678,
+          "correct_cases_per_minute": 29.629629629629633,
+          "pass_rate": 1.0,
+          "mean_quality_score": 1.0,
+          "quality_metric": "structured_json_exact_field_match",
+          "mean_peak_memory_bytes": 4294967296.0,
+          "max_peak_memory_bytes": 4294967296.0
+        }
+      ],
+      "rejected": [
+        {
+          "candidate_key": {
+            "decode_mode": "autoregressive",
+            "runtime_version": "0.31.3",
+            "quantization": "FP16",
+            "model_revision": null,
+            "tokenizer_revision": null,
+            "speculative_enabled": false,
+            "speculative_method": null,
+            "speculative_configured_depth": null,
+            "seed": 0,
+            "config_hash": "cfg-hash"
+          },
+          "run_ids": [
+            "run-rejected-001"
+          ],
+          "verification_paths": [
+            "artifacts/example-results/runs/run-rejected-001/verification.json"
+          ],
+          "final_record_paths": [
+            "artifacts/example-results/runs/run-rejected-001/final_record.json"
+          ],
+          "reasons": [
+            "run run-rejected-001: peak memory 25769803776 bytes exceeds the maximum 21474836480 bytes"
+          ]
+        }
+      ],
+      "inconclusive_reason": null,
+      "baseline_comparison": {
+        "baseline_candidate_key": {
+          "decode_mode": "autoregressive",
+          "runtime_version": "0.31.3",
+          "quantization": "Q4",
+          "model_revision": null,
+          "tokenizer_revision": null,
+          "speculative_enabled": false,
+          "speculative_method": null,
+          "speculative_configured_depth": null,
+          "seed": 0,
+          "config_hash": "cfg-hash"
+        },
+        "speculative_candidate_key": {
+          "decode_mode": "autoregressive",
+          "runtime_version": "0.31.3",
+          "quantization": "Q4",
+          "model_revision": null,
+          "tokenizer_revision": null,
+          "speculative_enabled": true,
+          "speculative_method": "draft-model",
+          "speculative_configured_depth": 2,
+          "seed": 0,
+          "config_hash": "cfg-hash"
+        },
+        "verdict": "improvement",
+        "reason": "speculative decoding decreased mean total time by 860.00 ms (-42.5%) versus the autoregressive baseline",
+        "baseline_run_ids": [
+          "run-ar-001",
+          "run-ar-002"
+        ],
+        "speculative_run_ids": [
+          "run-spec-001",
+          "run-spec-002"
+        ],
+        "baseline_mean_total_ms": 2025.0,
+        "speculative_mean_total_ms": 1165.0,
+        "delta_ms": -860.0,
+        "delta_pct": -0.4246913580246914
+      }
+    }
+  ],
+  "excluded_runs": [
+    {
+      "run_id": "run-excluded-001",
+      "source_results_dir": "artifacts/example-results",
+      "reason": "final_record.json (/var/folders/fd/7wzsqj2s69l1lmhwb_7j4wn00000gn/T/tmpo0don8_5/results/runs/run-excluded-001/final_record.json) failed schema validation: Invalid JSON for ExperimentRecord: Expecting value: line 1 column 1 (char 0)"
+    }
+  ]
+}

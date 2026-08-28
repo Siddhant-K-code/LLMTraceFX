@@ -912,15 +912,48 @@ rows that both passed and have measured timing) overall and broken down by
 decode mode and context tier -- deliberately not blended into one combined
 score.
 
+### Offline tuning and the `tune-report` HTML viewer
+
+Once a `workloads run` results directory has been collected, `tune`
+recommends the best verified configuration for one explicit objective
+under an explicit set of constraints -- it never blends multiple objectives
+and never loads a model or executes anything itself:
+
+```bash
+uv run llmtracefx-optimizer tune \
+  --results artifacts/qwen3.8-run \
+  --policy examples/optimizer/tune-policy-fastest-under-20gb-m5-pro.json \
+  --output artifacts/qwen3.8-tune-report.json
+```
+
+`tune-report` then renders that JSON report as a single, self-contained,
+portable HTML file (inline CSS, no JavaScript, no CDN) so the recommendation,
+the full accepted/rejected candidate breakdown, any speculative-vs-baseline
+comparison, and every excluded run can be inspected offline in a browser --
+no Streamlit dashboard, no re-scoring, no new tuning logic:
+
+```bash
+uv run llmtracefx-optimizer tune-report \
+  --input artifacts/qwen3.8-tune-report.json \
+  --output artifacts/qwen3.8-tune-report.html
+```
+
+Local artifact paths (results directories, `verification.json`/
+`final_record.json` locations) are redacted to stable
+`runs/<run_id>/<file>`-style labels by default, so the HTML file is safe to
+share without leaking a machine's home-directory layout; pass
+`--include-paths` to include the full paths instead. See
+`examples/optimizer/tune-report-example.json` for a synthetic (non-benchmark)
+example report that exercises every section of the viewer.
+
 **Not yet included** (tracked as a follow-up PR): a genuinely capable
 native-MTP runtime adapter (none exists upstream today), native Metal/CUDA
-performance-counter ingestion, CUDA/vLLM/SGLang collectors, an automatic
-tuning/recommendation command (`tune`) built on top of the evidence above,
-and any actual Qwen3.8-27B benchmark results -- everything in this section
-was verified against fake runtimes and small local checkpoints, never a real
-Qwen3.8-27B run. The fixtures under `tests/optimizer/fixtures/llama_cpp/` are
-synthetic, hand-written logs for testing the parser and doctor rule -- not
-benchmark evidence (see the `PROVENANCE.md` in that directory).
+performance-counter ingestion, CUDA/vLLM/SGLang collectors, and any actual
+Qwen3.8-27B benchmark results -- everything in this section was verified
+against fake runtimes and small local checkpoints, never a real Qwen3.8-27B
+run. The fixtures under `tests/optimizer/fixtures/llama_cpp/` are synthetic,
+hand-written logs for testing the parser and doctor rule -- not benchmark
+evidence (see the `PROVENANCE.md` in that directory).
 
 ## 📄 License
 

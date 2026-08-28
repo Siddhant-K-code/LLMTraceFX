@@ -20,6 +20,43 @@ from ..schema import ExperimentRecord
 from ..workloads.verify import RowVerification
 
 
+class IdentityValidationError(ValueError):
+    """Raised when a ``GroupKey``/``CandidateKey`` loaded from JSON is invalid."""
+
+
+def _required_str(data: Any, key: str, *, context: str) -> str:
+    if not isinstance(data, dict) or key not in data:
+        raise IdentityValidationError(f"{context} is missing required field: {key!r}")
+    value = data[key]
+    if not isinstance(value, str) or not value:
+        raise IdentityValidationError(
+            f"{context}.{key} must be a non-empty string, got {value!r}"
+        )
+    return value
+
+
+def _optional_str(data: dict[str, Any], key: str, *, context: str) -> str | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise IdentityValidationError(
+            f"{context}.{key} must be a string or null, got {value!r}"
+        )
+    return value
+
+
+def _optional_int(data: dict[str, Any], key: str, *, context: str) -> int | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise IdentityValidationError(
+            f"{context}.{key} must be an integer or null, got {value!r}"
+        )
+    return int(value)
+
+
 @dataclass(frozen=True)
 class GroupKey:
     """Identifies one set of directly comparable candidate configurations."""
@@ -67,6 +104,25 @@ class GroupKey:
             self.runtime_name,
             self.runtime_backend or "",
             self.workload_prompt_hash,
+        )
+
+    @classmethod
+    def from_dict(cls, data: Any) -> GroupKey:
+        if not isinstance(data, dict):
+            raise IdentityValidationError("group_key must be a JSON object")
+        context = "group_key"
+        return cls(
+            workload_id=_required_str(data, "workload_id", context=context),
+            workload_version=_required_str(data, "workload_version", context=context),
+            context_tier=_required_str(data, "context_tier", context=context),
+            model_id=_required_str(data, "model_id", context=context),
+            model_family=_optional_str(data, "model_family", context=context),
+            accelerator=_optional_str(data, "accelerator", context=context),
+            runtime_name=_required_str(data, "runtime_name", context=context),
+            runtime_backend=_optional_str(data, "runtime_backend", context=context),
+            workload_prompt_hash=_required_str(
+                data, "workload_prompt_hash", context=context
+            ),
         )
 
 
@@ -135,6 +191,36 @@ class CandidateKey:
             ),
             self.seed if self.seed is not None else -1,
             self.config_hash or "",
+        )
+
+    @classmethod
+    def from_dict(cls, data: Any) -> CandidateKey:
+        if not isinstance(data, dict):
+            raise IdentityValidationError("candidate_key must be a JSON object")
+        context = "candidate_key"
+        speculative_enabled = data.get("speculative_enabled")
+        if not isinstance(speculative_enabled, bool):
+            raise IdentityValidationError(
+                f"{context}.speculative_enabled must be a boolean, got "
+                f"{speculative_enabled!r}"
+            )
+        return cls(
+            decode_mode=_required_str(data, "decode_mode", context=context),
+            runtime_version=_optional_str(data, "runtime_version", context=context),
+            quantization=_optional_str(data, "quantization", context=context),
+            model_revision=_optional_str(data, "model_revision", context=context),
+            tokenizer_revision=_optional_str(
+                data, "tokenizer_revision", context=context
+            ),
+            speculative_enabled=speculative_enabled,
+            speculative_method=_optional_str(
+                data, "speculative_method", context=context
+            ),
+            speculative_configured_depth=_optional_int(
+                data, "speculative_configured_depth", context=context
+            ),
+            seed=_optional_int(data, "seed", context=context),
+            config_hash=_optional_str(data, "config_hash", context=context),
         )
 
 
