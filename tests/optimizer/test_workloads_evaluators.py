@@ -217,6 +217,41 @@ def test_evaluate_code_completion_timeout_kills_descendants(tmp_path):
         pytest.fail("candidate descendant survived evaluator timeout")
 
 
+@pytest.mark.skipif(
+    os.name != "posix",
+    reason="POSIX-only process-group containment",
+)
+def test_evaluate_code_completion_kills_descendants_after_parent_exits(tmp_path):
+    marker_path = tmp_path / "descendant-finished.txt"
+    spec = CodeCompletionSpec(
+        function_stub="def f() -> None:\n    pass\n",
+        test_code="",
+        entry_point="f",
+    )
+    child_script = (
+        "import time; "
+        "time.sleep(0.5); "
+        f"open({str(marker_path)!r}, 'w').write('done')"
+    )
+    completion = (
+        "import subprocess\n"
+        "import sys\n"
+        "subprocess.Popen(\n"
+        f"    [sys.executable, '-c', {child_script!r}],\n"
+        "    stdin=subprocess.DEVNULL,\n"
+        "    stdout=subprocess.DEVNULL,\n"
+        "    stderr=subprocess.DEVNULL,\n"
+        "    close_fds=True,\n"
+        ")\n"
+    )
+
+    outcome = evaluate_code_completion(spec, completion, timeout_seconds=5)
+
+    assert outcome.success is True
+    time.sleep(0.8)
+    assert not marker_path.exists()
+
+
 def test_evaluate_code_completion_ordinary_completion_still_evaluates_after_sandboxing():
     outcome = evaluate_code_completion(
         CODE_COMPLETION_PALINDROME.spec, _CORRECT_PALINDROME_COMPLETION

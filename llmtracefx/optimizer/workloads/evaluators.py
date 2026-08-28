@@ -148,13 +148,54 @@ def _extract_code(response_text: str) -> str:
     return match.group(1) if match else response_text
 
 
-def _terminate_candidate_process(process: subprocess.Popen[str]) -> None:
+def _process_ids_in_group(process_group_id: int) -> tuple[int, ...]:
+    """Return live process IDs in a POSIX process group.
+
+    Darwin can report ``ESRCH`` for ``killpg`` after the group leader has
+    exited even while descendants with the same PGID remain alive. ``ps`` is
+    used only as a cleanup fallback for that condition.
+    """
+    try:
+        completed = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,pgid="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=True,
+            shell=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ()
+
+    members: list[int] = []
+    for line in completed.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            continue
+        try:
+            pid, pgid = (int(field) for field in fields)
+        except ValueError:
+            continue
+        if pgid == process_group_id:
+            members.append(pid)
+    return tuple(members)
+
+
+def _terminate_candidate_process(
+    process: subprocess.Popen[str], *, process_group_id: int | None
+) -> None:
     """Terminate the candidate and its descendants where the OS permits."""
     if _IS_POSIX:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        if process_group_id is None:
             return
+        try:
+            os.killpg(process_group_id, signal.SIGKILL)
+        except ProcessLookupError:
+            for pid in _process_ids_in_group(process_group_id):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    continue
     elif process.poll() is None:
         process.kill()
 
@@ -177,17 +218,18 @@ def _run_candidate(
         start_new_session=_IS_POSIX,
         preexec_fn=(_posix_preexec_resource_limits if _IS_POSIX else None),
     )
+    process_group_id = process.pid if _IS_POSIX else None
     try:
         stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
-        _terminate_candidate_process(process)
+        _terminate_candidate_process(process, process_group_id=process_group_id)
         process.communicate()
         raise
     finally:
         # A candidate can let its direct process exit while leaving detached
         # workers in the new process group. Clean up the whole group before
         # returning from the evaluator.
-        _terminate_candidate_process(process)
+        _terminate_candidate_process(process, process_group_id=process_group_id)
 
     return subprocess.CompletedProcess(
         args=process.args,
