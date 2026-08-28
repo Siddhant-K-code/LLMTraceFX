@@ -8,9 +8,6 @@ collector's scope.
 
 from __future__ import annotations
 
-import hashlib
-import json
-import os
 import platform
 import time
 from collections.abc import Callable, Iterator
@@ -25,18 +22,23 @@ from ..schema import (
     CommandInfo,
     ErrorInfo,
     ExperimentRecord,
-    Measurement,
     MemoryMetrics,
-    MetricProvenance,
     ModelInfo,
     OutcomeInfo,
-    PlatformInfo,
     RepetitionInfo,
     RuntimeInfo,
     SpeculativeDecodingInfo,
     TimingMetrics,
     TokenCounts,
     utc_now_iso,
+)
+from ._shared import (
+    atomic_write_text,
+    bytes_measurement,
+    config_hash,
+    milliseconds,
+    record_platform,
+    sha256_text,
 )
 
 
@@ -268,10 +270,6 @@ class MLXCollectionResult:
     response_text: str
 
 
-def _sha256_text(value: str) -> str:
-    return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
-
-
 def _config_hash(config: MLXCollectionConfig) -> str:
     payload = {
         "model_id": config.model_id,
@@ -283,49 +281,7 @@ def _config_hash(config: MLXCollectionConfig) -> str:
         "draft_enabled": config.draft_model_path is not None,
         "num_draft_tokens": config.num_draft_tokens,
     }
-    return _sha256_text(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-
-
-def _milliseconds(started: float | None, ended: float | None) -> Measurement | None:
-    if started is None or ended is None:
-        return None
-    return Measurement(
-        value=max(0.0, ended - started) * 1000,
-        provenance=MetricProvenance.MEASURED_WALL_CLOCK,
-        unit="ms",
-    )
-
-
-def _bytes_measurement(value: int | None) -> Measurement | None:
-    if value is None:
-        return None
-    return Measurement(
-        value=float(value),
-        provenance=MetricProvenance.MEASURED_NATIVE,
-        unit="bytes",
-    )
-
-
-def _atomic_write_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    temporary.write_text(content, encoding="utf-8")
-    os.replace(temporary, path)
-
-
-def _record_platform(
-    runtime: MLXRuntime, accelerator_override: str | None
-) -> PlatformInfo:
-    manifest = collect_environment_manifest(extra_packages=("mlx", "mlx-lm"))
-    accelerator = accelerator_override or runtime.accelerator_name()
-    return PlatformInfo(
-        os_name=manifest.os_name,
-        os_version=manifest.os_release,
-        architecture=manifest.architecture,
-        cpu_cores=manifest.cpu_count,
-        total_memory_gb=manifest.total_memory_gb,
-        accelerator=accelerator,
-    )
+    return config_hash(payload)
 
 
 def collect_mlx(
@@ -411,7 +367,9 @@ def collect_mlx(
         run_id=config.run_id,
         started_at=started_at,
         ended_at=utc_now_iso(),
-        platform=_record_platform(runtime, config.accelerator),
+        platform=record_platform(
+            accelerator=config.accelerator or runtime.accelerator_name()
+        ),
         model=ModelInfo(
             model_id=config.model_id,
             model_revision=config.model_revision,
@@ -427,7 +385,7 @@ def collect_mlx(
         command=CommandInfo(
             argv=config.command_argv,
             config_hash=_config_hash(config),
-            workload_hash=_sha256_text(config.prompt),
+            workload_hash=sha256_text(config.prompt),
         ),
         repetition=RepetitionInfo(
             warmup_repetitions=0,
@@ -441,11 +399,11 @@ def collect_mlx(
             generated_tokens=generated_tokens or None,
         ),
         timing=TimingMetrics(
-            model_load=_milliseconds(load_started, load_ended),
-            tokenize=_milliseconds(tokenize_started, tokenize_ended),
-            prefill=_milliseconds(generation_started, first_token_at),
-            decode=_milliseconds(first_token_at, generation_ended),
-            total=_milliseconds(total_started, total_ended),
+            model_load=milliseconds(load_started, load_ended),
+            tokenize=milliseconds(tokenize_started, tokenize_ended),
+            prefill=milliseconds(generation_started, first_token_at),
+            decode=milliseconds(first_token_at, generation_ended),
+            total=milliseconds(total_started, total_ended),
         ),
         speculative=SpeculativeDecodingInfo(
             enabled=config.draft_model_path is not None,
@@ -460,9 +418,9 @@ def collect_mlx(
             verification_time=None,
         ),
         memory=MemoryMetrics(
-            active=_bytes_measurement(memory.active_bytes),
-            cache=_bytes_measurement(memory.cache_bytes),
-            peak=_bytes_measurement(memory.peak_bytes),
+            active=bytes_measurement(memory.active_bytes),
+            cache=bytes_measurement(memory.cache_bytes),
+            peak=bytes_measurement(memory.peak_bytes),
             wired=None,
         ),
         outcome=OutcomeInfo(success=error is None),
@@ -473,9 +431,7 @@ def collect_mlx(
     response_text = "".join(response_parts)
     config.output_dir.mkdir(parents=True, exist_ok=True)
     record.write_json(config.output_dir / "record.json")
-    _atomic_write_text(config.output_dir / "response.txt", response_text)
+    atomic_write_text(config.output_dir / "response.txt", response_text)
     manifest = collect_environment_manifest(extra_packages=("mlx", "mlx-lm"))
-    _atomic_write_text(
-        config.output_dir / "environment.json", manifest.to_json() + "\n"
-    )
+    atomic_write_text(config.output_dir / "environment.json", manifest.to_json() + "\n")
     return MLXCollectionResult(record=record, response_text=response_text)

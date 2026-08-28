@@ -677,6 +677,19 @@ build on:
   `no_significant_difference` / `inconclusive` — it refuses to guess when
   runs aren't comparable, repetitions are too few, or the delta is
   smaller than run-to-run noise.
+- **Native Qwen MTP capability detection**
+  (`llmtracefx.optimizer.collectors.native_mtp`): checks, against verified
+  upstream mlx-lm/mlx-vlm source, whether this environment can produce
+  trustworthy native multi-token-prediction evidence for a checkpoint's
+  architecture family, validates target/sidecar checkpoint compatibility,
+  and records an explicit unsupported result rather than mislabeling
+  generic draft-model speculation as native MTP.
+- **Deterministic workload matrix** (`llmtracefx.optimizer.workloads`): a
+  pinned, versioned catalog of code-completion, structured-JSON, and
+  prose-reasoning workloads with deterministic evaluators, materialized to
+  2K/8K/16K context tiers with documented, hashed padding, and a dry-run
+  matrix generator that plans (never executes) `collect-mlx`/`native-mtp`
+  commands across decode modes.
 
 Try it end-to-end with a CPU-only example (no GPU or model download
 required):
@@ -753,12 +766,109 @@ An optional existing MLX-LM draft model can be supplied with
 verification time through this API, so those fields remain absent. This is
 generic draft-model speculation, not native Qwen3.8 MTP.
 
-**Not yet included** (tracked as follow-up work): native Metal/CUDA
-performance-counter ingestion, native Qwen3.8 MTP collection, CUDA/vLLM/SGLang
-collectors, automatic tuning/search, and any actual Qwen3.8-27B benchmark results.
-The fixtures under `tests/optimizer/fixtures/llama_cpp/` are synthetic,
-hand-written logs for testing the parser and doctor rule — not
-benchmark evidence (see the `PROVENANCE.md` in that directory).
+### Native Qwen MTP: capability report and honest evidence collection
+
+Native multi-token-prediction (MTP) is architecturally different from the
+generic draft-model speculation above: the *same* model predicts several
+tokens ahead using its own MTP heads, instead of a smaller external draft
+model proposing tokens for the target to verify. Before adding an
+`llmtracefx-optimizer native-mtp collect` run, verify this project can
+actually trust what it would report:
+
+```bash
+uv run llmtracefx-optimizer native-mtp capability-report \
+  --target-model-path /path/to/local/qwen-checkpoint
+```
+
+This inspects the checkpoint's `config.json` model family and checks it
+against verified upstream facts (exit code `0` if a trustworthy native-MTP
+path exists, `3` if not, `1` on error):
+
+- **mlx-lm** (the runtime `collect-mlx` wraps) strips multi-token-prediction
+  weights during model loading for every family that ships them
+  (`qwen3_next`, `qwen3_5`, `qwen3_5_moe`, and others -- see
+  `llmtracefx.optimizer.collectors.native_mtp` for the full, referenced
+  list). There is no code path in mlx-lm that loads or invokes an MTP head.
+- **mlx-vlm** has an experimental, git-main-only `mlx_vlm.speculative.drafters`
+  module for a narrow set of families (e.g. `qwen4_exp`), dispatched through
+  the same `draft_model` request path as generic speculative decoding. It is
+  not a stable release, and this project cannot reliably distinguish its
+  metrics from generic draft-model speculation from the generation response
+  alone -- only checkpoint provenance does, and that is a best-effort,
+  metadata-only check.
+
+Given that, `native-mtp collect` never fabricates native-MTP evidence. It
+validates the target/sidecar checkpoints are locally present and
+architecturally compatible (`hidden_size`/`vocab_size` match, failing
+clearly otherwise), runs the same capability check, and:
+
+```bash
+uv run llmtracefx-optimizer native-mtp collect \
+  --run-id native-mtp-smoke-1 \
+  --target-model-path /path/to/local/qwen-target \
+  --mtp-sidecar-path /path/to/local/qwen-mtp-sidecar \
+  --model-id "Qwen/Qwen3.8-27B" \
+  --prompt-file examples/optimizer/mlx-smoke-prompt.txt \
+  --output-dir artifacts/native-mtp-smoke-1
+```
+
+writes an explicit, honest `record.json` (`outcome.success = false`,
+`error.category = "NativeMTPUnsupported"`, `speculative.enabled = false`)
+plus a standalone `capability_report.json`, rather than silently running
+generic draft-model speculation and mislabeling it as MTP. The collector's
+capable code path (`speculative.method = "native-mtp"`, recording only
+whatever proposed/accepted/depth fields a runtime actually exposes) is fully
+implemented and tested against a fake runtime so it is ready to wrap a
+genuinely stable, metrics-differentiated API if one is published upstream --
+no production adapter claims that today.
+
+### Deterministic code/JSON/reasoning workload matrix
+
+`llmtracefx.optimizer.workloads` pins a small, versioned, redistributable
+catalog of three workload categories -- code completion, constrained
+structured JSON, and prose/reasoning -- and a deterministic evaluator for
+each (exact unit-test pass/fail, exact required-field/type match, and exact
+expected-answer pattern match; no LLM-as-judge). Generate the full matrix for
+a target model without loading or downloading anything:
+
+```bash
+uv run llmtracefx-optimizer workloads generate-matrix \
+  --model-id "Qwen/Qwen3.8-27B" \
+  --model-family qwen3_next \
+  --output-dir artifacts/qwen3.8-matrix
+```
+
+This materializes each workload's prompt toward the 2K/8K/16K context tiers
+using a documented, deterministic filler-padding scheme (the base task prompt
+is always preserved verbatim and never truncated), hashes the fully
+materialized prompt, and writes:
+
+- `manifest.json`: every (workload, context tier, decode mode) combination,
+  each with its prompt hash, whether it is `runnable`, and -- for MTP rows
+  the capability report marks unsupported -- an explicit
+  `unsupported_reason` instead of a silently-omitted row.
+- `prompts/<workload>-<tier>.txt`: the exact materialized prompt text.
+- `configs/<run_id>.json`: a ready-to-use config for the PR #3 runner
+  (`llmtracefx-optimizer run --config ...`), wrapping the exact
+  `collect-mlx`/`native-mtp collect` invocation for that row.
+
+Evaluate a captured response against one workload's deterministic checker:
+
+```bash
+uv run llmtracefx-optimizer workloads evaluate \
+  --workload-id structured-json-profile-extraction \
+  --response-file /tmp/response.txt
+```
+
+**Not yet included** (tracked as a follow-up PR): a genuinely capable
+native-MTP runtime adapter (none exists upstream today), native Metal/CUDA
+performance-counter ingestion, CUDA/vLLM/SGLang collectors, automatic
+tuning/search, and any actual Qwen3.8-27B benchmark results -- everything in
+this section was verified against fake runtimes and small local checkpoints,
+never a real Qwen3.8-27B run. The fixtures under
+`tests/optimizer/fixtures/llama_cpp/` are synthetic, hand-written logs for
+testing the parser and doctor rule — not benchmark evidence (see the
+`PROVENANCE.md` in that directory).
 
 ## 📄 License
 

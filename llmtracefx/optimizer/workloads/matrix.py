@@ -1,0 +1,318 @@
+"""Deterministic workload matrix generation.
+
+Generates the set of (workload, context tier, decode mode) combinations
+this project can plan for a given target model, without ever executing
+anything or downloading model weights. Each entry carries the exact
+planned CLI invocation (reusing the existing ``collect-mlx`` /
+``native-mtp collect`` commands) and a ready-to-run
+``llmtracefx.optimizer.runner.RunnerConfig``-compatible JSON file, so the
+PR #3 runner can execute it once local checkpoints are available.
+
+Native-MTP rows are always included for visibility, but marked
+``runnable=False`` with an explicit ``unsupported_reason`` whenever
+capability detection (see ``collectors.native_mtp``) reports the
+runtime cannot produce trustworthy native-MTP evidence for the
+requested model family -- never silently omitted, never fabricated as
+runnable.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from ..collectors._shared import atomic_write_text
+from ..collectors.native_mtp import detect_native_mtp_capability
+from .catalog import WORKLOADS
+from .materialize import MaterializedPrompt, materialize_prompt
+from .schema import ContextTier, Workload
+
+MATRIX_SCHEMA_VERSION = "1"
+
+#: Default MTP block depths planned for when a runtime does support
+#: native MTP. Matches the depths already accepted by
+#: ``NativeMTPCollectionConfig.configured_depth`` and by generic
+#: draft-model speculation's ``num_draft_tokens``.
+DEFAULT_MTP_DEPTHS: tuple[int, ...] = (2, 4)
+
+DECODE_MODE_AUTOREGRESSIVE = "autoregressive"
+DECODE_MODE_NATIVE_MTP = "native-mtp"
+
+DEFAULT_MAX_TOKENS = 128
+
+
+@dataclass(frozen=True)
+class MatrixEntry:
+    """One planned (workload, context tier, decode mode) combination."""
+
+    run_id: str
+    workload_id: str
+    workload_version: str
+    category: str
+    context_tier: str
+    decode_mode: str
+    configured_depth: int | None
+    prompt: MaterializedPrompt
+    prompt_path: str
+    runner_results_dir: str
+    collector_output_dir: str
+    runnable: bool
+    unsupported_reason: str | None
+    command_argv: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "workload_id": self.workload_id,
+            "workload_version": self.workload_version,
+            "category": self.category,
+            "context_tier": self.context_tier,
+            "decode_mode": self.decode_mode,
+            "configured_depth": self.configured_depth,
+            "prompt": self.prompt.to_dict(),
+            "prompt_path": self.prompt_path,
+            "runner_results_dir": self.runner_results_dir,
+            "collector_output_dir": self.collector_output_dir,
+            "runnable": self.runnable,
+            "unsupported_reason": self.unsupported_reason,
+            "command_argv": list(self.command_argv),
+        }
+
+
+@dataclass(frozen=True)
+class MatrixManifest:
+    """The full deterministic matrix for one target model/family."""
+
+    schema_version: str
+    model_id: str
+    model_family: str
+    output_dir: str
+    entries: tuple[MatrixEntry, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "model_id": self.model_id,
+            "model_family": self.model_family,
+            "output_dir": self.output_dir,
+            "entries": [entry.to_dict() for entry in self.entries],
+        }
+
+    def to_json(self, *, indent: int | None = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent, sort_keys=False)
+
+
+def _collect_mlx_argv(
+    *,
+    run_id: str,
+    model_path: str,
+    model_id: str,
+    prompt_path: str,
+    output_dir: str,
+    max_tokens: int,
+) -> tuple[str, ...]:
+    return (
+        "llmtracefx-optimizer",
+        "collect-mlx",
+        "--run-id",
+        run_id,
+        "--model-path",
+        model_path,
+        "--model-id",
+        model_id,
+        "--prompt-file",
+        prompt_path,
+        "--output-dir",
+        output_dir,
+        "--max-tokens",
+        str(max_tokens),
+    )
+
+
+def _native_mtp_collect_argv(
+    *,
+    run_id: str,
+    target_model_path: str,
+    mtp_sidecar_path: str,
+    model_id: str,
+    prompt_path: str,
+    output_dir: str,
+    max_tokens: int,
+    configured_depth: int,
+) -> tuple[str, ...]:
+    return (
+        "llmtracefx-optimizer",
+        "native-mtp",
+        "collect",
+        "--run-id",
+        run_id,
+        "--target-model-path",
+        target_model_path,
+        "--mtp-sidecar-path",
+        mtp_sidecar_path,
+        "--model-id",
+        model_id,
+        "--prompt-file",
+        prompt_path,
+        "--output-dir",
+        output_dir,
+        "--max-tokens",
+        str(max_tokens),
+        "--configured-depth",
+        str(configured_depth),
+    )
+
+
+def generate_matrix(
+    *,
+    model_id: str,
+    model_family: str,
+    output_dir: str,
+    target_model_path: str | None = None,
+    mtp_sidecar_path: str | None = None,
+    workloads: Sequence[Workload] = WORKLOADS,
+    context_tiers: Sequence[ContextTier] = tuple(ContextTier),
+    mtp_depths: Sequence[int] = DEFAULT_MTP_DEPTHS,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+) -> MatrixManifest:
+    """Deterministically build the full planned matrix.
+
+    Purely computational: materializes prompts and derives planned
+    commands/paths from the given identifiers, but performs no file
+    I/O, no model loading, and no downloads. ``output_dir`` is used only
+    to compute the absolute paths later written by ``write_matrix`` (and
+    baked into each entry's planned command); pass the same value to
+    both functions. ``target_model_path``/``mtp_sidecar_path`` are
+    optional placeholders substituted into the planned commands; when
+    omitted, an explicit placeholder string is used so the manifest is
+    still generated but visibly incomplete.
+    """
+    resolved_target_path = target_model_path or "<TARGET_MODEL_PATH>"
+    resolved_sidecar_path = mtp_sidecar_path or "<MTP_SIDECAR_PATH>"
+    output_dir_path = Path(output_dir)
+
+    capability = detect_native_mtp_capability(
+        model_family, mlx_lm_version=None, mlx_vlm_version=None
+    )
+
+    entries: list[MatrixEntry] = []
+    for workload in workloads:
+        for tier in context_tiers:
+            materialized = materialize_prompt(workload, tier)
+            prompt_path = str(
+                output_dir_path / "prompts" / f"{workload.workload_id}-{tier.value}.txt"
+            )
+
+            ar_run_id = (
+                f"{workload.workload_id}-{tier.value}-{DECODE_MODE_AUTOREGRESSIVE}"
+            )
+            ar_output_dir = str(output_dir_path / "runs" / ar_run_id)
+            entries.append(
+                MatrixEntry(
+                    run_id=ar_run_id,
+                    workload_id=workload.workload_id,
+                    workload_version=workload.version,
+                    category=workload.category.value,
+                    context_tier=tier.value,
+                    decode_mode=DECODE_MODE_AUTOREGRESSIVE,
+                    configured_depth=None,
+                    prompt=materialized,
+                    prompt_path=prompt_path,
+                    runner_results_dir=str(output_dir_path / "runner" / ar_run_id),
+                    collector_output_dir=ar_output_dir,
+                    runnable=True,
+                    unsupported_reason=None,
+                    command_argv=_collect_mlx_argv(
+                        run_id=ar_run_id,
+                        model_path=resolved_target_path,
+                        model_id=model_id,
+                        prompt_path=prompt_path,
+                        output_dir=ar_output_dir,
+                        max_tokens=max_tokens,
+                    ),
+                )
+            )
+
+            for depth in mtp_depths:
+                mtp_run_id = (
+                    f"{workload.workload_id}-{tier.value}-"
+                    f"{DECODE_MODE_NATIVE_MTP}-depth{depth}"
+                )
+                mtp_output_dir = str(output_dir_path / "runs" / mtp_run_id)
+                entries.append(
+                    MatrixEntry(
+                        run_id=mtp_run_id,
+                        workload_id=workload.workload_id,
+                        workload_version=workload.version,
+                        category=workload.category.value,
+                        context_tier=tier.value,
+                        decode_mode=DECODE_MODE_NATIVE_MTP,
+                        configured_depth=depth,
+                        prompt=materialized,
+                        prompt_path=prompt_path,
+                        runner_results_dir=str(output_dir_path / "runner" / mtp_run_id),
+                        collector_output_dir=mtp_output_dir,
+                        runnable=capability.supported,
+                        unsupported_reason=(
+                            None if capability.supported else capability.reason
+                        ),
+                        command_argv=_native_mtp_collect_argv(
+                            run_id=mtp_run_id,
+                            target_model_path=resolved_target_path,
+                            mtp_sidecar_path=resolved_sidecar_path,
+                            model_id=model_id,
+                            prompt_path=prompt_path,
+                            output_dir=mtp_output_dir,
+                            max_tokens=max_tokens,
+                            configured_depth=depth,
+                        ),
+                    )
+                )
+
+    return MatrixManifest(
+        schema_version=MATRIX_SCHEMA_VERSION,
+        model_id=model_id,
+        model_family=model_family,
+        output_dir=str(output_dir_path),
+        entries=tuple(entries),
+    )
+
+
+def write_matrix(manifest: MatrixManifest) -> None:
+    """Materialize the manifest, prompts, and per-entry runner configs.
+
+    Never executes a command or loads a model. Writes, under
+    ``manifest.output_dir`` (the same value passed to
+    ``generate_matrix``):
+
+    * ``manifest.json``: the full machine-readable matrix.
+    * ``prompts/<workload_id>-<tier>.txt``: each fully materialized
+      prompt (deduplicated across decode modes/depths).
+    * ``configs/<run_id>.json``: a ``RunnerConfig``-compatible JSON per
+      entry (absolute paths), ready for
+      ``llmtracefx-optimizer run --config ...``.
+    """
+    output_dir_path = Path(manifest.output_dir)
+    output_dir_path.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(output_dir_path / "manifest.json", manifest.to_json() + "\n")
+
+    written_prompts: set[str] = set()
+    for entry in manifest.entries:
+        if entry.prompt_path not in written_prompts:
+            atomic_write_text(Path(entry.prompt_path), entry.prompt.text)
+            written_prompts.add(entry.prompt_path)
+
+        runner_config = {
+            "run_id": entry.run_id,
+            "command": list(entry.command_argv),
+            "results_dir": entry.runner_results_dir,
+            "warmup_repetitions": 0,
+            "measured_repetitions": 1,
+        }
+        atomic_write_text(
+            output_dir_path / "configs" / f"{entry.run_id}.json",
+            json.dumps(runner_config, indent=2, sort_keys=False) + "\n",
+        )
