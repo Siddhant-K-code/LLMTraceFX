@@ -1,0 +1,6 @@
+llama_perf_context_print:        load time =     345.20 ms
+llama_perf_context_print: prompt eval time =     118.40 ms /    50 tokens (    2.37 ms per token,   422.30 tokens per second)
+llama_perf_context_print:        eval time =    4790.10 ms /   200 runs   (   23.95 ms per token,    41.75 tokens per second)
+llama_perf_context_print:       total time =    5160.20 ms /   250 tokens
+ggml_metal_init: found device: Apple M5 Pro
+load_backend: loaded Metal backend from libggml-metal.so
