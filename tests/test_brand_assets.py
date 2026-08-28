@@ -21,6 +21,7 @@ from llmtracefx.brand import (
     HEATMAP_SCALE,
     LOCKUP_SVG,
     MARK_SVG,
+    PLOT_ANNOTATION,
     PLOT_LAYOUT,
     TOKENS_CSS,
 )
@@ -217,6 +218,30 @@ def test_plot_layout_puts_figures_on_the_sheet():
     assert PLOT_LAYOUT["paper_bgcolor"] == "#fbfaf7"
     assert PLOT_LAYOUT["plot_bgcolor"] == "#fbfaf7"
     assert PLOT_LAYOUT["colorway"] == list(CHART_SEQUENCE)
+
+
+def test_plot_layout_reclaims_the_reserved_chart_title_band():
+    """Charts are titled by the panel heading in the page, so the band the
+    library reserves for a figure title is dead space above every chart."""
+    margin = PLOT_LAYOUT["margin"]
+    assert isinstance(margin, dict)
+    assert margin["t"] <= 60
+    # Base margins stay tight so a narrow column spends its width on plot
+    # area. Plotly's autoexpand grows them again wherever tick labels or an
+    # axis title genuinely need the room.
+    assert margin["l"] <= 48
+    assert margin["r"] <= 32
+    assert margin["b"] <= 48
+
+
+def test_plot_annotation_demotes_subplot_titles_below_panel_headings():
+    """Subplot titles arrive as 16px paper annotations. Left alone they read
+    as a second heading competing with the panel heading above the chart."""
+    font = PLOT_ANNOTATION["font"]
+    assert isinstance(font, dict)
+    assert font["size"] <= 12
+    assert font["color"] == "#5b6167"
+    assert "monospace" in font["family"]
 
 
 def test_heatmap_scale_spans_zero_to_one_in_order():
