@@ -3,6 +3,7 @@
 Subcommands:
     manifest         Collect a CPU-only, non-sensitive environment manifest.
     run              Execute a configured experiment (warmups + measured reps).
+    collect-mlx      Run one local MLX-LM inference and record normalized evidence.
     parse-llama-cpp  Convert llama.cpp text output into a canonical ExperimentRecord.
     doctor speculative  Diagnose whether speculative decoding/MTP is a net regression.
 """
@@ -15,6 +16,12 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from .collectors.mlx import (
+    MLXCollectionConfig,
+    MLXCollectorError,
+    MLXLMRuntime,
+    collect_mlx,
+)
 from .doctor.speculative import diagnose_speculative_regression
 from .manifest import collect_environment_manifest
 from .parsers.llama_cpp import LlamaCppParseError, build_experiment_record
@@ -68,6 +75,69 @@ def _cmd_run(args: argparse.Namespace) -> int:
     )
     print(f"Artifacts written to {config.results_dir}")
     return 0 if succeeded == len(results) else 1
+
+
+def _collect_mlx_argv(args: argparse.Namespace) -> tuple[str, ...]:
+    invocation = getattr(args, "_invocation", None)
+    if invocation is not None:
+        return tuple(invocation)
+    return (
+        "llmtracefx-optimizer",
+        "collect-mlx",
+        "--run-id",
+        args.run_id,
+        "--model-path",
+        args.model_path,
+        "--model-id",
+        args.model_id,
+        "--prompt-file",
+        args.prompt_file,
+        "--output-dir",
+        args.output_dir,
+        "--max-tokens",
+        str(args.max_tokens),
+        "--seed",
+        str(args.seed),
+    )
+
+
+def _cmd_collect_mlx(args: argparse.Namespace) -> int:
+    try:
+        prompt = Path(args.prompt_file).read_text(encoding="utf-8")
+        config = MLXCollectionConfig(
+            run_id=args.run_id,
+            model_path=Path(args.model_path),
+            model_id=args.model_id,
+            prompt=prompt,
+            output_dir=Path(args.output_dir),
+            command_argv=_collect_mlx_argv(args),
+            max_tokens=args.max_tokens,
+            seed=args.seed,
+            model_revision=args.model_revision,
+            tokenizer_revision=args.tokenizer_revision,
+            quantization=args.quantization,
+            accelerator=args.accelerator,
+            draft_model_path=(
+                Path(args.draft_model_path) if args.draft_model_path else None
+            ),
+            num_draft_tokens=args.num_draft_tokens,
+        )
+        result = collect_mlx(config, runtime=MLXLMRuntime())
+    except (OSError, UnicodeError, MLXCollectorError) as exc:
+        print(f"Failed to collect MLX evidence: {exc}", file=sys.stderr)
+        return 1
+
+    record_path = config.output_dir / "record.json"
+    print(f"MLX experiment record written to {record_path}")
+    if result.record.outcome.success:
+        return 0
+    error_message = (
+        result.record.error.message
+        if result.record.error is not None
+        else "unknown runtime failure"
+    )
+    print(f"MLX inference failed: {error_message}", file=sys.stderr)
+    return 1
 
 
 def _cmd_parse_llama_cpp(args: argparse.Namespace) -> int:
@@ -180,6 +250,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.set_defaults(func=_cmd_run)
 
+    collect_mlx_parser = subparsers.add_parser(
+        "collect-mlx",
+        help="Run one local MLX-LM inference and record normalized evidence",
+    )
+    collect_mlx_parser.add_argument("--run-id", required=True)
+    collect_mlx_parser.add_argument(
+        "--model-path",
+        required=True,
+        help="Existing local MLX model directory; models are never downloaded",
+    )
+    collect_mlx_parser.add_argument("--model-id", required=True)
+    collect_mlx_parser.add_argument("--model-revision", default=None)
+    collect_mlx_parser.add_argument("--tokenizer-revision", default=None)
+    collect_mlx_parser.add_argument("--quantization", default=None)
+    collect_mlx_parser.add_argument(
+        "--prompt-file",
+        required=True,
+        help="UTF-8 prompt file; prompt contents are hashed but not copied into the record",
+    )
+    collect_mlx_parser.add_argument("--output-dir", required=True)
+    collect_mlx_parser.add_argument("--max-tokens", type=int, default=128)
+    collect_mlx_parser.add_argument("--seed", type=int, default=0)
+    collect_mlx_parser.add_argument(
+        "--accelerator",
+        default=None,
+        help="Explicit accelerator name; otherwise MLX device_info is used",
+    )
+    collect_mlx_parser.add_argument(
+        "--draft-model-path",
+        default=None,
+        help=(
+            "Optional existing local MLX-LM draft model. This enables generic "
+            "draft-model speculation, not native Qwen MTP."
+        ),
+    )
+    collect_mlx_parser.add_argument("--num-draft-tokens", type=int, default=2)
+    collect_mlx_parser.set_defaults(func=_cmd_collect_mlx)
+
     parse_parser = subparsers.add_parser(
         "parse-llama-cpp",
         help="Convert llama.cpp text output into a canonical ExperimentRecord",
@@ -260,7 +368,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(raw_argv)
+    args._invocation = (parser.prog, *raw_argv)
     sys.exit(args.func(args))
 
 

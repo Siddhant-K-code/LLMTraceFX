@@ -716,9 +716,46 @@ uv run llmtracefx-optimizer doctor speculative \
   --speculative /tmp/mtp-1.json /tmp/mtp-2.json
 ```
 
+### Collect an MLX-LM run on Apple Silicon
+
+Install the optional MLX runtime dependencies, then point the collector at an
+existing local MLX model directory:
+
+```bash
+uv sync --extra mlx
+
+uv run llmtracefx-optimizer collect-mlx \
+  --run-id local-smoke-1 \
+  --model-path "$HOME/.cache/huggingface/hub/models--mlx-community--Llama-3.2-3B-Instruct-4bit/snapshots/<revision>" \
+  --model-id mlx-community/Llama-3.2-3B-Instruct-4bit \
+  --model-revision <revision> \
+  --quantization mlx-affine-4bit \
+  --prompt-file examples/optimizer/mlx-smoke-prompt.txt \
+  --max-tokens 64 \
+  --output-dir artifacts/local-smoke-1
+```
+
+The model directory must already exist. `collect-mlx` never downloads or
+converts model weights. It writes:
+
+- `record.json`: the canonical experiment record
+- `response.txt`: generated output
+- `environment.json`: non-sensitive package and platform metadata
+
+The collector records host wall-clock timing around model load, tokenization,
+time to first token, decode, and total execution. MLX allocator values are
+recorded as native measurements. The normal path synchronizes at phase
+boundaries only and does not force evaluation per layer or per token.
+
+An optional existing MLX-LM draft model can be supplied with
+`--draft-model-path`. Accepted draft tokens are counted from MLX-LM's
+`from_draft` signal. MLX-LM does not expose the number of proposed tokens or
+verification time through this API, so those fields remain absent. This is
+generic draft-model speculation, not native Qwen3.8 MTP.
+
 **Not yet included** (tracked as follow-up work): native Metal/CUDA
-performance-counter ingestion, MLX and CUDA/vLLM/SGLang collectors,
-automatic tuning/search, and any actual Qwen3.8-27B benchmark results.
+performance-counter ingestion, native Qwen3.8 MTP collection, CUDA/vLLM/SGLang
+collectors, automatic tuning/search, and any actual Qwen3.8-27B benchmark results.
 The fixtures under `tests/optimizer/fixtures/llama_cpp/` are synthetic,
 hand-written logs for testing the parser and doctor rule — not
 benchmark evidence (see the `PROVENANCE.md` in that directory).
