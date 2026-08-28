@@ -64,6 +64,36 @@ class MaterializedPrompt:
             "prompt_char_count": len(self.text),
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MaterializedPrompt:
+        """Reconstruct planning metadata from a persisted matrix manifest.
+
+        ``to_dict`` deliberately never persists ``text`` (the prompt body
+        lives in its own ``prompts/<id>-<tier>.txt`` file so it is not
+        duplicated into ``manifest.json``), so ``text`` is always empty
+        here. This is intentional: callers loading a manifest back from
+        disk must read the prompt file at the owning entry's
+        ``prompt_path`` and verify its hash against ``prompt_hash``
+        rather than trusting an in-memory copy, which is exactly the
+        prompt-integrity check the verification pipeline performs before
+        executing any row.
+        """
+        try:
+            return cls(
+                workload_id=data["workload_id"],
+                workload_version=data["workload_version"],
+                context_tier=ContextTier(data["context_tier"]),
+                target_context_tokens=int(data["target_context_tokens"]),
+                approx_chars_per_token=int(data["approx_chars_per_token"]),
+                filler_segments_used=int(data["filler_segments_used"]),
+                text="",
+                prompt_hash=data["prompt_hash"],
+            )
+        except KeyError as exc:
+            raise ValueError(
+                f"MaterializedPrompt is missing required field: {exc}"
+            ) from exc
+
 
 def _build_filler(remaining_chars: int) -> tuple[str, int]:
     """Deterministically build filler text totalling >= ``remaining_chars``.
