@@ -184,6 +184,12 @@ class RunBinding:
     num_draft_tokens: int = 2
 
     def __post_init__(self) -> None:
+        if (
+            isinstance(self.num_draft_tokens, bool)
+            or not isinstance(self.num_draft_tokens, int)
+            or self.num_draft_tokens < 1
+        ):
+            raise VerifyError("num_draft_tokens must be a positive integer")
         if not self.target_model_path.exists():
             raise VerifyError(
                 f"target model path does not exist: {self.target_model_path}. "

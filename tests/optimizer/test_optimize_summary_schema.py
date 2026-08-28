@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 
@@ -120,6 +121,12 @@ def test_row_status_counts_rejects_non_integer_values():
         RowStatusCounts.from_dict({"total": "one"})
 
 
+@pytest.mark.parametrize("value", [True, -1, 1.5, "1"])
+def test_row_status_counts_rejects_invalid_direct_values(value):
+    with pytest.raises(OptimizeSummaryValidationError):
+        RowStatusCounts(blocked=value)
+
+
 def test_recommended_candidate_requires_group_label():
     with pytest.raises(OptimizeSummaryValidationError):
         RecommendedCandidate.from_dict(
@@ -129,6 +136,26 @@ def test_recommended_candidate_requires_group_label():
                 "objective_value": 1.0,
             }
         )
+
+
+@pytest.mark.parametrize("value", [True, math.nan, math.inf, -math.inf])
+def test_recommended_candidate_rejects_invalid_objective_value(value):
+    with pytest.raises(OptimizeSummaryValidationError, match="finite number"):
+        RecommendedCandidate(
+            group_label="g",
+            run_ids=("r1",),
+            objective_name="latency",
+            objective_value=value,
+        )
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+def test_summary_json_rejects_non_finite_objective_value(token):
+    data = _make_summary().to_dict()
+    data["recommendations"][0]["objective_value"] = json.loads(token)
+    payload = json.dumps(data, allow_nan=True)
+    with pytest.raises(OptimizeSummaryValidationError, match="finite number"):
+        OptimizeSummary.from_json(payload)
 
 
 def test_rejects_invalid_overall_status():
@@ -145,6 +172,11 @@ def test_rejects_non_integer_exit_code():
     data["exit_code"] = "0"
     with pytest.raises(OptimizeSummaryValidationError):
         OptimizeSummary.from_dict(data)
+
+
+def test_rejects_boolean_exit_code_on_direct_construction():
+    with pytest.raises(OptimizeSummaryValidationError):
+        _make_summary(exit_code=True)
 
 
 def test_phase_lookup_helper_finds_named_phase():

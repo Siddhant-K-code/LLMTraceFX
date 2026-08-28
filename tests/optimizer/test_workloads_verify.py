@@ -190,6 +190,13 @@ def test_run_binding_accepts_existing_paths(tmp_path):
     assert binding.draft_model_path == draft
 
 
+@pytest.mark.parametrize("value", [True, 0, -1])
+def test_run_binding_rejects_invalid_num_draft_tokens(tmp_path, value):
+    target = make_target_model(tmp_path)
+    with pytest.raises(VerifyError, match="positive integer"):
+        RunBinding(target_model_path=target, num_draft_tokens=value)
+
+
 # --- Unsupported (native-mtp) rows -------------------------------------------
 
 

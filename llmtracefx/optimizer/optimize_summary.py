@@ -19,6 +19,7 @@ outcome of calling into it.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -122,18 +123,40 @@ class PhaseReport:
 
 @dataclass(frozen=True)
 class RowStatusCounts:
-    """Per-``RowStatus`` counts across every row selected for this run."""
+    """Planning and result counts across every row selected for this run."""
 
     total: int = 0
+    ready: int = 0
+    blocked: int = 0
     completed: int = 0
     skipped: int = 0
     failed: int = 0
     unsupported: int = 0
     inconclusive: int = 0
 
+    def __post_init__(self) -> None:
+        for key in (
+            "total",
+            "ready",
+            "blocked",
+            "completed",
+            "skipped",
+            "failed",
+            "unsupported",
+            "inconclusive",
+        ):
+            value = getattr(self, key)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise OptimizeSummaryValidationError(
+                    f"row_counts.{key} must be a non-negative integer, "
+                    f"got {value!r}"
+                )
+
     def to_dict(self) -> dict[str, int]:
         return {
             "total": self.total,
+            "ready": self.ready,
+            "blocked": self.blocked,
             "completed": self.completed,
             "skipped": self.skipped,
             "failed": self.failed,
@@ -148,6 +171,8 @@ class RowStatusCounts:
         values: dict[str, int] = {}
         for key in (
             "total",
+            "ready",
+            "blocked",
             "completed",
             "skipped",
             "failed",
@@ -171,6 +196,16 @@ class RecommendedCandidate:
     run_ids: tuple[str, ...]
     objective_name: str
     objective_value: float
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.objective_value, bool)
+            or not isinstance(self.objective_value, (int, float))
+            or not math.isfinite(float(self.objective_value))
+        ):
+            raise OptimizeSummaryValidationError(
+                "recommended candidate.objective_value must be a finite number"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -205,11 +240,13 @@ class RecommendedCandidate:
                 f"{context}.objective_name must be a non-empty string"
             )
         objective_value = data.get("objective_value")
-        if isinstance(objective_value, bool) or not isinstance(
-            objective_value, (int, float)
+        if (
+            isinstance(objective_value, bool)
+            or not isinstance(objective_value, (int, float))
+            or not math.isfinite(float(objective_value))
         ):
             raise OptimizeSummaryValidationError(
-                f"{context}.objective_value must be a number"
+                f"{context}.objective_value must be a finite number"
             )
         return cls(
             group_label=group_label,
@@ -246,6 +283,12 @@ class OptimizeSummary:
     exit_code: int
     extra_results_dirs: tuple[str, ...] = field(default_factory=tuple)
 
+    def __post_init__(self) -> None:
+        if isinstance(self.exit_code, bool) or not isinstance(self.exit_code, int):
+            raise OptimizeSummaryValidationError(
+                "optimize summary.exit_code must be an integer"
+            )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
@@ -265,7 +308,12 @@ class OptimizeSummary:
         }
 
     def to_json(self, *, indent: int | None = 2) -> str:
-        return json.dumps(self.to_dict(), indent=indent, sort_keys=False)
+        return json.dumps(
+            self.to_dict(),
+            indent=indent,
+            sort_keys=False,
+            allow_nan=False,
+        )
 
     def phase(self, name: PhaseName) -> PhaseReport | None:
         for phase in self.phases:

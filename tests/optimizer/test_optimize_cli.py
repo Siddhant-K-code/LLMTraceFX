@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+import pytest
 from _tune_fixtures import write_run
 
 from llmtracefx.optimizer import cli
@@ -102,6 +103,10 @@ def _never_call_runtime_factory():
         )
 
     return factory
+
+
+def _never_call_phase(*args, **kwargs):
+    raise AssertionError("tune and render phases must not run during dry-run")
 
 
 def _build_matrix(tmp_path, workloads, *, context_tiers=(ContextTier.TIER_2K,)):
@@ -272,6 +277,8 @@ def test_optimize_dry_run_never_constructs_runtime_or_writes_reports(
     report_html = tmp_path / "report.html"
     policy_path = _write_policy(tmp_path, {"objective": "min_mean_total_latency_ms"})
     monkeypatch.setattr(cli, "MLXLMRuntime", _never_call_runtime_factory())
+    monkeypatch.setattr(cli, "tune", _never_call_phase)
+    monkeypatch.setattr(cli, "render_tune_report_html", _never_call_phase)
 
     exit_code = _run_optimize(
         _base_argv(
@@ -286,9 +293,24 @@ def test_optimize_dry_run_never_constructs_runtime_or_writes_reports(
     )
 
     assert exit_code == 0  # ready: valid --model-path given, nothing blocked
-    assert not results_dir.exists()
+    assert not (results_dir / "runs").exists()
     assert not report_json.exists()
     assert not report_html.exists()
+    summary = OptimizeSummary.read_json(results_dir / "optimize_summary.json")
+    assert summary.dry_run is True
+    assert summary.exit_code == 0
+    assert summary.row_counts.total == 1
+    assert summary.row_counts.ready == 1
+    assert summary.row_counts.blocked == 0
+    assert summary.row_counts.unsupported == 0
+    assert summary.phase(cli.PhaseName.PLANNED).status.value == "ok"
+    for phase_name in (
+        cli.PhaseName.EXECUTED,
+        cli.PhaseName.VERIFIED,
+        cli.PhaseName.TUNED,
+        cli.PhaseName.RENDERED,
+    ):
+        assert summary.phase(phase_name).status.value == "not_run"
 
 
 def test_optimize_dry_run_reports_blockers_without_model_path(tmp_path, capsys):
@@ -309,7 +331,15 @@ def test_optimize_dry_run_reports_blockers_without_model_path(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "BLOCKED" in out
     assert "no model was loaded, no results were tuned" not in out  # printed once
-    assert "no report was written" in out
+    assert "no tune report was written" in out
+    summary = OptimizeSummary.read_json(tmp_path / "results" / "optimize_summary.json")
+    assert summary.dry_run is True
+    assert summary.exit_code == 2
+    assert summary.overall_status.value == "inconclusive"
+    assert summary.row_counts.total == 1
+    assert summary.row_counts.ready == 0
+    assert summary.row_counts.blocked == 1
+    assert summary.row_counts.unsupported == 0
 
 
 def test_optimize_dry_run_reports_unsupported_rows(tmp_path, capsys):
@@ -329,6 +359,69 @@ def test_optimize_dry_run_reports_unsupported_rows(tmp_path, capsys):
     assert exit_code == 0  # unsupported rows never block
     out = capsys.readouterr().out
     assert "UNSUPPORTED" in out
+    summary = OptimizeSummary.read_json(tmp_path / "results" / "optimize_summary.json")
+    assert summary.row_counts.total == 1
+    assert summary.row_counts.ready == 0
+    assert summary.row_counts.blocked == 0
+    assert summary.row_counts.unsupported == 1
+    assert summary.phase(cli.PhaseName.EXECUTED).status.value == "not_run"
+
+
+def test_optimize_dry_run_writes_custom_summary_path(tmp_path):
+    matrix_path = _build_matrix(tmp_path, (STRUCTURED_JSON_PROFILE_EXTRACTION,))
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    policy_path = _write_policy(tmp_path, {"objective": "min_mean_total_latency_ms"})
+    summary_path = tmp_path / "custom-summary.json"
+
+    exit_code = _run_optimize(
+        _base_argv(
+            matrix_path=matrix_path,
+            results_dir=tmp_path / "results",
+            policy_path=policy_path,
+            report_json=tmp_path / "report.json",
+            model_path=model_path,
+            extra=[
+                "--mode",
+                "autoregressive",
+                "--dry-run",
+                "--summary-json",
+                str(summary_path),
+            ],
+        )
+    )
+
+    assert exit_code == 0
+    assert OptimizeSummary.read_json(summary_path).dry_run is True
+
+
+def test_optimize_dry_run_rejects_invalid_num_draft_tokens(tmp_path):
+    matrix_path = _build_matrix(tmp_path, (STRUCTURED_JSON_PROFILE_EXTRACTION,))
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    policy_path = _write_policy(tmp_path, {"objective": "min_mean_total_latency_ms"})
+
+    exit_code = _run_optimize(
+        _base_argv(
+            matrix_path=matrix_path,
+            results_dir=tmp_path / "results",
+            policy_path=policy_path,
+            report_json=tmp_path / "report.json",
+            model_path=model_path,
+            extra=[
+                "--mode",
+                "autoregressive",
+                "--dry-run",
+                "--num-draft-tokens",
+                "0",
+            ],
+        )
+    )
+
+    assert exit_code == 2
+    summary = OptimizeSummary.read_json(tmp_path / "results" / "optimize_summary.json")
+    assert summary.row_counts.ready == 0
+    assert summary.row_counts.blocked == 1
 
 
 # --- Execution failure precedence ----------------------------------------
@@ -435,6 +528,33 @@ def test_optimize_all_rows_unsupported_exits_1_consistently_with_tune(
     assert summary.row_counts.failed == 0
 
 
+def test_optimize_ignores_stale_unselected_primary_results(tmp_path, monkeypatch):
+    matrix_path = _build_matrix(tmp_path, (STRUCTURED_JSON_PROFILE_EXTRACTION,))
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    results_dir = tmp_path / "results"
+    write_run(results_dir, "stale-successful-run")
+    policy_path = _write_policy(tmp_path, {"objective": "min_mean_total_latency_ms"})
+    monkeypatch.setattr(cli, "MLXLMRuntime", _never_call_runtime_factory())
+
+    exit_code = _run_optimize(
+        _base_argv(
+            matrix_path=matrix_path,
+            results_dir=results_dir,
+            policy_path=policy_path,
+            report_json=tmp_path / "report.json",
+            model_path=model_path,
+            extra=["--mode", "native-mtp"],
+        )
+    )
+
+    assert exit_code == 1
+    report = TuneReport.read_json(tmp_path / "report.json")
+    assert report.groups == ()
+    summary = OptimizeSummary.read_json(results_dir / "optimize_summary.json")
+    assert summary.recommendations == ()
+
+
 def test_optimize_all_rows_inconclusive_exits_2(tmp_path, monkeypatch):
     matrix_path = _build_matrix(tmp_path, (STRUCTURED_JSON_PROFILE_EXTRACTION,))
     model_path = tmp_path / "model"
@@ -472,6 +592,187 @@ def test_optimize_all_rows_inconclusive_exits_2(tmp_path, monkeypatch):
 # --- Setup/config errors ---------------------------------------------------
 
 
+def _assert_optimize_path_collision(
+    tmp_path,
+    monkeypatch,
+    *,
+    collision_flag,
+    collision_path,
+):
+    matrix_path = _build_matrix(tmp_path, (STRUCTURED_JSON_PROFILE_EXTRACTION,))
+    model_path = tmp_path / "model"
+    model_path.mkdir(exist_ok=True)
+    results_dir = tmp_path / "results"
+    policy_path = _write_policy(tmp_path, {"objective": "min_mean_total_latency_ms"})
+    report_json = tmp_path / "report.json"
+    report_html = tmp_path / "report.html"
+    summary_json = tmp_path / "summary.json"
+    paths = {
+        "--report-json": report_json,
+        "--report-html": report_html,
+        "--summary-json": summary_json,
+    }
+    paths[collision_flag] = collision_path(
+        matrix_path=matrix_path,
+        policy_path=policy_path,
+        report_json=report_json,
+        report_html=report_html,
+        summary_json=summary_json,
+    )
+    monkeypatch.setattr(cli, "MLXLMRuntime", _never_call_runtime_factory())
+    policy_before = policy_path.read_bytes()
+    matrix_before = matrix_path.read_bytes()
+
+    argv = _base_argv(
+        matrix_path=matrix_path,
+        results_dir=results_dir,
+        policy_path=policy_path,
+        report_json=paths["--report-json"],
+        model_path=model_path,
+        report_html=paths["--report-html"],
+        extra=["--summary-json", str(paths["--summary-json"])],
+    )
+    exit_code = _run_optimize(argv)
+
+    assert exit_code == 1
+    assert policy_path.read_bytes() == policy_before
+    assert matrix_path.read_bytes() == matrix_before
+    assert not results_dir.exists()
+
+
+def test_optimize_rejects_report_json_report_html_collision(tmp_path, monkeypatch):
+    _assert_optimize_path_collision(
+        tmp_path,
+        monkeypatch,
+        collision_flag="--report-html",
+        collision_path=lambda **paths: paths["report_json"],
+    )
+
+
+def test_optimize_rejects_report_json_summary_collision(tmp_path, monkeypatch):
+    _assert_optimize_path_collision(
+        tmp_path,
+        monkeypatch,
+        collision_flag="--summary-json",
+        collision_path=lambda **paths: paths["report_json"],
+    )
+
+
+def test_optimize_rejects_report_json_default_summary_collision(tmp_path, monkeypatch):
+    matrix_path = _build_matrix(tmp_path, (STRUCTURED_JSON_PROFILE_EXTRACTION,))
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    results_dir = tmp_path / "results"
+    policy_path = _write_policy(tmp_path, {"objective": "min_mean_total_latency_ms"})
+    monkeypatch.setattr(cli, "MLXLMRuntime", _never_call_runtime_factory())
+
+    exit_code = _run_optimize(
+        _base_argv(
+            matrix_path=matrix_path,
+            results_dir=results_dir,
+            policy_path=policy_path,
+            report_json=results_dir / "optimize_summary.json",
+            model_path=model_path,
+        )
+    )
+
+    assert exit_code == 1
+    assert not results_dir.exists()
+
+
+def test_optimize_rejects_policy_report_collision(tmp_path, monkeypatch):
+    _assert_optimize_path_collision(
+        tmp_path,
+        monkeypatch,
+        collision_flag="--report-json",
+        collision_path=lambda **paths: paths["policy_path"],
+    )
+
+
+def test_optimize_rejects_matrix_summary_collision(tmp_path, monkeypatch):
+    _assert_optimize_path_collision(
+        tmp_path,
+        monkeypatch,
+        collision_flag="--summary-json",
+        collision_path=lambda **paths: paths["matrix_path"],
+    )
+
+
+def test_optimize_rejects_relative_path_aliases(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _assert_optimize_path_collision(
+        tmp_path,
+        monkeypatch,
+        collision_flag="--report-html",
+        collision_path=lambda **paths: tmp_path
+        / "subdir"
+        / ".."
+        / paths["report_json"].name,
+    )
+
+
+def test_optimize_rejects_symlink_path_aliases(tmp_path, monkeypatch):
+    report_target = tmp_path / "report.json"
+    report_alias = tmp_path / "report-alias.json"
+    try:
+        report_alias.symlink_to(report_target)
+    except OSError:
+        pytest.skip("symlinks are not available")
+    _assert_optimize_path_collision(
+        tmp_path,
+        monkeypatch,
+        collision_flag="--report-html",
+        collision_path=lambda **paths: report_alias,
+    )
+
+
+def test_optimize_rejects_case_insensitive_path_aliases(tmp_path, monkeypatch):
+    matrix_path = _build_matrix(tmp_path, (STRUCTURED_JSON_PROFILE_EXTRACTION,))
+    if not cli._filesystem_is_case_insensitive(matrix_path):
+        pytest.skip("filesystem is case-sensitive")
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    policy_path = _write_policy(tmp_path, {"objective": "min_mean_total_latency_ms"})
+    monkeypatch.setattr(cli, "MLXLMRuntime", _never_call_runtime_factory())
+
+    exit_code = _run_optimize(
+        _base_argv(
+            matrix_path=matrix_path,
+            results_dir=tmp_path / "results",
+            policy_path=policy_path,
+            report_json=matrix_path.with_name(matrix_path.name.swapcase()),
+            model_path=model_path,
+        )
+    )
+
+    assert exit_code == 1
+
+
+def test_optimize_rejects_selected_run_artifact_collision(tmp_path, monkeypatch):
+    matrix_path = _build_matrix(tmp_path, (STRUCTURED_JSON_PROFILE_EXTRACTION,))
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    results_dir = tmp_path / "results"
+    policy_path = _write_policy(tmp_path, {"objective": "min_mean_total_latency_ms"})
+    run_id = "structured-json-profile-extraction-2k-autoregressive"
+    final_record_path = results_dir / "runs" / run_id / "final_record.json"
+    monkeypatch.setattr(cli, "MLXLMRuntime", _never_call_runtime_factory())
+
+    exit_code = _run_optimize(
+        _base_argv(
+            matrix_path=matrix_path,
+            results_dir=results_dir,
+            policy_path=policy_path,
+            report_json=tmp_path / "report.json",
+            model_path=model_path,
+            extra=["--summary-json", str(final_record_path)],
+        )
+    )
+
+    assert exit_code == 1
+    assert not results_dir.exists()
+
+
 def test_optimize_invalid_policy_fails_before_any_execution(tmp_path, monkeypatch):
     matrix_path = _build_matrix(tmp_path, (STRUCTURED_JSON_PROFILE_EXTRACTION,))
     model_path = tmp_path / "model"
@@ -492,6 +793,28 @@ def test_optimize_invalid_policy_fails_before_any_execution(tmp_path, monkeypatc
     )
 
     assert exit_code == 1
+    assert not results_dir.exists()
+
+
+def test_optimize_missing_policy_fails_without_traceback(tmp_path, monkeypatch, capsys):
+    matrix_path = _build_matrix(tmp_path, (STRUCTURED_JSON_PROFILE_EXTRACTION,))
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    results_dir = tmp_path / "results"
+    monkeypatch.setattr(cli, "MLXLMRuntime", _never_call_runtime_factory())
+
+    exit_code = _run_optimize(
+        _base_argv(
+            matrix_path=matrix_path,
+            results_dir=results_dir,
+            policy_path=tmp_path / "missing-policy.json",
+            report_json=tmp_path / "report.json",
+            model_path=model_path,
+        )
+    )
+
+    assert exit_code == 1
+    assert "Invalid tune policy" in capsys.readouterr().err
     assert not results_dir.exists()
 
 
