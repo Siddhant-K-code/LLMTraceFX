@@ -269,6 +269,25 @@ def test_rejects_mismatched_quality_metric(tmp_path):
     assert any("quality_metric" in reason for reason in group.rejected[0].reasons)
 
 
+def test_rejects_unlabeled_quality_score_when_metric_is_required(tmp_path):
+    write_run(tmp_path, "r1", quality_score=0.99, quality_metric=None)
+    policy = TunePolicy(
+        objective=TuneObjective.MIN_MEAN_TOTAL_LATENCY_MS,
+        constraints=TuneConstraints(
+            min_quality_score=0.9,
+            required_quality_metric="structured_json_exact_field_match",
+        ),
+    )
+
+    report = tune(results_dirs=(tmp_path,), policy=policy)
+
+    group = report.groups[0]
+    assert group.outcome == GroupOutcome.INCONCLUSIVE
+    reasons = " ".join(group.rejected[0].reasons)
+    assert "missing outcome.quality_metric" in reasons
+    assert "structured_json_exact_field_match" in reasons
+
+
 def test_missing_quality_score_never_treated_as_zero(tmp_path):
     write_run(tmp_path, "r1", quality_score=None, quality_metric=None)
     policy = TunePolicy(

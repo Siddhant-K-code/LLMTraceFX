@@ -195,16 +195,19 @@ def _evaluate_candidate(
         score = run.final_record.outcome.quality_score
         if metric is not None:
             quality_metrics_seen.add(metric)
-        if (
-            constraints.required_quality_metric is not None
-            and metric is not None
-            and metric != constraints.required_quality_metric
-        ):
-            reasons.append(
-                f"run {run.run_id}: quality_metric {metric!r} does not match "
-                f"the required quality_metric "
-                f"{constraints.required_quality_metric!r}"
-            )
+        if constraints.required_quality_metric is not None:
+            if metric is None:
+                reasons.append(
+                    f"run {run.run_id}: missing outcome.quality_metric, "
+                    "required quality_metric is "
+                    f"{constraints.required_quality_metric!r}"
+                )
+            elif metric != constraints.required_quality_metric:
+                reasons.append(
+                    f"run {run.run_id}: quality_metric {metric!r} does not match "
+                    f"the required quality_metric "
+                    f"{constraints.required_quality_metric!r}"
+                )
         if score is not None:
             if math.isfinite(score):
                 quality_scores.append(score)
