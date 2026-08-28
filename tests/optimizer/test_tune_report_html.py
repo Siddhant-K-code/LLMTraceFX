@@ -9,6 +9,7 @@ so the rendered HTML reflects the same shape a real report would have.
 from __future__ import annotations
 
 import html
+import re
 from pathlib import Path
 
 from _tune_fixtures import write_run
@@ -406,3 +407,221 @@ def test_example_fixture_renders_every_section():
     assert "Speculative baseline comparison" in html_out
     assert "Excluded runs" in html_out
     assert "SYNTHETIC" in html_out
+
+
+# --- Reported numbers match the reasons that explain them ------------------
+
+
+def test_baseline_delta_percent_matches_the_reason_string(tmp_path):
+    """``delta_pct`` is a ratio, so it has to be formatted as a percent.
+
+    Rendering it as a bare number put ``-0.42%`` in the cursor reading two
+    lines under a reason string that said ``-42.5%``, which invites the
+    reader to trust the wrong one.
+    """
+    write_run(tmp_path, "r-ar1", speculative_enabled=False, total_ms=2000.0)
+    write_run(tmp_path, "r-ar2", speculative_enabled=False, total_ms=2000.0)
+    for run_id in ("r-spec1", "r-spec2"):
+        write_run(
+            tmp_path,
+            run_id,
+            speculative_enabled=True,
+            speculative_method="draft-model",
+            speculative_depth=2,
+            total_ms=1000.0,
+        )
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+    comparison = report.groups[0].baseline_comparison
+    assert comparison is not None
+    delta_pct = comparison.report.delta_pct
+    assert delta_pct is not None
+
+    html_out = render_tune_report_html(report)
+
+    # The same number the reason string quotes, not the raw ratio.
+    assert f"{delta_pct:+.1%}" in html_out
+    assert f"{delta_pct:+.2f}%" not in html_out
+
+
+# --- Document semantics ----------------------------------------------------
+
+
+def test_document_declares_language_and_semantic_meta(tmp_path):
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+    html_out = render_tune_report_html(report)
+
+    assert '<html lang="en">' in html_out
+    assert '<meta charset="utf-8">' in html_out
+    assert (
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        in html_out
+    )
+    assert '<meta name="color-scheme" content="light">' in html_out
+    assert (
+        '<meta name="generator" content="llmtracefx-optimizer tune-report">' in html_out
+    )
+    # A local evidence artifact should never be indexed if it is ever served.
+    assert '<meta name="robots" content="noindex, nofollow">' in html_out
+    assert '<meta name="description" content="' in html_out
+
+
+def test_meta_description_is_escaped(tmp_path):
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    policy = TunePolicy(
+        objective=TuneObjective.MIN_MEAN_TOTAL_LATENCY_MS,
+        name='fast" onload="alert(1)',
+    )
+    report = tune(results_dirs=(tmp_path,), policy=policy)
+
+    html_out = render_tune_report_html(report)
+
+    assert 'onload="alert(1)' not in html_out
+    assert "&quot;" in html_out
+
+
+def test_skip_link_targets_an_element_that_exists(tmp_path):
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+    html_out = render_tune_report_html(report)
+
+    assert '<a class="skip" href="#report">' in html_out
+    assert 'id="report"' in html_out
+
+
+def test_inline_lockup_carries_an_accessible_name(tmp_path):
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+    html_out = render_tune_report_html(report)
+
+    assert '<svg class="lockup" viewBox="0 0 206 32" role="img"' in html_out
+    assert 'aria-label="LLMTraceFX"' in html_out
+    # An ``xmlns`` would smuggle an http:// string past the offline check.
+    assert "xmlns" not in html_out
+
+
+# --- Table semantics survive the narrow-screen reflow ----------------------
+
+
+def test_tables_declare_explicit_aria_roles(tmp_path):
+    """The reflow sets ``display: block`` on table parts, which drops the
+    implicit table roles, so the roles are stated rather than assumed."""
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+    html_out = render_tune_report_html(report)
+
+    for role in ("table", "rowgroup", "row", "columnheader", "rowheader", "cell"):
+        assert f'role="{role}"' in html_out
+
+
+def test_measurement_cells_carry_their_label_for_the_narrow_reflow(tmp_path):
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+    html_out = render_tune_report_html(report)
+
+    for label in ("Mean latency (ms)", "Pass rate", "CV", "Evidence"):
+        assert f'data-label="{html.escape(label, quote=True)}"' in html_out
+
+
+def test_tables_have_captions_and_scoped_headers(tmp_path):
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+    html_out = render_tune_report_html(report)
+
+    assert "<caption" in html_out
+    assert 'scope="col"' in html_out
+    assert 'scope="rowgroup"' in html_out
+
+
+def test_states_are_never_signalled_by_colour_alone():
+    """Every state chip has to say what it means, because colour is not
+    available to every reader and does not survive a black and white print."""
+    example_path = (
+        Path(__file__).resolve().parents[2]
+        / "examples"
+        / "optimizer"
+        / "tune-report-example.json"
+    )
+    from llmtracefx.optimizer.tune.report import TuneReport
+
+    report = TuneReport.read_json(example_path)
+
+    html_out = render_tune_report_html(report)
+
+    chips = re.findall(r'<span class="state state-[a-z]+">([^<]*)</span>', html_out)
+    assert chips
+    assert all(chip.strip() for chip in chips)
+
+
+def test_empty_report_states_every_null_reading_explicitly(tmp_path):
+    """An empty result is a finding, not a blank page: the reader has to be
+    able to see which measurements were attempted and came back with nothing."""
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+    assert not report.groups
+
+    html_out = render_tune_report_html(report)
+
+    for label in (
+        "Comparable groups",
+        "Recommendations",
+        "Accepted candidates",
+        "Rejected candidates",
+        "Speculative baseline comparisons",
+    ):
+        assert f"<div><span>{label}</span>" in html_out
+    assert html_out.count('<span class="nil">none</span>') == 5
+
+
+def test_trace_ornament_terminates_the_document_and_stays_offline(tmp_path):
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+    html_out = render_tune_report_html(report)
+
+    # Decorative, so it must be hidden from assistive technology, and it must
+    # be inline geometry rather than anything that could reach the network.
+    assert (
+        '<svg class="ornament terminus" viewBox="0 0 160 32" aria-hidden="true">'
+        in html_out
+    )
+    assert html_out.index('class="ornament terminus"') < html_out.index("<footer>")
+    assert "xmlns" not in html_out
+
+
+def test_empty_report_ornament_uses_the_undecided_open_pad(tmp_path):
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+    html_out = render_tune_report_html(report)
+
+    # An open pad reads as "no decision recorded"; a filled pad would claim one.
+    assert '<svg class="ornament" viewBox="0 0 160 32" aria-hidden="true">' in html_out
+    assert (
+        '<rect x="119.75" y="6.75" width="18.5" height="18.5" stroke-width="1.5"/>'
+        in html_out
+    )
+
+
+def test_reflowed_tables_keep_their_caption_readable(tmp_path):
+    """A table-caption inside a block-ified table collapses to one word per
+    line, so the narrow layout has to opt it back into normal block flow."""
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+    html_out = render_tune_report_html(report)
+
+    assert ".reflow caption { display: block; width: 100%; }" in html_out
+
+
+def test_narrow_layout_separates_consecutive_stacked_records(tmp_path):
+    write_run(tmp_path, "r1", total_ms=1000.0)
+    report = tune(results_dirs=(tmp_path,), policy=LATENCY_POLICY)
+
+    html_out = render_tune_report_html(report)
+
+    assert ".reflow tbody:not(.cand) tr + tr {" in html_out

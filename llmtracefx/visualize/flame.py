@@ -1,6 +1,13 @@
 """
 Flame graph visualization for token-level GPU performance
 """
+from ..brand import (
+    CHART_SEQUENCE,
+    HEATMAP_SCALE,
+    LOCKUP_SVG,
+    PLOT_LAYOUT,
+    TOKENS_CSS,
+)
 import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
@@ -17,24 +24,39 @@ class FlameGraphGenerator:
     """Generate flame graphs and performance visualizations"""
     
     def __init__(self):
-        self.color_map = {
-            "rmsnorm": "#FF6B6B",
-            "layernorm": "#FF8E8E", 
-            "linear": "#4ECDC4",
-            "matmul": "#45B7D1",
-            "softmax": "#96CEB4",
-            "kvload": "#FFEAA7",
-            "kvstore": "#DDA0DD",
-            "attention": "#98D8C8",
-            "activation": "#F7DC6F",
-            "embedding": "#BB8FCE"
-        }
+        # Operations are keyed to the brand series so the same operation is
+        # the same colour in every chart, and so nothing drifts off-palette.
+        self.color_map = dict(
+            zip(
+                (
+                    "rmsnorm",
+                    "layernorm",
+                    "linear",
+                    "matmul",
+                    "softmax",
+                    "kvload",
+                    "kvstore",
+                    "attention",
+                    "activation",
+                    "embedding",
+                ),
+                CHART_SEQUENCE,
+            )
+        )
     
+    def _themed(self, fig: Any) -> Any:
+        """Put a figure on the sheet.
+
+        Applied at the one point every chart exits, so a new chart cannot be
+        added later and quietly arrive wearing the library's default theme.
+        """
+        fig.update_layout(**PLOT_LAYOUT)
+        return fig
+
     def generate_token_flame_graph(self, analyses: List[TokenAnalysis]) -> str:
         """Generate flame graph showing token vs operations timeline"""
         fig = make_subplots(
             rows=1, cols=1,
-            subplot_titles=["Token-Level GPU Performance Timeline"],
             specs=[[{"secondary_y": False}]]
         )
         
@@ -46,7 +68,7 @@ class FlameGraphGenerator:
             current_time = 0
             
             for op in analysis.operations:
-                color = self.color_map.get(op.name, "#95A5A6")
+                color = self.color_map.get(op.name, "#4a5157")
                 
                 # Add operation bar
                 fig.add_trace(go.Bar(
@@ -68,7 +90,6 @@ class FlameGraphGenerator:
         
         # Update layout
         fig.update_layout(
-            title="LLM Token Inference Performance Timeline",
             xaxis_title="Time (ms)",
             yaxis_title="Tokens",
             barmode='stack',
@@ -78,7 +99,7 @@ class FlameGraphGenerator:
             margin=dict(r=150)
         )
         
-        return fig.to_html(include_plotlyjs='cdn', div_id="flame-graph")
+        return self._themed(fig).to_html(include_plotlyjs='cdn', div_id="flame-graph")
     
     def generate_bottleneck_distribution(self, analyses: List[TokenAnalysis]) -> str:
         """Generate bottleneck distribution chart"""
@@ -90,18 +111,18 @@ class FlameGraphGenerator:
             go.Bar(
                 x=list(bottleneck_counts.keys()),
                 y=list(bottleneck_counts.values()),
-                marker_color=['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD']
+                marker_color=list(CHART_SEQUENCE[:6])
             )
         ])
         
         fig.update_layout(
-            title="GPU Bottleneck Distribution",
             xaxis_title="Bottleneck Type",
             yaxis_title="Number of Tokens",
             height=400
         )
         
-        return fig.to_html(include_plotlyjs='cdn', div_id="bottleneck-chart")
+        
+        return self._themed(fig).to_html(include_plotlyjs='cdn', div_id="bottleneck-chart")
     
     def generate_performance_heatmap(self, analyses: List[TokenAnalysis]) -> str:
         """Generate performance heatmap"""
@@ -135,18 +156,17 @@ class FlameGraphGenerator:
             z=matrix,
             x=operations,
             y=token_ids,
-            colorscale='Viridis',
+            colorscale=[list(stop) for stop in HEATMAP_SCALE],
             hovertemplate='<b>%{x}</b><br>%{y}<br>Duration: %{z:.1f}ms<extra></extra>'
         ))
         
         fig.update_layout(
-            title="Operation Duration Heatmap",
             xaxis_title="GPU Operations",
             yaxis_title="Tokens",
             height=max(400, len(analyses) * 20)
         )
         
-        return fig.to_html(include_plotlyjs='cdn', div_id="heatmap")
+        return self._themed(fig).to_html(include_plotlyjs='cdn', div_id="heatmap")
     
     def generate_latency_trend(self, analyses: List[TokenAnalysis]) -> str:
         """Generate latency trend chart"""
@@ -167,7 +187,7 @@ class FlameGraphGenerator:
                 y=latencies,
                 mode='lines+markers',
                 name='Latency (ms)',
-                line=dict(color='#FF6B6B', width=2),
+                line=dict(color=CHART_SEQUENCE[0], width=2),
                 marker=dict(size=6)
             ),
             row=1, col=1
@@ -180,23 +200,23 @@ class FlameGraphGenerator:
                 y=performance_scores,
                 mode='lines+markers',
                 name='Performance Score',
-                line=dict(color='#4ECDC4', width=2),
+                line=dict(color=CHART_SEQUENCE[1], width=2),
                 marker=dict(size=6)
             ),
             row=2, col=1
         )
         
         fig.update_layout(
-            title="Token Performance Trends",
             height=600,
             showlegend=True
         )
+        
         
         fig.update_xaxes(title_text="Token ID", row=2, col=1)
         fig.update_yaxes(title_text="Latency (ms)", row=1, col=1)
         fig.update_yaxes(title_text="Score (0-100)", row=2, col=1)
         
-        return fig.to_html(include_plotlyjs='cdn', div_id="trend-chart")
+        return self._themed(fig).to_html(include_plotlyjs='cdn', div_id="trend-chart")
     
     def generate_gpu_metrics_radar(self, analysis: TokenAnalysis) -> str:
         """Generate radar chart for GPU metrics"""
@@ -225,7 +245,7 @@ class FlameGraphGenerator:
             theta=categories,
             fill='toself',
             name=f'Token {analysis.token_id}',
-            line_color='#4ECDC4'
+            line_color=CHART_SEQUENCE[1]
         ))
         
         fig.update_layout(
@@ -239,7 +259,7 @@ class FlameGraphGenerator:
             height=500
         )
         
-        return fig.to_html(include_plotlyjs='cdn', div_id="radar-chart")
+        return self._themed(fig).to_html(include_plotlyjs='cdn', div_id="radar-chart")
     
     def generate_operation_breakdown(self, analysis: TokenAnalysis) -> str:
         """Generate pie chart for operation breakdown"""
@@ -262,7 +282,8 @@ class FlameGraphGenerator:
             height=400
         )
         
-        return fig.to_html(include_plotlyjs='cdn', div_id="breakdown-chart")
+        
+        return self._themed(fig).to_html(include_plotlyjs='cdn', div_id="breakdown-chart")
     
     def generate_comprehensive_dashboard(self, analyses: List[TokenAnalysis]) -> str:
         """Generate comprehensive HTML dashboard"""
@@ -286,121 +307,205 @@ class FlameGraphGenerator:
         
         html_template = f"""
         <!DOCTYPE html>
-        <html>
+        <html lang="en">
         <head>
-            <title>LLMTraceFX - GPU Performance Dashboard</title>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta name="color-scheme" content="light">
+            <title>GPU performance dashboard - LLMTraceFX</title>
             <style>
+                {TOKENS_CSS}
+                * {{ box-sizing: border-box; }}
                 body {{
-                    font-family: Arial, sans-serif;
-                    margin: 20px;
-                    background-color: #f8f9fa;
+                    font-family: var(--sans);
+                    margin: 0;
+                    padding: clamp(16px, 3vw, 40px) clamp(12px, 3vw, 36px) 64px;
+                    background-color: var(--field);
+                    background-image:
+                        repeating-linear-gradient(to right, #16181a0f 0 1px, transparent 1px 48px),
+                        repeating-linear-gradient(to bottom, #16181a0f 0 1px, transparent 1px 48px);
+                    color: var(--ink);
+                    font-size: 15px;
+                    line-height: 1.55;
                 }}
-                .header {{
-                    text-align: center;
-                    margin-bottom: 30px;
-                    padding: 20px;
-                    background-color: #2c3e50;
-                    color: white;
-                    border-radius: 10px;
+                .sheet {{
+                    max-width: 1180px;
+                    margin: 0 auto;
+                    background: var(--sheet);
+                    border: 1px solid var(--rule);
+                    box-shadow: 0 1px 1px #16181a0f, 0 26px 52px -30px #16181a5c;
+                    padding: clamp(20px, 4vw, 48px);
                 }}
+                .masthead {{
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: flex-start;
+                    gap: 16px 32px;
+                    flex-wrap: wrap;
+                    border-bottom: 1px solid var(--ink);
+                    padding-bottom: 14px;
+                    margin-bottom: 32px;
+                }}
+                .lockup {{ display: block; height: 19px; width: auto; color: var(--ink); }}
+                .stamp {{
+                    margin: 0;
+                    font-family: var(--mono);
+                    font-size: 10.5px;
+                    letter-spacing: 0.07em;
+                    text-transform: uppercase;
+                    color: var(--muted);
+                    text-align: right;
+                }}
+                h1 {{
+                    font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2.1rem);
+                    font-weight: 600;
+                    letter-spacing: -0.022em;
+                    line-height: 1.15;
+                    margin: 0 0 10px;
+                }}
+                .lede {{ margin: 0 0 32px; max-width: 68ch; color: var(--muted); }}
+                /* Divisional readout: the run totals on one ruled strip. */
                 .stats {{
                     display: grid;
-                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                    gap: 20px;
-                    margin-bottom: 30px;
+                    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+                    border-top: 1px solid var(--ink);
+                    border-bottom: 1px solid var(--rule);
                 }}
-                .stat-card {{
-                    background: white;
-                    padding: 20px;
-                    border-radius: 10px;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                    text-align: center;
+                .division {{
+                    position: relative;
+                    padding: 15px 16px 15px 15px;
+                    border-left: 1px solid var(--rule-soft);
                 }}
+                .division:first-child {{ border-left: 0; padding-left: 0; }}
+                .division::before {{
+                    content: "";
+                    position: absolute;
+                    top: 0; left: -1px;
+                    width: 1px; height: 6px;
+                    background: var(--ink);
+                }}
+                .division:first-child::before {{ display: none; }}
                 .stat-value {{
-                    font-size: 2em;
-                    font-weight: bold;
-                    color: #2c3e50;
+                    display: block;
+                    font-family: var(--mono);
+                    font-size: 1.375rem;
+                    font-variant-numeric: tabular-nums;
+                    line-height: 1.1;
+                    letter-spacing: -0.015em;
                 }}
                 .stat-label {{
-                    color: #7f8c8d;
-                    margin-top: 10px;
+                    display: block;
+                    margin-top: 7px;
+                    font-size: 10.5px;
+                    text-transform: uppercase;
+                    letter-spacing: 0.09em;
+                    color: var(--muted);
                 }}
-                .chart-container {{
-                    background: white;
-                    margin: 20px 0;
-                    padding: 20px;
-                    border-radius: 10px;
-                    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                .panel {{ margin: 44px 0 0; }}
+                .panel h2 {{
+                    position: relative;
+                    font-size: 1.0625rem;
+                    font-weight: 600;
+                    letter-spacing: -0.01em;
+                    border-top: 1px solid var(--ink);
+                    padding-top: 13px;
+                    margin: 0 0 16px;
+                }}
+                .panel h2::before {{
+                    content: "";
+                    position: absolute;
+                    top: 0; left: 0;
+                    width: 2px; height: 7px;
+                    background: var(--signal);
                 }}
                 .chart-grid {{
                     display: grid;
-                    grid-template-columns: 1fr 1fr;
-                    gap: 20px;
+                    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+                    gap: 12px 32px;
+                }}
+                footer {{
+                    margin-top: 52px;
+                    border-top: 1px solid var(--ink);
+                    padding-top: 14px;
+                    font-family: var(--mono);
+                    font-size: 10.5px;
+                    letter-spacing: 0.07em;
+                    text-transform: uppercase;
+                    color: var(--muted);
                 }}
             </style>
         </head>
         <body>
-            <div class="header">
-                <h1>🚀 LLMTraceFX - GPU Performance Dashboard</h1>
-                <p>Comprehensive analysis of LLM token inference performance</p>
-            </div>
-            
+        <div class="sheet">
+            <header class="masthead">
+                {LOCKUP_SVG}
+                <p class="stamp">GPU performance dashboard</p>
+            </header>
+            <h1>Token inference profile</h1>
+            <p class="lede">Every panel below is measured from the traced run.
+            Latency, bottlenecks, and utilisation are shown side by side so a
+            slow token can be attributed to an operation rather than guessed at.</p>
+
             <div class="stats">
-                <div class="stat-card">
-                    <div class="stat-value">{len(analyses)}</div>
-                    <div class="stat-label">Total Tokens</div>
+                <div class="division">
+                    <span class="stat-value">{len(analyses)}</span>
+                    <span class="stat-label">Tokens traced</span>
                 </div>
-                <div class="stat-card">
-                    <div class="stat-value">{total_latency:.1f}ms</div>
-                    <div class="stat-label">Total Latency</div>
+                <div class="division">
+                    <span class="stat-value">{total_latency:.1f} ms</span>
+                    <span class="stat-label">Total latency</span>
                 </div>
-                <div class="stat-card">
-                    <div class="stat-value">{avg_latency:.1f}ms</div>
-                    <div class="stat-label">Avg Latency/Token</div>
+                <div class="division">
+                    <span class="stat-value">{avg_latency:.1f} ms</span>
+                    <span class="stat-label">Mean per token</span>
                 </div>
-                <div class="stat-card">
-                    <div class="stat-value">{avg_performance:.1f}</div>
-                    <div class="stat-label">Avg Performance Score</div>
+                <div class="division">
+                    <span class="stat-value">{avg_performance:.1f}</span>
+                    <span class="stat-label">Mean performance score</span>
                 </div>
             </div>
-            
-            <div class="chart-container">
-                <h2>🔥 Token Performance Timeline</h2>
+
+            <section class="panel">
+                <h2>Token performance timeline</h2>
                 {flame_graph}
-            </div>
-            
+            </section>
+
             <div class="chart-grid">
-                <div class="chart-container">
-                    <h2>📊 Bottleneck Distribution</h2>
+                <section class="panel">
+                    <h2>Bottleneck distribution</h2>
                     {bottleneck_dist}
-                </div>
-                <div class="chart-container">
-                    <h2>📈 Performance Trends</h2>
+                </section>
+                <section class="panel">
+                    <h2>Performance trends</h2>
                     {trend_chart}
-                </div>
+                </section>
             </div>
-            
-            <div class="chart-container">
-                <h2>🌡️ Operation Performance Heatmap</h2>
+
+            <section class="panel">
+                <h2>Operation performance heatmap</h2>
                 {heatmap}
-            </div>
-            
+            </section>
+
             <div class="chart-grid">
-                <div class="chart-container">
-                    <h2>🎯 GPU Metrics Profile (Token 0)</h2>
+                <section class="panel">
+                    <h2>GPU metrics profile (token 0)</h2>
                     {sample_radar}
-                </div>
-                <div class="chart-container">
-                    <h2>🥧 Operation Breakdown (Token 0)</h2>
+                </section>
+                <section class="panel">
+                    <h2>Operation breakdown (token 0)</h2>
                     {sample_breakdown}
-                </div>
+                </section>
             </div>
-            
-            <div class="chart-container">
-                <h2>📋 Analysis Summary</h2>
-                <p>Generated {len(analyses)} token analyses with comprehensive GPU performance metrics.</p>
-                <p>Primary bottlenecks and optimization opportunities identified.</p>
-            </div>
+
+            <section class="panel">
+                <h2>Analysis summary</h2>
+                <p>{len(analyses)} token analyses were generated with GPU performance
+                metrics attached. Primary bottlenecks and optimization opportunities
+                are identified in the panels above.</p>
+            </section>
+
+            <footer>Generated by llmtracefx visualize</footer>
+        </div>
         </body>
         </html>
         """

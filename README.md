@@ -1,6 +1,27 @@
-# 🚀 LLMTraceFX
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/llmtracefx-lockup-inverse.svg">
+    <img src="assets/brand/llmtracefx-lockup.svg" alt="LLMTraceFX" width="309">
+  </picture>
+</p>
 
-**GPU-level LLM inference profiler** that analyzes token-level performance and provides AI-powered explanations.
+<p align="center">
+  <strong>GPU-level LLM inference profiler</strong> that analyzes token-level performance and provides AI-powered explanations.
+</p>
+
+<p align="center">
+  <a href="https://youtu.be/8tBpqgQIEG4">Video demo</a>
+  ·
+  <a href="https://siddhant-k-code--llmtracefx-web-app.modal.run">Live demo</a>
+  ·
+  <a href="#-inference-optimizer-foundation">Optimizer</a>
+  ·
+  <a href="DESIGN.md">Design system</a>
+</p>
+
+<p align="center">
+  <img src="assets/brand/social-preview.png" alt="LLMTraceFX: find out why inference is slow, with evidence. A tune report readout showing a 42.5 percent mean latency reduction with the pass rate held at 100 percent." width="820">
+</p>
 
 ## 🎬 Video Demo
 

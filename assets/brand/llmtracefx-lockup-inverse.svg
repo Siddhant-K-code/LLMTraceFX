@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 206 32" width="206" height="32" role="img" aria-labelledby="t">
+  <title id="t">LLMTraceFX</title>
+  <desc>Inverse horizontal lockup, for ink and other dark grounds.</desc>
+  <!--
+    LLMTraceFX identity. Two routed traces converge on one solid pad: the heavy
+    trace is the measured run that carried the decision, the hairline trace is
+    the evidence weighed beside it. Both turn at 45 degrees the way a routed
+    path does, and both stop at the pad, because a recommendation is only as
+    long as the evidence behind it. The same routing grammar draws the letters.
+  -->
+  <g fill="none" stroke="#F4F1EA" stroke-linecap="butt" stroke-linejoin="miter">
+    <path d="M3 8H10L16 14H19" stroke-width="3.5" />
+    <path d="M3 24H10L16 18H19" stroke-width="1.75" />
+  </g>
+  <rect x="18" y="10.5" width="11" height="11" fill="#C23D16" />
+  <path transform="translate(43 0)" d="M1.5 7.5V24.5H11.5 M17.5 7.5V24.5H27.5 M33.5 24.5V7.5L40 16L46.5 7.5V24.5 M52.5 7.5H62.5M57.5 7.5V24.5 M68.5 24.5V7.5H75.5L78.5 10.5V13L75.5 15.5H68.5M75 15.5L78.5 24.5 M84.5 24.5V11L88 7.5H91L94.5 11V24.5M84.5 17H94.5 M110.5 10.5L107.5 7.5H103.5L100.5 10.5V21.5L103.5 24.5H107.5L110.5 21.5 M126.5 7.5H116.5V24.5H126.5M116.5 16H124.5 M142.5 7.5H132.5V24.5M132.5 16H140.5 M148.5 7.5L158.5 24.5M158.5 7.5L148.5 24.5" fill="none" stroke="#F4F1EA" stroke-width="3" stroke-linecap="butt" stroke-linejoin="miter" />
+</svg>

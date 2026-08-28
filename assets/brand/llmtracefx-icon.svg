@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-labelledby="t">
+  <title id="t">LLMTraceFX</title>
+  <desc>Small-size reduction for favicons and 16px chrome. The hairline second trace is dropped below 24px rather than rendered as noise.</desc>
+  <!--
+    LLMTraceFX identity. Two routed traces converge on one solid pad: the heavy
+    trace is the measured run that carried the decision, the hairline trace is
+    the evidence weighed beside it. Both turn at 45 degrees the way a routed
+    path does, and both stop at the pad, because a recommendation is only as
+    long as the evidence behind it. The same routing grammar draws the letters.
+  -->
+  <path d="M2 7H9L18 16H20" fill="none" stroke="#16181A" stroke-width="4" stroke-linecap="butt" stroke-linejoin="miter" />
+  <rect x="19" y="10.5" width="11" height="11" fill="#C23D16" />
+</svg>

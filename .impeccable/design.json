@@ -1,0 +1,358 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-29T00:03:58.368+05:30",
+  "title": "Design System: LLMTraceFX",
+  "extensions": {
+    "colorMeta": {
+      "field": {
+        "role": "neutral",
+        "displayName": "Bone Field",
+        "canonical": "#f4f1ea",
+        "purpose": "Page field behind the sheet.",
+        "contrast": {
+          "againstSheet": "1.08:1",
+          "againstField": "1.00:1"
+        }
+      },
+      "sheet": {
+        "role": "neutral",
+        "displayName": "Paper Sheet",
+        "canonical": "#fbfaf7",
+        "purpose": "Report sheet and Plotly paper background.",
+        "contrast": {
+          "inkOnToken": "17.05:1"
+        }
+      },
+      "graticule": {
+        "role": "neutral",
+        "displayName": "Graticule Line",
+        "canonical": "#16181a0f",
+        "purpose": "One pixel field grid line."
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Instrument Ink",
+        "canonical": "#16181a",
+        "purpose": "Main text, main rules, lockup, axes.",
+        "contrast": {
+          "againstSheet": "17.05:1",
+          "againstField": "15.78:1"
+        }
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted Graphite",
+        "canonical": "#5b6167",
+        "purpose": "Labels, captions, ledes, secondary text.",
+        "contrast": {
+          "againstSheet": "6.00:1",
+          "againstField": "5.56:1"
+        }
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Hairline Rule",
+        "canonical": "#16181a26",
+        "purpose": "Sheet border and normal separators."
+      },
+      "rule-soft": {
+        "role": "neutral",
+        "displayName": "Soft Hairline",
+        "canonical": "#16181a14",
+        "purpose": "Internal seams and secondary row rules."
+      },
+      "signal": {
+        "role": "primary",
+        "displayName": "Signal Orange",
+        "canonical": "#c23d16",
+        "purpose": "Only accent, decision pad, recommended state, focus outline.",
+        "contrast": {
+          "againstSheet": "5.06:1",
+          "againstField": "4.69:1",
+          "whiteOnToken": "5.29:1"
+        }
+      },
+      "signal-tint": {
+        "role": "primary",
+        "displayName": "Signal Tint",
+        "canonical": "#c23d1612",
+        "purpose": "Recommended row wash."
+      },
+      "verify": {
+        "role": "tertiary",
+        "displayName": "Verified Green",
+        "canonical": "#17513a",
+        "purpose": "Accepted or improvement state.",
+        "contrast": {
+          "againstSheet": "8.85:1",
+          "againstField": "8.19:1"
+        }
+      },
+      "breach": {
+        "role": "tertiary",
+        "displayName": "Breach Red",
+        "canonical": "#8c1d28",
+        "purpose": "Rejected and breached state.",
+        "contrast": {
+          "againstSheet": "8.67:1",
+          "againstField": "8.02:1"
+        }
+      },
+      "hold": {
+        "role": "tertiary",
+        "displayName": "Hold Graphite",
+        "canonical": "#4a5157",
+        "purpose": "Inconclusive or null reading state.",
+        "contrast": {
+          "againstSheet": "7.72:1",
+          "againstField": "7.14:1"
+        }
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Report Display",
+        "purpose": "Tune report title."
+      },
+      "headline": {
+        "displayName": "Ruled Headline",
+        "purpose": "Section and panel titles."
+      },
+      "title": {
+        "displayName": "Uppercase Title",
+        "purpose": "Local subsection labels."
+      },
+      "body": {
+        "displayName": "System Body",
+        "purpose": "Prose and explanatory text."
+      },
+      "label": {
+        "displayName": "Mono Label",
+        "purpose": "Stamps, states, small metrics, and summaries."
+      },
+      "evidence": {
+        "displayName": "Evidence Mono",
+        "purpose": "Measurements, identifiers, run IDs, paths, route paths, and code."
+      }
+    },
+    "shadows": [
+      {
+        "name": "sheet",
+        "value": "0 1px 1px #16181a0f, 0 26px 52px -30px #16181a5c",
+        "purpose": "Only persistent sheet lift in report, API index, and GPU shell."
+      },
+      {
+        "name": "social-preview-sheet",
+        "value": "0 1px 1px #16181a0f, 0 30px 60px -34px #16181a66",
+        "purpose": "Image scale sheet lift in social-preview.html."
+      }
+    ],
+    "motion": [
+      {
+        "name": "details-chevron",
+        "value": "transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1)",
+        "purpose": "Only authored motion moment in the tune report."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "transition-duration: 0.01ms !important",
+        "purpose": "Guard in prefers-reduced-motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "reflow-table",
+        "value": "760px"
+      },
+      {
+        "name": "api-route-stack",
+        "value": "520px"
+      }
+    ],
+    "charting": {
+      "colorway": [
+        "#c23d16",
+        "#2f5d7c",
+        "#17513a",
+        "#8c1d28",
+        "#6f6230",
+        "#4a5157",
+        "#9a4b1f",
+        "#35625c",
+        "#5c4470",
+        "#7a3f52"
+      ],
+      "heatmapScale": [
+        [
+          0.0,
+          "#fbfaf7"
+        ],
+        [
+          0.25,
+          "#efe2d5"
+        ],
+        [
+          0.5,
+          "#dfae90"
+        ],
+        [
+          0.75,
+          "#c23d16"
+        ],
+        [
+          1.0,
+          "#6b1f08"
+        ]
+      ],
+      "plotLayout": {
+        "paper_bgcolor": "#fbfaf7",
+        "plot_bgcolor": "#fbfaf7",
+        "fontFamily": "ui-monospace, SFMono-Regular, \"SF Mono\", Menlo, Consolas, monospace",
+        "fontSize": 12,
+        "fontColor": "#16181a"
+      }
+    }
+  },
+  "components": [
+    {
+      "name": "Report Sheet",
+      "kind": "card",
+      "refersTo": "report-sheet",
+      "description": "Single paper surface floating on the graticule field.",
+      "html": "<div class=\"ds-report-sheet\">Report content</div>",
+      "css": ".ds-report-sheet { max-width: 1180px; margin: 0 auto; background: var(--sheet); color: var(--ink); border: 1px solid var(--rule); box-shadow: 0 1px 1px #16181a0f, 0 26px 52px -30px #16181a5c; border-radius: 0; padding: clamp(20px, 4vw, 56px); }"
+    },
+    {
+      "name": "Ruled Section Header",
+      "kind": "custom",
+      "refersTo": "section-rule",
+      "description": "Ink rule with a signal division tick.",
+      "html": "<div class=\"ds-rule\"><h2>Summary</h2></div>",
+      "css": ".ds-rule { position: relative; border-top: 1px solid var(--ink); padding-top: 13px; margin-bottom: 18px; } .ds-rule::before { content: \"\"; position: absolute; top: 0; left: 0; width: 2px; height: 7px; background: var(--signal); } .ds-rule h2 { margin: 0; font: 600 1.0625rem/1.55 var(--sans); letter-spacing: -0.01em; }"
+    },
+    {
+      "name": "Divisional Readout",
+      "kind": "custom",
+      "refersTo": "readout",
+      "description": "Counts on one ruled strip with vertical division ticks.",
+      "html": "<div class=\"ds-readout\"><div class=\"ds-division\"><span class=\"ds-v\">5</span><span class=\"ds-k\">Candidates</span></div></div>",
+      "css": ".ds-readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); border-top: 1px solid var(--ink); border-bottom: 1px solid var(--rule); } .ds-division { position: relative; padding: 15px 16px 15px 15px; border-left: 1px solid var(--rule-soft); } .ds-division:first-child { border-left: 0; padding-left: 0; } .ds-division::before { content: \"\"; position: absolute; top: 0; left: -1px; width: 1px; height: 6px; background: var(--ink); } .ds-v { display: block; font-family: var(--mono); font-size: 1.375rem; font-variant-numeric: tabular-nums; line-height: 1.1; letter-spacing: -0.015em; } .ds-k { display: block; margin-top: 7px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); }"
+    },
+    {
+      "name": "State Chip",
+      "kind": "chip",
+      "refersTo": "state-recommended",
+      "description": "Uppercase mono word plus square mark.",
+      "html": "<span class=\"ds-state ds-state-rec\">RECOMMENDED</span>",
+      "css": ".ds-state { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; white-space: nowrap; } .ds-state::before { content: \"\"; width: 8px; height: 8px; flex: 0 0 auto; } .ds-state-rec { color: var(--signal); } .ds-state-rec::before { background: var(--signal); } .ds-state-hold { color: var(--hold); } .ds-state-hold::before { border: 1.5px solid var(--hold); }"
+    },
+    {
+      "name": "Evidence Table",
+      "kind": "custom",
+      "refersTo": "evidence-cell",
+      "description": "Ruled table with captions, scoped headers, ARIA roles, and labelled narrow cells.",
+      "html": "<table class=\"ds-table\" role=\"table\"><caption>Evidence</caption><thead role=\"rowgroup\"><tr role=\"row\"><th scope=\"col\" role=\"columnheader\">Metric</th></tr></thead><tbody role=\"rowgroup\"><tr role=\"row\"><td role=\"cell\" data-label=\"Metric\">100%</td></tr></tbody></table>",
+      "css": ".ds-table { width: 100%; border-collapse: collapse; font-size: 13.5px; } .ds-table caption { caption-side: top; text-align: left; font-size: 12.5px; color: var(--muted); padding-bottom: 12px; max-width: 72ch; } .ds-table th { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); text-align: left; padding: 0 14px 8px 0; border-bottom: 1px solid var(--ink); } .ds-table td { padding: 11px 14px 11px 0; border-bottom: 1px solid var(--rule-soft); font-family: var(--mono); font-variant-numeric: tabular-nums; }"
+    },
+    {
+      "name": "Details Disclosure",
+      "kind": "custom",
+      "refersTo": "details-summary",
+      "description": "Native disclosure with the only authored motion in the report.",
+      "html": "<details><summary class=\"ds-summary\">Source run IDs and artifact paths</summary><p>runs/r1/final_record.json</p></details>",
+      "css": ".ds-summary { cursor: pointer; display: inline-flex; align-items: center; gap: 9px; padding: 6px 0; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted); list-style: none; } .ds-summary::before { content: \"\"; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1); margin-bottom: 2px; } details[open] > .ds-summary::before { transform: rotate(45deg); } .ds-summary:hover { color: var(--ink); } .ds-summary:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; }"
+    },
+    {
+      "name": "API Route Row",
+      "kind": "nav",
+      "refersTo": "route-index",
+      "description": "Ruled route entry with method, path, and muted description.",
+      "html": "<div class=\"ds-endpoint\"><span class=\"ds-method\">GET</span><span class=\"ds-path\">/hardware</span><span class=\"ds-about\">List supported hardware profiles.</span></div>",
+      "css": ".ds-endpoint { display: grid; grid-template-columns: minmax(0, 4.25rem) minmax(0, 1fr); gap: 2px 18px; padding: 13px 0; border-bottom: 1px solid var(--rule-soft); } .ds-method { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.09em; line-height: 1.7; color: var(--signal); } .ds-path { font-family: var(--mono); font-size: 0.9375rem; overflow-wrap: anywhere; } .ds-about { grid-column: 2; color: var(--muted); font-size: 0.875rem; }"
+    },
+    {
+      "name": "Report Ornament",
+      "kind": "custom",
+      "refersTo": "ornament",
+      "description": "Diagram scale trace motif for empty groups or final terminus.",
+      "html": "<svg class=\"ds-ornament\" viewBox=\"0 0 160 32\" aria-hidden=\"true\"><g fill=\"none\" stroke=\"currentColor\"><path d=\"M0 6H72L88 14H120\" stroke-width=\"2.5\"/><path d=\"M0 26H72L88 18H120\" stroke-width=\"1.25\"/><rect x=\"119.75\" y=\"6.75\" width=\"18.5\" height=\"18.5\" stroke-width=\"1.5\"/></g></svg>",
+      "css": ".ds-ornament { display: block; width: 232px; height: auto; color: var(--ink); opacity: 0.3; margin: 26px 0 0; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Oscilloscope measurement sheet",
+    "overview": "LLMTraceFX records evidence for local LLM and GPU inference work. The visual system must therefore read as measurement, not as promotion. The built world is a laboratory sheet over a bone coloured field. A faint graticule sits behind a paper sheet, data is set in monospace with tabular figures, and structure is made from hairline rules rather than cards.\n\nThe primary surface is `llmtracefx/optimizer/tune/report_html.py`, where `DIRECTION_CONTRACT` names the world: oscilloscope graticule and measurement cursors, seed `3bd5d052`. The report is a static audit artifact. It opens from disk, carries all evidence in one HTML file, and keeps accepted, rejected, inconclusive, and excluded material visible. The secondary shell in `llmtracefx/visualize/flame.py` reuses the same field, sheet, lockup, ruled readout, and Plotly theme. The API index in `llmtracefx/api/serve.py` uses the same grammar for a compact route list.",
+    "keyCharacteristics": [
+      "Bone field with a 48px graticule behind a lighter paper sheet.",
+      "Near black ink, grey mute, translucent hairlines, and exactly one authored accent hue.",
+      "System type only: sans for prose, mono for evidence, route paths, identifiers, metrics, and stamps.",
+      "Zero radius on sheets, tables, state marks, pads, and route rows.",
+      "Status is a word plus a mark, never colour alone.",
+      "Offline tune reports have no JavaScript, no web fonts, no external images, and no CDN references."
+    ],
+    "rules": [
+      {
+        "name": "The One Signal Rule",
+        "body": "Use `--signal` as the only accent hue. Do not add purple AI gradients, neon cyberpunk colours, glass tints, or a second callout hue.",
+        "section": "colors"
+      },
+      {
+        "name": "The Null Reading Rule",
+        "body": "Inconclusive states use `--hold`, a graphite colour, because refusing to guess is a null reading rather than a warning.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tested Contrast Rule",
+        "body": "Text colours must keep the measured contrast ratios above. The chart sequence is covered by `tests/test_brand_assets.py::test_every_series_colour_carries_a_readable_label`, which requires every series colour to hold white text and sheet contrast.",
+        "section": "colors"
+      },
+      {
+        "name": "The Evidence Mono Rule",
+        "body": "Every identifier, artifact path, metric, route path, candidate label, and cursor reading uses `--mono` with tabular figures where numbers are compared.",
+        "section": "typography"
+      },
+      {
+        "name": "The System Type Rule",
+        "body": "Do not fetch web fonts. The offline report rule and `tests/test_brand_assets.py::test_token_block_fetches_no_fonts` require system stacks only.",
+        "section": "typography"
+      },
+      {
+        "name": "The Ruled Not Carded Rule",
+        "body": "Use hairline borders, table rules, division ticks, and sheet lift. Do not wrap every statistic or table in separate cards.",
+        "section": "elevation"
+      },
+      {
+        "name": "The No Paint Gradient Rule",
+        "body": "Gradients are structural only: graticules and excluded-run diagonal ruling. Do not use gradients as brand paint.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Zero Radius Rule",
+        "body": "Do not add rounded corners. A radius would contradict the measurement sheet, decision pad, route geometry, and test-backed mark system.",
+        "section": "shapes"
+      }
+    ],
+    "dos": [
+      "Do use `llmtracefx/brand.py` as the single source of truth for tokens, inline marks, chart sequence, heatmap scale, and Plotly layout.",
+      "Do keep the report in the oscilloscope and logic analyzer measurement sheet world recorded in `DIRECTION_CONTRACT`.",
+      "Do use the 48px graticule on the field and the paper sheet on top of it.",
+      "Do use mono with tabular figures for all evidence, identifiers, paths, routes, metrics, stamps, and cursor readings.",
+      "Do keep rejected, inconclusive, excluded, and provenance material visible and labelled.",
+      "Do preserve explicit ARIA table roles and `data-label` attributes on any table that reflows at `max-width: 760px`.",
+      "Do pair every status colour with an uppercase word or visible label.",
+      "Do use native `<details>` for disclosure in the offline report.",
+      "Do use the primary lockup on light sheets, the inverse lockup on dark grounds, mono lockups for one colour reproduction, and the icon only at favicon scale.",
+      "Do keep report output deterministic, escaped, path redacted by default, and free of network references."
+    ],
+    "donts": [
+      "Don't add rounded corners, pill chips, card stacks, glass effects, or paint gradients.",
+      "Don't introduce a second accent hue or generic AI purple.",
+      "Don't fetch fonts or assets in the tune report.",
+      "Don't add JavaScript to the tune report. The only interaction is native disclosure.",
+      "Don't encode status by colour alone.",
+      "Don't add `xmlns` to inline report SVG constants, because that introduces a forbidden `http://` string.",
+      "Don't clip candidate labels, run IDs, paths, or metric cells. Wrap them and provide labels on narrow screens.",
+      "Don't use the diagram ornament as filler decoration. Use open for no decision and filled for a completed sheet terminus."
+    ]
+  }
+}
