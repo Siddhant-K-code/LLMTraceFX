@@ -1,6 +1,7 @@
 """
 FastAPI server for LLMTraceFX web endpoints
 """
+from ..brand import LOCKUP_SVG, TOKENS_CSS
 import asyncio
 import json
 import tempfile
@@ -86,61 +87,179 @@ except ValueError:
 @app.get("/", response_class=HTMLResponse)
 async def root():
     """Root endpoint with API documentation"""
-    return """
-    <html>
+    return f"""
+    <!DOCTYPE html>
+    <html lang="en">
     <head>
-        <title>LLMTraceFX API</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="color-scheme" content="light">
+        <title>API index - LLMTraceFX</title>
         <style>
-            body { font-family: Arial, sans-serif; margin: 40px; }
-            .endpoint { background: #f0f0f0; padding: 15px; margin: 10px 0; border-radius: 5px; }
-            .method { color: #007bff; font-weight: bold; }
+            {TOKENS_CSS}
+            * {{ box-sizing: border-box; }}
+            body {{
+                font-family: var(--sans);
+                margin: 0;
+                padding: clamp(16px, 3vw, 40px) clamp(12px, 3vw, 36px) 64px;
+                background-color: var(--field);
+                background-image:
+                    repeating-linear-gradient(to right, var(--graticule) 0 1px, transparent 1px 48px),
+                    repeating-linear-gradient(to bottom, var(--graticule) 0 1px, transparent 1px 48px);
+                color: var(--ink);
+                font-size: 15px;
+                line-height: 1.55;
+            }}
+            .sheet {{
+                max-width: 760px;
+                margin: 0 auto;
+                background: var(--sheet);
+                border: 1px solid var(--rule);
+                box-shadow: 0 1px 1px #16181a0f, 0 26px 52px -30px #16181a5c;
+                padding: clamp(20px, 4vw, 48px);
+            }}
+            .masthead {{
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                gap: 16px 32px;
+                flex-wrap: wrap;
+                border-bottom: 1px solid var(--ink);
+                padding-bottom: 14px;
+                margin-bottom: 32px;
+            }}
+            .lockup {{ display: block; height: 19px; width: auto; color: var(--ink); }}
+            .stamp {{
+                margin: 0;
+                font-family: var(--mono);
+                font-size: 10.5px;
+                letter-spacing: 0.07em;
+                text-transform: uppercase;
+                color: var(--muted);
+            }}
+            h1 {{
+                font-size: clamp(1.5rem, 1.1rem + 1.6vw, 2.1rem);
+                font-weight: 600;
+                letter-spacing: -0.022em;
+                line-height: 1.15;
+                margin: 0 0 10px;
+            }}
+            .lede {{ margin: 0 0 36px; max-width: 62ch; color: var(--muted); }}
+            h2 {{
+                position: relative;
+                font-size: 1.0625rem;
+                font-weight: 600;
+                letter-spacing: -0.01em;
+                border-top: 1px solid var(--ink);
+                padding-top: 13px;
+                margin: 0 0 4px;
+            }}
+            h2::before {{
+                content: "";
+                position: absolute;
+                top: 0; left: 0;
+                width: 2px; height: 7px;
+                background: var(--signal);
+            }}
+            /* Routes are a ruled index, not a stack of grey boxes: the path is
+               the thing you scan for, so it gets the mono column. */
+            .routes {{
+                border-top: 1px solid var(--rule);
+                margin-top: 12px;
+            }}
+            .endpoint {{
+                display: grid;
+                grid-template-columns: minmax(0, 4.25rem) minmax(0, 1fr);
+                gap: 2px 18px;
+                padding: 13px 0;
+                border-bottom: 1px solid var(--rule-soft);
+            }}
+            .method {{
+                font-family: var(--mono);
+                font-size: 10.5px;
+                letter-spacing: 0.09em;
+                line-height: 1.7;
+                color: var(--signal);
+            }}
+            .path {{
+                font-family: var(--mono);
+                font-size: 0.9375rem;
+                overflow-wrap: anywhere;
+            }}
+            .about {{ grid-column: 2; color: var(--muted); font-size: 0.875rem; }}
+            footer {{
+                margin-top: 44px;
+                border-top: 1px solid var(--ink);
+                padding-top: 14px;
+                font-family: var(--mono);
+                font-size: 10.5px;
+                letter-spacing: 0.07em;
+                text-transform: uppercase;
+                color: var(--muted);
+            }}
+            @media (max-width: 520px) {{
+                .endpoint {{ grid-template-columns: minmax(0, 1fr); }}
+                .about {{ grid-column: 1; }}
+            }}
         </style>
     </head>
     <body>
-        <h1>🚀 LLMTraceFX API</h1>
-        <p>GPU-level LLM inference profiler</p>
-        
-        <h2>Available Endpoints:</h2>
+    <div class="sheet">
+        <header class="masthead">
+            {LOCKUP_SVG}
+            <p class="stamp">HTTP API index</p>
+        </header>
+        <h1>GPU level LLM inference profiler</h1>
+        <p class="lede">This service accepts a trace, attributes its latency to
+        GPU operations, and returns the analysis as JSON or as a rendered
+        dashboard. The routes below are the whole surface.</p>
 
-        <div class="endpoint">
-            <span class="method">GET</span> /hardware
-            <br>List supported CUDA and Metal hardware profiles
+        <h2>Routes</h2>
+        <div class="routes">
+            <div class="endpoint">
+                <span class="method">GET</span>
+                <span class="path">/hardware</span>
+                <span class="about">List supported CUDA and Metal hardware profiles.</span>
+            </div>
+            <div class="endpoint">
+                <span class="method">POST</span>
+                <span class="path">/upload-trace</span>
+                <span class="about">Upload a trace file for analysis.</span>
+            </div>
+            <div class="endpoint">
+                <span class="method">POST</span>
+                <span class="path">/analyze-trace</span>
+                <span class="about">Analyze trace data supplied directly in the request.</span>
+            </div>
+            <div class="endpoint">
+                <span class="method">GET</span>
+                <span class="path">/analysis/{{analysis_id}}</span>
+                <span class="about">Get the analysis summary.</span>
+            </div>
+            <div class="endpoint">
+                <span class="method">GET</span>
+                <span class="path">/token/{{analysis_id}}/{{token_id}}</span>
+                <span class="about">Get the detailed analysis for a single token.</span>
+            </div>
+            <div class="endpoint">
+                <span class="method">GET</span>
+                <span class="path">/explain/{{analysis_id}}/{{token_id}}</span>
+                <span class="about">Get a Claude explanation for a token.</span>
+            </div>
+            <div class="endpoint">
+                <span class="method">GET</span>
+                <span class="path">/dashboard/{{analysis_id}}</span>
+                <span class="about">Get the rendered HTML dashboard.</span>
+            </div>
+            <div class="endpoint">
+                <span class="method">GET</span>
+                <span class="path">/export/{{analysis_id}}</span>
+                <span class="about">Export the analysis data as JSON.</span>
+            </div>
         </div>
-        
-        <div class="endpoint">
-            <span class="method">POST</span> /upload-trace
-            <br>Upload trace file for analysis
-        </div>
-        
-        <div class="endpoint">
-            <span class="method">POST</span> /analyze-trace
-            <br>Analyze trace data directly
-        </div>
-        
-        <div class="endpoint">
-            <span class="method">GET</span> /analysis/{analysis_id}
-            <br>Get analysis summary
-        </div>
-        
-        <div class="endpoint">
-            <span class="method">GET</span> /token/{analysis_id}/{token_id}
-            <br>Get detailed token analysis
-        </div>
-        
-        <div class="endpoint">
-            <span class="method">GET</span> /explain/{analysis_id}/{token_id}
-            <br>Get Claude AI explanation for token
-        </div>
-        
-        <div class="endpoint">
-            <span class="method">GET</span> /dashboard/{analysis_id}
-            <br>Get HTML dashboard
-        </div>
-        
-        <div class="endpoint">
-            <span class="method">GET</span> /export/{analysis_id}
-            <br>Export analysis data as JSON
-        </div>
+
+        <footer>llmtracefx serve</footer>
+    </div>
     </body>
     </html>
     """

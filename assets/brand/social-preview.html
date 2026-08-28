@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>LLMTraceFX social preview source</title>
+<!--
+  Source for assets/brand/social-preview.png (1280x640).
+
+  Regenerate by opening this file at exactly 1280x640 with a device scale
+  factor of 2 and capturing the viewport, for example:
+
+    chrome --headless --screenshot=assets/brand/social-preview.png \
+           --window-size=1280,640 --force-device-scale-factor=2 \
+           --hide-scrollbars assets/brand/social-preview.html
+
+  It is deliberately self contained: no fonts are fetched, no scripts run,
+  and every colour is a token from llmtracefx/brand.py.
+-->
+<style>
+  :root {
+    --field: #f4f1ea;
+    --sheet: #fbfaf7;
+    --ink: #16181a;
+    --muted: #5b6167;
+    --rule: #16181a26;
+    --rule-soft: #16181a14;
+    --signal: #c23d16;
+    --verify: #17513a;
+    --breach: #8c1d28;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+      "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+      "Liberation Mono", "DejaVu Sans Mono", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    font-family: var(--sans);
+    color: var(--ink);
+    background-color: var(--field);
+    background-image:
+      repeating-linear-gradient(to right, #16181a0f 0 1px, transparent 1px 64px),
+      repeating-linear-gradient(to bottom, #16181a0f 0 1px, transparent 1px 64px);
+    background-position: 32px 0;
+  }
+  .card {
+    position: absolute;
+    inset: 40px;
+    background: var(--sheet);
+    border: 1px solid var(--rule);
+    box-shadow: 0 1px 1px #16181a0f, 0 30px 60px -34px #16181a66;
+    padding: 44px 56px 40px;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--ink);
+    padding-bottom: 16px;
+  }
+  .lockup { display: block; height: 26px; width: auto; color: var(--ink); }
+  .stamp {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    line-height: 26px;
+  }
+  h1 {
+    margin-top: 40px;
+    font-size: 62px;
+    line-height: 1.03;
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    max-width: 19ch;
+  }
+  h1 em { font-style: normal; color: var(--signal); }
+  .lede {
+    margin-top: 20px;
+    font-size: 20px;
+    line-height: 1.45;
+    color: var(--muted);
+    max-width: 54ch;
+  }
+
+  /* A real readout, not a decorative chart: the same divisional strip the
+     tune report prints, so the preview shows the product's actual output. */
+  .readout {
+    margin-top: auto;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    border-top: 1px solid var(--ink);
+  }
+  .division {
+    position: relative;
+    padding: 18px 20px 0 18px;
+    border-left: 1px solid var(--rule-soft);
+  }
+  .division:first-child { border-left: 0; padding-left: 0; }
+  .division::before {
+    content: "";
+    position: absolute;
+    top: 0; left: -1px;
+    width: 1px; height: 8px;
+    background: var(--ink);
+  }
+  .division:first-child::before { display: none; }
+  .v {
+    display: block;
+    font-family: var(--mono);
+    font-size: 30px;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .v.accent { color: var(--signal); }
+  .v.good { color: var(--verify); }
+  .k {
+    display: block;
+    margin-top: 10px;
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  /* The trace motif at diagram scale: several measured candidates routed
+     through one gate, of which exactly one is carried through to a decision.
+     It is the logo's own geometry, and it states what the tool does. */
+  .transect {
+    position: absolute;
+    right: 56px;
+    top: 178px;
+    width: 372px;
+    height: auto;
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <header>
+      <svg class="lockup" viewBox="0 0 206 32" role="img" aria-label="LLMTraceFX">
+        <g fill="none" stroke="currentColor" stroke-linecap="butt" stroke-linejoin="miter">
+          <path d="M3 8H10L16 14H19" stroke-width="3.5"/>
+          <path d="M3 24H10L16 18H19" stroke-width="1.75"/>
+          <path transform="translate(43 0)" stroke-width="3" d="M1.5 7.5V24.5H11.5 M17.5 7.5V24.5H27.5 M33.5 24.5V7.5L40 16L46.5 7.5V24.5 M52.5 7.5H62.5M57.5 7.5V24.5 M68.5 24.5V7.5H75.5L78.5 10.5V13L75.5 15.5H68.5M75 15.5L78.5 24.5 M84.5 24.5V11L88 7.5H91L94.5 11V24.5M84.5 17H94.5 M110.5 10.5L107.5 7.5H103.5L100.5 10.5V21.5L103.5 24.5H107.5L110.5 21.5 M126.5 7.5H116.5V24.5H126.5M116.5 16H124.5 M142.5 7.5H132.5V24.5M132.5 16H140.5 M148.5 7.5L158.5 24.5M158.5 7.5L148.5 24.5"/>
+        </g>
+        <rect x="18" y="10.5" width="11" height="11" fill="var(--signal)"/>
+      </svg>
+      <span class="stamp">Local inference profiler</span>
+    </header>
+
+    <svg class="transect" viewBox="0 0 372 232" aria-hidden="true">
+      <g fill="none" stroke="#16181a" stroke-opacity="0.19" stroke-width="1.5"
+         stroke-linecap="butt" stroke-linejoin="miter">
+        <path d="M0 12H112L148 48H236"/>
+        <path d="M0 68H128L156 96H236"/>
+        <path d="M0 164H128L156 136H236"/>
+        <path d="M0 220H112L148 184H236"/>
+      </g>
+      <g fill="none" stroke="#16181a" stroke-opacity="0.34" stroke-width="1.5">
+        <path d="M236 44V52M236 92V100M236 132V140M236 180V188"/>
+      </g>
+      <path d="M0 116H236" fill="none" stroke="#16181a" stroke-opacity="0.42"
+            stroke-width="3.5"/>
+      <g fill="none" stroke="#16181a" stroke-opacity="0.19" stroke-width="1.5">
+        <path d="M40 110V122M88 110V122M136 110V122M184 110V122"/>
+      </g>
+      <path d="M236 116H302" fill="none" stroke="#16181a" stroke-opacity="0.42"
+            stroke-width="3.5"/>
+      <rect x="300" y="98" width="36" height="36" fill="var(--signal)"/>
+    </svg>
+
+    <h1>Find out why inference is slow. <em>With evidence.</em></h1>
+    <p class="lede">Profiles local LLM and GPU inference, verifies workload quality,
+    tunes configurations under explicit constraints, and prints a reproducible
+    offline report you can hand to someone else.</p>
+
+    <div class="readout">
+      <div class="division">
+        <span class="v accent">-42.5%</span>
+        <span class="k">Mean latency</span>
+      </div>
+      <div class="division">
+        <span class="v good">100%</span>
+        <span class="k">Pass rate held</span>
+      </div>
+      <div class="division">
+        <span class="v">5</span>
+        <span class="k">Candidates ranked</span>
+      </div>
+      <div class="division">
+        <span class="v">0</span>
+        <span class="k">Network calls</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
