@@ -640,6 +640,89 @@ uv run ruff check llmtracefx/hardware.py \
   llmtracefx/profiler/gpu_analyzer.py tests
 ```
 
+## 🧭 Inference Optimizer Foundation
+
+LLMTraceFX is evolving from a trace *analyzer* into a workload-aware
+inference *optimizer* for open models (initial target: Qwen3.8-27B on
+Apple M5 Pro via MLX/llama.cpp Metal, and on CloudRift RTX 4090 via
+llama.cpp CUDA). This PR lays the **foundation only** — reliable, tested
+primitives that later native Metal/CUDA collectors and tuning logic will
+build on:
+
+- **Canonical evidence schema** (`llmtracefx.optimizer.schema`): a
+  versioned `ExperimentRecord` capturing run identity, hardware/platform,
+  model/tokenizer/quantization, runtime/backend + git revision, exact
+  command and config/workload hashes, warmup/repetition/seed metadata,
+  token counts, load/tokenize/prefill/decode/total timing, speculative
+  decoding (MTP) counters, memory/power when available, task outcome, and
+  errors — every measurement is tagged with a `MetricProvenance`
+  (`measured_native`, `measured_wall_clock`, `derived`, `estimated`) so
+  nothing is silently invented.
+- **CPU-only environment manifest** (`llmtracefx.optimizer.manifest`):
+  deterministic, non-sensitive OS/arch/CPU/package-version metadata for
+  comparability checks. Never collects secrets, usernames, hostnames, or
+  full environment dumps.
+- **Reproducible experiment runner** (`llmtracefx.optimizer.runner`):
+  executes a configured command (argv list, never a shell string) for N
+  warmup + N measured repetitions, with timeouts, atomic JSON/JSONL
+  artifacts, and resume that skips already-completed repetitions while
+  retrying failed/timed-out ones.
+- **llama.cpp collector** (`llmtracefx.optimizer.parsers.llama_cpp`):
+  parses `llama_print_timings` / `llama_perf_context_print` timing lines
+  and speculative-decoding counters into the canonical schema, tolerating
+  missing optional lines but raising explicitly on malformed values.
+- **First "doctor" rule** (`llmtracefx.optimizer.doctor.speculative`):
+  compares speculative-decoding (MTP) runs against a comparable
+  autoregressive baseline and reports `regression` / `improvement` /
+  `no_significant_difference` / `inconclusive` — it refuses to guess when
+  runs aren't comparable, repetitions are too few, or the delta is
+  smaller than run-to-run noise.
+
+Try it end-to-end with a CPU-only example (no GPU or model download
+required):
+
+```bash
+uv sync --extra dev --extra test
+
+# 1. Collect a non-sensitive environment manifest
+uv run llmtracefx-optimizer manifest
+
+# 2. Convert a llama.cpp log into a canonical ExperimentRecord
+uv run llmtracefx-optimizer parse-llama-cpp \
+  --run-id baseline-1 --model-id "Qwen/Qwen3.8-27B" --quantization Q4_K_M \
+  --stdout-file tests/optimizer/fixtures/llama_cpp/qwen3_8b_baseline_run1.log \
+  --output /tmp/baseline-1.json -- llama-cli -m qwen3.8-27b-q4.gguf
+
+uv run llmtracefx-optimizer parse-llama-cpp \
+  --run-id baseline-2 --model-id "Qwen/Qwen3.8-27B" --quantization Q4_K_M \
+  --stdout-file tests/optimizer/fixtures/llama_cpp/qwen3_8b_baseline_run2.log \
+  --output /tmp/baseline-2.json -- llama-cli -m qwen3.8-27b-q4.gguf
+
+uv run llmtracefx-optimizer parse-llama-cpp \
+  --run-id mtp-1 --model-id "Qwen/Qwen3.8-27B" --quantization Q4_K_M \
+  --speculative-method mtp \
+  --stdout-file tests/optimizer/fixtures/llama_cpp/qwen3_8b_mtp_improvement_run1.log \
+  --output /tmp/mtp-1.json -- llama-cli -m qwen3.8-27b-q4.gguf --spec-type draft-mtp
+
+uv run llmtracefx-optimizer parse-llama-cpp \
+  --run-id mtp-2 --model-id "Qwen/Qwen3.8-27B" --quantization Q4_K_M \
+  --speculative-method mtp \
+  --stdout-file tests/optimizer/fixtures/llama_cpp/qwen3_8b_mtp_improvement_run2.log \
+  --output /tmp/mtp-2.json -- llama-cli -m qwen3.8-27b-q4.gguf --spec-type draft-mtp
+
+# 3. Ask the doctor whether speculative decoding changed performance
+uv run llmtracefx-optimizer doctor speculative \
+  --baseline /tmp/baseline-1.json /tmp/baseline-2.json \
+  --speculative /tmp/mtp-1.json /tmp/mtp-2.json
+```
+
+**Not yet included** (tracked as follow-up work): native Metal/CUDA
+performance-counter ingestion, MLX and CUDA/vLLM/SGLang collectors,
+automatic tuning/search, and any actual Qwen3.8-27B benchmark results.
+The fixtures under `tests/optimizer/fixtures/llama_cpp/` are synthetic,
+hand-written logs for testing the parser and doctor rule — not
+benchmark evidence (see the `PROVENANCE.md` in that directory).
+
 ## 📄 License
 
 This project is licensed under the GNU General Public License v3.0 License - see the [LICENSE](LICENSE) file for details.

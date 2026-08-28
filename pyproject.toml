@@ -75,6 +75,7 @@ Issues = "https://github.com/Siddhant-K-code/LLMTraceFX/issues"
 llmtracefx = "llmtracefx.main:main"
 llmtracefx-serve = "llmtracefx.api.serve:main"
 llmtracefx-dashboard = "llmtracefx.realtime_dashboard:main"
+llmtracefx-optimizer = "llmtracefx.optimizer.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
