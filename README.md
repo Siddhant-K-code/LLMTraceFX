@@ -946,6 +946,29 @@ share without leaking a machine's home-directory layout; pass
 `examples/optimizer/tune-report-example.json` for a synthetic (non-benchmark)
 example report that exercises every section of the viewer.
 
+The `optimize` command composes workload execution, verification, tuning, and
+optional HTML rendering without changing any phase's underlying logic:
+
+```bash
+uv run llmtracefx-optimizer optimize \
+  --matrix artifacts/qwen3.8-matrix/manifest.json \
+  --model-path /existing/local/mlx/model \
+  --results artifacts/qwen3.8-run \
+  --policy examples/optimizer/tune-policy-fastest-under-20gb-m5-pro.json \
+  --report-json artifacts/qwen3.8-tune-report.json \
+  --report-html artifacts/qwen3.8-tune-report.html \
+  --mode autoregressive \
+  --context-tier 2k
+```
+
+It writes `optimize_summary.json` under `--results` by default. This atomic,
+machine-readable summary records every phase, row count, recommendation, and
+the final exit status. `--dry-run` writes the same summary with planning counts
+and marks execution, verification, tuning, and rendering as `not_run`; it does
+not load MLX or write tune reports. Existing unrelated runs under `--results`
+are excluded from tuning, while repeatable `--extra-results` paths explicitly
+opt additional evidence into the comparison.
+
 **Not yet included** (tracked as a follow-up PR): a genuinely capable
 native-MTP runtime adapter (none exists upstream today), native Metal/CUDA
 performance-counter ingestion, CUDA/vLLM/SGLang collectors, and any actual

@@ -13,6 +13,7 @@ about it can be trusted enough to even place it in a comparable group.
 
 from __future__ import annotations
 
+from collections.abc import Set
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -209,7 +210,11 @@ def _load_one_run(
     )
 
 
-def load_evidence(results_dirs: tuple[Path, ...]) -> LoadedEvidence:
+def load_evidence(
+    results_dirs: tuple[Path, ...],
+    *,
+    primary_run_ids: Set[str] | None = None,
+) -> LoadedEvidence:
     """Load and identity-check every run under every given results directory.
 
     Raises ``TuneInputError`` if the same ``run_id`` appears more than once
@@ -222,11 +227,17 @@ def load_evidence(results_dirs: tuple[Path, ...]) -> LoadedEvidence:
     usable: dict[str, RunEvidence] = {}
     excluded: list[ExcludedRun] = []
 
-    for results_dir in results_dirs:
+    for index, results_dir in enumerate(results_dirs):
         runs_dir = results_dir / "runs"
         if not runs_dir.is_dir():
             continue
         for verification_path in sorted(runs_dir.glob("*/verification.json")):
+            if (
+                index == 0
+                and primary_run_ids is not None
+                and verification_path.parent.name not in primary_run_ids
+            ):
+                continue
             evidence, excluded_run = _load_one_run(
                 verification_path, results_dir=results_dir
             )

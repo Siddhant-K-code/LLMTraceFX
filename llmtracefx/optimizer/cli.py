@@ -14,6 +14,10 @@ Subcommands:
                      verified configuration for a workload/hardware target.
     tune-report      Render a `tune` JSON report as a self-contained, portable
                      HTML file for offline inspection (no Streamlit needed).
+    optimize         End-to-end: execute selected matrix rows, tune the
+                     resulting evidence, and render the JSON/HTML report,
+                     composing the above primitives without duplicating any
+                     of their logic.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import argparse
 import json
 import sys
 from dataclasses import asdict
+from itertools import combinations
 from pathlib import Path
 
 from .collectors._shared import atomic_write_text
@@ -39,6 +44,17 @@ from .collectors.native_mtp import (
 )
 from .doctor.speculative import diagnose_speculative_regression
 from .manifest import collect_environment_manifest
+from .optimize_summary import (
+    OPTIMIZE_SUMMARY_SCHEMA_VERSION,
+    OptimizeSummary,
+    OptimizeSummaryValidationError,
+    OverallStatus,
+    PhaseName,
+    PhaseReport,
+    PhaseStatus,
+    RecommendedCandidate,
+    RowStatusCounts,
+)
 from .parsers.llama_cpp import LlamaCppParseError, build_experiment_record
 from .runner import ExperimentRunner, RunnerConfig, RunnerConfigError
 from .schema import (
@@ -53,7 +69,7 @@ from .schema import (
 from .tune.explain import format_report_text
 from .tune.loader import TuneInputError
 from .tune.policy import TunePolicy, TunePolicyError
-from .tune.report import TuneReport, TuneReportValidationError
+from .tune.report import GroupOutcome, TuneReport, TuneReportValidationError
 from .tune.report_html import render_tune_report_html
 from .tune.tuner import tune
 from .workloads.aggregate import summarize_results, write_summary
@@ -69,6 +85,7 @@ from .workloads.matrix import (
 )
 from .workloads.schema import ContextTier, WorkloadCategory, WorkloadSchemaError
 from .workloads.verify import (
+    RowPlan,
     RowSelection,
     RowStatus,
     RunBinding,
@@ -484,7 +501,6 @@ def _cmd_workloads_run(args: argparse.Namespace) -> int:
         if not plans:
             print("No matrix rows matched the selection filters", file=sys.stderr)
             return 1
-
         for plan in plans:
             label = (
                 "UNSUPPORTED"
@@ -572,7 +588,7 @@ def _cmd_workloads_summarize(args: argparse.Namespace) -> int:
 def _cmd_tune(args: argparse.Namespace) -> int:
     try:
         policy = TunePolicy.from_file(args.policy)
-    except TunePolicyError as exc:
+    except (OSError, UnicodeError, TunePolicyError) as exc:
         print(f"Invalid tune policy: {exc}", file=sys.stderr)
         return 1
 
@@ -630,6 +646,506 @@ def _cmd_tune_report(args: argparse.Namespace) -> int:
             "rerun with --include-paths to include full paths."
         )
     return 0
+
+
+def _exit_code_severity(code: int) -> int:
+    """Rank exit codes so a hard failure always outranks an inconclusive one.
+
+    Mirrors the precedence already implied by every other subcommand in
+    this CLI: ``1`` (invalid input / hard failure) is worse than ``2``
+    (evidence collected but inconclusive), which is worse than ``0``.
+    """
+    if code == 1:
+        return 2
+    if code == 2:
+        return 1
+    return 0
+
+
+def _combine_exit_codes(*codes: int) -> int:
+    return max(codes, key=_exit_code_severity)
+
+
+def _resolve_optimize_paths(args: argparse.Namespace) -> dict[str, Path | None]:
+    output_dir = Path(args.results).expanduser().resolve(strict=False)
+    return {
+        "matrix": Path(args.matrix).expanduser().resolve(strict=False),
+        "policy": Path(args.policy).expanduser().resolve(strict=False),
+        "report-json": (
+            Path(args.report_json).expanduser().resolve(strict=False)
+            if args.report_json
+            else None
+        ),
+        "report-html": (
+            Path(args.report_html).expanduser().resolve(strict=False)
+            if args.report_html
+            else None
+        ),
+        "summary-json": (
+            Path(args.summary_json).expanduser().resolve(strict=False)
+            if args.summary_json
+            else output_dir / "optimize_summary.json"
+        ),
+        "results": output_dir,
+    }
+
+
+def _filesystem_is_case_insensitive(path: Path) -> bool:
+    """Detect case folding read-only using the nearest existing ancestor."""
+    probe = path
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    while probe != probe.parent:
+        name = probe.name
+        for index, character in enumerate(name):
+            if not character.isalpha():
+                continue
+            swapped = character.swapcase()
+            if swapped == character:
+                continue
+            alias = probe.with_name(name[:index] + swapped + name[index + 1 :])
+            try:
+                return alias.exists() and alias.samefile(probe)
+            except OSError:
+                return False
+        probe = probe.parent
+    return False
+
+
+def _paths_alias(left: Path, right: Path) -> bool:
+    left = left.expanduser().resolve(strict=False)
+    right = right.expanduser().resolve(strict=False)
+    if left == right:
+        return True
+    if left.exists() and right.exists():
+        try:
+            if left.samefile(right):
+                return True
+        except OSError:
+            pass
+    return str(left).casefold() == str(
+        right
+    ).casefold() and _filesystem_is_case_insensitive(left)
+
+
+def _validate_optimize_paths(paths: dict[str, Path | None]) -> str | None:
+    """Reject aliases that could overwrite optimize inputs or artifacts."""
+    configured: list[tuple[str, Path]] = []
+    for label in ("matrix", "policy", "report-json", "report-html", "summary-json"):
+        path = paths[label]
+        if path is not None:
+            configured.append((label, path))
+    for (left_label, left), (right_label, right) in combinations(configured, 2):
+        if _paths_alias(left, right):
+            return (
+                "optimize paths must be distinct; "
+                f"{left_label} and {right_label} alias {left}"
+            )
+    return None
+
+
+def _validate_optimize_plan_paths(
+    paths: dict[str, Path | None], plans: tuple[RowPlan, ...]
+) -> str | None:
+    """Prevent optimize inputs/outputs from aliasing selected-row artifacts."""
+    configured = [
+        (label, path)
+        for label in (
+            "matrix",
+            "policy",
+            "report-json",
+            "report-html",
+            "summary-json",
+        )
+        if (path := paths[label]) is not None
+    ]
+    for plan in plans:
+        artifacts = (
+            ("prompt", plan.prompt_path),
+            ("verification", plan.verification_path),
+            ("final record", plan.final_record_path),
+            ("collector record", plan.collection_dir / "record.json"),
+            ("response", plan.collection_dir / "response.txt"),
+            ("environment", plan.collection_dir / "environment.json"),
+        )
+        for label, path in configured:
+            for artifact_label, artifact_path in artifacts:
+                if _paths_alias(path, artifact_path):
+                    return (
+                        f"optimize {label} path aliases selected run "
+                        f"{plan.entry.run_id!r} {artifact_label} artifact: {path}"
+                    )
+    return None
+
+
+def _cmd_optimize(args: argparse.Namespace) -> int:
+    """Compose row execution, offline tuning, and report rendering.
+
+    Reuses ``workloads.verify.run_selected_rows``/``plan_selected_rows``,
+    ``tune.tuner.tune``, and ``tune.report_html.render_tune_report_html``
+    exactly as the standalone ``workloads run``/``tune``/``tune-report``
+    subcommands do; nothing here duplicates their collection, evaluation,
+    tuning, or rendering logic.
+    """
+    paths = _resolve_optimize_paths(args)
+    path_error = _validate_optimize_paths(paths)
+    if path_error is not None:
+        print(path_error, file=sys.stderr)
+        return 1
+
+    matrix_path = paths["matrix"]
+    policy_path = paths["policy"]
+    output_dir = paths["results"]
+    report_json_path = paths["report-json"]
+    report_html_path = paths["report-html"]
+    summary_path = paths["summary-json"]
+    assert matrix_path is not None
+    assert policy_path is not None
+    assert output_dir is not None
+    assert summary_path is not None
+    try:
+        manifest = MatrixManifest.read_json(matrix_path)
+    except (OSError, MatrixSchemaError) as exc:
+        print(f"Failed to load matrix manifest: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        policy = TunePolicy.from_file(policy_path)
+    except (OSError, UnicodeError, TunePolicyError) as exc:
+        print(f"Invalid tune policy: {exc}", file=sys.stderr)
+        return 1
+
+    selection = _row_selection_from_args(args)
+    manifest_dir = matrix_path.parent
+
+    if args.dry_run:
+        plans = plan_selected_rows(
+            manifest,
+            manifest_dir=manifest_dir,
+            output_dir=output_dir,
+            selection=selection,
+            binding=_optional_run_binding(args),
+        )
+        if not plans:
+            print("No matrix rows matched the selection filters", file=sys.stderr)
+            return 1
+        plan_path_error = _validate_optimize_plan_paths(paths, plans)
+        if plan_path_error is not None:
+            print(plan_path_error, file=sys.stderr)
+            return 1
+
+        for plan in plans:
+            label = (
+                "UNSUPPORTED"
+                if plan.unsupported
+                else ("READY" if plan.ready else "BLOCKED")
+            )
+            print(
+                f"[{label}] {plan.entry.run_id} "
+                f"({plan.entry.decode_mode}, {plan.entry.context_tier})"
+            )
+            print(f"    prompt file: {plan.prompt_path}")
+            print(f"    collection dir: {plan.collection_dir}")
+            print(f"    final record: {plan.final_record_path}")
+            if plan.unsupported:
+                print(f"    unsupported reason: {plan.unsupported_reason}")
+            for blocker in plan.blockers:
+                print(f"    blocker: {blocker}")
+
+        blocked = sum(1 for plan in plans if not plan.unsupported and not plan.ready)
+        unsupported = sum(1 for plan in plans if plan.unsupported)
+        print(
+            f"{len(plans)} row(s) selected, {blocked} blocked, "
+            f"{unsupported} unsupported"
+        )
+        print(
+            f"Planned tune policy objective: {policy.objective.value} ({policy_path})"
+        )
+        if report_json_path is not None:
+            print(f"Planned tune report JSON: {report_json_path}")
+        if report_html_path is not None:
+            print(f"Planned tune report HTML: {report_html_path}")
+        exit_code = 0 if blocked == 0 else 2
+        overall_status = (
+            OverallStatus.SUCCESS if exit_code == 0 else OverallStatus.INCONCLUSIVE
+        )
+        planned_detail = (
+            f"{len(plans)} row(s) selected, {blocked} blocked, "
+            f"{unsupported} unsupported"
+        )
+        summary = OptimizeSummary(
+            schema_version=OPTIMIZE_SUMMARY_SCHEMA_VERSION,
+            generated_at=utc_now_iso(),
+            dry_run=True,
+            matrix_path=str(matrix_path),
+            results_dir=str(output_dir),
+            extra_results_dirs=tuple(args.extra_results or ()),
+            policy_path=str(policy_path),
+            report_json_path=(
+                str(report_json_path) if report_json_path is not None else None
+            ),
+            report_html_path=(
+                str(report_html_path) if report_html_path is not None else None
+            ),
+            phases=(
+                PhaseReport(
+                    name=PhaseName.PLANNED,
+                    status=PhaseStatus.OK,
+                    detail=planned_detail,
+                ),
+                PhaseReport(name=PhaseName.EXECUTED, status=PhaseStatus.NOT_RUN),
+                PhaseReport(name=PhaseName.VERIFIED, status=PhaseStatus.NOT_RUN),
+                PhaseReport(name=PhaseName.TUNED, status=PhaseStatus.NOT_RUN),
+                PhaseReport(name=PhaseName.RENDERED, status=PhaseStatus.NOT_RUN),
+            ),
+            row_counts=RowStatusCounts(
+                total=len(plans),
+                ready=sum(1 for plan in plans if plan.ready and not plan.unsupported),
+                blocked=blocked,
+                unsupported=unsupported,
+            ),
+            recommendations=(),
+            overall_status=overall_status,
+            exit_code=exit_code,
+        )
+        try:
+            atomic_write_text(summary_path, summary.to_json() + "\n")
+            OptimizeSummary.read_json(summary_path)
+        except (OSError, OptimizeSummaryValidationError) as exc:
+            print(
+                f"Failed to write/validate orchestration summary: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            "No model was loaded or downloaded, no results were tuned, and "
+            "no tune report was written (--dry-run)"
+        )
+        print(f"Dry-run orchestration summary written to {summary_path}")
+        return exit_code
+
+    if report_json_path is None:
+        print("--report-json is required unless --dry-run is set", file=sys.stderr)
+        return 1
+    if not args.model_path:
+        print("--model-path is required unless --dry-run is set", file=sys.stderr)
+        return 1
+
+    try:
+        binding = RunBinding(
+            target_model_path=Path(args.model_path),
+            draft_model_path=(
+                Path(args.draft_model_path) if args.draft_model_path else None
+            ),
+            seed=args.seed,
+            num_draft_tokens=args.num_draft_tokens,
+        )
+    except VerifyError as exc:
+        print(f"Invalid model path binding: {exc}", file=sys.stderr)
+        return 1
+
+    plans = plan_selected_rows(
+        manifest,
+        manifest_dir=manifest_dir,
+        output_dir=output_dir,
+        selection=selection,
+        binding=binding,
+    )
+    if not plans:
+        print("No matrix rows matched the selection filters", file=sys.stderr)
+        return 1
+    plan_path_error = _validate_optimize_plan_paths(paths, plans)
+    if plan_path_error is not None:
+        print(plan_path_error, file=sys.stderr)
+        return 1
+
+    results = run_selected_rows(
+        manifest,
+        manifest_dir=manifest_dir,
+        output_dir=output_dir,
+        selection=selection,
+        binding=binding,
+        resume=not args.no_resume,
+        runtime_factory=MLXLMRuntime,
+    )
+    if not results:
+        print("No matrix rows matched the selection filters", file=sys.stderr)
+        return 1
+
+    for result in results:
+        status = result.verification.status.value.upper()
+        suffix = f": {result.verification.reason}" if result.verification.reason else ""
+        print(f"[{status}] {result.entry.run_id}{suffix}")
+    print(f"Artifacts written to {output_dir}")
+
+    counts = RowStatusCounts(
+        total=len(results),
+        ready=sum(
+            1
+            for result in results
+            if result.verification.status != RowStatus.UNSUPPORTED
+        ),
+        completed=sum(
+            1 for r in results if r.verification.status == RowStatus.COMPLETED
+        ),
+        skipped=sum(1 for r in results if r.verification.status == RowStatus.SKIPPED),
+        failed=sum(1 for r in results if r.verification.status == RowStatus.FAILED),
+        unsupported=sum(
+            1 for r in results if r.verification.status == RowStatus.UNSUPPORTED
+        ),
+        inconclusive=sum(
+            1 for r in results if r.verification.status == RowStatus.INCONCLUSIVE
+        ),
+    )
+
+    if counts.failed:
+        executed_status = PhaseStatus.FAILED
+    elif counts.inconclusive:
+        executed_status = PhaseStatus.INCONCLUSIVE
+    else:
+        executed_status = PhaseStatus.OK
+
+    trustable = counts.completed + counts.skipped
+    if counts.failed:
+        verified_status = PhaseStatus.FAILED
+    elif counts.inconclusive:
+        verified_status = PhaseStatus.INCONCLUSIVE
+    elif trustable == 0:
+        verified_status = PhaseStatus.UNSUPPORTED
+    else:
+        verified_status = PhaseStatus.OK
+
+    extra_results = tuple(Path(path) for path in (args.extra_results or ()))
+    results_dirs = (output_dir, *extra_results)
+
+    tune_report: TuneReport | None = None
+    tune_detail: str | None = None
+    try:
+        tune_report = tune(
+            results_dirs=results_dirs,
+            policy=policy,
+            primary_run_ids=frozenset(result.entry.run_id for result in results),
+        )
+    except TuneInputError as exc:
+        tune_detail = str(exc)
+        print(f"Invalid tuning input: {tune_detail}", file=sys.stderr)
+
+    if tune_report is not None:
+        print(format_report_text(tune_report, verbose=args.explain))
+        if not tune_report.groups:
+            tuned_status = PhaseStatus.FAILED
+            tune_detail = (
+                "no comparable groups were found across the given results "
+                "directories"
+            )
+            print(f"\n{tune_detail}", file=sys.stderr)
+        elif not tune_report.has_recommendation:
+            tuned_status = PhaseStatus.INCONCLUSIVE
+        else:
+            tuned_status = PhaseStatus.OK
+    else:
+        tuned_status = PhaseStatus.FAILED
+
+    recommendations: list[RecommendedCandidate] = []
+    if tune_report is not None:
+        for group in tune_report.groups:
+            if (
+                group.outcome == GroupOutcome.RECOMMENDED
+                and group.recommended is not None
+            ):
+                recommendations.append(
+                    RecommendedCandidate(
+                        group_label=group.group_key.label(),
+                        run_ids=group.recommended.run_ids,
+                        objective_name=group.recommended.objective_name,
+                        objective_value=group.recommended.objective_value,
+                    )
+                )
+
+    rendered_status = PhaseStatus.SKIPPED
+    rendered_detail: str | None = None
+    if tune_report is not None:
+        try:
+            atomic_write_text(report_json_path, tune_report.to_json() + "\n")
+            TuneReport.read_json(report_json_path)
+        except (OSError, TuneReportValidationError) as exc:
+            rendered_status = PhaseStatus.FAILED
+            rendered_detail = f"failed to write/validate tune report JSON: {exc}"
+            print(rendered_detail, file=sys.stderr)
+        else:
+            print(f"Tune report JSON written to {report_json_path}")
+            rendered_status = PhaseStatus.OK
+
+        if rendered_status == PhaseStatus.OK and report_html_path is not None:
+            try:
+                html_document = render_tune_report_html(
+                    tune_report, redact_paths=not args.include_paths
+                )
+                atomic_write_text(report_html_path, html_document)
+            except OSError as exc:
+                rendered_status = PhaseStatus.FAILED
+                rendered_detail = f"failed to write tune report HTML: {exc}"
+                print(rendered_detail, file=sys.stderr)
+            else:
+                print(f"Tune report HTML written to {report_html_path}")
+    else:
+        rendered_detail = "tuning failed; nothing to render"
+
+    exec_code = 1 if counts.failed else (2 if counts.inconclusive else 0)
+    tune_code = (
+        1
+        if tuned_status == PhaseStatus.FAILED
+        else 2 if tuned_status == PhaseStatus.INCONCLUSIVE else 0
+    )
+    rendered_code = 1 if rendered_status == PhaseStatus.FAILED else 0
+    exit_code = _combine_exit_codes(exec_code, tune_code, rendered_code)
+
+    if exit_code == 0:
+        overall_status = OverallStatus.SUCCESS
+    elif exit_code == 2:
+        overall_status = OverallStatus.INCONCLUSIVE
+    else:
+        overall_status = OverallStatus.FAILED
+
+    summary = OptimizeSummary(
+        schema_version=OPTIMIZE_SUMMARY_SCHEMA_VERSION,
+        generated_at=utc_now_iso(),
+        dry_run=False,
+        matrix_path=str(matrix_path),
+        results_dir=str(output_dir),
+        extra_results_dirs=tuple(str(path) for path in extra_results),
+        policy_path=str(policy_path),
+        report_json_path=str(report_json_path),
+        report_html_path=str(report_html_path) if report_html_path else None,
+        phases=(
+            PhaseReport(name=PhaseName.PLANNED, status=PhaseStatus.OK),
+            PhaseReport(name=PhaseName.EXECUTED, status=executed_status),
+            PhaseReport(name=PhaseName.VERIFIED, status=verified_status),
+            PhaseReport(name=PhaseName.TUNED, status=tuned_status, detail=tune_detail),
+            PhaseReport(
+                name=PhaseName.RENDERED,
+                status=rendered_status,
+                detail=rendered_detail,
+            ),
+        ),
+        row_counts=counts,
+        recommendations=tuple(recommendations),
+        overall_status=overall_status,
+        exit_code=exit_code,
+    )
+
+    try:
+        atomic_write_text(summary_path, summary.to_json() + "\n")
+        OptimizeSummary.read_json(summary_path)
+    except (OSError, OptimizeSummaryValidationError) as exc:
+        print(f"Failed to write/validate orchestration summary: {exc}", file=sys.stderr)
+        # The summary itself is the source of truth for what happened; if it
+        # cannot be trusted on disk, the whole invocation must be reported
+        # as a hard failure regardless of how the individual phases went.
+        return 1
+
+    print(f"Orchestration summary written to {summary_path}")
+    return exit_code
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1059,6 +1575,149 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     tune_report_parser.set_defaults(func=_cmd_tune_report)
+
+    optimize_parser = subparsers.add_parser(
+        "optimize",
+        help=(
+            "End-to-end: execute selected `workloads generate-matrix` rows, "
+            "offline-tune the resulting evidence, and render the JSON/HTML "
+            "report in one invocation. Composes `workloads run`, `tune`, "
+            "and `tune-report` exactly as they already behave; never loads "
+            "a model, downloads weights, or writes a report until its own "
+            "phase's evidence exists and validates."
+        ),
+    )
+    optimize_parser.add_argument(
+        "--matrix",
+        required=True,
+        help="Path to a `workloads generate-matrix` manifest.json",
+    )
+    optimize_parser.add_argument(
+        "--model-path",
+        default=None,
+        help=(
+            "Existing local target MLX model directory; required unless "
+            "--dry-run (models are never downloaded)"
+        ),
+    )
+    optimize_parser.add_argument(
+        "--draft-model-path",
+        default=None,
+        help=(
+            "Optional existing local MLX draft model; enables generic "
+            "draft-model speculation on selected autoregressive rows, "
+            "never on native-mtp rows"
+        ),
+    )
+    optimize_parser.add_argument("--num-draft-tokens", type=int, default=2)
+    optimize_parser.add_argument(
+        "--results",
+        required=True,
+        help=(
+            "The `workloads run` results directory for this invocation; "
+            "this is also the only results directory tuned unless "
+            "--extra-results explicitly opts in additional ones"
+        ),
+    )
+    optimize_parser.add_argument(
+        "--extra-results",
+        nargs="+",
+        default=None,
+        help=(
+            "Opt-in: additional already-collected `workloads run` results "
+            "directories to include when tuning, alongside --results. "
+            "Omit to tune only the evidence produced by this invocation"
+        ),
+    )
+    optimize_parser.add_argument(
+        "--run-id", nargs="+", default=None, help="Select specific run_id(s)"
+    )
+    optimize_parser.add_argument(
+        "--category",
+        nargs="+",
+        default=None,
+        choices=[category.value for category in WorkloadCategory],
+        help="Filter selected rows by workload category",
+    )
+    optimize_parser.add_argument(
+        "--context-tier",
+        nargs="+",
+        default=None,
+        choices=[tier.value for tier in ContextTier],
+        help="Filter selected rows by context tier",
+    )
+    optimize_parser.add_argument(
+        "--mode",
+        nargs="+",
+        default=None,
+        choices=[DECODE_MODE_AUTOREGRESSIVE, DECODE_MODE_NATIVE_MTP],
+        help=(
+            "Filter selected rows by decode mode; native-mtp rows are "
+            "always rejected as unsupported, never executed"
+        ),
+    )
+    optimize_parser.add_argument("--seed", type=int, default=0)
+    optimize_parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Re-run all selected rows even if a hash-matching completed artifact exists",
+    )
+    optimize_parser.add_argument(
+        "--policy",
+        required=True,
+        help="Path to a tune policy JSON/YAML file (objective + constraints)",
+    )
+    optimize_parser.add_argument(
+        "--report-json",
+        default=None,
+        help=(
+            "Atomically write the full tune report JSON to this path; "
+            "required unless --dry-run"
+        ),
+    )
+    optimize_parser.add_argument(
+        "--report-html",
+        default=None,
+        help=(
+            "Atomically write a self-contained HTML tune report to this "
+            "path. Optional: omit to skip HTML rendering entirely"
+        ),
+    )
+    optimize_parser.add_argument(
+        "--include-paths",
+        action="store_true",
+        help=(
+            "Include full local artifact paths in the HTML report. "
+            "Default: redact every path, same as `tune-report`"
+        ),
+    )
+    optimize_parser.add_argument(
+        "--summary-json",
+        default=None,
+        help=(
+            "Path to atomically write the machine-readable orchestration "
+            "summary (phase statuses, run counts, recommendations, exit "
+            "status) to. Default: <--results>/optimize_summary.json"
+        ),
+    )
+    optimize_parser.add_argument(
+        "--explain",
+        action="store_true",
+        help=(
+            "Print every violated constraint for every rejected candidate "
+            "(same as `tune --explain`)"
+        ),
+    )
+    optimize_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Print selected rows, required local model paths, expected "
+            "run/tune/report artifacts, unsupported rows, and blockers "
+            "without loading any model, tuning, or writing any report"
+        ),
+    )
+    optimize_parser.set_defaults(func=_cmd_optimize)
 
     return parser
 

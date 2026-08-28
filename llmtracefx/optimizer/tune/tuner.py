@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import math
 import statistics
-from collections.abc import Sequence
+from collections.abc import Sequence, Set
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -595,9 +595,14 @@ def _build_groups(
     return groups, excluded
 
 
-def tune(*, results_dirs: Sequence[Path], policy: TunePolicy) -> TuneReport:
+def tune(
+    *,
+    results_dirs: Sequence[Path],
+    policy: TunePolicy,
+    primary_run_ids: Set[str] | None = None,
+) -> TuneReport:
     """Load, group, constrain, and rank evidence into a full ``TuneReport``."""
-    loaded = load_evidence(tuple(results_dirs))
+    loaded = load_evidence(tuple(results_dirs), primary_run_ids=primary_run_ids)
     groups, extra_excluded = _build_groups(loaded.usable)
 
     group_reports = tuple(
