@@ -30,7 +30,7 @@ from .schema import (
 )
 
 
-def _platform_from_manifest() -> PlatformInfo:
+def _platform_from_manifest(*, accelerator: str | None = None) -> PlatformInfo:
     manifest = collect_environment_manifest()
     return PlatformInfo(
         os_name=manifest.os_name,
@@ -38,6 +38,7 @@ def _platform_from_manifest() -> PlatformInfo:
         architecture=manifest.architecture,
         cpu_cores=manifest.cpu_count,
         total_memory_gb=manifest.total_memory_gb,
+        accelerator=accelerator,
     )
 
 
@@ -95,7 +96,7 @@ def _cmd_parse_llama_cpp(args: argparse.Namespace) -> int:
         record = build_experiment_record(
             run_id=args.run_id,
             started_at=utc_now_iso(),
-            platform=_platform_from_manifest(),
+            platform=_platform_from_manifest(accelerator=args.accelerator),
             model=ModelInfo(
                 model_id=args.model_id,
                 model_revision=args.model_revision,
@@ -190,6 +191,16 @@ def build_parser() -> argparse.ArgumentParser:
     parse_parser.add_argument("--quantization", default=None)
     parse_parser.add_argument("--runtime-version", default=None)
     parse_parser.add_argument("--runtime-git-revision", default=None)
+    parse_parser.add_argument(
+        "--accelerator",
+        default=None,
+        help=(
+            "Explicit accelerator/GPU name (e.g. 'Apple M5 Pro', 'NVIDIA RTX 4090'). "
+            "Takes precedence over any device name llama.cpp reports in its own "
+            "output; if omitted, the parsed device hint (when present) is used "
+            "instead so comparability checks can tell different accelerators apart."
+        ),
+    )
     parse_parser.add_argument(
         "--speculative-method",
         default=None,

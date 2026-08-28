@@ -11,6 +11,7 @@ from llmtracefx.optimizer.schema import (
     Measurement,
     MetricProvenance,
     ModelInfo,
+    OutcomeInfo,
     PlatformInfo,
     RepetitionInfo,
     RuntimeInfo,
@@ -286,3 +287,76 @@ def test_command_info_from_dict_rejects_malformed_argv_entries(malformed_argv):
 def test_command_info_from_dict_accepts_list_of_strings():
     info = CommandInfo.from_dict({"argv": ["llama-cli", "-m", "model.gguf"]})
     assert info.argv == ("llama-cli", "-m", "model.gguf")
+
+
+# --- Adjacent audit: PlatformInfo / OutcomeInfo malformed float fields ------
+
+
+@pytest.mark.parametrize("malformed_value", ["8", True, [8], {}])
+def test_platform_info_from_dict_rejects_malformed_cpu_cores(malformed_value):
+    with pytest.raises(SchemaValidationError, match="cpu_cores"):
+        PlatformInfo.from_dict(
+            {
+                "os_name": "Darwin",
+                "os_version": "24.0",
+                "architecture": "arm64",
+                "cpu_cores": malformed_value,
+            }
+        )
+
+
+@pytest.mark.parametrize("malformed_value", ["24.0", True, [24]])
+def test_platform_info_from_dict_rejects_malformed_total_memory_gb(malformed_value):
+    with pytest.raises(SchemaValidationError, match="total_memory_gb"):
+        PlatformInfo.from_dict(
+            {
+                "os_name": "Darwin",
+                "os_version": "24.0",
+                "architecture": "arm64",
+                "total_memory_gb": malformed_value,
+            }
+        )
+
+
+def test_platform_info_from_dict_accepts_valid_numeric_fields():
+    platform = PlatformInfo.from_dict(
+        {
+            "os_name": "Darwin",
+            "os_version": "24.0",
+            "architecture": "arm64",
+            "cpu_cores": 18,
+            "total_memory_gb": 24,  # int is a valid float-compatible input
+        }
+    )
+    assert platform.cpu_cores == 18
+    assert platform.total_memory_gb == 24.0
+
+
+def test_platform_info_from_dict_allows_missing_and_none_numeric_fields():
+    platform = PlatformInfo.from_dict(
+        {
+            "os_name": "Darwin",
+            "os_version": "24.0",
+            "architecture": "arm64",
+            "cpu_cores": None,
+            "total_memory_gb": None,
+        }
+    )
+    assert platform.cpu_cores is None
+    assert platform.total_memory_gb is None
+
+
+@pytest.mark.parametrize("malformed_value", ["0.9", True, [0.9]])
+def test_outcome_info_from_dict_rejects_malformed_quality_score(malformed_value):
+    with pytest.raises(SchemaValidationError, match="quality_score"):
+        OutcomeInfo.from_dict({"quality_score": malformed_value})
+
+
+def test_outcome_info_from_dict_accepts_valid_quality_score():
+    outcome = OutcomeInfo.from_dict({"quality_score": 0.87})
+    assert outcome.quality_score == pytest.approx(0.87)
+
+
+def test_outcome_info_from_dict_allows_missing_quality_score():
+    outcome = OutcomeInfo.from_dict({})
+    assert outcome.quality_score is None

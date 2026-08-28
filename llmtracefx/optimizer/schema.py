@@ -116,7 +116,7 @@ def _validate_int(value: Any, *, context: str, key: str) -> int:
         raise SchemaValidationError(
             f"{context}.{key} must be an integer, got {value!r}"
         )
-    return value
+    return int(value)
 
 
 def _coerce_required_int(data: dict[str, Any], key: str, *, context: str) -> int:
@@ -130,6 +130,28 @@ def _coerce_optional_int(data: dict[str, Any], key: str, *, context: str) -> int
     if value is None:
         return None
     return _validate_int(value, context=context, key=key)
+
+
+def _validate_float(value: Any, *, context: str, key: str) -> float:
+    """Require ``value`` to be a genuine number (not ``bool``/``str``/etc).
+
+    Same rationale as ``_validate_int``: a malformed persisted float field
+    must fail as a ``SchemaValidationError`` naming the offending field
+    rather than raising a raw ``ValueError``/``TypeError`` from ``float()``
+    or silently accepting a boolean (``float(True) == 1.0``).
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SchemaValidationError(f"{context}.{key} must be a number, got {value!r}")
+    return float(value)
+
+
+def _coerce_optional_float(
+    data: dict[str, Any], key: str, *, context: str
+) -> float | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    return _validate_float(value, context=context, key=key)
 
 
 @dataclass(frozen=True)
@@ -156,8 +178,12 @@ class PlatformInfo:
                 os_version=data["os_version"],
                 architecture=data["architecture"],
                 cpu_model=data.get("cpu_model"),
-                cpu_cores=data.get("cpu_cores"),
-                total_memory_gb=data.get("total_memory_gb"),
+                cpu_cores=_coerce_optional_int(
+                    data, "cpu_cores", context="PlatformInfo"
+                ),
+                total_memory_gb=_coerce_optional_float(
+                    data, "total_memory_gb", context="PlatformInfo"
+                ),
                 accelerator=data.get("accelerator"),
             )
         except KeyError as exc:
@@ -462,7 +488,9 @@ class OutcomeInfo:
     def from_dict(cls, data: dict[str, Any]) -> OutcomeInfo:
         return cls(
             success=bool(data.get("success", True)),
-            quality_score=data.get("quality_score"),
+            quality_score=_coerce_optional_float(
+                data, "quality_score", context="OutcomeInfo"
+            ),
             quality_metric=data.get("quality_metric"),
             notes=data.get("notes"),
         )
