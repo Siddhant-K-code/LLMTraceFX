@@ -1,6 +1,9 @@
 """Tests for the speculative-decoding regression doctor rule."""
 
+import dataclasses
 from pathlib import Path
+
+import pytest
 
 from llmtracefx.optimizer.doctor.speculative import (
     DoctorVerdict,
@@ -10,10 +13,12 @@ from llmtracefx.optimizer.doctor.speculative import (
 from llmtracefx.optimizer.parsers.llama_cpp import build_experiment_record
 from llmtracefx.optimizer.schema import (
     CommandInfo,
+    ExperimentRecord,
     ModelInfo,
     OutcomeInfo,
     PlatformInfo,
     RepetitionInfo,
+    SchemaValidationError,
     utc_now_iso,
 )
 
@@ -287,3 +292,132 @@ def test_ineligible_records_without_total_timing_are_excluded():
 
     report = diagnose_speculative_regression(baseline, speculative, min_repetitions=1)
     assert report.speculative_run_ids == ("mtp-1",)
+
+
+def _with_total_ms(record: ExperimentRecord, value: float) -> ExperimentRecord:
+    bumped_total = dataclasses.replace(record.timing.total, value=value)
+    return dataclasses.replace(
+        record, timing=dataclasses.replace(record.timing, total=bumped_total)
+    )
+
+
+def test_inconclusive_when_baseline_mean_is_zero():
+    # A generic Measurement only requires value >= 0, so an all-zero
+    # baseline total time is schema-valid but is not usable evidence:
+    # the old code computed delta_pct=None here and then crashed trying
+    # to format it as a percentage.
+    baseline = [_with_total_ms(record, 0.0) for record in _baseline_records()]
+    speculative = [
+        _record_from_fixture(
+            "qwen3_8b_mtp_regression_run1.log", "mtp-1", speculative_method="mtp"
+        ),
+        _record_from_fixture(
+            "qwen3_8b_mtp_regression_run2.log", "mtp-2", speculative_method="mtp"
+        ),
+    ]
+
+    report = diagnose_speculative_regression(baseline, speculative)
+
+    assert report.verdict == DoctorVerdict.INCONCLUSIVE
+    assert "baseline" in report.reason
+    assert "finite" in report.reason or "positive" in report.reason
+    assert report.delta_pct is None
+
+
+def test_inconclusive_when_baseline_mean_is_negative():
+    # Not reachable through ExperimentRecord.validate() (which rejects
+    # negative timing values), but a defensive guard nonetheless, since
+    # this function accepts any ExperimentRecord instances, validated or
+    # not (e.g. built via dataclasses.replace in tests/tooling).
+    baseline = [_with_total_ms(record, -10.0) for record in _baseline_records()]
+    speculative = [
+        _record_from_fixture(
+            "qwen3_8b_mtp_regression_run1.log", "mtp-1", speculative_method="mtp"
+        ),
+        _record_from_fixture(
+            "qwen3_8b_mtp_regression_run2.log", "mtp-2", speculative_method="mtp"
+        ),
+    ]
+
+    report = diagnose_speculative_regression(baseline, speculative)
+
+    assert report.verdict == DoctorVerdict.INCONCLUSIVE
+    assert "baseline" in report.reason
+
+
+def test_inconclusive_when_baseline_mean_is_nan():
+    baseline = [_with_total_ms(record, float("nan")) for record in _baseline_records()]
+    speculative = [
+        _record_from_fixture(
+            "qwen3_8b_mtp_regression_run1.log", "mtp-1", speculative_method="mtp"
+        ),
+        _record_from_fixture(
+            "qwen3_8b_mtp_regression_run2.log", "mtp-2", speculative_method="mtp"
+        ),
+    ]
+
+    report = diagnose_speculative_regression(baseline, speculative)
+
+    assert report.verdict == DoctorVerdict.INCONCLUSIVE
+    assert "finite" in report.reason
+
+
+def test_inconclusive_when_baseline_mean_is_infinite():
+    baseline = [_with_total_ms(record, float("inf")) for record in _baseline_records()]
+    speculative = [
+        _record_from_fixture(
+            "qwen3_8b_mtp_regression_run1.log", "mtp-1", speculative_method="mtp"
+        ),
+        _record_from_fixture(
+            "qwen3_8b_mtp_regression_run2.log", "mtp-2", speculative_method="mtp"
+        ),
+    ]
+
+    report = diagnose_speculative_regression(baseline, speculative)
+
+    assert report.verdict == DoctorVerdict.INCONCLUSIVE
+    assert "finite" in report.reason
+
+
+def test_inconclusive_when_speculative_mean_is_non_finite():
+    baseline = _baseline_records()
+    speculative = [
+        _with_total_ms(
+            _record_from_fixture(
+                "qwen3_8b_mtp_regression_run1.log", "mtp-1", speculative_method="mtp"
+            ),
+            float("nan"),
+        ),
+        _record_from_fixture(
+            "qwen3_8b_mtp_regression_run2.log", "mtp-2", speculative_method="mtp"
+        ),
+    ]
+
+    report = diagnose_speculative_regression(baseline, speculative)
+
+    assert report.verdict == DoctorVerdict.INCONCLUSIVE
+    assert "speculative-decoding" in report.reason
+    assert "finite" in report.reason
+
+
+def test_experiment_record_from_dict_rejects_malformed_success_before_reaching_doctor():
+    # A malformed persisted outcome.success ("false" is truthy as a
+    # Python string) must fail at deserialization time, so it can never
+    # reach _eligible_totals()/diagnose_speculative_regression() and
+    # silently poison eligibility bucketing by looking "successful".
+    baseline = _baseline_records()
+    payload = baseline[0].to_dict()
+    payload["outcome"]["success"] = "false"
+    with pytest.raises(SchemaValidationError, match="OutcomeInfo.success"):
+        ExperimentRecord.from_dict(payload)
+
+
+def test_experiment_record_from_dict_rejects_malformed_speculative_enabled_before_reaching_doctor():
+    # Same guarantee for speculative.enabled, which drives the
+    # baseline-vs-speculative bucketing in _eligible_totals(): a
+    # malformed value must fail before it can be mis-bucketed.
+    baseline = _baseline_records()
+    payload = baseline[0].to_dict()
+    payload["speculative"]["enabled"] = "false"
+    with pytest.raises(SchemaValidationError, match="SpeculativeDecodingInfo.enabled"):
+        ExperimentRecord.from_dict(payload)

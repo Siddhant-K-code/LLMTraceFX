@@ -154,6 +154,29 @@ def _coerce_optional_float(
     return _validate_float(value, context=context, key=key)
 
 
+def _validate_bool(value: Any, *, context: str, key: str) -> bool:
+    """Require ``value`` to be a genuine JSON ``bool``.
+
+    ``bool(...)`` is dangerously permissive for persisted input: nearly
+    every non-empty value (including the string ``"false"``) is truthy,
+    so ``bool("false")`` is ``True``. A malformed persisted boolean field
+    (a string, an int, ``None``, a list, ...) must fail as a
+    ``SchemaValidationError`` naming the offending field instead of
+    silently being coerced to the wrong truth value.
+    """
+    if not isinstance(value, bool):
+        raise SchemaValidationError(f"{context}.{key} must be a boolean, got {value!r}")
+    return value
+
+
+def _coerce_bool_with_default(
+    data: dict[str, Any], key: str, *, context: str, default: bool
+) -> bool:
+    if key not in data:
+        return default
+    return _validate_bool(data[key], context=context, key=key)
+
+
 @dataclass(frozen=True)
 class PlatformInfo:
     """Hardware/platform/OS context the run executed under."""
@@ -408,7 +431,9 @@ class SpeculativeDecodingInfo:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SpeculativeDecodingInfo:
         return cls(
-            enabled=bool(data.get("enabled", False)),
+            enabled=_coerce_bool_with_default(
+                data, "enabled", context="SpeculativeDecodingInfo", default=False
+            ),
             method=data.get("method"),
             configured_depth=_coerce_optional_int(
                 data, "configured_depth", context="SpeculativeDecodingInfo"
@@ -487,7 +512,9 @@ class OutcomeInfo:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> OutcomeInfo:
         return cls(
-            success=bool(data.get("success", True)),
+            success=_coerce_bool_with_default(
+                data, "success", context="OutcomeInfo", default=True
+            ),
             quality_score=_coerce_optional_float(
                 data, "quality_score", context="OutcomeInfo"
             ),

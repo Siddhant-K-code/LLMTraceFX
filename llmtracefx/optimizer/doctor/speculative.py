@@ -11,6 +11,7 @@ run-to-run noise.
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -165,11 +166,42 @@ def diagnose_speculative_regression(
 
     baseline_mean = statistics.mean(baseline_totals)
     speculative_mean = statistics.mean(speculative_totals)
+
+    # The generic Measurement schema only requires timing values to be
+    # >= 0 (zero and, since it does not check finiteness, NaN/inf all
+    # pass ExperimentRecord.validate()). None of those are usable
+    # evidence here: a zero-or-negative baseline makes the relative delta
+    # below undefined/infinite, and a non-finite mean would silently
+    # propagate into a nonsensical verdict rather than a crash.
+    if not math.isfinite(baseline_mean) or baseline_mean <= 0:
+        return SpeculativeRegressionReport(
+            verdict=DoctorVerdict.INCONCLUSIVE,
+            reason=(
+                "baseline mean total time is not a positive, finite measurement "
+                f"({baseline_mean!r} ms); cannot compute a reliable relative delta"
+            ),
+            baseline_run_ids=tuple(r.run_id for r in baseline),
+            speculative_run_ids=tuple(r.run_id for r in speculative),
+        )
+    if not math.isfinite(speculative_mean) or speculative_mean < 0:
+        return SpeculativeRegressionReport(
+            verdict=DoctorVerdict.INCONCLUSIVE,
+            reason=(
+                "speculative-decoding mean total time is not a finite, non-negative "
+                f"measurement ({speculative_mean!r} ms); cannot compute a reliable delta"
+            ),
+            baseline_run_ids=tuple(r.run_id for r in baseline),
+            speculative_run_ids=tuple(r.run_id for r in speculative),
+        )
+
     baseline_noise = statistics.pstdev(baseline_totals)
     speculative_noise = statistics.pstdev(speculative_totals)
 
     delta_ms = speculative_mean - baseline_mean
-    delta_pct = delta_ms / baseline_mean if baseline_mean else None
+    # baseline_mean is guaranteed positive and finite by the guard above,
+    # so this division is always well-defined -- delta_pct is never None
+    # by the time it reaches the percentage-formatted reasons below.
+    delta_pct = delta_ms / baseline_mean
 
     run_ids = tuple(r.run_id for r in baseline), tuple(r.run_id for r in speculative)
 
@@ -189,7 +221,7 @@ def diagnose_speculative_regression(
             delta_pct=delta_pct,
         )
 
-    if delta_pct is not None and abs(delta_pct) < relative_threshold:
+    if abs(delta_pct) < relative_threshold:
         verdict = DoctorVerdict.NO_SIGNIFICANT_DIFFERENCE
         reason = f"delta ({delta_pct:+.1%}) is below the {relative_threshold:.0%} significance threshold"
     elif delta_ms > 0:

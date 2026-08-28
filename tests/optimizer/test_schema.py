@@ -360,3 +360,64 @@ def test_outcome_info_from_dict_accepts_valid_quality_score():
 def test_outcome_info_from_dict_allows_missing_quality_score():
     outcome = OutcomeInfo.from_dict({})
     assert outcome.quality_score is None
+
+
+@pytest.mark.parametrize(
+    "malformed_value", ["false", "true", "", 0, 1, None, [], [True]]
+)
+def test_outcome_info_from_dict_rejects_malformed_success(malformed_value):
+    # "false" is truthy as a Python string, so a naive bool(...) coercion
+    # would silently turn a persisted success="false" into success=True.
+    with pytest.raises(SchemaValidationError, match="OutcomeInfo.success"):
+        OutcomeInfo.from_dict({"success": malformed_value})
+
+
+@pytest.mark.parametrize("valid_value", [True, False])
+def test_outcome_info_from_dict_accepts_real_booleans(valid_value):
+    outcome = OutcomeInfo.from_dict({"success": valid_value})
+    assert outcome.success is valid_value
+
+
+def test_outcome_info_from_dict_defaults_success_to_true_when_missing():
+    outcome = OutcomeInfo.from_dict({})
+    assert outcome.success is True
+
+
+@pytest.mark.parametrize(
+    "malformed_value", ["false", "true", "", 0, 1, None, [], [True]]
+)
+def test_speculative_decoding_info_from_dict_rejects_malformed_enabled(
+    malformed_value,
+):
+    with pytest.raises(SchemaValidationError, match="SpeculativeDecodingInfo.enabled"):
+        SpeculativeDecodingInfo.from_dict({"enabled": malformed_value})
+
+
+@pytest.mark.parametrize("valid_value", [True, False])
+def test_speculative_decoding_info_from_dict_accepts_real_booleans(valid_value):
+    spec = SpeculativeDecodingInfo.from_dict({"enabled": valid_value})
+    assert spec.enabled is valid_value
+
+
+def test_speculative_decoding_info_from_dict_defaults_enabled_to_false_when_missing():
+    spec = SpeculativeDecodingInfo.from_dict({})
+    assert spec.enabled is False
+
+
+def test_experiment_record_from_dict_rejects_string_false_as_success():
+    # Full round-trip: a persisted record with outcome.success = "false"
+    # (e.g. hand-edited or from a buggy producer) must not silently
+    # become a "successful" run that poisons doctor eligibility.
+    record = make_record()
+    payload = record.to_dict()
+    payload["outcome"]["success"] = "false"
+    with pytest.raises(SchemaValidationError, match="OutcomeInfo.success"):
+        ExperimentRecord.from_dict(payload)
+
+
+def test_experiment_record_from_dict_rejects_string_false_as_speculative_enabled():
+    record = make_record()
+    payload = record.to_dict()
+    payload["speculative"]["enabled"] = "false"
+    with pytest.raises(SchemaValidationError, match="SpeculativeDecodingInfo.enabled"):
+        ExperimentRecord.from_dict(payload)
