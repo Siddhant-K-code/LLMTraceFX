@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -100,6 +101,35 @@ def _measurement_from_optional(data: dict[str, Any] | None) -> Measurement | Non
 
 def _measurement_to_optional(measurement: Measurement | None) -> dict[str, Any] | None:
     return None if measurement is None else measurement.to_dict()
+
+
+def _validate_int(value: Any, *, context: str, key: str) -> int:
+    """Require ``value`` to be a genuine ``int`` (not ``bool``/``float``/etc).
+
+    Persisted records are untrusted input: a malformed field (a string, a
+    float, a boolean, ``None``, a list, ...) must fail as a
+    ``SchemaValidationError`` naming the offending field rather than
+    either raising a raw ``ValueError``/``TypeError`` from ``int()`` or
+    silently truncating/coercing (e.g. ``int(1.9)`` or ``int(True)``).
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SchemaValidationError(
+            f"{context}.{key} must be an integer, got {value!r}"
+        )
+    return value
+
+
+def _coerce_required_int(data: dict[str, Any], key: str, *, context: str) -> int:
+    if key not in data:
+        raise SchemaValidationError(f"{context} is missing required field: '{key}'")
+    return _validate_int(data[key], context=context, key=key)
+
+
+def _coerce_optional_int(data: dict[str, Any], key: str, *, context: str) -> int | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    return _validate_int(value, context=context, key=key)
 
 
 @dataclass(frozen=True)
@@ -208,16 +238,30 @@ class CommandInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CommandInfo:
-        try:
-            return cls(
-                argv=tuple(data["argv"]),
-                config_hash=data.get("config_hash"),
-                workload_hash=data.get("workload_hash"),
-            )
-        except KeyError as exc:
+        if "argv" not in data:
+            raise SchemaValidationError("CommandInfo is missing required field: 'argv'")
+        argv = data["argv"]
+        # A scalar string is technically a ``Sequence[str]`` in Python, so
+        # ``tuple("llama-cli")`` would silently explode into one-character
+        # elements instead of failing. Require an actual list/tuple of
+        # non-empty strings.
+        if isinstance(argv, (str, bytes)) or not isinstance(argv, Sequence):
             raise SchemaValidationError(
-                f"CommandInfo is missing required field: {exc}"
-            ) from exc
+                f"CommandInfo.argv must be a non-empty list of strings, got {argv!r}"
+            )
+        argv_tuple = tuple(argv)
+        if not argv_tuple or not all(
+            isinstance(item, str) and item for item in argv_tuple
+        ):
+            raise SchemaValidationError(
+                "CommandInfo.argv must be a non-empty list of non-empty strings, "
+                f"got {argv!r}"
+            )
+        return cls(
+            argv=argv_tuple,
+            config_hash=data.get("config_hash"),
+            workload_hash=data.get("workload_hash"),
+        )
 
 
 @dataclass(frozen=True)
@@ -235,17 +279,18 @@ class RepetitionInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RepetitionInfo:
-        try:
-            return cls(
-                warmup_repetitions=int(data["warmup_repetitions"]),
-                measured_repetitions=int(data["measured_repetitions"]),
-                repetition_index=int(data["repetition_index"]),
-                seed=data.get("seed"),
-            )
-        except KeyError as exc:
-            raise SchemaValidationError(
-                f"RepetitionInfo is missing required field: {exc}"
-            ) from exc
+        return cls(
+            warmup_repetitions=_coerce_required_int(
+                data, "warmup_repetitions", context="RepetitionInfo"
+            ),
+            measured_repetitions=_coerce_required_int(
+                data, "measured_repetitions", context="RepetitionInfo"
+            ),
+            repetition_index=_coerce_required_int(
+                data, "repetition_index", context="RepetitionInfo"
+            ),
+            seed=_coerce_optional_int(data, "seed", context="RepetitionInfo"),
+        )
 
 
 @dataclass(frozen=True)
@@ -262,9 +307,15 @@ class TokenCounts:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TokenCounts:
         return cls(
-            input_tokens=data.get("input_tokens"),
-            context_tokens=data.get("context_tokens"),
-            generated_tokens=data.get("generated_tokens"),
+            input_tokens=_coerce_optional_int(
+                data, "input_tokens", context="TokenCounts"
+            ),
+            context_tokens=_coerce_optional_int(
+                data, "context_tokens", context="TokenCounts"
+            ),
+            generated_tokens=_coerce_optional_int(
+                data, "generated_tokens", context="TokenCounts"
+            ),
         )
 
 
@@ -333,9 +384,15 @@ class SpeculativeDecodingInfo:
         return cls(
             enabled=bool(data.get("enabled", False)),
             method=data.get("method"),
-            configured_depth=data.get("configured_depth"),
-            proposed_tokens=data.get("proposed_tokens"),
-            accepted_tokens=data.get("accepted_tokens"),
+            configured_depth=_coerce_optional_int(
+                data, "configured_depth", context="SpeculativeDecodingInfo"
+            ),
+            proposed_tokens=_coerce_optional_int(
+                data, "proposed_tokens", context="SpeculativeDecodingInfo"
+            ),
+            accepted_tokens=_coerce_optional_int(
+                data, "accepted_tokens", context="SpeculativeDecodingInfo"
+            ),
             verification_time=_measurement_from_optional(data.get("verification_time")),
         )
 

@@ -136,6 +136,42 @@ def test_build_experiment_record_from_speculative_fixture_sets_method():
     assert record.speculative.acceptance_rate == pytest.approx(96 / 320)
 
 
+def test_build_experiment_record_fills_accelerator_from_device_hint():
+    record = build_experiment_record(
+        run_id="baseline-run-1",
+        started_at=utc_now_iso(),
+        platform=_platform(),
+        model=_model(),
+        command=CommandInfo(argv=("llama-cli", "-m", "qwen3.8-27b-q4.gguf")),
+        repetition=_repetition(),
+        stdout_text=_read_fixture("qwen3_8b_baseline_run1.log"),
+    )
+
+    assert record.platform.accelerator == "Apple M5 Pro"
+
+
+def test_build_experiment_record_caller_supplied_accelerator_wins():
+    platform = PlatformInfo(
+        os_name="Darwin",
+        os_version="24.0",
+        architecture="arm64",
+        accelerator="NVIDIA RTX 4090 24GB",
+    )
+    record = build_experiment_record(
+        run_id="baseline-run-1",
+        started_at=utc_now_iso(),
+        platform=platform,
+        model=_model(),
+        command=CommandInfo(argv=("llama-cli", "-m", "qwen3.8-27b-q4.gguf")),
+        repetition=_repetition(),
+        stdout_text=_read_fixture("qwen3_8b_baseline_run1.log"),
+    )
+
+    # The stdout text reports "Apple M5 Pro", but the caller's explicit
+    # accelerator identity must not be overwritten by the parsed hint.
+    assert record.platform.accelerator == "NVIDIA RTX 4090 24GB"
+
+
 def test_build_experiment_record_propagates_parse_errors():
     with pytest.raises(LlamaCppParseError):
         build_experiment_record(

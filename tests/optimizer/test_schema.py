@@ -178,3 +178,111 @@ def test_from_dict_rejects_missing_required_field():
     del payload["run_id"]
     with pytest.raises(SchemaValidationError, match="missing required field"):
         ExperimentRecord.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    "malformed_value", ["not-a-number", True, False, None, 1.5, [1]]
+)
+@pytest.mark.parametrize(
+    "field_name",
+    ["warmup_repetitions", "measured_repetitions", "repetition_index"],
+)
+def test_repetition_info_from_dict_rejects_malformed_required_ints(
+    field_name, malformed_value
+):
+    payload = {
+        "warmup_repetitions": 1,
+        "measured_repetitions": 2,
+        "repetition_index": 0,
+        field_name: malformed_value,
+    }
+    with pytest.raises(SchemaValidationError, match=f"RepetitionInfo.{field_name}"):
+        RepetitionInfo.from_dict(payload)
+
+
+@pytest.mark.parametrize("malformed_value", ["not-a-number", True, False, 1.5, [1]])
+def test_repetition_info_from_dict_rejects_malformed_seed(malformed_value):
+    payload = {
+        "warmup_repetitions": 1,
+        "measured_repetitions": 2,
+        "repetition_index": 0,
+        "seed": malformed_value,
+    }
+    with pytest.raises(SchemaValidationError, match="RepetitionInfo.seed"):
+        RepetitionInfo.from_dict(payload)
+
+
+def test_repetition_info_from_dict_accepts_valid_ints_and_none_seed():
+    info = RepetitionInfo.from_dict(
+        {"warmup_repetitions": 1, "measured_repetitions": 2, "repetition_index": 0}
+    )
+    assert info.seed is None
+    assert info.warmup_repetitions == 1
+
+
+@pytest.mark.parametrize("malformed_value", ["not-a-number", True, False, 1.5, [1]])
+@pytest.mark.parametrize(
+    "field_name", ["input_tokens", "context_tokens", "generated_tokens"]
+)
+def test_token_counts_from_dict_rejects_malformed_optional_ints(
+    field_name, malformed_value
+):
+    with pytest.raises(SchemaValidationError, match=f"TokenCounts.{field_name}"):
+        TokenCounts.from_dict({field_name: malformed_value})
+
+
+def test_token_counts_from_dict_accepts_missing_and_none():
+    counts = TokenCounts.from_dict({"input_tokens": None})
+    assert counts.input_tokens is None
+    assert counts.context_tokens is None
+    assert counts.generated_tokens is None
+
+
+def test_token_counts_from_dict_allows_negative_int_value():
+    # from_dict accepts a well-typed negative int; range checks are the
+    # job of ExperimentRecord.validate(), not deserialization.
+    counts = TokenCounts.from_dict({"input_tokens": -1})
+    assert counts.input_tokens == -1
+
+
+@pytest.mark.parametrize("malformed_value", ["not-a-number", True, False, 1.5, [1]])
+@pytest.mark.parametrize(
+    "field_name", ["configured_depth", "proposed_tokens", "accepted_tokens"]
+)
+def test_speculative_decoding_info_from_dict_rejects_malformed_optional_ints(
+    field_name, malformed_value
+):
+    with pytest.raises(
+        SchemaValidationError, match=f"SpeculativeDecodingInfo.{field_name}"
+    ):
+        SpeculativeDecodingInfo.from_dict({field_name: malformed_value})
+
+
+def test_command_info_from_dict_rejects_scalar_string_argv():
+    # A scalar string is iterable, so a naive tuple(argv) would silently
+    # explode "llama-cli" into its individual characters.
+    with pytest.raises(SchemaValidationError, match="argv"):
+        CommandInfo.from_dict({"argv": "llama-cli -m model.gguf"})
+
+
+def test_command_info_from_dict_rejects_missing_argv():
+    with pytest.raises(SchemaValidationError, match="missing required field"):
+        CommandInfo.from_dict({})
+
+
+def test_command_info_from_dict_rejects_empty_argv():
+    with pytest.raises(SchemaValidationError, match="argv"):
+        CommandInfo.from_dict({"argv": []})
+
+
+@pytest.mark.parametrize(
+    "malformed_argv", [["llama-cli", 123], ["llama-cli", ""], [None]]
+)
+def test_command_info_from_dict_rejects_malformed_argv_entries(malformed_argv):
+    with pytest.raises(SchemaValidationError, match="argv"):
+        CommandInfo.from_dict({"argv": malformed_argv})
+
+
+def test_command_info_from_dict_accepts_list_of_strings():
+    info = CommandInfo.from_dict({"argv": ["llama-cli", "-m", "model.gguf"]})
+    assert info.argv == ("llama-cli", "-m", "model.gguf")

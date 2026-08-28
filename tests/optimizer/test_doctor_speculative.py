@@ -24,8 +24,15 @@ def _read_fixture(name: str) -> str:
     return (FIXTURES_DIR / name).read_text(encoding="utf-8")
 
 
-def _platform(architecture: str = "arm64") -> PlatformInfo:
-    return PlatformInfo(os_name="Darwin", os_version="24.0", architecture=architecture)
+def _platform(
+    architecture: str = "arm64", accelerator: str | None = None
+) -> PlatformInfo:
+    return PlatformInfo(
+        os_name="Darwin",
+        os_version="24.0",
+        architecture=architecture,
+        accelerator=accelerator,
+    )
 
 
 def _model() -> ModelInfo:
@@ -136,6 +143,44 @@ def test_inconclusive_when_hardware_differs():
 
     assert report.verdict == DoctorVerdict.INCONCLUSIVE
     assert "not comparable" in report.reason
+
+
+def test_inconclusive_when_accelerator_differs():
+    # Same OS/architecture, same model/runtime/workload -- only the
+    # accelerator identity differs. Runs must not be treated as
+    # comparable just because everything else matches.
+    baseline = _baseline_records()
+    speculative = [
+        _record_from_fixture(
+            "qwen3_8b_mtp_regression_run1.log",
+            "mtp-1",
+            speculative_method="mtp",
+            platform=_platform(accelerator="NVIDIA RTX 4090 24GB"),
+        ),
+        _record_from_fixture(
+            "qwen3_8b_mtp_regression_run2.log",
+            "mtp-2",
+            speculative_method="mtp",
+            platform=_platform(accelerator="NVIDIA RTX 4090 24GB"),
+        ),
+    ]
+
+    report = diagnose_speculative_regression(baseline, speculative)
+
+    assert report.verdict == DoctorVerdict.INCONCLUSIVE
+    assert "not comparable" in report.reason
+
+
+def test_comparability_key_differs_by_accelerator():
+    baseline = _record_from_fixture("qwen3_8b_baseline_run1.log", "baseline-1")
+    other_gpu = _record_from_fixture(
+        "qwen3_8b_baseline_run1.log",
+        "baseline-1-other-gpu",
+        platform=_platform(accelerator="NVIDIA RTX 4090 24GB"),
+    )
+
+    assert baseline.platform.accelerator == "Apple M5 Pro"
+    assert comparability_key(baseline) != comparability_key(other_gpu)
 
 
 def test_inconclusive_when_too_few_repetitions():

@@ -17,7 +17,7 @@ label but has a value that cannot be parsed as a number raises
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..schema import (
     CommandInfo,
@@ -238,8 +238,19 @@ def build_experiment_record(
     runner's ``RunnerConfig``). ``speculative_method`` should be supplied
     by the caller (e.g. ``"mtp"``) when speculative decoding was enabled,
     since llama.cpp's plain timing output does not name the method.
+
+    ``platform.accelerator`` identifies the GPU/accelerator a run executed
+    on and is required for the doctor rules to tell runs on different
+    hardware apart. If the caller-supplied ``platform`` does not already
+    set it, it is filled in from the accelerator identity llama.cpp itself
+    reports (e.g. a Metal "found device: ..." line). An explicit
+    caller-supplied ``platform.accelerator`` always takes precedence over
+    the parsed value.
     """
     parsed = parse_llama_cpp_output(stdout_text + "\n" + stderr_text)
+
+    if platform.accelerator is None and parsed.device_hint:
+        platform = replace(platform, accelerator=parsed.device_hint)
 
     runtime = RuntimeInfo(
         name="llama.cpp",
