@@ -21,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # confirm these cases actually fail against the behaviour they describe.
 SCRIPT="${LINT_CHANGED_SCRIPT:-${SCRIPT_DIR}/lint-changed.sh}"
 EMPTY_TREE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+REAL_GIT="$(command -v git)"
 
 PASSED=0
 FAILED=0
@@ -59,11 +60,16 @@ new_repo() {
     for arg in "$@"; do printf '\t%s' "$arg"; done
     printf '\n'
 } >>"$STUB_LOG"
-# "$1" is always "run" and "$2" is the tool name. Failing one tool at a time is
-# what lets the status tests tell the four apart. Failing them all at once would
-# only prove that at least one of them propagates.
-if [ -n "${STUB_FAIL_TOOL:-}" ] && [ "${2:-}" = "$STUB_FAIL_TOOL" ]; then
-    exit 1
+# Failing one named tool at a time is what lets the status tests tell the four
+# apart. Failing them all at once would only show that at least one of them
+# propagates. Matching any argument rather than a fixed position keeps this
+# working if the invocation ever grows a flag such as `uv run --frozen`.
+if [ -n "${STUB_FAIL_TOOL:-}" ]; then
+    for arg in "$@"; do
+        if [ "$arg" = "$STUB_FAIL_TOOL" ]; then
+            exit 1
+        fi
+    done
 fi
 exit "${STUB_EXIT:-0}"
 STUB
@@ -109,6 +115,35 @@ calls_for() {
     grep -cF "$(printf '\t%s\t' "$1")" "$STUB_LOG" 2>/dev/null | tr -d ' '
 }
 
+# The full argument list a tool was invoked with, comma separated.
+#
+# files_for deliberately drops everything before the `--`, which means it cannot
+# see the flags. That is the gap this closes: without an argv assertion, black
+# can lose `--check` and start rewriting the working tree in CI while still
+# reporting success, and ruff can gain `--exit-zero`, with every file list
+# assertion still passing.
+args_for() {
+    grep -F "$(printf '\t%s\t' "$1")" "$STUB_LOG" 2>/dev/null | head -1 \
+        | sed 's/^CALL'"$(printf '\t')"'//' | tr '\t' ','
+}
+
+# A git that fails only on `diff`, forwarding everything else to the real one.
+# The diff failure branch is otherwise the one path in the script with no
+# coverage, and it is the branch that used to swallow errors silently.
+break_git_diff() {
+    cat >"${REPO}/bin/git" <<GITSTUB
+#!/usr/bin/env bash
+for arg in "\$@"; do
+    if [ "\$arg" = "diff" ]; then
+        echo "git: simulated diff failure" >&2
+        exit 128
+    fi
+done
+exec "${REAL_GIT}" "\$@"
+GITSTUB
+    chmod +x "${REPO}/bin/git"
+}
+
 echo "Testing ${SCRIPT}"
 echo
 
@@ -132,6 +167,12 @@ run_script "$BASE"
 check "added file is checked" "b.py" "$(files_for ruff)"
 check "black gets the same file list" "b.py" "$(files_for black)"
 check "isort gets the same file list" "b.py" "$(files_for isort)"
+# Pin the flags, not just the file list. Without these, dropping --check from
+# black leaves it rewriting the working tree in CI and reporting success, and
+# every file list assertion above still passes.
+check "ruff argv" "run,ruff,check,--,b.py" "$(args_for ruff)"
+check "black argv" "run,black,--check,--,b.py" "$(args_for black)"
+check "isort argv" "run,isort,--check-only,--,b.py" "$(args_for isort)"
 
 new_repo
 commit_file "a.py"
@@ -172,6 +213,10 @@ commit_file "two.py"
 commit_file "three.py"
 run_script "$BASE"
 check "multi commit push checks every commit" "one.py,three.py,two.py" "$(files_for ruff)"
+# Multi-file lists for the other tools too. With only single-file assertions,
+# truncating black or isort to the first changed file goes unnoticed.
+check "black sees every commit's files" "one.py,three.py,two.py" "$(files_for black)"
+check "isort sees every commit's files" "one.py,three.py,two.py" "$(files_for isort)"
 
 # --- failing closed -------------------------------------------------------
 
@@ -208,6 +253,18 @@ git -C "$REPO" update-ref refs/remotes/origin/main HEAD
 run_script ""
 check "empty base argument fails closed" "1" "$RC"
 check "empty base argument runs no tools" "0" "$(calls_for ruff)"
+
+# A base that resolves fine but a diff that then fails. This is the branch that
+# used to be swallowed by process substitution, and it is the only path left
+# with no coverage, so `git diff ... || true` would otherwise go unnoticed.
+new_repo
+commit_file "a.py"
+BASE="$(git -C "$REPO" rev-parse HEAD)"
+commit_file "b.py"
+break_git_diff
+run_script "$BASE"
+check "failing git diff fails closed" "1" "$RC"
+check "failing git diff runs no tools" "0" "$(calls_for ruff)"
 
 # --- initial push ---------------------------------------------------------
 
@@ -271,10 +328,20 @@ new_repo
 commit_file "llmtracefx/__init__.py"
 BASE="$(git -C "$REPO" rev-parse HEAD)"
 commit_file "llmtracefx/mod.py"
+commit_file "llmtracefx/other.py"
 commit_file "tests/test_mod.py"
 run_script "$BASE"
-check "ruff sees package and tests" "llmtracefx/mod.py,tests/test_mod.py" "$(files_for ruff)"
-check "mypy sees only the package" "llmtracefx/mod.py" "$(files_for mypy)"
+check "ruff sees package and tests" \
+    "llmtracefx/mod.py,llmtracefx/other.py,tests/test_mod.py" "$(files_for ruff)"
+check "black sees package and tests" \
+    "llmtracefx/mod.py,llmtracefx/other.py,tests/test_mod.py" "$(files_for black)"
+check "isort sees package and tests" \
+    "llmtracefx/mod.py,llmtracefx/other.py,tests/test_mod.py" "$(files_for isort)"
+check "mypy sees only the package" \
+    "llmtracefx/mod.py,llmtracefx/other.py" "$(files_for mypy)"
+check "mypy argv" \
+    "run,mypy,--follow-imports=silent,--,llmtracefx/mod.py,llmtracefx/other.py" \
+    "$(args_for mypy)"
 
 new_repo
 commit_file "a.py"
