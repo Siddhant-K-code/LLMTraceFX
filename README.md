@@ -940,16 +940,24 @@ and are never mixed into a single unlabelled number.
   recorded external command rather than to this program, and `llama-server`
   has its own `--api-key`. Those values are redacted where `parse-llama-cpp`
   persists them instead, so the flag stays visible as evidence and the
-  credential does not reach `record.command.argv`.
-- No parse diagnostic repeats a value the caller supplied. Option names and
-  the usage block are kept, since they carry no caller input and are what make
-  the error actionable, but anything typed as a value is replaced. That
-  includes the tail of an attached short cluster such as `-p<secret>`, which
-  is a value wearing an option's clothes. This program's own vocabulary is put
-  beyond reach first, so mistyping `collect-ap` does not rewrite the valid
-  `collect-api` in the list of choices; a literal is only protected when no
-  supplied value contains it, so a secret that embeds an option name is still
-  replaced whole. A secret pasted into the wrong option is still a secret.
+  credential does not reach `record.command.argv`. A separate value is
+  redacted whatever it looks like, because such a flag always takes one and
+  the base64url alphabet starts a value with `-` often enough to matter.
+- No parse diagnostic repeats a value the caller supplied. A token is a name
+  only when this program defined it, which the parser itself is asked; token
+  syntax is not evidence. Option names and the usage block are kept, since
+  they carry no caller input and are what make the error actionable, and
+  everything else is replaced. That includes the tail of an attached short
+  cluster such as `-p<secret>`, which is a value wearing an option's clothes,
+  including when the value ends in the `=` padding a base64 key carries. It
+  also includes a long option with a dropped space, `--api-key<secret>`: when
+  a defined option is a prefix of the token only the tail is replaced, so
+  `--dry-run<secret>` still reads as `--dry-run[REDACTED]`, and otherwise the
+  whole token goes. This program's own vocabulary is put beyond reach first,
+  so mistyping `collect-ap` does not rewrite the valid `collect-api` in the
+  list of choices; a literal is only protected when no supplied value contains
+  it, so a secret that embeds an option name is still replaced whole. A secret
+  pasted into the wrong option is still a secret.
 - The credential value is never written to an artifact, never logged, never
   hashed and never included in the reconstructed command. `HTTPRequest`
   overrides `repr` so a traceback cannot surface the `Authorization` header.

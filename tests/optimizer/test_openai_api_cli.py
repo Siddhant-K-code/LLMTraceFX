@@ -901,3 +901,112 @@ def test_a_credential_flag_before_the_separator_is_still_rejected(
     assert code == 2
     assert _SENTINEL not in err
     assert "--api-key is not a supported option" in err
+
+
+# Eighth review pass: a name is a name only when this program defined it.
+
+
+@pytest.mark.parametrize("suffix", ["=", "==", ""])
+@pytest.mark.parametrize("flag", ["-p", "-k"])
+def test_a_base64_padded_attached_cluster_is_not_echoed(
+    tmp_path: Path, flag: str, suffix: str
+) -> None:
+    """Splitting on ``=`` first leaves nothing to redact in a padded key."""
+    secret = f"{_SENTINEL}{suffix}"
+    code, out, err = run_main(base_argv(tmp_path) + [f"{flag}{secret}"])
+
+    assert code == 2
+    assert secret not in err + out
+    assert _SENTINEL not in err + out
+
+
+@pytest.mark.parametrize("flag", ["--api-key", "--token", "--unknown-flag"])
+def test_a_long_option_with_a_dropped_space_is_not_echoed(
+    tmp_path: Path, flag: str
+) -> None:
+    """``--api-key$KEY`` is caller data wearing a long option's clothes."""
+    code, out, err = run_main(base_argv(tmp_path) + [f"{flag}{_SENTINEL}"])
+
+    assert code == 2
+    assert _SENTINEL not in err + out
+
+
+def test_a_dropped_space_after_a_real_option_keeps_the_option_readable(
+    tmp_path: Path,
+) -> None:
+    """A defined option is a name, so only the tail past it is a value."""
+    code, _, err = run_main(base_argv(tmp_path) + [f"--dry-run{_SENTINEL}"])
+
+    assert code == 2
+    assert _SENTINEL not in err
+    assert "--dry-run[REDACTED]" in err
+
+
+def test_a_defined_option_is_never_treated_as_a_value() -> None:
+    """The scrub must not swallow the names that make a diagnostic useful."""
+    code, _, err = run_main(["collect-api", "--run-id", "r1"])
+
+    assert code == 2
+    assert "--endpoint" in err
+    assert "--model-id" in err
+
+
+def test_a_recorded_credential_value_that_looks_like_a_flag_is_redacted(
+    tmp_path: Path,
+) -> None:
+    """base64url values start with ``-`` often enough to matter."""
+    stdout_file = tmp_path / "llama.txt"
+    stdout_file.write_text("llama_perf_context_print: eval time = 1.0 ms\n")
+
+    code, out, _ = run_main(
+        [
+            "parse-llama-cpp",
+            "--run-id",
+            "r1",
+            "--model-id",
+            "local.gguf",
+            "--stdout-file",
+            str(stdout_file),
+            "--",
+            "llama-server",
+            "--api-key",
+            f"-{_SENTINEL}",
+            "--port",
+            "8080",
+        ]
+    )
+
+    assert code == 0
+    assert _SENTINEL not in out
+    assert json.loads(out)["command"]["argv"] == [
+        "llama-server",
+        "--api-key",
+        "[REDACTED]",
+        "--port",
+        "8080",
+    ]
+
+
+def test_a_trailing_credential_flag_in_a_recorded_command_has_nothing_to_eat(
+    tmp_path: Path,
+) -> None:
+    stdout_file = tmp_path / "llama.txt"
+    stdout_file.write_text("llama_perf_context_print: eval time = 1.0 ms\n")
+
+    code, out, _ = run_main(
+        [
+            "parse-llama-cpp",
+            "--run-id",
+            "r1",
+            "--model-id",
+            "local.gguf",
+            "--stdout-file",
+            str(stdout_file),
+            "--",
+            "llama-server",
+            "--api-key",
+        ]
+    )
+
+    assert code == 0
+    assert json.loads(out)["command"]["argv"] == ["llama-server", "--api-key"]

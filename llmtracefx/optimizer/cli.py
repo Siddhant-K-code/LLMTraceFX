@@ -1358,7 +1358,10 @@ def _redact_credential_flag_values(argv: Sequence[str]) -> tuple[str, ...]:
     ``llama-server`` has its own ``--api-key``. The flag itself is evidence
     worth keeping, the value is a credential that would otherwise be
     written verbatim into ``record.command.argv``. Both the separate and
-    the attached form are covered.
+    the attached form are covered. A separate value is redacted whatever
+    it looks like, because such a flag always takes one: the base64url
+    alphabet includes ``-``, so skipping values that start like a flag
+    would leak roughly one credential in sixty four.
     """
     redacted: list[str] = []
     skip_next = False
@@ -1377,39 +1380,61 @@ def _redact_credential_flag_values(argv: Sequence[str]) -> tuple[str, ...]:
             redacted.append(f"{name}=[REDACTED]")
             continue
         following = argv[index + 1] if index + 1 < len(argv) else None
-        skip_next = following is not None and not following.startswith("-")
+        skip_next = following is not None
         redacted.append(token)
     return tuple(redacted)
 
 
-def _argument_values(raw_argv: Sequence[str]) -> tuple[str, ...]:
+def _argument_values(
+    raw_argv: Sequence[str], literals: Sequence[str] = ()
+) -> tuple[str, ...]:
     """Every caller-supplied value in ``raw_argv``, longest first.
 
-    Long option names are excluded because they are what makes a diagnostic
-    actionable and they are chosen by this program, not by the caller.
-    Everything else is a value that argparse would otherwise quote back
-    into stderr, so it is treated as possibly secret. Longest first so a
-    value that contains another is replaced whole.
+    Token syntax is not evidence of what a token is. The property that
+    matters is whether this program defined the string, and ``literals``
+    answers that, so only a name this program chose is kept out of the
+    scrub set. Everything else is a value that argparse would otherwise
+    quote back into stderr. Longest first so a value that contains
+    another is replaced whole.
 
     A short cluster such as ``-p<secret>`` is the attached form, so only
     the flag letter is a name and the rest is a value. That is the shape
-    ``mysql -p<password>`` teaches, and skipping it as though the whole
-    token were an option name puts the credential straight into
-    "unrecognized arguments".
+    ``mysql -p<password>`` teaches, and it is contributed regardless of
+    any ``=`` inside it, because a base64 credential ends in ``=`` and
+    splitting on it first would leave nothing to redact. A long option
+    with a dropped space, ``--api-key<secret>``, is not a name either;
+    when a defined option is a prefix of it the tail alone is the value,
+    which keeps the diagnostic actionable, and otherwise the whole token
+    is treated as a value.
     """
     values: set[str] = set()
-    for token in raw_argv:
-        candidate = token
-        if token.startswith("-"):
-            name, separator, attached = token.partition("=")
-            if separator:
-                candidate = attached
-            elif token.startswith("--"):
-                continue
-            else:
-                candidate = token[2:]
+
+    def contribute(candidate: str) -> None:
         if len(candidate) >= _MIN_SCRUBBED_ARGUMENT_CHARS:
             values.add(candidate)
+
+    known = frozenset(literals)
+    for token in raw_argv:
+        if not token.startswith("-"):
+            contribute(token)
+            continue
+        name, separator, attached = token.partition("=")
+        if separator:
+            contribute(attached)
+        if not token.startswith("--"):
+            contribute(token[2:])
+            continue
+        if token in known or name in known:
+            continue
+        prefix = next(
+            (
+                literal
+                for literal in literals
+                if len(literal) < len(token) and token.startswith(literal)
+            ),
+            "",
+        )
+        contribute(token[len(prefix) :] if prefix else token)
     return tuple(sorted(values, key=len, reverse=True))
 
 
@@ -2202,8 +2227,8 @@ def main(argv: list[str] | None = None) -> None:
 
     parser = build_parser()
     raw_argv = list(sys.argv[1:] if argv is None else argv)
-    _argv_values_to_scrub = _argument_values(raw_argv)
     _protected_argument_literals = _parser_literals(parser)
+    _argv_values_to_scrub = _argument_values(raw_argv, _protected_argument_literals)
     _reject_credential_arguments(raw_argv)
     args = parser.parse_args(raw_argv)
     args._invocation = (parser.prog, *raw_argv)
