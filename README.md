@@ -910,21 +910,46 @@ and are never mixed into a single unlabelled number.
   than tokens. `provider_completion_tokens_per_second` combines a
   provider-reported count with a client-measured window and carries an
   explicit mixed-provenance note.
-- **One window for both rates.** `content_window_ms` runs from the first
-  content delta arrival to the last, and both rates divide by it. It
-  excludes the request, the response headers, any leading metadata chunk
-  and the trailing usage, finish-reason and `[DONE]` events, none of which
-  carry generated content. The window is persisted alongside the rates
-  because a rate is only as trustworthy as the window it came from: two
-  deltas a few microseconds apart produce a very large number that is
-  arithmetic rather than evidence, and only the window makes that visible.
-  With a single content delta there are no intervals to measure, so the
-  window and both rates are `null` rather than zero.
+- **Two windows, each matching its numerator.** `content_window_ms` runs
+  from the first content delta arrival to the last and is the denominator
+  for `content_delta_rate_per_second`. `generation_window_ms` starts at the
+  first generated event of any kind, reasoning or content, and is the
+  denominator for `provider_completion_tokens_per_second`, because Z.ai
+  counts reasoning tokens inside `completion_tokens` and dividing them by
+  the visible window would credit a long silent reasoning phase to a short
+  answer. With no reasoning deltas the two windows are identical. Both
+  exclude the request, the response headers, any leading metadata chunk and
+  the trailing usage, finish-reason and `[DONE]` events. The windows are
+  persisted alongside the rates because a rate is only as trustworthy as
+  the window it came from: two deltas a few microseconds apart produce a
+  very large number that is arithmetic rather than evidence, and only the
+  window makes that visible. A window with no measurable width leaves its
+  rate `null` rather than zero.
+- **A visible-token rate is published only when it can be.**
+  `provider_visible_completion_tokens_per_second` divides
+  `completion_tokens` minus the provider-reported reasoning tokens by
+  `content_window_ms`. When the provider does not report a reasoning token
+  count the field is `null`, because a missing count is not zero and
+  treating it as zero would inflate the rate.
 - **The token rate is an estimate, not a measurement.** Its window starts
-  at the first content delta, so that delta's own generation time is
-  outside it, and when `content_delta_count` is far below
-  `completion_tokens` the window endpoints are delta boundaries rather
-  than token boundaries. The persisted note says so.
+  at the first generated delta, so that delta's own generation time is
+  outside it, and when the delta count is far below `completion_tokens` the
+  window endpoints are delta boundaries rather than token boundaries. The
+  persisted note says so.
+- **One clock read per network chunk.** Several SSE events can arrive in a
+  single chunk. Every event decoded from a chunk is stamped with that
+  chunk's arrival time, so the parser's own CPU time never appears as
+  inter-token latency. Deltas that shared a packet therefore show a zero
+  gap, which is what was actually observed.
+- **The finish reason is classified before it is redacted.** Redaction
+  rewrites provider-controlled text, so classifying from the redacted
+  string would let a credential that happens to contain `error` dissolve
+  `network_error` and turn an aborted generation into a success.
+  `finish_reason` holds the redacted provider text,
+  `finish_reason_classification` holds `terminal`, `failure` or
+  `unrecognized`, and `finish_reason_code` holds the documented spelling
+  this collector recognized. The code is drawn from a fixed set defined in
+  this repository rather than from provider bytes.
 
 #### Privacy guarantees
 
@@ -943,6 +968,9 @@ and are never mixed into a single unlabelled number.
   credential does not reach `record.command.argv`. A separate value is
   redacted whatever it looks like, because such a flag always takes one and
   the base64url alphabet starts a value with `-` often enough to matter.
+  The one exception is another credential flag: letting the first flag
+  consume it would skip the second flag's own handler and append the real
+  credential verbatim.
 - No parse diagnostic repeats a value the caller supplied. A token is a name
   only when this program defined it, which the parser itself is asked; token
   syntax is not evidence. Option names and the usage block are kept, since
@@ -1015,6 +1043,20 @@ and are never mixed into a single unlabelled number.
   repair is applied to truncated evidence only, so a complete answer is never
   altered, and it uses the same flexible matching as the whole-value scrub so
   the two controls guarding the same threat have equal strength.
+- Redaction also recognizes percent-encoded echoes. A provider that
+  reflects a key it received in a URL sends back `sk-slash%2Fcredential`
+  rather than `sk-slash/credential`, which is reversible and therefore
+  still a leak. Each credential character is matched as its literal form,
+  its `%XX` form or its double-encoded `%25XX` form, case insensitively, so
+  a mixed encoding is covered without enumerating whole-string variants.
+  Matching starts from candidate positions found by a single scan rather
+  than by compiling one pattern per prefix length, which keeps the cost of
+  a long credential flat.
+- No parse diagnostic repeats a value the caller supplied, in any
+  rendering. argparse formats several of its messages with `%r`, so a value
+  containing a newline, a tab, a zero-width space or a backslash reaches
+  stderr as an escape sequence that does not match the raw string. Both the
+  value and its `repr` body are scrubbed, longest rendering first.
 - `--dry-run` applies the same refusal a real run does. If the configured
   environment variable holds a value that appears in the endpoint or the
   command, the pre-flight check fails instead of printing a plan that a real

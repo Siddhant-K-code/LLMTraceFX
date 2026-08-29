@@ -1010,3 +1010,168 @@ def test_a_trailing_credential_flag_in_a_recorded_command_has_nothing_to_eat(
 
     assert code == 0
     assert json.loads(out)["command"]["argv"] == ["llama-server", "--api-key"]
+
+
+# --- Ninth review pass -------------------------------------------------------
+
+
+SENTINEL = "Sentinel0123456789abcdefXYZ"
+
+# Values whose ``repr`` differs from the value itself. argparse formats the
+# offending token with ``%r`` in several messages, so a scrub that only
+# looks for the raw spelling matches nothing and prints the value in full.
+ESCAPING_SUFFIXES = ["\n", "\r", "\t", "\u200b", "\u00a0", "\\x", "'\"", "\x01"]
+
+
+@pytest.mark.parametrize("suffix", ESCAPING_SUFFIXES)
+def test_a_value_repr_escapes_is_not_echoed_by_the_subcommand_diagnostic(
+    suffix: str,
+) -> None:
+    """``invalid choice: %r`` renders the token, it does not print it."""
+    code, out, err = run_main([SENTINEL + suffix])
+
+    assert code == 2
+    assert SENTINEL not in out
+    assert SENTINEL not in err
+    assert "[REDACTED]" in err
+
+
+@pytest.mark.parametrize("suffix", ESCAPING_SUFFIXES)
+def test_a_value_repr_escapes_is_not_echoed_by_a_type_conversion_error(
+    suffix: str, tmp_path: Path
+) -> None:
+    code, out, err = run_main(
+        [
+            "collect-api",
+            "--endpoint",
+            "https://api.example.test/v1/chat/completions",
+            "--model-id",
+            "glm-5.3",
+            "--run-id",
+            "r1",
+            "--output-dir",
+            str(tmp_path),
+            "--seed",
+            SENTINEL + suffix,
+        ]
+    )
+
+    assert code == 2
+    assert SENTINEL not in out
+    assert SENTINEL not in err
+
+
+@pytest.mark.parametrize("suffix", ESCAPING_SUFFIXES)
+def test_a_value_repr_escapes_is_not_echoed_by_an_ignored_explicit_argument(
+    suffix: str, tmp_path: Path
+) -> None:
+    code, out, err = run_main(
+        [
+            "collect-api",
+            "--endpoint",
+            "https://api.example.test/v1/chat/completions",
+            "--model-id",
+            "glm-5.3",
+            "--run-id",
+            "r1",
+            "--output-dir",
+            str(tmp_path),
+            f"--dry-run={SENTINEL}{suffix}",
+        ]
+    )
+
+    assert code == 2
+    assert SENTINEL not in out
+    assert SENTINEL not in err
+
+
+def test_the_scrub_still_leaves_the_valid_choices_readable() -> None:
+    """Rendering-aware scrubbing must not eat this program's vocabulary."""
+    code, _, err = run_main([SENTINEL + "\n"])
+
+    assert code == 2
+    assert "collect-api" in err
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("--api-key", "--token"),
+        ("--api-key", "--api-key"),
+        ("--token", "--api_key"),
+        ("--api-key", "--APIKEY"),
+    ],
+)
+def test_a_credential_flag_does_not_consume_another_credential_flag(
+    tmp_path: Path, flags: tuple[str, str]
+) -> None:
+    """The one token after a credential flag that is not its value.
+
+    Swallowing the second flag as the first flag's value means the second
+    flag's own handler never runs and the real credential lands in
+    ``record.command.argv`` verbatim.
+    """
+    stdout_file = tmp_path / "llama.txt"
+    stdout_file.write_text("llama_perf_context_print: eval time = 1.0 ms\n")
+
+    code, out, _ = run_main(
+        [
+            "parse-llama-cpp",
+            "--run-id",
+            "r1",
+            "--model-id",
+            "local.gguf",
+            "--stdout-file",
+            str(stdout_file),
+            "--",
+            "llama-server",
+            flags[0],
+            flags[1],
+            SENTINEL,
+            "--port",
+            "8080",
+        ]
+    )
+
+    assert code == 0
+    argv = json.loads(out)["command"]["argv"]
+    assert SENTINEL not in argv
+    assert argv == [
+        "llama-server",
+        flags[0],
+        flags[1],
+        "[REDACTED]",
+        "--port",
+        "8080",
+    ]
+
+
+def test_a_credential_flag_followed_by_an_ordinary_flag_still_redacts_it(
+    tmp_path: Path,
+) -> None:
+    """Only another credential flag is exempt, not any flag-shaped token."""
+    stdout_file = tmp_path / "llama.txt"
+    stdout_file.write_text("llama_perf_context_print: eval time = 1.0 ms\n")
+
+    code, out, _ = run_main(
+        [
+            "parse-llama-cpp",
+            "--run-id",
+            "r1",
+            "--model-id",
+            "local.gguf",
+            "--stdout-file",
+            str(stdout_file),
+            "--",
+            "llama-server",
+            "--api-key",
+            "-Ab9x-secret-value",
+            "--port",
+            "8080",
+        ]
+    )
+
+    assert code == 0
+    argv = json.loads(out)["command"]["argv"]
+    assert "-Ab9x-secret-value" not in argv
+    assert argv == ["llama-server", "--api-key", "[REDACTED]", "--port", "8080"]

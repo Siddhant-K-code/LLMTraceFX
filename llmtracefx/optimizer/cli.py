@@ -1358,10 +1358,7 @@ def _redact_credential_flag_values(argv: Sequence[str]) -> tuple[str, ...]:
     ``llama-server`` has its own ``--api-key``. The flag itself is evidence
     worth keeping, the value is a credential that would otherwise be
     written verbatim into ``record.command.argv``. Both the separate and
-    the attached form are covered. A separate value is redacted whatever
-    it looks like, because such a flag always takes one: the base64url
-    alphabet includes ``-``, so skipping values that start like a flag
-    would leak roughly one credential in sixty four.
+    the attached form are covered.
     """
     redacted: list[str] = []
     skip_next = False
@@ -1370,9 +1367,7 @@ def _redact_credential_flag_values(argv: Sequence[str]) -> tuple[str, ...]:
             skip_next = False
             redacted.append("[REDACTED]")
             continue
-        if not token.startswith("-") or _option_stem(token) not in (
-            _CREDENTIAL_ARGUMENT_STEMS
-        ):
+        if not _is_credential_flag(token):
             redacted.append(token)
             continue
         name, separator, _ = token.partition("=")
@@ -1380,9 +1375,20 @@ def _redact_credential_flag_values(argv: Sequence[str]) -> tuple[str, ...]:
             redacted.append(f"{name}=[REDACTED]")
             continue
         following = argv[index + 1] if index + 1 < len(argv) else None
-        skip_next = following is not None
+        # A credential flag always takes a value, so whatever follows is
+        # redacted whatever it looks like: the base64url alphabet includes
+        # ``-``, so skipping values that start like a flag would leak
+        # roughly one credential in sixty four. The one token that is not a
+        # value is another credential flag, which has its own value after
+        # it. Consuming that would leave the real credential untouched, so
+        # it is left for the next iteration to handle.
+        skip_next = following is not None and not _is_credential_flag(following)
         redacted.append(token)
     return tuple(redacted)
+
+
+def _is_credential_flag(token: str) -> bool:
+    return token.startswith("-") and _option_stem(token) in _CREDENTIAL_ARGUMENT_STEMS
 
 
 def _argument_values(
@@ -1438,6 +1444,24 @@ def _argument_values(
     return tuple(sorted(values, key=len, reverse=True))
 
 
+def _value_renderings(value: str) -> tuple[str, ...]:
+    """Every spelling of ``value`` an argparse message may contain.
+
+    argparse formats the offending token with ``%r`` in several of its
+    messages, not ``%s``: ``invalid choice``, ``ignored explicit
+    argument`` and every ``type=`` conversion failure among them.
+    ``repr`` escapes each character for which ``str.isprintable()`` is
+    false, so a value carrying a trailing newline, a zero-width space, a
+    non-breaking space or a backslash never appears in the message in the
+    form the caller typed. Replacing only the raw form would then match
+    nothing and print the value in full. The escaped body is returned
+    alongside the raw form so both spellings are covered; the surrounding
+    quotes are left in place because they belong to the message.
+    """
+    quoted = repr(value)
+    return (value, quoted[1:-1])
+
+
 def _scrub_argv_values(message: str) -> str:
     """Replace every caller-supplied value in ``message``.
 
@@ -1451,16 +1475,21 @@ def _scrub_argv_values(message: str) -> str:
     values = _argv_values_to_scrub
     if not values:
         return message
+    renderings = sorted(
+        {rendering for value in values for rendering in _value_renderings(value)},
+        key=len,
+        reverse=True,
+    )
     protected = {
         f"\x00{index}\x00": literal
         for index, literal in enumerate(_protected_argument_literals)
-        if not any(literal in value for value in values)
+        if not any(literal in rendering for rendering in renderings)
     }
     scrubbed = message
     for placeholder, literal in protected.items():
         scrubbed = scrubbed.replace(literal, placeholder)
-    for value in values:
-        scrubbed = scrubbed.replace(value, "[REDACTED]")
+    for rendering in renderings:
+        scrubbed = scrubbed.replace(rendering, "[REDACTED]")
     for placeholder, literal in protected.items():
         scrubbed = scrubbed.replace(placeholder, literal)
     return scrubbed

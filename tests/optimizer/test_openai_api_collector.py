@@ -750,12 +750,17 @@ def test_inter_token_latency_is_derived_from_content_deltas_only(
     assert payload["statistics"]["content_delta_rate_provenance"] == "derived"
 
 
-def test_both_rates_share_one_content_window(tmp_path: Path) -> None:
-    """The delta rate and the token rate must use the same denominator.
+def test_the_two_rates_use_the_windows_that_match_their_numerators(
+    tmp_path: Path,
+) -> None:
+    """Each rate is divided by the window its numerator was produced over.
 
-    Anchoring the token rate on the last event of any kind would fold the
+    The delta rate counts content deltas, so it uses the content window.
+    The provider's ``completion_tokens`` counts reasoning tokens too, so it
+    uses the wider generation window that starts at the first reasoning
+    delta. Anchoring either on the last event of any kind would fold the
     trailing usage, finish-reason and ``[DONE]`` events into a decode
-    window, making the two published rates incomparable.
+    window.
     """
     config = make_config(tmp_path)
     usage = {"prompt_tokens": 5, "completion_tokens": 12, "total_tokens": 17}
@@ -767,15 +772,99 @@ def test_both_rates_share_one_content_window(tmp_path: Path) -> None:
     content_offsets = [
         event.offset_ms for event in timeline.events if event.kind == "content"
     ]
+    generated_offsets = [
+        event.offset_ms
+        for event in timeline.events
+        if event.kind in {"content", "reasoning"}
+    ]
     expected_window = content_offsets[-1] - content_offsets[0]
+    expected_generation = generated_offsets[-1] - generated_offsets[0]
 
     assert statistics.content_window_ms == pytest.approx(expected_window)
-    # Three gaps across four arrivals, over the same window.
+    assert statistics.generation_window_ms == pytest.approx(expected_generation)
+    # Reasoning was streamed first, so the generation window is strictly wider.
+    assert expected_generation > expected_window
+    # Three gaps across four arrivals, over the content window.
     assert statistics.content_delta_rate_per_second == pytest.approx(
         3 / (expected_window / 1000)
     )
     assert statistics.provider_completion_tokens_per_second == pytest.approx(
-        12 / (expected_window / 1000)
+        12 / (expected_generation / 1000)
+    )
+
+
+def test_reasoning_before_content_does_not_inflate_the_token_rate(
+    tmp_path: Path,
+) -> None:
+    """A long silent reasoning phase must not be credited to the answer.
+
+    ``completion_tokens`` covers the reasoning tokens as well, so the rate
+    published for it has to span the time those tokens were generated in.
+    """
+    config = make_config(tmp_path)
+    usage = {
+        "prompt_tokens": 5,
+        "completion_tokens": 100,
+        "total_tokens": 105,
+        "completion_tokens_details": {"reasoning_tokens": 90},
+    }
+
+    result, _ = run(
+        config,
+        glm_stream(
+            content_parts=("a", "b"),
+            reasoning_parts=tuple(f"step {index}" for index in range(8)),
+            usage=usage,
+        ),
+    )
+
+    statistics = result.evidence.statistics
+    assert statistics.content_window_ms is not None
+    assert statistics.generation_window_ms is not None
+    assert statistics.generation_window_ms > statistics.content_window_ms
+    assert statistics.provider_completion_tokens_per_second is not None
+    naive = 100 / (statistics.content_window_ms / 1000)
+    assert statistics.provider_completion_tokens_per_second < naive
+    assert statistics.provider_completion_tokens_per_second == pytest.approx(
+        100 / (statistics.generation_window_ms / 1000)
+    )
+    # The visible rate strips the reasoning tokens the provider reported and
+    # is measured over the window the visible answer actually arrived in.
+    assert statistics.provider_visible_completion_tokens_per_second == pytest.approx(
+        10 / (statistics.content_window_ms / 1000)
+    )
+
+
+def test_a_missing_reasoning_token_count_leaves_the_visible_rate_null(
+    tmp_path: Path,
+) -> None:
+    """A count the provider did not report is not zero."""
+    config = make_config(tmp_path)
+    usage = {"prompt_tokens": 5, "completion_tokens": 12, "total_tokens": 17}
+
+    result, _ = run(config, glm_stream(content_parts=("a", "b", "c"), usage=usage))
+
+    statistics = result.evidence.statistics
+    assert result.evidence.usage.reasoning_tokens is None
+    assert statistics.provider_visible_completion_tokens_per_second is None
+    assert statistics.provider_completion_tokens_per_second is not None
+
+
+def test_without_reasoning_deltas_the_two_windows_are_identical(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    usage = {"prompt_tokens": 5, "completion_tokens": 12, "total_tokens": 17}
+
+    result, _ = run(
+        config,
+        glm_stream(content_parts=("a", "b", "c"), reasoning_parts=(), usage=usage),
+    )
+
+    statistics = result.evidence.statistics
+    assert statistics.content_window_ms is not None
+    assert statistics.generation_window_ms == pytest.approx(
+        statistics.content_window_ms
     )
 
 
@@ -797,10 +886,10 @@ def test_the_content_window_ignores_trailing_usage_and_done_events(
     assert timeline.last_event_offset_ms > statistics.content_window_ms
 
 
-def test_a_single_content_delta_yields_no_window_and_no_rates(
+def test_a_single_content_delta_yields_no_content_window_and_no_delta_rate(
     tmp_path: Path,
 ) -> None:
-    """One arrival bounds zero intervals, so no rate is observable."""
+    """One arrival bounds zero intervals, so no delta rate is observable."""
     config = make_config(tmp_path)
     usage = {"prompt_tokens": 5, "completion_tokens": 12, "total_tokens": 17}
 
@@ -810,8 +899,30 @@ def test_a_single_content_delta_yields_no_window_and_no_rates(
     assert statistics.content_delta_count == 1
     assert statistics.content_window_ms is None
     assert statistics.content_delta_rate_per_second is None
-    assert statistics.provider_completion_tokens_per_second is None
+    assert statistics.provider_visible_completion_tokens_per_second is None
     assert statistics.inter_content_delta is None
+    # A reasoning delta preceded the answer, so a generation window was
+    # still observed and the provider's token count has a denominator.
+    assert statistics.generation_window_ms is not None
+    assert statistics.provider_completion_tokens_per_second is not None
+
+
+def test_a_single_generated_delta_yields_no_window_and_no_rates(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    usage = {"prompt_tokens": 5, "completion_tokens": 12, "total_tokens": 17}
+
+    result, _ = run(
+        config,
+        glm_stream(content_parts=("only",), reasoning_parts=(), usage=usage),
+    )
+
+    statistics = result.evidence.statistics
+    assert statistics.content_window_ms is None
+    assert statistics.generation_window_ms is None
+    assert statistics.content_delta_rate_per_second is None
+    assert statistics.provider_completion_tokens_per_second is None
 
 
 def test_the_content_window_is_persisted_with_its_definition(tmp_path: Path) -> None:
@@ -825,9 +936,15 @@ def test_the_content_window_is_persisted_with_its_definition(tmp_path: Path) -> 
     statistics = payload["statistics"]
     assert statistics["content_window_ms"] is not None
     assert "last content delta arrival" in statistics["content_window_definition"]
+    assert statistics["generation_window_ms"] is not None
+    assert "reasoning or content" in statistics["generation_window_definition"]
     note = statistics["provider_completion_tokens_per_second_note"]
-    assert "content_window_ms" in note
+    assert "generation_window_ms" in note
+    assert "includes reasoning tokens" in note
     assert "coarse estimate" in note
+    visible_note = statistics["provider_visible_completion_tokens_per_second_note"]
+    assert "content_window_ms" in visible_note
+    assert "missing count is not zero" in visible_note
 
 
 def test_stream_without_a_done_sentinel_is_recorded_honestly(tmp_path: Path) -> None:
@@ -2558,3 +2675,355 @@ def test_a_stream_ending_on_a_stray_carriage_return_is_still_a_success(
     assert result.evidence.success is True
     assert result.evidence.stream_had_unterminated_event is False
     assert result.record.outcome.success is True
+
+
+# --- Ninth review pass -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "credential",
+    [
+        "error",
+        "network",
+        "network_error",
+        "_error",
+        "work_err",
+    ],
+)
+def test_a_credential_overlapping_a_finish_reason_cannot_erase_a_failure(
+    tmp_path: Path, credential: str
+) -> None:
+    """Meaning is decided before redaction rewrites the text.
+
+    Redaction is a text transform on a provider-controlled string. A
+    credential that happens to contain ``error`` turns ``network_error``
+    into ``network_[REDACTED]``; if the failure were classified from the
+    redacted text it would stop being recognized, and the ``[DONE]`` that
+    follows would publish an aborted generation as a whole answer.
+
+    These credentials are English fragments of this program's own
+    vocabulary, so no artifact-wide substring scan is asserted here: a
+    credential that spells a word this collector writes itself cannot be
+    kept out of its own diagnostics, and the encoded-echo tests cover the
+    scan against a realistic key.
+    """
+    config = make_config(tmp_path)
+    environ = {"ZAI_API_KEY": credential}
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "partial"}}]}),
+        sse(
+            {
+                "id": "c1",
+                "choices": [
+                    {"index": 0, "delta": {}, "finish_reason": "network_error"}
+                ],
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks, environ=environ)
+
+    assert result.evidence.success is False
+    assert result.record.outcome.success is False
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.provider_error_code == "network_error"
+    assert result.evidence.finish_reason_classification == "failure"
+    # The persisted text is still redacted, only the classification is not
+    # derived from it.
+    assert result.evidence.finish_reason is not None
+    assert "[REDACTED]" in result.evidence.finish_reason
+
+
+@pytest.mark.parametrize("credential", ["stop", "top", "sensitive", "tool_calls"])
+def test_a_credential_overlapping_a_terminal_reason_keeps_the_success(
+    tmp_path: Path, credential: str
+) -> None:
+    """The same ordering must not turn a completed answer into a failure."""
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "done"}}]}),
+        sse(
+            {
+                "id": "c1",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+        ),
+    ]
+
+    result, _ = run(config, chunks, environ={"ZAI_API_KEY": credential})
+
+    assert result.evidence.success is True
+    assert result.evidence.finish_reason_classification == "terminal"
+    assert result.response_text == "done"
+
+
+def test_the_finish_reason_classification_is_persisted_beside_the_text(
+    tmp_path: Path,
+) -> None:
+    """The persisted code is a value this collector defined, not the wire text."""
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "hi"}}]}),
+        sse(
+            {
+                "id": "c1",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "STOP "}],
+            }
+        ),
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert result.evidence.success is True
+    payload = json.loads(
+        (config.output_dir / "api_evidence.json").read_text(encoding="utf-8")
+    )
+    assert payload["finish_reason"] == "STOP"
+    assert payload["finish_reason_classification"] == "terminal"
+    assert payload["finish_reason_code"] == "stop"
+
+
+def test_an_unrecognized_finish_reason_is_classified_as_such(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "hi"}}]}),
+        sse(
+            {
+                "id": "c1",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "invented"}],
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks)
+
+    payload = json.loads(
+        (config.output_dir / "api_evidence.json").read_text(encoding="utf-8")
+    )
+    assert payload["finish_reason_classification"] == "unrecognized"
+    assert payload["finish_reason_code"] is None
+    # [DONE] is still an accepted terminal condition on its own.
+    assert result.evidence.success is True
+
+
+PERCENT_CREDENTIAL = "sk-slash/credential+plus space"
+
+
+def percent_encode(value: str, *, lower: bool = False, double: bool = False) -> str:
+    encoded = "".join(
+        (
+            character
+            if character.isalnum() or character in "-_."
+            else "".join(f"%{byte:02X}" for byte in character.encode("utf-8"))
+        )
+        for character in value
+    )
+    if double:
+        encoded = encoded.replace("%", "%25")
+    return encoded.lower() if lower else encoded
+
+
+@pytest.mark.parametrize(
+    ("lower", "double"),
+    [(False, False), (True, False), (False, True), (True, True)],
+)
+def test_a_percent_encoded_credential_echo_is_scrubbed_everywhere(
+    tmp_path: Path, lower: bool, double: bool
+) -> None:
+    """An encoded echo is one mechanical decode away from the key.
+
+    A provider that reflects the credential through a URL builder returns
+    ``sk-slash%2Fcredential``. A literal substring scrub sees nothing, and
+    the artifact carries a reversible secret.
+    """
+    config = make_config(tmp_path)
+    echo = percent_encode(PERCENT_CREDENTIAL, lower=lower, double=double)
+    chunks = [
+        sse(
+            {
+                "id": f"resp-{echo}",
+                "request_id": f"req-{echo}",
+                "model": f"glm-{echo}",
+                "choices": [{"index": 0, "delta": {"content": f"key is {echo}"}}],
+            }
+        ),
+        sse(
+            {
+                "id": "resp-2",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+    response = FakeResponse(
+        chunks,
+        headers={"content-type": "text/event-stream", "x-request-id": echo},
+    )
+
+    result, _ = run(config, response, environ={"ZAI_API_KEY": PERCENT_CREDENTIAL})
+
+    assert echo not in result.response_text
+    for path in sorted(config.output_dir.iterdir()):
+        text = path.read_text(encoding="utf-8")
+        assert echo not in text, path.name
+        assert PERCENT_CREDENTIAL not in text, path.name
+
+
+def test_a_partially_percent_encoded_echo_is_scrubbed(tmp_path: Path) -> None:
+    """Real quoting functions encode only what they consider unsafe."""
+    config = make_config(tmp_path)
+    echo = PERCENT_CREDENTIAL.replace("/", "%2F").replace(" ", "%20")
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": echo}}]}),
+        sse(
+            {
+                "id": "c1",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks, environ={"ZAI_API_KEY": PERCENT_CREDENTIAL})
+
+    assert "%2F" not in result.response_text
+    assert result.response_text == "[REDACTED]"
+
+
+def test_an_encoded_credential_cut_by_truncation_is_repaired(tmp_path: Path) -> None:
+    """The boundary repair matches the same encodings as the whole scrub."""
+    config = make_config(tmp_path)
+    encoded = percent_encode(PERCENT_CREDENTIAL)
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": encoded[:-4]}}]})
+    ]
+
+    result, _ = run(config, chunks, environ={"ZAI_API_KEY": PERCENT_CREDENTIAL})
+
+    assert result.evidence.success is False
+    for path in sorted(config.output_dir.iterdir()):
+        text = path.read_text(encoding="utf-8")
+        assert "sk-slash" not in text, path.name
+
+
+def test_an_encoded_bearer_prefix_is_scrubbed(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    chunks = [
+        sse(
+            {
+                "id": "c1",
+                "choices": [
+                    {"index": 0, "delta": {"content": "Bearer%20some-other-token"}}
+                ],
+            }
+        ),
+        sse(
+            {
+                "id": "c1",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert "some-other-token" not in result.response_text
+
+
+def test_events_from_one_network_chunk_share_one_arrival_time(
+    tmp_path: Path,
+) -> None:
+    """Parser CPU time is not inter-token latency.
+
+    Reading the clock per decoded event rather than per network chunk
+    invents positive gaps between deltas that arrived in the same packet,
+    which would show up as observable throughput that no observer could
+    have measured.
+    """
+    config = make_config(tmp_path)
+    together = sse(
+        {"id": "c1", "choices": [{"index": 0, "delta": {"content": "aa"}}]}
+    ) + sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "bb"}}]})
+    chunks = [
+        together,
+        sse(
+            {
+                "id": "c1",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks)
+
+    offsets = [
+        event.offset_ms
+        for event in result.evidence.timeline.events
+        if event.kind == "content"
+    ]
+    assert len(offsets) == 2
+    assert offsets[0] == offsets[1]
+    statistics = result.evidence.statistics
+    # A zero-width window is not a window, so no rate is published from it.
+    assert statistics.content_window_ms is None
+    assert statistics.content_delta_rate_per_second is None
+    assert statistics.provider_completion_tokens_per_second is None
+
+
+def test_events_in_separate_network_chunks_keep_their_gaps(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "aa"}}]}),
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "bb"}}]}),
+        sse(
+            {
+                "id": "c1",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks)
+
+    offsets = [
+        event.offset_ms
+        for event in result.evidence.timeline.events
+        if event.kind == "content"
+    ]
+    assert offsets[1] > offsets[0]
+    assert result.evidence.statistics.content_window_ms == pytest.approx(
+        offsets[1] - offsets[0]
+    )
+
+
+def test_a_fragmented_event_is_timed_by_the_chunk_that_completed_it(
+    tmp_path: Path,
+) -> None:
+    """A delta split across packets arrives when its last byte does."""
+    config = make_config(tmp_path)
+    first = sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "aa"}}]})
+    chunks = [
+        first[:10],
+        first[10:],
+        sse(
+            {
+                "id": "c1",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks)
+
+    content = [
+        event for event in result.evidence.timeline.events if event.kind == "content"
+    ]
+    assert len(content) == 1
+    assert result.evidence.timeline.first_body_chunk_offset_ms is not None
+    assert content[0].offset_ms > result.evidence.timeline.first_body_chunk_offset_ms

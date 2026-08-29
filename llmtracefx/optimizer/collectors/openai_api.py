@@ -147,6 +147,17 @@ _TERMINAL_FINISH_REASONS = frozenset(
 # https://docs.z.ai/api-reference/llm/chat-completion
 _FAILURE_FINISH_REASONS = frozenset({"network_error", "model_context_window_exceeded"})
 
+# How a ``finish_reason`` is classified. The provider's raw string is
+# classified before redaction can touch it, because redaction rewrites
+# provider-controlled text and a credential that happens to contain
+# ``error`` would turn ``network_error`` into ``network_[REDACTED]`` and
+# erase the failure. The classification is derived from a value this
+# collector defines, so it stays meaningful whatever the redactor does to
+# the text that is persisted alongside it.
+_FINISH_TERMINAL = "terminal"
+_FINISH_FAILURE = "failure"
+_FINISH_UNRECOGNIZED = "unrecognized"
+
 _EVENT_KIND_CONTENT = "content"
 _EVENT_KIND_REASONING = "reasoning"
 _EVENT_KIND_METADATA = "metadata"
@@ -697,51 +708,111 @@ class _Redactor:
     itself would otherwise write it straight to disk.
     """
 
-    _BEARER = re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]+")
+    _BEARER = re.compile(r"(?i)\b(bearer)(?:\s|%20|%2520)+[A-Za-z0-9._~+/=%-]+")
+
+    # A whitespace run, in any rendering a provider might echo it in: real
+    # whitespace, the form-encoded ``+``, or the percent-encoded byte.
+    # Bounded repetition so a pathological run cannot make matching blow up.
+    _WHITESPACE_ELEMENT = r"(?:\s|\+|%(?:09|0[ABCD]|20)|%25(?:09|0[ABCD]|20)){1,64}"
 
     @staticmethod
-    def _flexible(fragment: str, *, anchored: bool) -> re.Pattern[str] | None:
-        """Compile a fragment so whitespace runs and case cannot hide it.
+    def _character_element(character: str) -> str:
+        """One character, in literal and percent-encoded renderings.
 
-        A provider that echoes the credential back with tabs for spaces, or
-        with the case folded, is echoing the credential. Matching each
-        internal whitespace run flexibly under ``re.IGNORECASE`` keeps every
-        sink at the same strength without any sink having to alter what it
-        persists.
+        A provider that echoes the credential back through a URL builder
+        returns ``sk-slash%2Fcredential`` for ``sk-slash/credential``. That
+        is the credential: anyone reading the artifact can decode it in one
+        step. Matching each character as ``(?:c|%XX|%25XX)`` catches the
+        encoded form wherever it appears, including the partial encoding a
+        real quoting function produces when it encodes only the characters
+        it considers unsafe. ``re.IGNORECASE`` on the compiled pattern
+        covers ``%2f`` as well as ``%2F``. Double encoding is included
+        because a value passed through two layers of quoting is still one
+        mechanical decode away from the key, and the expansion stops there
+        so the pattern stays bounded.
         """
-        parts = [re.escape(part) for part in fragment.split()]
-        if not parts:
+        literal = re.escape(character)
+        encoded = "".join(f"%{byte:02X}" for byte in character.encode("utf-8"))
+        forms = [literal, encoded, encoded.replace("%", "%25")]
+        return "(?:" + "|".join(dict.fromkeys(forms)) + ")"
+
+    @classmethod
+    def _elements(cls, fragment: str) -> list[str]:
+        """Split a fragment into per-character (or per-whitespace-run) parts.
+
+        Surrounding whitespace is dropped: a credential read from a file or
+        an environment value may carry it, it is not part of the secret,
+        and keeping it would make the pattern demand whitespace the
+        provider never echoed. A fragment with no non-whitespace character
+        is not a credential and yields no elements at all, so it cannot
+        compile into a pattern that matches every space in every artifact.
+        """
+        elements: list[str] = []
+        stripped = fragment.strip()
+        index = 0
+        while index < len(stripped):
+            if stripped[index].isspace():
+                while index < len(stripped) and stripped[index].isspace():
+                    index += 1
+                elements.append(cls._WHITESPACE_ELEMENT)
+                continue
+            elements.append(cls._character_element(stripped[index]))
+            index += 1
+        return elements
+
+    @classmethod
+    def _flexible(cls, fragment: str) -> re.Pattern[str] | None:
+        """Compile a fragment so encoding, whitespace and case cannot hide it.
+
+        A provider that echoes the credential back with tabs for spaces,
+        with the case folded, or percent-encoded, is echoing the
+        credential. Keeping every sink on this one construction means no
+        sink has to alter what it persists to stay safe.
+        """
+        elements = cls._elements(fragment)
+        if not elements:
             return None
-        body = r"\s+".join(parts)
-        if anchored:
-            # A prefix cut inside a whitespace run leaves a trailing run
-            # that the split above dropped.
-            if fragment != fragment.rstrip():
-                body += r"\s*"
-            body += r"\Z"
-        return re.compile(body, re.IGNORECASE)
+        return re.compile("".join(elements), re.IGNORECASE)
 
     def __init__(self, credential: str | None) -> None:
         self._credential = credential or None
+        self._parts = self._elements(self._credential) if self._credential else []
         self._pattern = (
-            self._flexible(self._credential, anchored=False)
-            if self._credential
-            else None
+            re.compile("".join(self._parts), re.IGNORECASE) if self._parts else None
         )
         # ``boundary`` compares against a tail that truncation cut, so it
         # cannot use the whole-credential pattern. It uses the same
-        # construction per candidate prefix length instead, so the two
+        # construction over each shorter prefix instead, so the two
         # matchers guarding the same threat have equal strength.
-        tails: list[re.Pattern[str]] = []
-        if self._credential:
-            for length in range(
-                len(self._credential) - 1, _MIN_ENCODED_CREDENTIAL_CHARS - 1, -1
-            ):
-                pattern = self._flexible(self._credential[:length], anchored=True)
-                if pattern is not None:
-                    tails.append(pattern)
-        # Longest prefix first, so the repair removes as much as it can.
-        self._tail_patterns = tuple(tails)
+        #
+        # Those per-prefix patterns are built only when the head of the
+        # credential is actually present. Any prefix long enough to match
+        # begins with that head, so its absence rules every prefix out, and
+        # the common case where nothing leaked pays for one small search
+        # rather than one compile per prefix length.
+        self._tail_head = (
+            re.compile(
+                "(?=" + "".join(self._parts[:_MIN_ENCODED_CREDENTIAL_CHARS]) + ")",
+                re.IGNORECASE,
+            )
+            if len(self._parts) > _MIN_ENCODED_CREDENTIAL_CHARS
+            else None
+        )
+        self._tail_patterns: tuple[re.Pattern[str], ...] | None = None
+
+    def _element_patterns(self) -> tuple[re.Pattern[str], ...]:
+        """One compiled matcher per credential element, built on demand.
+
+        Walking these forward from a candidate start is linear in the
+        credential length. Compiling one anchored pattern per prefix length
+        instead would be quadratic in the credential length, which is
+        measurable for a long key and buys nothing.
+        """
+        if self._tail_patterns is None:
+            self._tail_patterns = tuple(
+                re.compile(part, re.IGNORECASE) for part in self._parts
+            )
+        return self._tail_patterns
 
     def _scrub(self, text: str) -> str:
         cleaned = text
@@ -767,10 +838,27 @@ class _Redactor:
         KiB body can leak all but the last character of a key.
         """
         cleaned = text.rstrip("\ufffd")
-        for pattern in self._tail_patterns:
-            repaired, count = pattern.subn(_REDACTED, cleaned)
-            if count:
-                return repaired
+        if self._tail_head is None:
+            return cleaned
+        # Every prefix long enough to match starts with the credential's
+        # head, so the only candidate starts are the positions the head
+        # occupies. ``finditer`` yields them in order and every accepted
+        # match ends at the end of the string, so the first start that
+        # succeeds is also the longest prefix.
+        ending = len(cleaned)
+        patterns = self._element_patterns()
+        for found in self._tail_head.finditer(cleaned):
+            start = found.start()
+            cursor = start
+            for index, pattern in enumerate(patterns):
+                match = pattern.match(cleaned, cursor)
+                if match is None:
+                    break
+                cursor = match.end()
+                if cursor >= ending:
+                    if cursor == ending and index + 1 >= _MIN_ENCODED_CREDENTIAL_CHARS:
+                        return cleaned[:start] + _REDACTED
+                    break
         return cleaned
 
     def text(self, value: str) -> str:
@@ -923,7 +1011,7 @@ def _normalized_query_identity(query: str) -> list[list[Any]]:
 
 def _config_identity_hash(config: APICollectionConfig) -> str:
     parts = parse_endpoint(config.endpoint)
-    return config_hash(
+    identity: str = config_hash(
         {
             "provider": config.provider,
             "endpoint_origin": f"{parts.scheme}://{parts.netloc}",
@@ -945,6 +1033,7 @@ def _config_identity_hash(config: APICollectionConfig) -> str:
             ),
         }
     )
+    return identity
 
 
 def _endpoint_for_command(endpoint: str) -> str:
@@ -1187,6 +1276,13 @@ class StreamStatistics:
     consumer can see how wide the measurement actually was: a rate over a
     window of a few microseconds with two samples is arithmetic, not
     evidence, and only the window makes that visible.
+
+    ``generation_window_ms`` is the wider window that starts at the first
+    generated event of any kind, reasoning or content, and ends at the
+    last. It exists because a provider-reported ``completion_tokens``
+    counts reasoning tokens as well as visible ones, so the content window
+    is the wrong denominator for it whenever reasoning was streamed first.
+    With no reasoning deltas the two windows are identical.
     """
 
     content_delta_count: int = 0
@@ -1197,8 +1293,10 @@ class StreamStatistics:
     comment_count: int = 0
     inter_content_delta: LatencyDistribution | None = None
     content_window_ms: float | None = None
+    generation_window_ms: float | None = None
     content_delta_rate_per_second: float | None = None
     provider_completion_tokens_per_second: float | None = None
+    provider_visible_completion_tokens_per_second: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1221,17 +1319,35 @@ class StreamStatistics:
             ),
             "content_delta_rate_per_second": self.content_delta_rate_per_second,
             "content_delta_rate_provenance": MetricProvenance.DERIVED.value,
+            "generation_window_ms": self.generation_window_ms,
+            "generation_window_definition": (
+                "first generated event arrival, reasoning or content, to the "
+                "last, client-observed; equals content_window_ms when no "
+                "reasoning delta was streamed"
+            ),
             "provider_completion_tokens_per_second": (
                 self.provider_completion_tokens_per_second
             ),
             "provider_completion_tokens_per_second_note": (
                 "provider-reported completion tokens divided by "
-                "content_window_ms; mixed provenance. The window starts at "
-                "the first content delta, so the first delta's own "
-                "generation time is excluded, and when content_delta_count "
-                "is far below completion_tokens the window endpoints are "
-                "delta boundaries rather than token boundaries. Treat this "
-                "as a coarse estimate, not a measured per-token rate."
+                "generation_window_ms; mixed provenance. completion_tokens "
+                "includes reasoning tokens where the provider counts them, "
+                "so the wider generation window is the matching denominator. "
+                "The window starts at the first generated delta, so that "
+                "delta's own generation time is excluded, and when the delta "
+                "count is far below completion_tokens the window endpoints "
+                "are delta boundaries rather than token boundaries. Treat "
+                "this as a coarse estimate, not a measured per-token rate."
+            ),
+            "provider_visible_completion_tokens_per_second": (
+                self.provider_visible_completion_tokens_per_second
+            ),
+            "provider_visible_completion_tokens_per_second_note": (
+                "(completion tokens minus provider-reported reasoning "
+                "tokens) divided by content_window_ms; mixed provenance. It "
+                "is null whenever the provider did not report a reasoning "
+                "token count, because a missing count is not zero and "
+                "assuming it were would inflate the visible rate."
             ),
         }
 
@@ -1267,6 +1383,14 @@ class APIEvidence:
     provider_request_id: str | None = None
     response_model: str | None = None
     finish_reason: str | None = None
+    finish_reason_classification: str | None = None
+    """How the raw ``finish_reason`` was classified, decided before
+    redaction could rewrite the text it was read from."""
+    finish_reason_code: str | None = None
+    """The documented spelling this collector recognized, or null when the
+    provider sent something outside the documented set. Drawn from a value
+    this collector defines rather than from provider bytes, so unlike
+    ``finish_reason`` it carries no provider-controlled text."""
     usage: ProviderUsage = field(default_factory=ProviderUsage)
     timeline: StreamTimeline = field(default_factory=StreamTimeline)
     statistics: StreamStatistics = field(default_factory=StreamStatistics)
@@ -1289,6 +1413,8 @@ class APIEvidence:
             "provider_request_id": self.provider_request_id,
             "response_model": self.response_model,
             "finish_reason": self.finish_reason,
+            "finish_reason_classification": self.finish_reason_classification,
+            "finish_reason_code": self.finish_reason_code,
             "usage": self.usage.to_dict(),
             "timeline": self.timeline.to_dict(),
             "statistics": self.statistics.to_dict(),
@@ -1346,6 +1472,10 @@ class _StreamAccumulator:
         self.provider_request_id: str | None = None
         self.response_model: str | None = None
         self.finish_reason: str | None = None
+        self.finish_outcome: str | None = None
+        self.finish_reason_code: str | None = None
+        self.first_generated_token_at: float | None = None
+        self.last_generated_token_at: float | None = None
         self.usage: ProviderUsage = ProviderUsage()
         self.terminated_with_done = False
         self.incomplete_event_discarded = False
@@ -1360,17 +1490,24 @@ class _StreamAccumulator:
     ) -> APIFailure | None:
         """Drain the body. Returns a failure, or ``None`` when it streamed."""
         decoder = SSEDecoder()
+        observed_at: float | None = None
         try:
             for chunk in response.iter_bytes():
-                now = self._clock()
+                # One clock read per network chunk, shared by every event it
+                # completes. Reading the clock per event would time the
+                # parser instead of the network and turn microseconds of
+                # local CPU into inter-token latency that no observer could
+                # have seen: several deltas can arrive in a single chunk.
+                observed_at = self._clock()
                 if self.first_body_chunk_at is None:
-                    self.first_body_chunk_at = now
+                    self.first_body_chunk_at = observed_at
                 for event in decoder.feed(chunk):
-                    failure = self._handle_event(event, redact=redact)
+                    failure = self._handle_event(event, observed_at, redact=redact)
                     if failure is not None or self.terminated_with_done:
                         return failure
+            final_at = self._clock() if observed_at is None else observed_at
             for event in decoder.close():
-                failure = self._handle_event(event, redact=redact)
+                failure = self._handle_event(event, final_at, redact=redact)
                 if failure is not None or self.terminated_with_done:
                     return failure
         except SSEDecodeError as exc:
@@ -1384,8 +1521,10 @@ class _StreamAccumulator:
             self.incomplete_event_discarded = decoder.incomplete_event_discarded
         return None
 
-    def _handle_event(self, event: SSEEvent, *, redact: _Redactor) -> APIFailure | None:
-        now = self._clock()
+    def _handle_event(
+        self, event: SSEEvent, observed_at: float, *, redact: _Redactor
+    ) -> APIFailure | None:
+        now = observed_at
         self.last_event_at = now
         data = event.data.strip()
 
@@ -1485,6 +1624,23 @@ class _StreamAccumulator:
                     category=FAILURE_STREAM_DECODE,
                     message="stream chunk 'finish_reason' is not a string",
                 )
+            # Classify what the provider actually sent, before redaction
+            # rewrites it. Redaction is a text transform on an untrusted
+            # string, so it can dissolve a documented reason: a credential
+            # containing "error" turns "network_error" into
+            # "network_[REDACTED]", the failure is no longer recognized and
+            # a following [DONE] publishes an aborted generation as a
+            # success. Meaning is decided first, text is redacted second.
+            normalized = finish_reason.strip().lower()
+            if normalized in _FAILURE_FINISH_REASONS:
+                self.finish_outcome = _FINISH_FAILURE
+                self.finish_reason_code = normalized
+            elif normalized in _TERMINAL_FINISH_REASONS:
+                self.finish_outcome = _FINISH_TERMINAL
+                self.finish_reason_code = normalized
+            else:
+                self.finish_outcome = _FINISH_UNRECOGNIZED
+                self.finish_reason_code = None
             self.finish_reason = redact.identifier(finish_reason)
 
         delta = choice.get("delta")
@@ -1518,8 +1674,11 @@ class _StreamAccumulator:
         if content:
             if self.first_content_token_at is None:
                 self.first_content_token_at = now
+            if self.first_generated_token_at is None:
+                self.first_generated_token_at = now
             self.content_arrival_times.append(now)
             self.last_content_at = now
+            self.last_generated_token_at = now
             self.content_parts.append(content)
             self.content_delta_count += 1
             self._record_event(_EVENT_KIND_CONTENT, len(content), now)
@@ -1529,6 +1688,9 @@ class _StreamAccumulator:
             return None
 
         if reasoning:
+            if self.first_generated_token_at is None:
+                self.first_generated_token_at = now
+            self.last_generated_token_at = now
             self.reasoning_delta_count += 1
             self.reasoning_characters += len(reasoning)
             self._record_event(_EVENT_KIND_REASONING, len(reasoning), now)
@@ -1582,15 +1744,18 @@ class _StreamAccumulator:
             return False
         if self.terminated_with_done:
             return True
-        reason = self.finish_reason
-        return reason is not None and reason in _TERMINAL_FINISH_REASONS
+        return self.finish_outcome == _FINISH_TERMINAL
 
     def failed_finish_reason(self) -> str | None:
-        """The ``finish_reason`` when the provider documented it as a failure."""
-        reason = self.finish_reason
-        if reason is not None and reason in _FAILURE_FINISH_REASONS:
-            return reason
-        return None
+        """The documented failure reason the provider reported, if any.
+
+        The value returned is the documented spelling this collector
+        recognized, not the provider's bytes, so it is safe to persist as
+        an error code and cannot carry an echoed credential.
+        """
+        if self.finish_outcome != _FINISH_FAILURE:
+            return None
+        return self.finish_reason_code
 
     def content_text(self) -> str:
         """The final answer, scrubbed as one string.
@@ -1625,6 +1790,13 @@ class _StreamAccumulator:
         # arrival. Anchoring the end on ``last_event_at`` instead would
         # fold the trailing usage/finish-reason/[DONE] events, which carry
         # no generated content, into a decode denominator.
+        # A second window, ``generation_window_ms``, runs from the first
+        # generated event of any kind to the last. When the provider streams
+        # reasoning deltas before the answer, that window is the one the
+        # provider's completion-token count was produced over: Z.ai counts
+        # reasoning tokens inside ``completion_tokens``, so dividing them by
+        # the content window would credit a long silent reasoning phase to a
+        # short visible one and overstate throughput.
         window_seconds: float | None = None
         if (
             len(self.content_arrival_times) > 1
@@ -1634,15 +1806,37 @@ class _StreamAccumulator:
                 self.content_arrival_times[-1] - self.content_arrival_times[0]
             )
 
+        generation_seconds: float | None = None
+        first_generated = self.first_generated_token_at
+        last_generated = self.last_generated_token_at
+        if (
+            first_generated is not None
+            and last_generated is not None
+            and last_generated > first_generated
+        ):
+            generation_seconds = last_generated - first_generated
+
         delta_rate = None
         token_rate = None
+        visible_token_rate = None
         if window_seconds is not None:
             # ``n`` arrivals bound ``n - 1`` intervals, so the delta rate is
             # measured over the gaps it actually observed.
             delta_rate = (len(self.content_arrival_times) - 1) / window_seconds
             completion_tokens = self.usage.completion_tokens
+            reasoning_tokens = self.usage.reasoning_tokens
+            if (
+                completion_tokens is not None
+                and reasoning_tokens is not None
+                and completion_tokens >= reasoning_tokens
+            ):
+                visible_token_rate = (
+                    completion_tokens - reasoning_tokens
+                ) / window_seconds
+        if generation_seconds is not None:
+            completion_tokens = self.usage.completion_tokens
             if completion_tokens is not None:
-                token_rate = completion_tokens / window_seconds
+                token_rate = completion_tokens / generation_seconds
 
         return StreamStatistics(
             content_delta_count=self.content_delta_count,
@@ -1655,8 +1849,12 @@ class _StreamAccumulator:
             content_window_ms=(
                 None if window_seconds is None else window_seconds * 1000
             ),
+            generation_window_ms=(
+                None if generation_seconds is None else generation_seconds * 1000
+            ),
             content_delta_rate_per_second=delta_rate,
             provider_completion_tokens_per_second=token_rate,
+            provider_visible_completion_tokens_per_second=visible_token_rate,
         )
 
     def timeline(self, completed_at: float) -> StreamTimeline:
@@ -2120,6 +2318,8 @@ def collect_openai_stream(
         provider_request_id=provider_request_id,
         response_model=accumulator.response_model,
         finish_reason=accumulator.finish_reason,
+        finish_reason_classification=accumulator.finish_outcome,
+        finish_reason_code=accumulator.finish_reason_code,
         usage=accumulator.usage,
         timeline=accumulator.timeline(completed),
         statistics=accumulator.statistics(),
