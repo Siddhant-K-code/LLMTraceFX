@@ -1,0 +1,153 @@
+# CI for LLMTraceFX.
+#
+# About the `quality` job: it is a ratchet, not a repo-wide gate.
+#
+# main currently carries substantial pre-existing lint, format and type debt
+# (hundreds of ruff findings and dozens of mypy errors in older modules). A
+# repo-wide `ruff check llmtracefx/` or `mypy llmtracefx/` would be red on every
+# single pull request, which trains people to ignore the build. Rather than
+# mass-reformatting the repository or hiding the problem behind blanket ignores
+# and continue-on-error, the quality job checks only the Python files that the
+# pull request actually touches. New and edited code is held to the standard,
+# untouched legacy code is left for separate cleanup, and the gate means
+# something on day one.
+#
+# The selection logic lives in scripts/lint-changed.sh so the identical check can
+# be run locally with `make lint-changed`.
+#
+# Note for future contributors: `ruff format` is deliberately absent here.
+# `ruff format` and black disagree on some files in this repository and each
+# reverts the other, so requiring both is unsatisfiable. black is the formatter
+# of record. ruff's linter does not conflict with black, and ruff's I001 import
+# rule was verified to agree with isort, so `ruff check` is still enforced.
+# The `format` and `format-check` Makefile targets were corrected to match, so
+# running `make format` locally produces exactly what this workflow accepts.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_COLOR: "1"
+
+jobs:
+  test:
+    name: test (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra test
+
+      - name: Run test suite
+        run: uv run pytest
+
+  quality:
+    name: quality ratchet (changed files)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so the merge base with the base branch is available.
+          fetch-depth: 0
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --extra dev --extra test
+
+      - name: Resolve diff base
+        id: diff-base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$PR_BASE_SHA"
+          else
+            # github.event.before is all zeros for a new branch, and can point at
+            # an object that no longer exists after a force push.
+            base="$PUSH_BEFORE_SHA"
+            if ! git rev-parse --verify --quiet "${base}^{commit}" >/dev/null; then
+              base="$(git rev-parse --verify --quiet 'HEAD^{commit}^' || true)"
+            fi
+          fi
+          if [ -z "$base" ]; then
+            echo "Could not resolve a diff base, skipping the ratchet."
+            echo "base=" >> "$GITHUB_OUTPUT"
+          else
+            echo "Diff base: $base"
+            echo "base=$base" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run quality ratchet on changed files
+        if: steps.diff-base.outputs.base != ''
+        run: scripts/lint-changed.sh "${{ steps.diff-base.outputs.base }}"
+
+  build:
+    name: build and verify wheel
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Verify the wheel imports in a clean environment
+        run: |
+          set -euo pipefail
+          wheel="$(ls dist/*.whl)"
+          echo "Testing $wheel"
+          uv venv --python 3.12 .wheel-check
+          uv pip install --python .wheel-check/bin/python "$wheel"
+          # Run from a directory without the source tree so the import resolves
+          # against the installed wheel rather than ./llmtracefx.
+          cd "$(mktemp -d)"
+          "$GITHUB_WORKSPACE/.wheel-check/bin/python" -c "
+          import importlib.metadata as md
+          import llmtracefx
+          print('imported llmtracefx from', llmtracefx.__file__)
+          print('version', md.version('llmtracefx'))
+          "

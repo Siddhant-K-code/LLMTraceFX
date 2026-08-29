@@ -1,6 +1,6 @@
 # LLMTraceFX Makefile
 
-.PHONY: help install install-dev sync test lint format clean run-sample run-server deploy-modal
+.PHONY: help install install-dev sync test lint lint-changed format clean run-sample run-server deploy-modal
 
 help:  ## Show this help message
 	@echo "LLMTraceFX - GPU-level LLM inference profiler"
@@ -29,15 +29,16 @@ lint:  ## Run linting
 	uv run ruff check llmtracefx/
 	uv run mypy llmtracefx/
 
+lint-changed:  ## Run the CI quality ratchet over files changed vs origin/main
+	./scripts/lint-changed.sh origin/main
+
 format:  ## Format code
 	uv run black llmtracefx/
 	uv run isort llmtracefx/
-	uv run ruff format llmtracefx/
 
 format-check:  ## Check formatting
 	uv run black --check llmtracefx/
 	uv run isort --check-only llmtracefx/
-	uv run ruff format --check llmtracefx/
 
 # Running
 run-sample:  ## Run analysis on sample trace

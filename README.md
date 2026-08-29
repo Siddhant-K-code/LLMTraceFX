@@ -661,6 +661,40 @@ uv run ruff check llmtracefx/hardware.py \
   llmtracefx/profiler/gpu_analyzer.py tests
 ```
 
+### Continuous Integration
+
+GitHub Actions runs three jobs on every pull request and on pushes to `main`
+(see `.github/workflows/ci.yml`):
+
+| Job | What it does |
+| --- | --- |
+| `test` | Full `pytest` suite on Python 3.10, 3.11, 3.12 and 3.13 |
+| `quality ratchet` | `ruff check`, `black`, `isort` and `mypy` on changed files only |
+| `build` | `uv build`, then installs the wheel into a clean environment and imports it |
+
+The quality job checks only the Python files a change touches, rather than the
+whole repository. Older modules still carry lint and typing debt, so a repo-wide
+gate would fail every pull request regardless of its contents. Checking the diff
+keeps new code at the intended standard while that debt is paid down separately.
+
+Run the same check locally before pushing:
+
+```bash
+make lint-changed
+```
+
+That compares against `origin/main`. To compare against something else, call the
+script directly:
+
+```bash
+./scripts/lint-changed.sh <base-ref-or-sha>
+```
+
+Note that `ruff format` is not used anywhere in this project. It and `black`
+disagree on a few files here and each undoes the other, so running both can
+never pass. `black` is the formatter of record, and `make format` matches what
+CI enforces. `ruff check` is still used for linting, which does not conflict.
+
 ## 🧭 Inference Optimizer Foundation
 
 LLMTraceFX is evolving from a trace *analyzer* into a workload-aware
