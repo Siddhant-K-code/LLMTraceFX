@@ -7,11 +7,41 @@ from .mlx import (
     MLXLMRuntime,
     collect_mlx,
 )
+from .openai_api import (
+    API_EVIDENCE_SCHEMA_VERSION,
+    GLM_REASONING_EFFORT_LEVELS,
+    THINKING_TYPES,
+    APICollectionConfig,
+    APICollectionResult,
+    APIEvidence,
+    OpenAIStreamCollectorError,
+    ProviderExtensions,
+    StreamingTransport,
+    UrllibStreamingTransport,
+    build_request_plan,
+    collect_openai_stream,
+)
+from .sse import SSEDecodeError, SSEDecoder, SSEEvent
 
 __all__ = [
+    "API_EVIDENCE_SCHEMA_VERSION",
+    "APICollectionConfig",
+    "APICollectionResult",
+    "APIEvidence",
+    "GLM_REASONING_EFFORT_LEVELS",
     "MLXCollectionConfig",
     "MLXCollectionResult",
     "MLXCollectorError",
     "MLXLMRuntime",
+    "OpenAIStreamCollectorError",
+    "ProviderExtensions",
+    "SSEDecodeError",
+    "SSEDecoder",
+    "SSEEvent",
+    "StreamingTransport",
+    "THINKING_TYPES",
+    "UrllibStreamingTransport",
+    "build_request_plan",
     "collect_mlx",
+    "collect_openai_stream",
 ]

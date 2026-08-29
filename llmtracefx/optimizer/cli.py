@@ -4,6 +4,8 @@ Subcommands:
     manifest         Collect a CPU-only, non-sensitive environment manifest.
     run              Execute a configured experiment (warmups + measured reps).
     collect-mlx      Run one local MLX-LM inference and record normalized evidence.
+    collect-api      Stream one OpenAI-compatible chat completion (e.g. Z.ai GLM)
+                     and record normalized, credential-free evidence.
     native-mtp       Native Qwen MTP capability report / evidence collection.
     parse-llama-cpp  Convert llama.cpp text output into a canonical ExperimentRecord.
     doctor speculative  Diagnose whether speculative decoding/MTP is a net regression.
@@ -24,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import asdict
 from itertools import combinations
@@ -41,6 +44,16 @@ from .collectors.native_mtp import (
     NativeMTPCollectorError,
     capability_report_for_target,
     collect_native_mtp,
+)
+from .collectors.openai_api import (
+    GLM_REASONING_EFFORT_LEVELS,
+    THINKING_TYPES,
+    APICollectionConfig,
+    OpenAIStreamCollectorError,
+    ProviderExtensions,
+    UrllibStreamingTransport,
+    build_request_plan,
+    collect_openai_stream,
 )
 from .doctor.speculative import diagnose_speculative_regression
 from .manifest import collect_environment_manifest
@@ -208,6 +221,133 @@ def _cmd_collect_mlx(args: argparse.Namespace) -> int:
         else "unknown runtime failure"
     )
     print(f"MLX inference failed: {error_message}", file=sys.stderr)
+    return 1
+
+
+def _collect_api_argv(args: argparse.Namespace) -> tuple[str, ...]:
+    """Rebuild a credential-free, fully explicit invocation for the record.
+
+    The real ``sys.argv`` is deliberately not reused here. Reconstructing
+    the command resolves every default (so the record states which
+    environment variable held the credential instead of relying on the
+    default at replay time) and guarantees that nothing the caller typed
+    can reach an artifact.
+    """
+    reconstructed = [
+        "llmtracefx-optimizer",
+        "collect-api",
+        "--run-id",
+        args.run_id,
+        "--provider",
+        args.provider,
+        "--endpoint",
+        args.endpoint,
+        "--model-id",
+        args.model_id,
+        "--prompt-file",
+        args.prompt_file,
+        "--output-dir",
+        args.output_dir,
+        "--api-key-env",
+        args.api_key_env,
+        "--request-timeout",
+        str(args.request_timeout),
+    ]
+    for flag, value in (
+        ("--model-revision", args.model_revision),
+        ("--system-prompt-file", args.system_prompt_file),
+        ("--max-output-tokens", args.max_output_tokens),
+        ("--temperature", args.temperature),
+        ("--top-p", args.top_p),
+        ("--seed", args.seed),
+        ("--reasoning-effort", args.reasoning_effort),
+        ("--thinking", args.thinking),
+        ("--clear-thinking", args.clear_thinking),
+        ("--provider-request-id", args.provider_request_id),
+    ):
+        if value is not None:
+            reconstructed.extend((flag, str(value)))
+    if args.dry_run:
+        reconstructed.append("--dry-run")
+    return tuple(reconstructed)
+
+
+def _api_collection_config(args: argparse.Namespace) -> APICollectionConfig:
+    system_prompt = (
+        Path(args.system_prompt_file).read_text(encoding="utf-8")
+        if args.system_prompt_file
+        else None
+    )
+    return APICollectionConfig(
+        run_id=args.run_id,
+        provider=args.provider,
+        endpoint=args.endpoint,
+        model_id=args.model_id,
+        prompt=Path(args.prompt_file).read_text(encoding="utf-8"),
+        output_dir=Path(args.output_dir),
+        command_argv=_collect_api_argv(args),
+        credential_env_var=args.api_key_env,
+        system_prompt=system_prompt,
+        max_output_tokens=args.max_output_tokens,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        seed=args.seed,
+        request_timeout_seconds=args.request_timeout,
+        extensions=ProviderExtensions(
+            reasoning_effort=args.reasoning_effort,
+            thinking_type=args.thinking,
+            clear_thinking=(
+                None if args.clear_thinking is None else args.clear_thinking == "true"
+            ),
+            provider_request_id=args.provider_request_id,
+        ),
+        model_revision=args.model_revision,
+    )
+
+
+def _cmd_collect_api(args: argparse.Namespace) -> int:
+    try:
+        config = _api_collection_config(args)
+    except (OSError, UnicodeError, OpenAIStreamCollectorError) as exc:
+        print(f"Failed to configure API collection: {exc}", file=sys.stderr)
+        return 1
+
+    if args.dry_run:
+        plan = build_request_plan(config)
+        payload = {
+            "dry_run": True,
+            "network_request_performed": False,
+            "credential_env_var": config.credential_env_var,
+            "credential_env_var_present": bool(
+                os.environ.get(config.credential_env_var, "").strip()
+            ),
+            "plan": plan.to_dict(),
+        }
+        text = json.dumps(payload, indent=2, allow_nan=False)
+        print(text)
+        try:
+            atomic_write_text(config.output_dir / "request_plan.json", text + "\n")
+        except OSError as exc:
+            print(f"Failed to write request plan: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    try:
+        result = collect_openai_stream(config, transport=UrllibStreamingTransport())
+    except (OSError, OpenAIStreamCollectorError) as exc:
+        print(f"Failed to collect API evidence: {exc}", file=sys.stderr)
+        return 1
+
+    print(f"API experiment record written to {config.output_dir / 'record.json'}")
+    if result.record.outcome.success:
+        return 0
+    failure = result.evidence.failure
+    detail = (
+        "unknown failure"
+        if failure is None
+        else f"{failure.category}: {failure.message}"
+    )
+    print(f"API collection failed: {detail}", file=sys.stderr)
     return 1
 
 
@@ -1216,6 +1356,119 @@ def build_parser() -> argparse.ArgumentParser:
     )
     collect_mlx_parser.add_argument("--num-draft-tokens", type=int, default=2)
     collect_mlx_parser.set_defaults(func=_cmd_collect_mlx)
+
+    collect_api_parser = subparsers.add_parser(
+        "collect-api",
+        help=(
+            "Stream one OpenAI-compatible chat completion and record "
+            "normalized, credential-free evidence"
+        ),
+        # Prefix matching would let "--api-key <secret>" resolve to
+        # "--api-key-env", which would then treat the secret as an
+        # environment variable name and persist it.
+        allow_abbrev=False,
+    )
+    collect_api_parser.add_argument("--run-id", required=True)
+    collect_api_parser.add_argument(
+        "--provider",
+        default="z.ai",
+        help="Short provider label recorded in evidence (never a secret)",
+    )
+    collect_api_parser.add_argument(
+        "--endpoint",
+        required=True,
+        help=(
+            "Full chat-completions URL, e.g. "
+            "https://api.z.ai/api/paas/v4/chat/completions. Must be https for "
+            "non-local hosts and must not embed credentials."
+        ),
+    )
+    collect_api_parser.add_argument(
+        "--model-id",
+        required=True,
+        help="Provider model ID, e.g. glm-5.3 or glm-5.3-flash",
+    )
+    collect_api_parser.add_argument(
+        "--model-revision",
+        default=None,
+        help=(
+            "Provider-side model build, when the provider exposes one. Hosted "
+            "APIs usually do not, in which case leave it unset rather than "
+            "guessing."
+        ),
+    )
+    collect_api_parser.add_argument(
+        "--prompt-file",
+        required=True,
+        help="UTF-8 prompt file; prompt contents are hashed but not copied into artifacts",
+    )
+    collect_api_parser.add_argument(
+        "--system-prompt-file",
+        default=None,
+        help="Optional UTF-8 system prompt file; also hashed, never copied",
+    )
+    collect_api_parser.add_argument("--output-dir", required=True)
+    collect_api_parser.add_argument(
+        "--api-key-env",
+        default="ZAI_API_KEY",
+        help=(
+            "Name of the environment variable holding the API key. Only the "
+            "name is recorded; the value is never persisted, echoed or "
+            "accepted as a command argument."
+        ),
+    )
+    collect_api_parser.add_argument("--max-output-tokens", type=int, default=None)
+    collect_api_parser.add_argument("--temperature", type=float, default=None)
+    collect_api_parser.add_argument("--top-p", type=float, default=None)
+    collect_api_parser.add_argument("--seed", type=int, default=None)
+    collect_api_parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=120.0,
+        help="Per-request timeout in seconds; no retries are performed",
+    )
+    collect_api_parser.add_argument(
+        "--reasoning-effort",
+        choices=GLM_REASONING_EFFORT_LEVELS,
+        default=None,
+        help=(
+            "Provider-specific reasoning budget. Z.ai documents low/high/max "
+            "for glm-5.3 and glm-5.3-flash, defaulting to max when unset."
+        ),
+    )
+    collect_api_parser.add_argument(
+        "--thinking",
+        choices=THINKING_TYPES,
+        default=None,
+        help=(
+            "Provider-specific thinking.type. Z.ai documents that glm-5.3 and "
+            "glm-5.3-flash accept only 'enabled'."
+        ),
+    )
+    collect_api_parser.add_argument(
+        "--clear-thinking",
+        choices=("true", "false"),
+        default=None,
+        help=(
+            "Provider-specific thinking.clear_thinking. Controls whether "
+            "reasoning_content from previous turns is cleared; it does not "
+            "change whether this turn thinks. Unset means the provider default."
+        ),
+    )
+    collect_api_parser.add_argument(
+        "--provider-request-id",
+        default=None,
+        help="Optional caller-supplied provider request ID (Z.ai body request_id)",
+    )
+    collect_api_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Validate configuration and print the credential-free request plan "
+            "without performing any network request"
+        ),
+    )
+    collect_api_parser.set_defaults(func=_cmd_collect_api)
 
     native_mtp_parser = subparsers.add_parser(
         "native-mtp",

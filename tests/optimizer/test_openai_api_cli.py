@@ -1,0 +1,377 @@
+"""Tests for the ``collect-api`` CLI surface.
+
+These tests never perform a network request. The dry-run tests replace the
+real transport with one that fails if it is ever used, and the collection
+tests inject a fake transport that replays recorded byte chunks.
+"""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterator, Mapping
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from llmtracefx.optimizer import cli
+from llmtracefx.optimizer.collectors.openai_api import HTTPRequest
+
+ENDPOINT = "https://api.z.ai/api/paas/v4/chat/completions"
+API_KEY = "cli-test-key-not-a-real-credential"
+
+
+class ExplodingTransport:
+    def open_stream(self, request: HTTPRequest) -> Any:
+        raise AssertionError("dry-run must not open a stream")
+
+
+class FakeResponse:
+    def __init__(self, chunks: list[bytes], status_code: int = 200) -> None:
+        self._chunks = chunks
+        self._status_code = status_code
+
+    @property
+    def status_code(self) -> int:
+        return self._status_code
+
+    @property
+    def headers(self) -> Mapping[str, str]:
+        return {}
+
+    def iter_bytes(self) -> Iterator[bytes]:
+        yield from self._chunks
+
+    def close(self) -> None:
+        return None
+
+
+class FakeTransport:
+    requests: list[HTTPRequest] = []
+
+    def __init__(self, chunks: list[bytes], status_code: int = 200) -> None:
+        self._chunks = chunks
+        self._status_code = status_code
+
+    def open_stream(self, request: HTTPRequest) -> FakeResponse:
+        FakeTransport.requests.append(request)
+        return FakeResponse(self._chunks, self._status_code)
+
+
+def sse(payload: dict[str, Any]) -> bytes:
+    return f"data: {json.dumps(payload)}\n\n".encode()
+
+
+SUCCESS_STREAM = [
+    sse(
+        {
+            "id": "chatcmpl-1",
+            "model": "glm-5.3",
+            "choices": [{"index": 0, "delta": {"content": "hi"}}],
+        }
+    ),
+    sse(
+        {
+            "id": "chatcmpl-1",
+            "choices": [
+                {"index": 0, "delta": {"content": ""}, "finish_reason": "stop"}
+            ],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+        }
+    ),
+    b"data: [DONE]\n\n",
+]
+
+
+@pytest.fixture(autouse=True)
+def _reset_recorded_requests() -> Iterator[None]:
+    FakeTransport.requests = []
+    yield
+    FakeTransport.requests = []
+
+
+def base_argv(tmp_path: Path, **extra: str) -> list[str]:
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("Explain a stack in one sentence.", encoding="utf-8")
+    argv = [
+        "collect-api",
+        "--run-id",
+        "cli-run",
+        "--endpoint",
+        ENDPOINT,
+        "--model-id",
+        "glm-5.3",
+        "--prompt-file",
+        str(prompt),
+        "--output-dir",
+        str(tmp_path / "artifacts"),
+    ]
+    for flag, value in extra.items():
+        argv.extend((f"--{flag.replace('_', '-')}", value))
+    return argv
+
+
+def invoke(argv: list[str]) -> int:
+    parser = cli.build_parser()
+    args = parser.parse_args(argv)
+    return int(args.func(args))
+
+
+# --- Dry run -----------------------------------------------------------------
+
+
+def test_dry_run_performs_no_network_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+
+    exit_code = invoke(base_argv(tmp_path) + ["--dry-run"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dry_run"] is True
+    assert payload["network_request_performed"] is False
+    assert payload["credential_env_var"] == "ZAI_API_KEY"
+    assert payload["credential_env_var_present"] is False
+    assert payload["plan"]["model_id"] == "glm-5.3"
+    assert payload["plan"]["endpoint_origin"] == "https://api.z.ai"
+
+    artifacts = tmp_path / "artifacts"
+    assert sorted(path.name for path in artifacts.iterdir()) == ["request_plan.json"]
+    assert (
+        json.loads((artifacts / "request_plan.json").read_text(encoding="utf-8"))
+        == payload
+    )
+
+
+def test_dry_run_reports_presence_without_revealing_the_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    monkeypatch.setenv("ZAI_API_KEY", API_KEY)
+
+    exit_code = invoke(base_argv(tmp_path) + ["--dry-run"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert json.loads(output)["credential_env_var_present"] is True
+    assert API_KEY not in output
+    assert API_KEY not in (tmp_path / "artifacts" / "request_plan.json").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_dry_run_command_reconstruction_names_the_env_var_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    monkeypatch.setenv("ZAI_API_KEY", API_KEY)
+    argv = base_argv(tmp_path, reasoning_effort="high", clear_thinking="false") + [
+        "--dry-run"
+    ]
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli.main(argv)
+
+    assert excinfo.value.code == 0
+    command = json.loads(capsys.readouterr().out)["plan"]["command"]
+    assert command[0] == "llmtracefx-optimizer"
+    assert command[1] == "collect-api"
+    assert "--api-key-env" in command
+    assert command[command.index("--api-key-env") + 1] == "ZAI_API_KEY"
+    assert API_KEY not in command
+    assert not any(part.startswith("--api-key=") for part in command)
+
+
+def test_reconstructed_command_round_trips_through_the_parser(tmp_path: Path) -> None:
+    argv = base_argv(
+        tmp_path,
+        provider="z.ai",
+        api_key_env="ZAI_API_KEY",
+        max_output_tokens="128",
+        temperature="0.2",
+        top_p="0.9",
+        seed="11",
+        request_timeout="45.0",
+        reasoning_effort="max",
+        thinking="enabled",
+        clear_thinking="true",
+        model_revision="unavailable-from-provider",
+    )
+    parser = cli.build_parser()
+    args = parser.parse_args(argv + ["--dry-run"])
+
+    reconstructed = cli._collect_api_argv(args)
+
+    assert reconstructed[0] == "llmtracefx-optimizer"
+    reparsed = parser.parse_args(list(reconstructed[1:]))
+    assert reparsed.model_id == args.model_id
+    assert reparsed.reasoning_effort == "max"
+    assert reparsed.thinking == "enabled"
+    assert reparsed.clear_thinking == "true"
+    assert reparsed.max_output_tokens == 128
+    assert reparsed.dry_run is True
+
+
+def test_dry_run_rejects_an_invalid_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    argv = base_argv(tmp_path) + ["--dry-run"]
+    argv[argv.index("--endpoint") + 1] = "http://api.z.ai/v4/chat/completions"
+
+    exit_code = invoke(argv)
+
+    assert exit_code == 1
+    assert "must use https" in capsys.readouterr().err
+
+
+def test_missing_prompt_file_is_reported_without_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    argv = base_argv(tmp_path)
+    argv[argv.index("--prompt-file") + 1] = str(tmp_path / "absent.txt")
+
+    exit_code = invoke(argv + ["--dry-run"])
+
+    assert exit_code == 1
+    assert "Failed to configure API collection" in capsys.readouterr().err
+
+
+# --- Argument surface --------------------------------------------------------
+
+
+def test_the_cli_never_accepts_a_key_argument(tmp_path: Path) -> None:
+    parser = cli.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(base_argv(tmp_path) + ["--api-key", API_KEY])
+
+
+@pytest.mark.parametrize("value", ["medium", "MAX", "none"])
+def test_reasoning_effort_choices_are_restricted(tmp_path: Path, value: str) -> None:
+    parser = cli.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(base_argv(tmp_path, reasoning_effort=value))
+
+
+@pytest.mark.parametrize("value", ["low", "high", "max"])
+def test_documented_reasoning_effort_levels_are_accepted(
+    tmp_path: Path, value: str
+) -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(base_argv(tmp_path, reasoning_effort=value))
+
+    assert args.reasoning_effort == value
+
+
+def test_defaults_match_the_documented_zai_usage(tmp_path: Path) -> None:
+    parser = cli.build_parser()
+
+    args = parser.parse_args(base_argv(tmp_path))
+
+    assert args.api_key_env == "ZAI_API_KEY"
+    assert args.provider == "z.ai"
+    assert args.request_timeout == 120.0
+    assert args.reasoning_effort is None
+    assert args.thinking is None
+    assert args.clear_thinking is None
+    assert args.dry_run is False
+
+
+# --- Collection --------------------------------------------------------------
+
+
+def test_successful_collection_writes_artifacts_and_exits_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("ZAI_API_KEY", API_KEY)
+    monkeypatch.setattr(
+        cli, "UrllibStreamingTransport", lambda: FakeTransport(SUCCESS_STREAM)
+    )
+
+    exit_code = invoke(
+        base_argv(
+            tmp_path,
+            model_id="glm-5.3-flash",
+            reasoning_effort="low",
+            clear_thinking="true",
+        )
+    )
+
+    assert exit_code == 0
+    assert "record.json" in capsys.readouterr().out
+    artifacts = tmp_path / "artifacts"
+    assert sorted(path.name for path in artifacts.iterdir()) == [
+        "api_evidence.json",
+        "environment.json",
+        "record.json",
+        "response.txt",
+    ]
+    body = json.loads(FakeTransport.requests[0].body.decode("utf-8"))
+    assert body["model"] == "glm-5.3-flash"
+    assert body["reasoning_effort"] == "low"
+    assert body["thinking"] == {"clear_thinking": True}
+    for artifact in artifacts.iterdir():
+        assert API_KEY not in artifact.read_text(encoding="utf-8")
+
+
+def test_failed_collection_exits_non_zero_and_still_writes_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("ZAI_API_KEY", API_KEY)
+    error_body = json.dumps({"code": 1113, "message": "insufficient balance"}).encode()
+    monkeypatch.setattr(
+        cli, "UrllibStreamingTransport", lambda: FakeTransport([error_body], 402)
+    )
+
+    exit_code = invoke(base_argv(tmp_path))
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "http_status" in captured.err
+    assert "insufficient balance" in captured.err
+    evidence = json.loads(
+        (tmp_path / "artifacts" / "api_evidence.json").read_text(encoding="utf-8")
+    )
+    assert evidence["success"] is False
+    assert evidence["failure"]["status_code"] == 402
+
+
+def test_missing_credential_exits_non_zero_without_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        cli, "UrllibStreamingTransport", lambda: FakeTransport(SUCCESS_STREAM)
+    )
+
+    exit_code = invoke(base_argv(tmp_path))
+
+    assert exit_code == 1
+    assert "ZAI_API_KEY is not set" in capsys.readouterr().err
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_custom_credential_env_var_is_honoured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    monkeypatch.setenv("OTHER_PROVIDER_KEY", API_KEY)
+    monkeypatch.setattr(
+        cli, "UrllibStreamingTransport", lambda: FakeTransport(SUCCESS_STREAM)
+    )
+
+    exit_code = invoke(
+        base_argv(tmp_path, provider="other-provider", api_key_env="OTHER_PROVIDER_KEY")
+    )
+
+    assert exit_code == 0
+    evidence = json.loads(
+        (tmp_path / "artifacts" / "api_evidence.json").read_text(encoding="utf-8")
+    )
+    assert evidence["plan"]["credential_env_var"] == "OTHER_PROVIDER_KEY"
+    assert evidence["plan"]["provider"] == "other-provider"

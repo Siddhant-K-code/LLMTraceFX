@@ -6,9 +6,11 @@ the single source of truth for what a benchmarking run looks like. Optional
 measurements stay ``None`` when they were not observed — nothing here
 invents a value.
 
-This is schema ``SCHEMA_VERSION``. Bump the constant and extend
-``ExperimentRecord.from_dict`` to stay backward compatible whenever the
-shape changes.
+This is schema ``SCHEMA_VERSION``. New optional fields that older records
+simply omit are additive: ``from_dict`` defaults them, old records keep
+deserializing, and the constant stays put. Bump the constant, and extend
+``ExperimentRecord.from_dict`` to stay backward compatible, whenever an
+existing field changes meaning, type, or requiredness.
 """
 
 from __future__ import annotations
@@ -52,6 +54,16 @@ class MetricProvenance(str, Enum):
 
     MEASURED_WALL_CLOCK = "measured_wall_clock"
     """Timed on the host around a call boundary (e.g. subprocess duration)."""
+
+    PROVIDER_REPORTED = "provider_reported"
+    """Reported by a remote service, not observed by this client.
+
+    Remote inference APIs return their own accounting (token usage in
+    particular). Those numbers are evidence, but they are neither a local
+    hardware counter nor a host timer: the client cannot verify them and
+    cannot decompose them. They are kept under their own provenance so
+    they are never mistaken for a native measurement.
+    """
 
     DERIVED = "derived"
     """Computed from other measured values (e.g. tokens / seconds)."""
@@ -258,6 +270,13 @@ class RuntimeInfo:
     backend: str | None = None
     """e.g. 'Metal', 'CUDA', 'CPU'."""
     git_revision: str | None = None
+    provider: str | None = None
+    """Remote service that executed the run, when it was not local.
+
+    Set only by collectors that talk to a hosted API (e.g. an
+    OpenAI-compatible endpoint), so a remote run is never mistaken for a
+    local one. Local collectors leave this ``None``. It deliberately does
+    not reuse ``backend``, which describes a local compute backend."""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -270,6 +289,7 @@ class RuntimeInfo:
                 version=data.get("version"),
                 backend=data.get("backend"),
                 git_revision=data.get("git_revision"),
+                provider=data.get("provider"),
             )
         except KeyError as exc:
             raise SchemaValidationError(
@@ -356,12 +376,33 @@ class TokenCounts:
     input_tokens: int | None = None
     context_tokens: int | None = None
     generated_tokens: int | None = None
+    provenance: MetricProvenance | None = None
+    """How these counts were obtained, when that is not self-evident.
+
+    Local collectors tokenize the prompt themselves and count generation
+    steps, so they leave this ``None``. A collector that can only repeat
+    what a remote service reported must set
+    ``MetricProvenance.PROVIDER_REPORTED`` so the counts are never read
+    as locally measured."""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "input_tokens": self.input_tokens,
+            "context_tokens": self.context_tokens,
+            "generated_tokens": self.generated_tokens,
+            "provenance": None if self.provenance is None else self.provenance.value,
+        }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TokenCounts:
+        provenance = data.get("provenance")
+        if provenance is not None:
+            try:
+                provenance = MetricProvenance(provenance)
+            except ValueError as exc:
+                raise SchemaValidationError(
+                    f"TokenCounts.provenance is invalid: {exc}"
+                ) from exc
         return cls(
             input_tokens=_coerce_optional_int(
                 data, "input_tokens", context="TokenCounts"
@@ -372,6 +413,7 @@ class TokenCounts:
             generated_tokens=_coerce_optional_int(
                 data, "generated_tokens", context="TokenCounts"
             ),
+            provenance=provenance,
         )
 
 

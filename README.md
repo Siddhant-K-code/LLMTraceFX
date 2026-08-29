@@ -787,6 +787,186 @@ An optional existing MLX-LM draft model can be supplied with
 verification time through this API, so those fields remain absent. This is
 generic draft-model speculation, not native Qwen3.8 MTP.
 
+### Collect a streaming OpenAI-compatible API run
+
+`collect-api` is the remote counterpart to `collect-mlx`. It streams one
+chat completion from any OpenAI-compatible `/chat/completions` endpoint and
+writes the same canonical evidence artifacts, so a local run and an API run
+can later be compared on identical record structures. The collector itself
+is provider neutral: the endpoint, model ID, credential environment variable
+name and provider-specific request fields are all configuration.
+
+The examples below are commands, not measured results. This repository
+publishes no latency, throughput or cost numbers for any hosted API.
+
+**Dry run first.** `--dry-run` validates the configuration, prints the
+credential-free request plan and performs no network request at all:
+
+```bash
+uv run llmtracefx-optimizer collect-api \
+  --run-id zai-glm-5.3-dry \
+  --provider z.ai \
+  --endpoint https://api.z.ai/api/paas/v4/chat/completions \
+  --model-id glm-5.3 \
+  --prompt-file examples/optimizer/api-smoke-prompt.txt \
+  --output-dir artifacts/zai-glm-5.3-dry \
+  --reasoning-effort high \
+  --dry-run
+```
+
+**Collecting real evidence.** Export the key first; it is never accepted as
+a command argument:
+
+```bash
+export ZAI_API_KEY=...   # read by name, never persisted or echoed
+
+# Frontier model
+uv run llmtracefx-optimizer collect-api \
+  --run-id zai-glm-5.3-1 \
+  --provider z.ai \
+  --endpoint https://api.z.ai/api/paas/v4/chat/completions \
+  --model-id glm-5.3 \
+  --prompt-file examples/optimizer/api-smoke-prompt.txt \
+  --output-dir artifacts/zai-glm-5.3-1 \
+  --max-output-tokens 256 \
+  --reasoning-effort high \
+  --clear-thinking true
+
+# Efficiency model
+uv run llmtracefx-optimizer collect-api \
+  --run-id zai-glm-5.3-flash-1 \
+  --provider z.ai \
+  --endpoint https://api.z.ai/api/paas/v4/chat/completions \
+  --model-id glm-5.3-flash \
+  --prompt-file examples/optimizer/api-smoke-prompt.txt \
+  --output-dir artifacts/zai-glm-5.3-flash-1 \
+  --max-output-tokens 256 \
+  --reasoning-effort low
+```
+
+#### Provider-specific request fields
+
+`reasoning_effort` and `thinking` are not portable OpenAI chat-completions
+parameters. They are kept in a typed `ProviderExtensions` block and are only
+sent when explicitly requested, so a record never implies a default the
+provider did not actually apply. Per Z.ai's published documentation
+([chat completions](https://docs.z.ai/api-reference/llm/chat-completion),
+[GLM-5.3-Flash guide](https://docs.z.ai/guides/vlm/glm-5.3-flash)):
+
+| Flag | Body field | Documented values | Notes |
+| --- | --- | --- | --- |
+| `--reasoning-effort` | `reasoning_effort` | `low`, `high`, `max` | `max` is the provider default for `glm-5.3` and `glm-5.3-flash`. Other values are rejected by the API. |
+| `--thinking` | `thinking.type` | `enabled`, `disabled` | `glm-5.3` and `glm-5.3-flash` accept only `enabled`. |
+| `--clear-thinking` | `thinking.clear_thinking` | `true`, `false` | Provider default is `true`. It controls whether `reasoning_content` from *previous* turns is cleared. It does not change whether the current turn thinks. |
+| `--provider-request-id` | `request_id` | any string | Optional caller-supplied ID. Leave unset to let the provider generate one. |
+
+#### Artifacts
+
+```
+artifacts/<run-id>/
+  record.json         canonical ExperimentRecord, identical schema to collect-mlx
+  response.txt        final answer text only
+  api_evidence.json   streaming timeline, statistics, provider usage, failure detail
+  environment.json    non-sensitive client package and platform metadata
+```
+
+`--dry-run` writes only `request_plan.json`.
+
+#### What is measured and how it is labelled
+
+Client-observed timing and provider-reported usage are kept strictly apart
+and are never mixed into a single unlabelled number.
+
+- **Client-measured** (`timeline`, `provenance: measured_wall_clock`), taken
+  from a monotonic clock: request start, response headers, first body byte,
+  first content token, last event, completion.
+- **Time to first content token** is the offset of the first non-empty
+  `delta.content` string. Empty content deltas (GLM's role-only opening
+  chunk and its final chunk both carry `""`), metadata chunks,
+  reasoning-only deltas and `:` keepalive comments do not count.
+- **Provider-reported** (`usage`, `provenance: provider_reported`):
+  `prompt_tokens`, `completion_tokens`, `total_tokens`,
+  `prompt_tokens_details.cached_tokens`, and
+  `completion_tokens_details.reasoning_tokens` when the provider sends it.
+  A metric the provider does not report stays `null`. It is never inferred
+  as zero. Values that arrive malformed are listed in
+  `usage.malformed_fields` rather than silently discarded.
+- **Derived** (`content_delta_rate_per_second`, `inter_content_delta`):
+  computed from SSE content deltas, which are not necessarily one token
+  each, so the field is labelled `derived` and named after deltas rather
+  than tokens. `provider_completion_tokens_per_second` combines a
+  provider-reported count with a client-measured window and carries an
+  explicit mixed-provenance note.
+
+#### Privacy guarantees
+
+- The API key is read only from the environment variable named by
+  `--api-key-env` (default `ZAI_API_KEY`). There is no `--api-key` flag, and
+  prefix abbreviation is disabled on this subcommand so `--api-key` cannot
+  resolve to `--api-key-env`.
+- The credential value is never written to an artifact, never logged, never
+  hashed and never included in the reconstructed command. `HTTPRequest`
+  overrides `repr` so a traceback cannot surface the `Authorization` header.
+  Only header *names* are persisted.
+- Collection aborts before any request if the credential value appears in the
+  run id, endpoint, provider label, model id, model revision, prompt, system
+  prompt, any provider extension string or command arguments.
+- Surrounding whitespace is stripped from the credential, and a value that
+  cannot be sent as an HTTP header value (control characters, non latin-1) is
+  rejected by name before the request is built. An unencodable header would
+  otherwise make `http.client` raise an error whose message contains the whole
+  header value.
+- Prompt and system prompt are hashed, never copied into artifacts.
+- Redirects are refused, so the credential is never replayed to a host you
+  did not name. Plain `http` is rejected except for loopback hosts.
+- Reasoning content is counted, never stored: `api_evidence.json` records
+  `reasoning_delta_count`, `reasoning_characters` and
+  `reasoning_text_persisted: false`, and `response.txt` holds the final
+  answer only.
+- Every persisted message is passed through a redactor that removes the
+  known credential and any `Bearer <token>` shape before writing.
+
+#### Failure evidence
+
+Transport and protocol failures produce a failure-shaped record instead of
+an exception or a silent success: `outcome.success = false`, an
+`error.category`, and the same four artifacts. Categories are
+`http_status`, `timeout`, `connection`, `stream_decode`,
+`provider_error_payload` and `missing_content`. Safe status code, provider
+error code, provider request ID and rate-limit headers are preserved where
+the provider returns them. Both the OpenAI `{"error": {...}}` shape and
+Z.ai's bare `{"code": ..., "message": ...}` shape are recognized. Protocol
+level failures that Python raises as `http.client.HTTPException` rather than
+`OSError`, such as an `IncompleteRead` when a proxy hangs up mid chunk or a
+`BadStatusLine` from a garbled response, are recorded as `connection`
+failures.
+
+Invalid configuration and a missing credential remain hard errors with no
+artifacts, because neither describes a request that was actually attempted.
+
+#### Limitations
+
+- **No retries.** Exactly one request is issued per invocation. A retry
+  policy would have to represent every attempt as separate evidence, which
+  is out of scope here.
+- **Transport is not separable from generation.** Time to first content
+  token includes DNS, TLS, queueing and network transit. The headers and
+  first-body-byte offsets are recorded separately so the transport share is
+  visible, but the remote decode time cannot be isolated from a client-side
+  observation.
+- **No provider hardware or memory is recorded.** It is not observable, so
+  the record claims no accelerator and no memory rather than substituting a
+  local value.
+- **Model revision is usually unavailable.** Hosted APIs generally do not
+  expose a build identifier. `--model-revision` stays unset in that case
+  instead of guessing, and the config hash pins the request identity that
+  *is* observable.
+- **`reasoning_tokens` is not documented for GLM.** It is captured if the
+  provider sends it and stays `null` otherwise.
+- **No pricing.** Cost per correct case belongs to a later versioned
+  comparison layer. Baking mutable prices into a collector would make old
+  evidence silently wrong.
+
 ### Native Qwen MTP: capability report and honest evidence collection
 
 Native multi-token-prediction (MTP) is architecturally different from the
