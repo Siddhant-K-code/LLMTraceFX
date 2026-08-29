@@ -1307,21 +1307,18 @@ def run_parser(argv: list[str]) -> tuple[int, str, str, str]:
 
 
 @pytest.fixture(autouse=True)
-def _reset_scrub_state() -> Iterator[None]:
-    """Start each case with the state a fresh process would have.
+def _scrub_state_is_not_inherited() -> Iterator[None]:
+    """Every case must start and end with no scrub state in force.
 
-    The leak this guards only appears when nothing has populated the
-    module globals, which is exactly the situation on first use.
+    The leak this guards appears when the state left over from an earlier
+    parse is mistaken for one still in force, which suppresses
+    installation for the next parse and scrubs it against the wrong argv.
+    Asserting on both sides means a case that leaves state behind is
+    reported here rather than by whichever unrelated case runs next.
     """
-    values = cli._argv_values_to_scrub
-    literals = cli._protected_argument_literals
-    cli._argv_values_to_scrub = ()
-    cli._protected_argument_literals = ()
-    try:
-        yield
-    finally:
-        cli._argv_values_to_scrub = values
-        cli._protected_argument_literals = literals
+    assert cli._scrub_state.get() is None
+    yield
+    assert cli._scrub_state.get() is None
 
 
 _PARSER_SECRET = "sk-live-CANARY-4f9a2b7c1d8e"
@@ -1419,8 +1416,7 @@ def test_parser_scrub_state_is_restored_after_a_direct_parse() -> None:
     """
     run_parser(["collect-api", "--reasoning-effort", _PARSER_SECRET])
 
-    assert cli._argv_values_to_scrub == ()
-    assert cli._protected_argument_literals == ()
+    assert cli._scrub_state.get() is None
 
 
 def test_a_valid_direct_parse_returns_the_parsed_arguments() -> None:
@@ -1445,3 +1441,66 @@ def test_a_valid_direct_parse_returns_the_parsed_arguments() -> None:
 
     assert args.model_id == "glm-5.3"
     assert args.api_key_env == "ZAI_API_KEY"
+
+
+# --- Twelfth review pass -----------------------------------------------------
+
+
+def test_a_direct_parse_after_main_is_still_scrubbed() -> None:
+    """State left standing by an earlier call must not disarm the next one.
+
+    ``main`` used to assign the scrub globals and never restore them. The
+    scope then treated a populated state as an enclosing scope still in
+    force and skipped installation, so the second parse was scrubbed
+    against the first command line and echoed its own value in full. Both
+    now go through the scope, and nesting is detected from the context
+    variable being set rather than from it being non-empty.
+    """
+    first = "FIRSTSECRET-4f9a2b7c"
+    second = "SECONDSECRET-1d8e3a6b"
+
+    with contextlib.suppress(SystemExit):
+        run_main([first])
+    _, stdout, stderr, detail = run_parser([second])
+
+    for stream in (stdout, stderr, detail):
+        assert second not in stream
+        assert first not in stream
+
+
+def test_main_restores_the_scrub_state_it_installed() -> None:
+    """The scope must unwind through the SystemExit argparse raises."""
+    with contextlib.suppress(SystemExit):
+        run_main(["definitely-not-a-command"])
+
+    assert cli._scrub_state.get() is None
+
+
+@pytest.mark.parametrize("value", ["abc", "ab", "a", "xy"])
+def test_a_short_argument_value_is_not_echoed_either(value: str) -> None:
+    """The guarantee was absolute, but the implementation had a floor.
+
+    Values below four characters were never collected, so argparse
+    printed them verbatim. They are collected now; only their bare
+    spelling is withheld from replacement, because a two character string
+    occurs inside ordinary words and blanking every occurrence would
+    destroy the message.
+    """
+    _, stdout, stderr, detail = run_parser(["collect-api", "--reasoning-effort", value])
+
+    for stream in (stdout, stderr, detail):
+        assert f"'{value}'" not in stream
+        assert f'"{value}"' not in stream
+
+
+def test_scrubbing_a_short_value_keeps_the_message_readable() -> None:
+    """Replacing a two character value as a bare substring would not."""
+    _, _, stderr, detail = run_parser(["collect-api", "--reasoning-effort", "ax"])
+
+    message = stderr + detail
+    assert "--reasoning-effort" in message
+    assert "invalid choice" in message
+    # The valid spellings are what make the error actionable, and each
+    # contains one of the value's characters.
+    for choice in ("low", "high", "max"):
+        assert choice in message

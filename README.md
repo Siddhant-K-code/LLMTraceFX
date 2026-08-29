@@ -963,13 +963,44 @@ and are never mixed into a single unlabelled number.
   `finish_reason` holds the redacted provider text,
   `finish_reason_classification` holds `terminal`, `failure` or
   `unrecognized`, and `finish_reason_code` holds the documented spelling
-  this collector recognized. The code is drawn from a fixed set defined in
-  this repository rather than from provider bytes. A reported failure is
+  this collector recognized. The code is drawn from a configured set held
+  in this repository rather than from provider bytes. A reported failure is
   sticky: nothing in the wire format stops a provider sending a second
   `finish_reason`, and last-write-wins would let a trailing `stop` erase an
   earlier `network_error` and publish an aborted generation as a success with
   a full latency timeline. Two ordinary terminal reasons still take the later
   one.
+- **Which reasons end a stream is configuration, not collector policy.**
+  `finish_reason` is not fully standardized: OpenAI documents one set and
+  providers add their own, so the meaning of a reason belongs to the
+  endpoint being measured. `FinishReasonVocabulary` carries the two sets as
+  typed configuration, the applied vocabulary is written into
+  `plan.finish_reasons` so a record says which reading produced its verdict,
+  and it feeds `config_hash`, because two runs that read the same reason
+  differently are not the same measurement configuration even though they
+  send identical requests. The default is the union of the OpenAI reasons
+  and Z.ai's documented additions (`sensitive` as terminal,
+  `network_error` and `model_context_window_exceeded` as failures), which
+  is what this collector was validated against. Those strings appear in no
+  other OpenAI-compatible vocabulary known at the time of writing, so the
+  union classifies a non-Z.ai stream exactly as the OpenAI set alone would;
+  `FinishReasonVocabulary.openai_only()` drops them for an endpoint known to
+  reuse one differently. A reason in neither set is `unrecognized`, which is
+  deliberately not a synonym for terminal: an unknown reason is no evidence
+  that generation completed, so a stream ending on one without `[DONE]` is
+  still reported as truncated.
+- **Asking for reasoning and hearing nothing back suppresses the rate too.**
+  When the request enabled thinking or set `reasoning_effort` and the
+  provider returns neither reasoning deltas nor a reasoning token count,
+  reasoning cannot be ruled out of `completion_tokens`, so
+  `provider_completion_tokens_per_second` stays `null` with a recorded
+  reason. The test is what this collector asked for, not who the provider
+  is, so it stays meaningful for any OpenAI-compatible endpoint.
+- **A request id in an error body is kept.** On a non-200 the stream never
+  runs, so headers used to be the only source. A `request_id` at the top
+  level of the error payload or inside its `error` object is now read as
+  well, redacted like any other identifier, and the header value still wins
+  when both are present.
 
 #### Privacy guarantees
 
@@ -1107,14 +1138,29 @@ and are never mixed into a single unlabelled number.
   `RequestPlan`, its reconstructed command or a persisted config may be
   written at all. Both now match case insensitively, tolerate whitespace
   differences and see through percent-encoding, and the credential
-  environment variable's own name is part of what is checked.
+  environment variable's own name is part of what is checked. The match runs
+  at every credential length. A minimum length still applies, but only to the
+  extra rounds of percent-decoding, which is where a coincidental hit is
+  plausible; gating the ordinary match on it meant a short key was scrubbed
+  by the redactor and waved through by the check. The output directory is
+  checked too, since a credential there is written into the filesystem as a
+  pathname, where no downstream redactor can reach it.
 - No parse diagnostic repeats a value the caller supplied, in any
   rendering. argparse formats several of its messages with `%r`, so a value
   containing a newline, a tab, a zero-width space or a backslash reaches
   stderr as an escape sequence that does not match the raw string. Both the
-  value and its `repr` body are scrubbed, longest rendering first. The scrub
-  state is installed per parse rather than once by `main`, so
-  `build_parser().parse_args(...)` is as safe as the real entrypoint.
+  value and its `repr` body are scrubbed, longest rendering first. Short
+  values are scrubbed as well. They are replaced only in their quoted
+  renderings, because argparse always quotes the offending token in the
+  messages that repeat one, while blanking a one or two character value
+  wherever it appeared would eat letters out of the surrounding English and
+  leave an unreadable error. The scrub state lives in a `ContextVar`
+  installed per parse rather than in globals set once by `main`, so
+  `build_parser().parse_args(...)` is as safe as the real entrypoint and
+  `main` no longer leaves state standing after it exits. An absent
+  `ContextVar` is distinguishable from an empty one, which an emptiness test
+  was not: stale state from `main` looked exactly like an active enclosing
+  scope and suppressed the installation of a real one.
   `parse_args` and `parse_known_args` are both public and both reachable on
   their own, and `parse_args` reports unrecognized arguments itself after the
   inner call has returned, so each installs the scope and a nested parse

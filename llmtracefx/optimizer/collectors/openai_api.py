@@ -128,24 +128,28 @@ FAILURE_PROVIDER_ERROR = "provider_error_payload"
 FAILURE_MISSING_CONTENT = "missing_content"
 FAILURE_STREAM_TRUNCATED = "stream_truncated"
 
-# Terminal ``finish_reason`` values. A stream that stops without one of
-# these and without ``[DONE]`` was cut short, however much content it
-# already delivered. ``sensitive`` is Z.ai's documented analogue of
-# OpenAI's ``content_filter``: generation ended by a filter, which is a
-# real ending rather than a lost stream.
-# https://docs.z.ai/api-reference/llm/chat-completion
-_TERMINAL_FINISH_REASONS = frozenset(
-    {"stop", "length", "content_filter", "tool_calls", "function_call", "sensitive"}
+# Portable ``finish_reason`` values from the OpenAI chat-completions API.
+# A stream that stops without a terminal reason and without ``[DONE]`` was
+# cut short, however much content it already delivered.
+# https://platform.openai.com/docs/api-reference/chat/streaming
+OPENAI_TERMINAL_FINISH_REASONS = frozenset(
+    {"stop", "length", "content_filter", "tool_calls", "function_call"}
 )
 
-# Documented ``finish_reason`` values that report a failed generation.
-# Z.ai lists both alongside the successful ones, so a run can carry
-# content, one of these, and ``[DONE]`` all at once. The sentinel must not
-# be allowed to outrank them: the text on the wire is not a completed
-# answer, and publishing it as a success would put a truncated or aborted
-# generation into the evidence set as though it were whole.
+# Z.ai's documented additions for GLM. ``sensitive`` is its analogue of
+# OpenAI's ``content_filter``: generation ended by a filter, which is a
+# real ending rather than a lost stream. ``network_error`` and
+# ``model_context_window_exceeded`` are listed alongside the successful
+# reasons, so a run can carry content, one of them, and ``[DONE]`` all at
+# once. The sentinel must not be allowed to outrank them: the text on the
+# wire is not a completed answer, and publishing it as a success would put
+# a truncated or aborted generation into the evidence set as though it
+# were whole.
 # https://docs.z.ai/api-reference/llm/chat-completion
-_FAILURE_FINISH_REASONS = frozenset({"network_error", "model_context_window_exceeded"})
+ZAI_TERMINAL_FINISH_REASONS = frozenset({"sensitive"})
+ZAI_FAILURE_FINISH_REASONS = frozenset(
+    {"network_error", "model_context_window_exceeded"}
+)
 
 # How a ``finish_reason`` is classified. The provider's raw string is
 # classified before redaction can touch it, because redaction rewrites
@@ -422,6 +426,83 @@ def _normalize_headers(headers: Any) -> dict[str, str]:
 
 
 @dataclass(frozen=True)
+class FinishReasonVocabulary:
+    """Which ``finish_reason`` strings mean "ended" and which mean "failed".
+
+    ``finish_reason`` is not fully standardized. OpenAI documents one set
+    and providers add their own, so the meaning of a reason is a property
+    of the endpoint being measured rather than of this collector. Holding
+    the vocabulary here keeps provider-specific semantics in typed
+    configuration: pointing the collector at a provider with different
+    reasons is a configuration change, not a code change.
+
+    Anything in neither set is classified ``unrecognized``. That is
+    deliberately not the same as terminal: an unknown reason is not
+    evidence that generation completed, so a stream ending on one without
+    ``[DONE]`` is still reported as truncated rather than published as a
+    whole answer.
+
+    The default is the union of the OpenAI reasons and Z.ai's documented
+    additions, which is the configuration this collector was validated
+    against. The Z.ai strings are absent from every other OpenAI-compatible
+    vocabulary known at the time of writing, so the union classifies a
+    non-Z.ai stream exactly as the OpenAI set alone would. Use
+    :meth:`openai_only` for an endpoint that is known to reuse one of those
+    strings with a different meaning.
+    """
+
+    terminal: frozenset[str] = OPENAI_TERMINAL_FINISH_REASONS | (
+        ZAI_TERMINAL_FINISH_REASONS
+    )
+    failure: frozenset[str] = ZAI_FAILURE_FINISH_REASONS
+
+    def __post_init__(self) -> None:
+        for name in ("terminal", "failure"):
+            value = getattr(self, name)
+            if not isinstance(value, (frozenset, set)):
+                raise OpenAIStreamCollectorError(
+                    f"{name} finish reasons must be a set of strings, got {value!r}"
+                )
+            for reason in value:
+                if not isinstance(reason, str) or reason != reason.strip().lower():
+                    raise OpenAIStreamCollectorError(
+                        f"{name} finish reasons must be stripped lowercase "
+                        f"strings, got {reason!r}"
+                    )
+                if not reason:
+                    raise OpenAIStreamCollectorError(
+                        f"{name} finish reasons must be non-empty strings"
+                    )
+            object.__setattr__(self, name, frozenset(value))
+        # A reason that means both "finished" and "failed" has no defined
+        # classification, and silently letting one set win would decide a
+        # run's outcome by the order of two branches.
+        overlap = sorted(self.terminal & self.failure)
+        if overlap:
+            raise OpenAIStreamCollectorError(
+                "a finish reason cannot be both terminal and a failure, got "
+                f"{overlap!r}"
+            )
+        if not self.terminal:
+            raise OpenAIStreamCollectorError(
+                "at least one terminal finish reason is required, otherwise "
+                "no stream can ever be classified as complete"
+            )
+
+    @classmethod
+    def openai_only(cls) -> FinishReasonVocabulary:
+        """Just the portable OpenAI reasons, with no provider additions."""
+        return cls(terminal=OPENAI_TERMINAL_FINISH_REASONS, failure=frozenset())
+
+    def identity(self) -> dict[str, list[str]]:
+        """The vocabulary as sorted lists, for hashing and for evidence."""
+        return {
+            "terminal": sorted(self.terminal),
+            "failure": sorted(self.failure),
+        }
+
+
+@dataclass(frozen=True)
 class ProviderExtensions:
     """Provider-specific request fields, kept out of the OpenAI core.
 
@@ -478,6 +559,20 @@ class ProviderExtensions:
         return fields
 
 
+def _reasoning_requested(extensions: ProviderExtensions) -> bool:
+    """True when the request asked the model to think before answering.
+
+    Derived from what this collector sent, not from the provider's
+    identity, so it stays meaningful for any OpenAI-compatible endpoint
+    that accepts these extensions. It decides only whether an absent
+    reasoning token count is suspicious: having asked for reasoning and
+    been told nothing about it is different from never having asked.
+    """
+    return extensions.thinking_type == "enabled" or (
+        extensions.reasoning_effort is not None
+    )
+
+
 @dataclass(frozen=True)
 class APICollectionConfig:
     """Inputs and reproducibility metadata for one streaming API call."""
@@ -502,6 +597,10 @@ class APICollectionConfig:
     seed: int | None = None
     request_timeout_seconds: float = 120.0
     extensions: ProviderExtensions = field(default_factory=ProviderExtensions)
+    finish_reasons: FinishReasonVocabulary = field(
+        default_factory=FinishReasonVocabulary
+    )
+    """How this endpoint's ``finish_reason`` strings are classified."""
     model_revision: str | None = None
     """Provider-side model build, when the provider exposes one. Hosted
     APIs generally do not, in which case this stays ``None`` rather than
@@ -997,6 +1096,7 @@ class RequestPlan:
     messages: tuple[MessageDigest, ...]
     request_parameters: dict[str, Any]
     provider_extensions: dict[str, Any]
+    finish_reasons: dict[str, list[str]]
     request_timeout_seconds: float
     command: tuple[str, ...]
     config_hash: str
@@ -1018,6 +1118,9 @@ class RequestPlan:
             "messages": [message.to_dict() for message in self.messages],
             "request_parameters": dict(sorted(self.request_parameters.items())),
             "provider_extensions": dict(sorted(self.provider_extensions.items())),
+            "finish_reasons": {
+                key: list(value) for key, value in sorted(self.finish_reasons.items())
+            },
             "request_timeout_seconds": self.request_timeout_seconds,
             "command": list(self.command),
             "config_hash": self.config_hash,
@@ -1099,6 +1202,12 @@ def _config_identity_hash(config: APICollectionConfig) -> str:
             # collector promises never to hash.
             "request_parameters": _core_request_parameters(config),
             "provider_extensions": config.extensions.to_request_fields(),
+            # Two runs that classify the same finish reason differently are
+            # not the same measurement configuration, even though they
+            # issue byte-identical requests. The difference is in what the
+            # response is taken to mean, which is exactly what a config
+            # identity is for.
+            "finish_reasons": config.finish_reasons.identity(),
             "request_timeout_seconds": config.request_timeout_seconds,
             "system_prompt_sha256": (
                 None
@@ -1233,6 +1342,7 @@ def build_request_plan(
         messages=messages,
         request_parameters=_core_request_parameters(config),
         provider_extensions=config.extensions.to_request_fields(),
+        finish_reasons=config.finish_reasons.identity(),
         request_timeout_seconds=float(config.request_timeout_seconds),
         command=_sanitized_command(config, env_var_display=env_var_display),
         config_hash=_config_identity_hash(config),
@@ -1585,9 +1695,11 @@ class _StreamAccumulator:
         clock: Callable[[], float],
         started: float,
         redactor: _Redactor,
+        finish_reasons: FinishReasonVocabulary | None = None,
     ) -> None:
         self._clock = clock
         self._started = started
+        self.finish_reasons = finish_reasons or FinishReasonVocabulary()
         self.response_headers_at: float | None = None
         self.first_body_chunk_at: float | None = None
         self.first_content_token_at: float | None = None
@@ -1766,7 +1878,7 @@ class _StreamAccumulator:
             # a following [DONE] publishes an aborted generation as a
             # success. Meaning is decided first, text is redacted second.
             normalized = finish_reason.strip().lower()
-            if normalized in _FAILURE_FINISH_REASONS:
+            if normalized in self.finish_reasons.failure:
                 self.finish_outcome = _FINISH_FAILURE
                 self.finish_reason_code = normalized
                 self.finish_reason = redact.identifier(finish_reason)
@@ -1780,7 +1892,7 @@ class _StreamAccumulator:
                 # the outcome, so it is kept for both the code and the
                 # persisted text, which therefore always agree.
                 pass
-            elif normalized in _TERMINAL_FINISH_REASONS:
+            elif normalized in self.finish_reasons.terminal:
                 self.finish_outcome = _FINISH_TERMINAL
                 self.finish_reason_code = normalized
                 self.finish_reason = redact.identifier(finish_reason)
@@ -1923,7 +2035,7 @@ class _StreamAccumulator:
             return joined
         return self._redactor.boundary(joined)
 
-    def statistics(self) -> StreamStatistics:
+    def statistics(self, *, reasoning_requested: bool = False) -> StreamStatistics:
         gaps = [
             (later - earlier) * 1000
             for earlier, later in zip(
@@ -1998,6 +2110,24 @@ class _StreamAccumulator:
                     "reasoning delta, so the period those tokens were "
                     "generated in was never observed and any rate over the "
                     "visible window would overstate throughput"
+                )
+            elif (
+                reasoning_requested
+                and reasoning_tokens is None
+                and self.reasoning_delta_count == 0
+            ):
+                # Reasoning was asked for and the provider accounted for it
+                # in neither of the two ways it can: no reasoning delta on
+                # the wire and no reasoning token count in usage. A hidden
+                # phase cannot be ruled out, and treating the absent count
+                # as zero is the inference this collector refuses to make
+                # everywhere else. Requests that did not ask for reasoning
+                # are unaffected, because there is no hidden phase to miss.
+                rate_unavailable = (
+                    "reasoning was requested but the provider reported "
+                    "neither reasoning deltas nor a reasoning token count, "
+                    "so a hidden reasoning phase cannot be ruled out and "
+                    "the observed window may not span every counted token"
                 )
             elif completion_tokens is not None:
                 token_rate = completion_tokens / generation_seconds
@@ -2224,16 +2354,21 @@ def _contains_credential(value: str, credential: str) -> bool:
     value being persisted would not fire on the exact shapes redaction was
     built to catch.
 
-    Short credentials are compared literally only. A one or two character
-    value would otherwise match a decoded byte by coincidence, and a
-    refusal that fires on noise trains people to work around it.
+    Short credentials skip the extra decoding rounds only. A one or two
+    character value would otherwise match a decoded byte by coincidence,
+    and a refusal that fires on noise trains people to work around it. The
+    flexible match itself runs at every length, because the redactor runs
+    at every length: a value the redactor would scrub must never pass the
+    check that decides whether it may be persisted at all.
     """
     if credential in value:
         return True
-    if len(credential.strip()) < _MIN_ENCODED_CREDENTIAL_CHARS:
-        return False
     pattern = _Redactor._flexible(credential)
     if pattern is None:
+        return False
+    if pattern.search(value):
+        return True
+    if len(credential.strip()) < _MIN_ENCODED_CREDENTIAL_CHARS:
         return False
     # ``_percent_decodings`` yields the value itself first, so this covers
     # the direct search as well as the ``+``-for-space and multi-round
@@ -2255,6 +2390,10 @@ def _assert_credential_not_embedded(
         # so a value that is somehow both the name and the secret has to be
         # refused here rather than relied on to be masked downstream.
         ("credential_env_var", config.credential_env_var),
+        # The output directory becomes a pathname on disk. A credential
+        # there is written into the filesystem itself, where no downstream
+        # redactor can reach it.
+        ("output_dir", str(config.output_dir)),
     ]
     optional: tuple[tuple[str, str | None], ...] = (
         ("model_revision", config.model_revision),
@@ -2399,7 +2538,10 @@ def _terminal_condition_failure(
 
 
 def _http_status_failure(
-    response: StreamingResponse, *, redact: _Redactor
+    response: StreamingResponse,
+    *,
+    redact: _Redactor,
+    accumulator: _StreamAccumulator,
 ) -> APIFailure:
     body = _read_error_body(response).decode("utf-8", errors="replace")
     # The byte cap in ``_read_error_body`` can cut through an echoed
@@ -2416,6 +2558,19 @@ def _http_status_failure(
         source = error if isinstance(error, Mapping) else payload
         message = f"HTTP {response.status_code}: {_error_message(source)}"
         code = _error_code(source)
+        # Z.ai returns its request id in the body, and an error response
+        # need not carry the header form. Discarding it would throw away
+        # the one identifier that makes a failed call traceable with the
+        # provider, which is exactly when it is most needed. Only the id
+        # is taken: an error body's other fields do not describe a
+        # response that was produced.
+        for candidate in (payload, error):
+            if not isinstance(candidate, Mapping):
+                continue
+            found = candidate.get("request_id")
+            if isinstance(found, str) and found:
+                accumulator.provider_request_id = redact.identifier(found)
+                break
     elif body.strip():
         message = f"HTTP {response.status_code}: {body}"
     return APIFailure(
@@ -2460,7 +2615,12 @@ def collect_openai_stream(
 
     started_at = utc_now_iso()
     started = clock()
-    accumulator = _StreamAccumulator(clock=clock, started=started, redactor=redact)
+    accumulator = _StreamAccumulator(
+        clock=clock,
+        started=started,
+        redactor=redact,
+        finish_reasons=config.finish_reasons,
+    )
     failure: APIFailure | None = None
     rate_limit_headers: dict[str, str] = {}
     header_request_id: str | None = None
@@ -2479,7 +2639,9 @@ def collect_openai_stream(
             header_request_id = _request_id_from_headers(headers)
             header_request_id = redact.identifier(header_request_id)
             if response.status_code != 200:
-                failure = _http_status_failure(response, redact=redact)
+                failure = _http_status_failure(
+                    response, redact=redact, accumulator=accumulator
+                )
             else:
                 failure = accumulator.consume(response, redact=redact)
         finally:
@@ -2511,7 +2673,9 @@ def collect_openai_stream(
         finish_reason_code=accumulator.finish_reason_code,
         usage=accumulator.usage,
         timeline=accumulator.timeline(completed),
-        statistics=accumulator.statistics(),
+        statistics=accumulator.statistics(
+            reasoning_requested=_reasoning_requested(config.extensions)
+        ),
         rate_limit_headers=rate_limit_headers,
         stream_terminated_with_done=accumulator.terminated_with_done,
         stream_had_unterminated_event=accumulator.incomplete_event_discarded,

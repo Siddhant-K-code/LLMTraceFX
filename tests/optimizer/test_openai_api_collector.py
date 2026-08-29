@@ -29,6 +29,7 @@ from llmtracefx.optimizer.collectors.openai_api import (
     FAILURE_STREAM_TRUNCATED,
     FAILURE_TIMEOUT,
     APICollectionConfig,
+    FinishReasonVocabulary,
     HTTPRequest,
     OpenAIStreamCollectorError,
     ProviderExtensions,
@@ -1903,13 +1904,38 @@ def test_an_unrelated_encoded_endpoint_is_not_falsely_refused(tmp_path: Path) ->
     assert result.record.outcome.success is True
 
 
-def test_a_short_credential_does_not_trigger_encoded_false_positives(
+def test_a_short_credential_is_still_matched_the_way_the_redactor_matches_it(
     tmp_path: Path,
 ) -> None:
-    """A tiny value would match a decoded byte by coincidence."""
+    """Length must not buy a value weaker containment than redaction.
+
+    ``a/b`` is not a plausible key, but ``?path=a%2Fb`` is a genuine
+    percent-encoded echo of it rather than a coincidence: the redactor
+    turns that endpoint into ``path=[REDACTED]``. If the pre-flight check
+    let it through, a value the redactor considers the credential would
+    reach the persisted plan, which is the asymmetry this pairing exists
+    to prevent. The extra multi-round decodings, where a short value
+    really can collide with a decoded byte, stay behind the length gate.
+    """
     config = make_config(tmp_path, endpoint=f"{ENDPOINT}?path=a%2Fb")
 
-    result, _ = run(config, glm_stream(), environ={"ZAI_API_KEY": "a/b"})
+    with pytest.raises(OpenAIStreamCollectorError, match="refusing to run"):
+        run(config, glm_stream(), environ={"ZAI_API_KEY": "a/b"})
+
+    assert _Redactor("a/b").text("path=a%2Fb") == "path=[REDACTED]"
+
+
+def test_a_short_credential_absent_from_the_endpoint_is_not_refused(
+    tmp_path: Path,
+) -> None:
+    """Refusal must follow a real match, not merely a short credential.
+
+    The matcher runs at every length now, so this pins the other side of
+    that change: a short value that appears in no spelling still runs.
+    """
+    config = make_config(tmp_path, endpoint=f"{ENDPOINT}?q=one+two")
+
+    result, _ = run(config, glm_stream(), environ={"ZAI_API_KEY": "xyz"})
 
     assert result.record.outcome.success is True
 
@@ -3567,3 +3593,364 @@ def test_the_unavailable_reason_is_persisted_in_the_record(tmp_path: Path) -> No
     payload = result.evidence.statistics.to_dict()
     assert payload["provider_completion_tokens_per_second"] is None
     assert payload["provider_completion_tokens_per_second_unavailable_reason"]
+
+
+# --- Twelfth review pass -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "credential,field,value",
+    [
+        ("ABCDE", "model_id", "abcde"),
+        ("ABCDE", "run_id", "abcde"),
+        ("Ab-Cd", "provider", "ab-cd"),
+        ("SHORT", "system_prompt", "short"),
+        ("a/b", "model_revision", "a%2Fb"),
+    ],
+)
+def test_a_short_credential_cannot_slip_past_the_preflight(
+    tmp_path: Path, credential: str, field: str, value: str
+) -> None:
+    """The length gate belonged to the decodings, never to the matcher.
+
+    ``_contains_credential`` used to return early for anything shorter
+    than the encoded-credential threshold, comparing literally and case
+    sensitively, while ``_Redactor`` matched every length case
+    insensitively and through percent-encoding. That gap let a value the
+    redactor treats as the credential be written into the plan, the
+    reconstructed command and the persisted config.
+    """
+    config = make_config(tmp_path, **{field: value})
+
+    assert _Redactor(credential).text(value) == "[REDACTED]"
+    with pytest.raises(OpenAIStreamCollectorError, match="refusing to run"):
+        run(config, glm_stream(), environ={"ZAI_API_KEY": credential})
+
+
+def test_the_output_directory_cannot_be_named_after_the_credential(
+    tmp_path: Path,
+) -> None:
+    """A path is written into the filesystem, where no redactor reaches.
+
+    Every other persisted field was checked, but ``output_dir`` becomes a
+    directory name on disk. Creating it would put the key in the
+    filesystem itself, visible to anything that can list the parent.
+    """
+    config = make_config(tmp_path, output_dir=tmp_path / API_KEY)
+
+    with pytest.raises(OpenAIStreamCollectorError, match="refusing to run"):
+        run(config, glm_stream())
+
+    assert not (tmp_path / API_KEY).exists()
+
+
+def test_requested_reasoning_with_no_accounting_leaves_the_rate_unavailable(
+    tmp_path: Path,
+) -> None:
+    """Asking for reasoning and being told nothing is not evidence of none.
+
+    A provider that streams no reasoning delta and reports no reasoning
+    token count has accounted for the thinking in neither way it can. The
+    window may therefore miss tokens the numerator counts, and treating
+    the absent count as zero is the inference this collector refuses to
+    make everywhere else.
+    """
+    config = make_config(
+        tmp_path, extensions=ProviderExtensions(thinking_type="enabled")
+    )
+    usage = {"prompt_tokens": 5, "completion_tokens": 100, "total_tokens": 105}
+
+    result, _ = run(
+        config,
+        glm_stream(content_parts=("a", "b"), reasoning_parts=(), usage=usage),
+    )
+
+    statistics = result.evidence.statistics
+    assert result.evidence.usage.reasoning_tokens is None
+    assert statistics.provider_completion_tokens_per_second is None
+    reason = statistics.provider_completion_tokens_per_second_unavailable_reason
+    assert reason is not None
+    assert "cannot be ruled out" in reason
+
+
+def test_reasoning_effort_alone_also_counts_as_requesting_reasoning(
+    tmp_path: Path,
+) -> None:
+    """Either control asks the model to think, so either arms the check."""
+    config = make_config(
+        tmp_path, extensions=ProviderExtensions(reasoning_effort="high")
+    )
+    usage = {"prompt_tokens": 5, "completion_tokens": 100, "total_tokens": 105}
+
+    result, _ = run(
+        config,
+        glm_stream(content_parts=("a", "b"), reasoning_parts=(), usage=usage),
+    )
+
+    assert result.evidence.statistics.provider_completion_tokens_per_second is None
+
+
+def test_an_unasked_for_reasoning_absence_still_publishes_the_rate(
+    tmp_path: Path,
+) -> None:
+    """No reasoning was requested, so there is no hidden phase to miss.
+
+    Suppressing here would delete the metric for every ordinary
+    non-reasoning model, which is a cost with no evidence behind it.
+    """
+    config = make_config(tmp_path, extensions=ProviderExtensions())
+    usage = {"prompt_tokens": 5, "completion_tokens": 100, "total_tokens": 105}
+
+    result, _ = run(
+        config,
+        glm_stream(content_parts=("a", "b"), reasoning_parts=(), usage=usage),
+    )
+
+    statistics = result.evidence.statistics
+    assert statistics.provider_completion_tokens_per_second is not None
+    assert statistics.provider_completion_tokens_per_second_unavailable_reason is None
+
+
+def test_requested_reasoning_that_was_streamed_still_publishes_the_rate(
+    tmp_path: Path,
+) -> None:
+    """Observed reasoning is inside the window, so the rate is honest."""
+    config = make_config(
+        tmp_path, extensions=ProviderExtensions(thinking_type="enabled")
+    )
+    usage = {"prompt_tokens": 5, "completion_tokens": 100, "total_tokens": 105}
+
+    result, _ = run(
+        config,
+        glm_stream(content_parts=("a", "b"), reasoning_parts=("think",), usage=usage),
+    )
+
+    statistics = result.evidence.statistics
+    assert statistics.reasoning_delta_count == 1
+    assert statistics.provider_completion_tokens_per_second is not None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"request_id": "req-body-1", "error": {"message": "bad", "code": "1210"}},
+        {"error": {"message": "bad", "code": "1210", "request_id": "req-body-1"}},
+    ],
+)
+def test_a_body_level_request_id_survives_an_http_failure(
+    tmp_path: Path, body: dict[str, Any]
+) -> None:
+    """The id is what makes a failed call traceable with the provider.
+
+    Z.ai returns it in the body and an error response need not carry the
+    header form, so consulting only headers threw away the one field the
+    caller needs when raising a support ticket.
+    """
+    config = make_config(tmp_path)
+
+    result, _ = run(config, FakeResponse([json.dumps(body).encode()], status_code=400))
+
+    assert result.record.outcome.success is False
+    assert result.evidence.failure is not None
+    assert result.evidence.provider_request_id == "req-body-1"
+
+
+def test_a_body_request_id_echoing_the_credential_is_redacted(
+    tmp_path: Path,
+) -> None:
+    """It is provider-controlled text like any other."""
+    config = make_config(tmp_path)
+    body = json.dumps(
+        {"request_id": f"req-{API_KEY}", "error": {"message": "bad"}}
+    ).encode()
+
+    result, _ = run(config, FakeResponse([body], status_code=400))
+
+    request_id = result.evidence.provider_request_id
+    assert request_id is not None
+    assert API_KEY not in request_id
+    assert "[REDACTED]" in request_id
+
+
+def test_a_header_request_id_is_not_overwritten_by_a_body_without_one(
+    tmp_path: Path,
+) -> None:
+    """The existing header path must keep working unchanged."""
+    config = make_config(tmp_path)
+
+    result, _ = run(
+        config,
+        FakeResponse(
+            [json.dumps({"error": {"message": "bad"}}).encode()],
+            status_code=400,
+            headers={"x-request-id": "req-header-9"},
+        ),
+    )
+
+    assert result.evidence.provider_request_id == "req-header-9"
+
+
+# --- Finish reason vocabulary as configuration -------------------------------
+#
+# ``finish_reason`` is not fully standardized. Z.ai documents "sensitive",
+# "network_error" and "model_context_window_exceeded" alongside the OpenAI
+# set, so which strings end a stream is a property of the endpoint rather
+# than of this collector.
+# https://docs.z.ai/api-reference/llm/chat-completion
+
+
+def _finish_stream(reason: str, *, done: bool = True) -> list[bytes]:
+    chunks = [
+        sse(
+            {"id": "chatcmpl-f", "choices": [{"index": 0, "delta": {"content": "hi"}}]}
+        ),
+        sse(
+            {
+                "id": "chatcmpl-f",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": reason}],
+            }
+        ),
+    ]
+    if done:
+        chunks.append(b"data: [DONE]\n\n")
+    return chunks
+
+
+@pytest.mark.parametrize(
+    ("reason", "classification"),
+    [
+        ("stop", "terminal"),
+        ("length", "terminal"),
+        ("sensitive", "terminal"),
+        ("network_error", "failure"),
+        ("model_context_window_exceeded", "failure"),
+        ("eos", "unrecognized"),
+    ],
+)
+def test_the_default_vocabulary_keeps_the_documented_zai_semantics(
+    tmp_path: Path, reason: str, classification: str
+) -> None:
+    result, _ = run(make_config(tmp_path), _finish_stream(reason))
+
+    assert result.evidence.finish_reason_classification == classification
+
+
+def test_a_provider_finish_reason_can_be_declared_terminal_in_configuration(
+    tmp_path: Path,
+) -> None:
+    """A different provider is supported by configuring it, not by editing
+    the collector."""
+    config = make_config(
+        tmp_path,
+        provider="other",
+        finish_reasons=FinishReasonVocabulary(
+            terminal=frozenset({"stop", "eos"}), failure=frozenset()
+        ),
+    )
+
+    result, _ = run(config, _finish_stream("eos"))
+
+    assert result.evidence.finish_reason_classification == "terminal"
+    assert result.evidence.success is True
+
+
+def test_the_zai_additions_can_be_dropped_for_an_endpoint_that_reuses_them(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, finish_reasons=FinishReasonVocabulary.openai_only())
+
+    result, _ = run(config, _finish_stream("sensitive"))
+
+    assert result.evidence.finish_reason_classification == "unrecognized"
+
+
+def test_an_unrecognized_reason_without_done_is_still_reported_as_truncated(
+    tmp_path: Path,
+) -> None:
+    """Unknown is not a synonym for finished: an unrecognized reason is no
+    evidence that generation completed."""
+    result, _ = run(make_config(tmp_path), _finish_stream("eos", done=False))
+
+    assert result.evidence.success is False
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.category == FAILURE_STREAM_TRUNCATED
+
+
+def test_a_configured_failure_reason_outranks_a_trailing_done(
+    tmp_path: Path,
+) -> None:
+    config = make_config(
+        tmp_path,
+        finish_reasons=FinishReasonVocabulary(
+            terminal=frozenset({"stop"}), failure=frozenset({"aborted"})
+        ),
+    )
+
+    result, _ = run(config, _finish_stream("aborted"))
+
+    assert result.evidence.success is False
+    assert result.evidence.finish_reason_classification == "failure"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        (
+            {"terminal": frozenset({"stop"}), "failure": frozenset({"stop"})},
+            "cannot be both terminal and a failure",
+        ),
+        (
+            {"terminal": frozenset(), "failure": frozenset()},
+            "at least one terminal finish reason",
+        ),
+        (
+            {"terminal": frozenset({"Stop"})},
+            "stripped lowercase",
+        ),
+        (
+            {"terminal": frozenset({" stop"})},
+            "stripped lowercase",
+        ),
+        (
+            {"terminal": frozenset({""})},
+            "must be non-empty strings",
+        ),
+        (
+            {"terminal": ["stop"]},
+            "must be a set of strings",
+        ),
+    ],
+)
+def test_an_incoherent_vocabulary_is_rejected(
+    kwargs: dict[str, Any], match: str
+) -> None:
+    with pytest.raises(OpenAIStreamCollectorError, match=match):
+        FinishReasonVocabulary(**kwargs)
+
+
+def test_the_vocabulary_is_recorded_in_the_plan(tmp_path: Path) -> None:
+    plan = build_request_plan(make_config(tmp_path), environ=ENVIRON)
+
+    recorded = plan.to_dict()["finish_reasons"]
+
+    assert "sensitive" in recorded["terminal"]
+    assert recorded["failure"] == [
+        "model_context_window_exceeded",
+        "network_error",
+    ]
+    assert recorded["terminal"] == sorted(recorded["terminal"])
+
+
+def test_changing_the_vocabulary_changes_the_config_identity(
+    tmp_path: Path,
+) -> None:
+    """Two runs that read the same reason differently are not the same
+    measurement configuration, even though they send identical requests."""
+    default = build_request_plan(make_config(tmp_path), environ=ENVIRON)
+    narrowed = build_request_plan(
+        make_config(tmp_path, finish_reasons=FinishReasonVocabulary.openai_only()),
+        environ=ENVIRON,
+    )
+
+    assert default.request_parameters == narrowed.request_parameters
+    assert default.config_hash != narrowed.config_hash

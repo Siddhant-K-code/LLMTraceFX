@@ -30,6 +30,7 @@ import os
 import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict
 from itertools import combinations
 from pathlib import Path
@@ -1360,8 +1361,15 @@ _CREDENTIAL_ARGUMENT_STEMS = frozenset(
     }
 )
 
-_argv_values_to_scrub: tuple[str, ...] = ()
-_protected_argument_literals: tuple[str, ...] = ()
+#: Scrub state for one parse, held per context rather than in module
+#: globals. ``main`` used to set globals and never restore them, so a
+#: later ``build_parser().parse_args(...)`` in the same process inherited
+#: a populated state that did not describe its own argv and echoed the
+#: value it was given. A ``ContextVar`` is restored by its token on every
+#: exit path and is not shared between threads.
+_scrub_state: ContextVar[tuple[tuple[str, ...], tuple[str, ...]] | None] = ContextVar(
+    "llmtracefx_argv_scrub_state", default=None
+)
 
 
 def _option_stem(token: str) -> str:
@@ -1440,7 +1448,11 @@ def _argument_values(
     values: set[str] = set()
 
     def contribute(candidate: str) -> None:
-        if len(candidate) >= _MIN_SCRUBBED_ARGUMENT_CHARS:
+        # Every non-empty value is collected. How much of it can be
+        # replaced safely is decided per rendering in
+        # ``_value_renderings``, which drops the bare form for values too
+        # short to replace without mangling the surrounding message.
+        if candidate:
             values.add(candidate)
 
     known = frozenset(literals)
@@ -1483,6 +1495,14 @@ def _value_renderings(value: str) -> tuple[str, ...]:
     quotes are left in place because they belong to the message.
     """
     quoted = repr(value)
+    if len(value) < _MIN_SCRUBBED_ARGUMENT_CHARS:
+        # Too short to replace as a bare substring: a two character value
+        # occurs inside ordinary words, and blanking every occurrence
+        # would destroy the message that makes the error actionable.
+        # argparse always quotes the offending token in the messages that
+        # repeat one, so the quoted spellings are both distinctive enough
+        # to replace safely and sufficient to keep the guarantee.
+        return (quoted, f'"{value}"')
     return (value, quoted[1:-1])
 
 
@@ -1496,7 +1516,7 @@ def _scrub_argv_values(message: str) -> str:
     protected when no value contains it, so a secret that happens to
     embed an option name is still replaced whole.
     """
-    values = _argv_values_to_scrub
+    values, literals = _scrub_state.get() or ((), ())
     if not values:
         return message
     renderings = sorted(
@@ -1506,7 +1526,7 @@ def _scrub_argv_values(message: str) -> str:
     )
     protected = {
         f"\x00{index}\x00": literal
-        for index, literal in enumerate(_protected_argument_literals)
+        for index, literal in enumerate(literals)
         if not any(literal in rendering for rendering in renderings)
     }
     scrubbed = message
@@ -1534,25 +1554,24 @@ def _argument_scrub_scope(
     An enclosing scope wins. Subparsers are instances of this class too and
     parse a suffix of the command line, so letting the inner parse reinstall
     the state would narrow it to the tokens that subparser happens to see.
+    Nesting is detected from the context variable actually being set, not
+    from it merely being non-empty, so a scope that has genuinely exited
+    can never be mistaken for one still in force.
     """
-    global _argv_values_to_scrub
-    global _protected_argument_literals
-
-    if _protected_argument_literals:
+    if _scrub_state.get() is not None:
         yield
         return
-    previous_values = _argv_values_to_scrub
-    previous_literals = _protected_argument_literals
     literals = _parser_literals(parser)
-    _protected_argument_literals = literals
-    _argv_values_to_scrub = _argument_values(
-        list(sys.argv[1:] if argv is None else argv), literals
+    token = _scrub_state.set(
+        (
+            _argument_values(list(sys.argv[1:] if argv is None else argv), literals),
+            literals,
+        )
     )
     try:
         yield
     finally:
-        _argv_values_to_scrub = previous_values
-        _protected_argument_literals = previous_literals
+        _scrub_state.reset(token)
 
 
 _N = TypeVar("_N")
@@ -2362,16 +2381,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    global _argv_values_to_scrub
-    global _protected_argument_literals
-
     parser = build_parser()
     raw_argv = list(sys.argv[1:] if argv is None else argv)
-    _protected_argument_literals = _parser_literals(parser)
-    _argv_values_to_scrub = _argument_values(raw_argv, _protected_argument_literals)
-    _reject_credential_arguments(raw_argv)
-    args = parser.parse_args(raw_argv)
-    args._invocation = (parser.prog, *raw_argv)
+    # The scope, rather than a bare assignment, so the state is undone on
+    # every exit path including the ``SystemExit`` argparse raises. Left
+    # standing it would suppress installation for the next parse in this
+    # process, which would then be scrubbed against the wrong argv.
+    with _argument_scrub_scope(parser, raw_argv):
+        _reject_credential_arguments(raw_argv)
+        args = parser.parse_args(raw_argv)
+        args._invocation = (parser.prog, *raw_argv)
     sys.exit(args.func(args))
 
 
