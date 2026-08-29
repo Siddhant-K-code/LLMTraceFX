@@ -28,9 +28,11 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Sequence
 from dataclasses import asdict
 from itertools import combinations
 from pathlib import Path
+from typing import NoReturn
 
 from .collectors._shared import atomic_write_text
 from .collectors.mlx import (
@@ -1305,8 +1307,118 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
     return exit_code
 
 
+_MIN_SCRUBBED_ARGUMENT_CHARS = 4
+
+_CREDENTIAL_ARGUMENT_STEMS = frozenset(
+    {
+        "apikey",
+        "apikeys",
+        "apisecret",
+        "apitoken",
+        "accesskey",
+        "accesstoken",
+        "auth",
+        "authorization",
+        "authtoken",
+        "bearer",
+        "bearertoken",
+        "clientsecret",
+        "credential",
+        "credentials",
+        "key",
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "secretkey",
+        "token",
+    }
+)
+
+_argv_values_to_scrub: tuple[str, ...] = ()
+
+
+def _option_stem(token: str) -> str:
+    """Normalize ``--Api_Key=value`` to ``apikey`` for comparison.
+
+    Spelling is not evidence of intent. A caller reaching for a credential
+    flag may type it with dashes, underscores or neither, so the stem is
+    compared with all of that removed and the value dropped.
+    """
+    name = token.split("=", 1)[0].lstrip("-")
+    return "".join(character for character in name.lower() if character.isalnum())
+
+
+def _argument_values(raw_argv: Sequence[str]) -> tuple[str, ...]:
+    """Every caller-supplied value in ``raw_argv``, longest first.
+
+    Option names are excluded because they are what makes a diagnostic
+    actionable and they are chosen by this program, not by the caller.
+    Everything else is a value that argparse would otherwise quote back
+    into stderr, so it is treated as possibly secret. Longest first so a
+    value that contains another is replaced whole.
+    """
+    values: set[str] = set()
+    for token in raw_argv:
+        candidate = token
+        if token.startswith("-"):
+            name, separator, attached = token.partition("=")
+            if not separator:
+                continue
+            candidate = attached
+        if len(candidate) >= _MIN_SCRUBBED_ARGUMENT_CHARS:
+            values.add(candidate)
+    return tuple(sorted(values, key=len, reverse=True))
+
+
+def _scrub_argv_values(message: str) -> str:
+    scrubbed = message
+    for value in _argv_values_to_scrub:
+        scrubbed = scrubbed.replace(value, "[REDACTED]")
+    return scrubbed
+
+
+class SecureArgumentParser(argparse.ArgumentParser):
+    """An ``ArgumentParser`` whose diagnostics never repeat a value.
+
+    argparse quotes the offending token straight back to the caller, so a
+    mistyped ``--api-key <secret>`` lands in stderr verbatim and from there
+    in shell history, CI logs and screenshots. Option names and the usage
+    block are kept, since they carry no caller input and are what make the
+    error actionable; every value the caller supplied is replaced.
+    """
+
+    def error(self, message: str) -> NoReturn:
+        super().error(_scrub_argv_values(message))
+
+
+def _reject_credential_arguments(raw_argv: Sequence[str]) -> None:
+    """Refuse a credential-bearing flag before argparse can echo its value.
+
+    The collector reads the credential from the environment and has no
+    flag that accepts one, so any such flag is a mistake. Rejecting it here
+    rather than letting it fall through to "unrecognized arguments" means
+    the value is never formatted into a message in the first place, and the
+    caller is told where the credential actually belongs.
+    """
+    for token in raw_argv:
+        if not token.startswith("-") or token == "--":
+            continue
+        if _option_stem(token) not in _CREDENTIAL_ARGUMENT_STEMS:
+            continue
+        name = token.split("=", 1)[0]
+        print(
+            f"llmtracefx-optimizer: error: {name} is not a supported option "
+            "and a credential must never appear in a command line. Export "
+            "the credential to an environment variable and name that "
+            "variable with --api-key-env.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = SecureArgumentParser(
         prog="llmtracefx-optimizer",
         description="Inference-optimizer foundation primitives for LLMTraceFX",
     )
@@ -1993,8 +2105,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    global _argv_values_to_scrub
+
     parser = build_parser()
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    _argv_values_to_scrub = _argument_values(raw_argv)
+    _reject_credential_arguments(raw_argv)
     args = parser.parse_args(raw_argv)
     args._invocation = (parser.prog, *raw_argv)
     sys.exit(args.func(args))

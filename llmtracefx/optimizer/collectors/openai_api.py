@@ -95,6 +95,7 @@ from ._shared import (
     config_hash,
     milliseconds,
     record_platform,
+    sha256_bytes,
     sha256_text,
 )
 from .sse import SSEDecodeError, SSEDecoder, SSEEvent
@@ -129,10 +130,22 @@ FAILURE_STREAM_TRUNCATED = "stream_truncated"
 
 # Terminal ``finish_reason`` values. A stream that stops without one of
 # these and without ``[DONE]`` was cut short, however much content it
-# already delivered.
+# already delivered. ``sensitive`` is Z.ai's documented analogue of
+# OpenAI's ``content_filter``: generation ended by a filter, which is a
+# real ending rather than a lost stream.
+# https://docs.z.ai/api-reference/llm/chat-completion
 _TERMINAL_FINISH_REASONS = frozenset(
-    {"stop", "length", "content_filter", "tool_calls", "function_call"}
+    {"stop", "length", "content_filter", "tool_calls", "function_call", "sensitive"}
 )
+
+# Documented ``finish_reason`` values that report a failed generation.
+# Z.ai lists both alongside the successful ones, so a run can carry
+# content, one of these, and ``[DONE]`` all at once. The sentinel must not
+# be allowed to outrank them: the text on the wire is not a completed
+# answer, and publishing it as a success would put a truncated or aborted
+# generation into the evidence set as though it were whole.
+# https://docs.z.ai/api-reference/llm/chat-completion
+_FAILURE_FINISH_REASONS = frozenset({"network_error", "model_context_window_exceeded"})
 
 _EVENT_KIND_CONTENT = "content"
 _EVENT_KIND_REASONING = "reasoning"
@@ -955,11 +968,20 @@ def _endpoint_for_command(endpoint: str) -> str:
 
 
 def _sanitized_command(config: APICollectionConfig) -> tuple[str, ...]:
+    """Replace the raw endpoint wherever it appears in the reconstruction.
+
+    Matching whole arguments only would sanitize ``--endpoint <url>`` and
+    miss the equally ordinary ``--endpoint=<url>``, leaving the raw query
+    values in ``plan.command`` and in ``record.command.argv``. Substring
+    replacement covers both spellings and any other reconstruction format
+    without having to enumerate them, and the replacement is the same URL
+    with its query values masked, so it stays a faithful command.
+    """
     safe_endpoint = _endpoint_for_command(config.endpoint)
     if safe_endpoint == config.endpoint:
         return tuple(config.command_argv)
     return tuple(
-        safe_endpoint if argument == config.endpoint else argument
+        argument.replace(config.endpoint, safe_endpoint)
         for argument in config.command_argv
     )
 
@@ -1326,7 +1348,7 @@ class _StreamAccumulator:
         self.finish_reason: str | None = None
         self.usage: ProviderUsage = ProviderUsage()
         self.terminated_with_done = False
-        self.had_unterminated_event = False
+        self.incomplete_event_discarded = False
 
     def offset_ms(self, moment: float | None) -> float | None:
         if moment is None:
@@ -1359,7 +1381,7 @@ class _StreamAccumulator:
             return APIFailure(category=FAILURE_CONNECTION, message=redact(str(exc)))
         finally:
             self.comment_count = decoder.comment_count
-            self.had_unterminated_event = decoder.dispatched_unterminated_event
+            self.incomplete_event_discarded = decoder.incomplete_event_discarded
         return None
 
     def _handle_event(self, event: SSEEvent, *, redact: _Redactor) -> APIFailure | None:
@@ -1543,16 +1565,32 @@ class _StreamAccumulator:
         )
 
     def terminated_cleanly(self) -> bool:
-        """True when the provider signalled a real end of stream.
+        """True when the provider signalled a real, successful end of stream.
 
         Either the ``[DONE]`` sentinel or a terminal ``finish_reason`` is
         accepted, because both are documented endings and not every
         OpenAI-compatible provider sends both.
+
+        A documented failure ``finish_reason`` and a frame the stream left
+        pending are both checked first. Either one means bytes were lost or
+        the generation was aborted, and neither is cancelled out by a
+        ``[DONE]`` that happens to follow.
         """
+        if self.failed_finish_reason() is not None:
+            return False
+        if self.incomplete_event_discarded:
+            return False
         if self.terminated_with_done:
             return True
         reason = self.finish_reason
         return reason is not None and reason in _TERMINAL_FINISH_REASONS
+
+    def failed_finish_reason(self) -> str | None:
+        """The ``finish_reason`` when the provider documented it as a failure."""
+        reason = self.finish_reason
+        if reason is not None and reason in _FAILURE_FINISH_REASONS:
+            return reason
+        return None
 
     def content_text(self) -> str:
         """The final answer, scrubbed as one string.
@@ -1912,6 +1950,67 @@ def _read_error_body(response: StreamingResponse) -> bytes:
     return bytes(collected[:_MAX_ERROR_BODY_BYTES])
 
 
+def _terminal_condition_failure(
+    accumulator: _StreamAccumulator, response_text: str
+) -> APIFailure | None:
+    """Decide whether a stream that raised nothing actually succeeded.
+
+    The three ways a stream can end badly without erroring are ordered by
+    how much they explain. A documented failure ``finish_reason`` is the
+    provider telling us directly why generation stopped, so it is reported
+    even when ``[DONE]`` followed and even when some content arrived. A
+    frame the stream left pending means the connection was cut mid event.
+    Only then is the generic "no terminal condition at all" case reached.
+    """
+    failed_reason = accumulator.failed_finish_reason()
+    if failed_reason is not None:
+        return APIFailure(
+            category=FAILURE_PROVIDER_ERROR,
+            message=(
+                "provider reported a failure finish_reason; the stream did "
+                "not carry a completed generation"
+            ),
+            provider_error_code=failed_reason,
+        )
+
+    if accumulator.incomplete_event_discarded:
+        return APIFailure(
+            category=FAILURE_STREAM_TRUNCATED,
+            message=(
+                "stream ended in the middle of an event; the pending frame "
+                "was discarded and the response is truncated"
+            ),
+            provider_error_code=None,
+        )
+
+    if not response_text:
+        return APIFailure(
+            category=FAILURE_MISSING_CONTENT,
+            message=(
+                "stream completed without any content delta; finish_reason="
+                f"{accumulator.finish_reason!r}"
+            ),
+            provider_error_code=None,
+        )
+
+    if not accumulator.terminated_cleanly():
+        # Content alone does not mean the answer is whole. Without ``[DONE]``
+        # or a terminal finish_reason the body was cut short, and publishing
+        # a truncated answer as a success would corrupt every downstream
+        # comparison that reads it.
+        return APIFailure(
+            category=FAILURE_STREAM_TRUNCATED,
+            message=(
+                "stream ended without a terminal condition: no [DONE] "
+                "sentinel and finish_reason="
+                f"{accumulator.finish_reason!r}; the response is truncated"
+            ),
+            provider_error_code=None,
+        )
+
+    return None
+
+
 def _http_status_failure(
     response: StreamingResponse, *, redact: _Redactor
 ) -> APIFailure:
@@ -2006,30 +2105,8 @@ def collect_openai_stream(
     completed = clock()
     response_text = accumulator.content_text()
 
-    if failure is None and not response_text:
-        failure = APIFailure(
-            category=FAILURE_MISSING_CONTENT,
-            message=(
-                "stream completed without any content delta; finish_reason="
-                f"{accumulator.finish_reason!r}"
-            ),
-            provider_error_code=None,
-        )
-
-    if failure is None and not accumulator.terminated_cleanly():
-        # Content alone does not mean the answer is whole. Without ``[DONE]``
-        # or a terminal finish_reason the body was cut short, and publishing
-        # a truncated answer as a success would corrupt every downstream
-        # comparison that reads it.
-        failure = APIFailure(
-            category=FAILURE_STREAM_TRUNCATED,
-            message=(
-                "stream ended without a terminal condition: no [DONE] "
-                "sentinel and finish_reason="
-                f"{accumulator.finish_reason!r}; the response is truncated"
-            ),
-            provider_error_code=None,
-        )
+    if failure is None:
+        failure = _terminal_condition_failure(accumulator, response_text)
 
     provider_request_id = accumulator.provider_request_id or header_request_id
 
@@ -2048,7 +2125,7 @@ def collect_openai_stream(
         statistics=accumulator.statistics(),
         rate_limit_headers=rate_limit_headers,
         stream_terminated_with_done=accumulator.terminated_with_done,
-        stream_had_unterminated_event=accumulator.had_unterminated_event,
+        stream_had_unterminated_event=accumulator.incomplete_event_discarded,
         reasoning_content_returned=accumulator.reasoning_delta_count > 0,
         failure=failure,
     )
@@ -2111,7 +2188,11 @@ def _publish_artifacts(
         "schema_version": ARTIFACT_MANIFEST_SCHEMA_VERSION,
         "run_id": run_id,
         "artifacts": [
-            {"name": name, "sha256": sha256_text(text)} for name, text in payloads
+            # Hashed as bytes, and verified as bytes, so a response holding
+            # CRLF or a lone CR cannot make a correctly written set look
+            # tampered with.
+            {"name": name, "sha256": sha256_bytes(text.encode("utf-8"))}
+            for name, text in payloads
         ],
     }
     atomic_write_text(marker_path, json.dumps(marker, indent=2, allow_nan=False) + "\n")
@@ -2144,10 +2225,10 @@ def artifact_set_is_complete(output_dir: Path) -> bool:
         if not isinstance(name, str) or not isinstance(digest, str):
             return False
         try:
-            text = (output_dir / name).read_text(encoding="utf-8")
+            raw = (output_dir / name).read_bytes()
         except OSError:
             return False
-        if sha256_text(text) != digest:
+        if sha256_bytes(raw) != digest:
             return False
     return True
 

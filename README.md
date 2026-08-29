@@ -881,7 +881,9 @@ and written last. A reader can call
 `llmtracefx.optimizer.collectors.artifact_set_is_complete(output_dir)`, which
 returns `True` only when the marker exists, every file it lists is present and
 every sha256 still matches. Treat a directory without a valid marker as an
-incomplete run rather than as evidence.
+incomplete run rather than as evidence. Both sides of that check work on raw
+bytes, so an answer containing CRLF or a lone CR verifies correctly instead of
+looking tampered with because text mode rewrote its line endings.
 
 #### What is measured and how it is labelled
 
@@ -929,7 +931,15 @@ and are never mixed into a single unlabelled number.
 - The API key is read only from the environment variable named by
   `--api-key-env` (default `ZAI_API_KEY`). There is no `--api-key` flag, and
   prefix abbreviation is disabled on this subcommand so `--api-key` cannot
-  resolve to `--api-key-env`.
+  resolve to `--api-key-env`. A credential-shaped flag such as `--api-key`,
+  `--api_key`, `--token` or `--secret`, in either the separate or the
+  `--flag=value` form, is refused before argparse sees it, because argparse
+  quotes an unrecognized argument straight back into stderr, value and all.
+  The refusal names the flag and points at `--api-key-env`, never the value.
+- No parse diagnostic repeats a value the caller supplied. Option names and
+  the usage block are kept, since they carry no caller input and are what make
+  the error actionable, but anything typed as a value is replaced. A secret
+  pasted into the wrong option is still a secret.
 - The credential value is never written to an artifact, never logged, never
   hashed and never included in the reconstructed command. `HTTPRequest`
   overrides `repr` so a traceback cannot surface the `Authorization` header.
@@ -946,7 +956,9 @@ and are never mixed into a single unlabelled number.
 - Endpoint query *values* are stripped from every persisted form of the
   command, including `record.json`, and from `HTTPRequest.__repr__`, so a
   private deployment name in a query string does not reach an artifact, a log
-  line or a traceback.
+  line or a traceback. The stripping is applied wherever the endpoint appears
+  in the reconstructed command, so `--endpoint=<url>` is covered as fully as
+  the separate `--endpoint <url>` form.
 - A malformed endpoint is reported as a sanitized error rather than an
   escaping `ValueError`. `urlsplit` raises on an unclosed IPv6 bracket and
   `SplitResult.port` raises on a port that is not an integer in range, both
@@ -1009,14 +1021,32 @@ failures.
 
 A stream is only accepted when it reaches a terminal condition the provider
 documents: a `[DONE]` sentinel, or a `finish_reason` of `stop`, `length`,
-`content_filter`, `tool_calls` or `function_call`. A connection that closes
-cleanly after some content but before either of those is recorded as
-`stream_truncated`, not as a short success. Accepting it would silently
+`content_filter`, `tool_calls`, `function_call` or `sensitive`. A connection
+that closes cleanly after some content but before either of those is recorded
+as `stream_truncated`, not as a short success. Accepting it would silently
 convert a dropped connection into a real answer and, worse, into a plausible
 latency measurement. A body shorter than its own `Content-Length` is a
 `connection` failure: `http.client` returns a clean end of file there rather
 than raising, so the collector compares bytes read against the declared
 length itself.
+
+Z.ai documents `network_error` and `model_context_window_exceeded` alongside
+those successful reasons, so a stream can carry content, one of these, and
+`[DONE]` all at once
+([API reference](https://docs.z.ai/api-reference/llm/chat-completion)). The
+sentinel does not outrank them. It reports that the transport finished, not
+that the generation did, so a run ending on either reason is recorded as
+`provider_error_payload` with the reason as the provider error code.
+
+An event the stream leaves pending is discarded rather than dispatched. The
+event-stream rules dispatch on a blank line, and end of stream is not one, so a
+frame still buffered when the body ends was cut in transit. Dispatching it
+anyway would let an unterminated `data: [DONE]` close a truncated collection as
+though the provider had ended it cleanly. The run is recorded as
+`stream_truncated` instead. One leading U+FEFF byte order mark is ignored, as
+the rules require, including when its bytes arrive split across chunks;
+without that the first field name is not `data` and the whole first event is
+silently dropped.
 
 A named `event: error` frame is treated as a provider error even when its
 payload is only a message string, is empty, or is the `[DONE]` sentinel. The

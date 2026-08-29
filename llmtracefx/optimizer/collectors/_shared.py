@@ -16,8 +16,12 @@ from ..manifest import collect_environment_manifest
 from ..schema import Measurement, MetricProvenance, PlatformInfo
 
 
+def sha256_bytes(value: bytes) -> str:
+    return f"sha256:{hashlib.sha256(value).hexdigest()}"
+
+
 def sha256_text(value: str) -> str:
-    return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+    return sha256_bytes(value.encode("utf-8"))
 
 
 def milliseconds(started: float | None, ended: float | None) -> Measurement | None:
@@ -41,9 +45,17 @@ def bytes_measurement(value: int | None) -> Measurement | None:
 
 
 def atomic_write_text(path: Path, content: str) -> None:
+    """Write ``content`` so the bytes on disk are exactly its UTF-8 encoding.
+
+    ``newline=""`` disables the translation text mode would otherwise
+    apply. Without it a ``\\n`` becomes the platform line ending on write
+    while ``\\r\\n`` and a lone ``\\r`` collapse back to ``\\n`` on read, so
+    a response that legitimately contains carriage returns would not hash
+    to the same value it was written with.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    temporary.write_text(content, encoding="utf-8")
+    temporary.write_text(content, encoding="utf-8", newline="")
     os.replace(temporary, path)
 
 

@@ -24,7 +24,7 @@ def test_single_event_is_dispatched_on_blank_line() -> None:
     events = drain(decoder, [b'data: {"a": 1}\n\n'])
 
     assert [event.data for event in events] == ['{"a": 1}']
-    assert decoder.dispatched_unterminated_event is False
+    assert decoder.incomplete_event_discarded is False
 
 
 def test_event_split_across_every_byte_boundary() -> None:
@@ -110,12 +110,17 @@ def test_blank_line_without_data_dispatches_nothing() -> None:
     assert events == []
 
 
-def test_unterminated_final_event_is_flushed_and_flagged() -> None:
+def test_unterminated_final_event_is_discarded_and_flagged() -> None:
+    """End of stream is not a blank line, so the frame is never dispatched.
+
+    Dispatching it would hand the collector a ``[DONE]`` the provider
+    never finished sending, which reads as a clean end of stream.
+    """
     decoder = SSEDecoder()
     events = drain(decoder, [b"data: [DONE]"])
 
-    assert [event.data for event in events] == ["[DONE]"]
-    assert decoder.dispatched_unterminated_event is True
+    assert events == []
+    assert decoder.incomplete_event_discarded is True
 
 
 def test_close_is_idempotent() -> None:
@@ -147,3 +152,83 @@ def test_stream_ending_mid_character_raises_a_decode_error() -> None:
 
     with pytest.raises(SSEDecodeError, match="mid-character"):
         list(decoder.close())
+
+
+# --- Sixth review pass: end of stream and byte order mark --------------------
+
+
+def test_incomplete_ordinary_event_at_eof_is_discarded() -> None:
+    """A frame with no blank line was cut in transit, so it is not an event."""
+    decoder = SSEDecoder()
+    events = drain(decoder, [b'data: {"choices": [{"delta": {"content": "hi"}}]}\n'])
+
+    assert events == []
+    assert decoder.incomplete_event_discarded is True
+
+
+def test_incomplete_done_after_a_complete_event_is_discarded() -> None:
+    decoder = SSEDecoder()
+    events = drain(decoder, [b'data: {"a": 1}\n\n', b"data: [DONE]"])
+
+    assert [event.data for event in events] == ['{"a": 1}']
+    assert decoder.incomplete_event_discarded is True
+
+
+@pytest.mark.parametrize("split", [1, 3, 6, 9])
+def test_incomplete_done_is_discarded_however_it_is_fragmented(split: int) -> None:
+    payload = b"data: [DONE]"
+    decoder = SSEDecoder()
+    events = drain(decoder, [payload[:split], payload[split:]])
+
+    assert events == []
+    assert decoder.incomplete_event_discarded is True
+
+
+def test_a_terminated_stream_is_not_marked_incomplete() -> None:
+    decoder = SSEDecoder()
+    events = drain(decoder, [b'data: {"a": 1}\n\n', b"data: [DONE]\n\n"])
+
+    assert [event.data for event in events] == ['{"a": 1}', "[DONE]"]
+    assert decoder.incomplete_event_discarded is False
+
+
+def test_a_complete_trailing_comment_does_not_mark_the_stream_incomplete() -> None:
+    decoder = SSEDecoder()
+    events = drain(decoder, [b'data: {"a": 1}\n\n', b": keepalive\n"])
+
+    assert [event.data for event in events] == ['{"a": 1}']
+    assert decoder.incomplete_event_discarded is False
+    assert decoder.comment_count == 1
+
+
+def test_a_leading_byte_order_mark_is_ignored() -> None:
+    """Without this the first field name is ``\ufeffdata`` and the event vanishes."""
+    decoder = SSEDecoder()
+    events = drain(decoder, ["\ufeff".encode() + b'data: {"a": 1}\n\n'])
+
+    assert [event.data for event in events] == ['{"a": 1}']
+
+
+@pytest.mark.parametrize("split", [1, 2])
+def test_a_byte_order_mark_split_across_chunks_is_ignored(split: int) -> None:
+    mark = "\ufeff".encode()
+    decoder = SSEDecoder()
+    events = drain(decoder, [mark[:split], mark[split:] + b'data: {"a": 1}\n\n'])
+
+    assert [event.data for event in events] == ['{"a": 1}']
+
+
+def test_only_the_first_byte_order_mark_is_stripped() -> None:
+    """A U+FEFF anywhere after the first character is ordinary content."""
+    decoder = SSEDecoder()
+    events = drain(decoder, ['\ufeffdata: {"a": "\ufeff\ufeff"}\n\n'.encode()])
+
+    assert [event.data for event in events] == ['{"a": "\ufeff\ufeff"}']
+
+
+def test_a_byte_order_mark_alone_does_not_start_an_event() -> None:
+    decoder = SSEDecoder()
+    events = drain(decoder, ["\ufeff".encode()])
+
+    assert events == []
+    assert decoder.incomplete_event_discarded is False

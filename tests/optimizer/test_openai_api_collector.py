@@ -900,7 +900,8 @@ def test_a_non_terminal_finish_reason_does_not_terminate_a_stream(
     assert result.evidence.failure.category == FAILURE_STREAM_TRUNCATED
 
 
-def test_unterminated_final_event_is_flagged(tmp_path: Path) -> None:
+def test_unterminated_done_sentinel_is_not_a_clean_ending(tmp_path: Path) -> None:
+    """A ``[DONE]`` the stream never terminated cannot end a run cleanly."""
     config = make_config(tmp_path)
     chunks = [
         b'data: {"id": "c1", "choices": [{"index": 0, "delta": {"content": "x"}}]}\n\n',
@@ -909,8 +910,11 @@ def test_unterminated_final_event_is_flagged(tmp_path: Path) -> None:
 
     result, _ = run(config, chunks)
 
-    assert result.evidence.stream_terminated_with_done is True
+    assert result.evidence.stream_terminated_with_done is False
     assert result.evidence.stream_had_unterminated_event is True
+    assert result.evidence.success is False
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.category == FAILURE_STREAM_TRUNCATED
 
 
 def test_response_is_closed_even_though_evidence_is_kept(tmp_path: Path) -> None:
@@ -2119,13 +2123,13 @@ def test_a_credential_with_doubled_spaces_is_redacted_from_response_text(
 def test_a_truncated_error_event_payload_does_not_leak_a_credential_prefix(
     tmp_path: Path, keep: int
 ) -> None:
-    """An unterminated ``error`` event is dispatched with its raw data line.
+    """A cut ``error`` payload must not reach an artifact in any form.
 
-    A complete data line parses as JSON and takes a safe branch, so the raw
-    interpolation is reached mainly when the provider cut the payload. The
-    cut can fall inside an echoed credential, and no oversized body or
-    padding trick is needed: the provider just closes the connection at a
-    chosen offset.
+    The frame is now discarded at end of stream rather than dispatched, so
+    the cut payload no longer reaches the message interpolation at all and
+    the run is reported as truncated. The assertions stay because the
+    guarantee under test is the absence of the credential, not the route
+    the bytes would otherwise have taken.
     """
     config = make_config(tmp_path)
     chunks = [
@@ -2136,6 +2140,7 @@ def test_a_truncated_error_event_payload_does_not_leak_a_credential_prefix(
 
     failure = result.evidence.failure
     assert failure is not None
+    assert failure.category == FAILURE_STREAM_TRUNCATED
     prefixes = [API_KEY[:n] for n in range(_MIN_LEAKED_PREFIX_CHARS, len(API_KEY) + 1)]
     for prefix in prefixes:
         assert prefix not in failure.message, f"{len(prefix)} characters survived"
@@ -2287,3 +2292,245 @@ def test_a_whitespace_only_credential_does_not_crash_the_redactor(
     assert redact_text_for_dry_run("nothing to hide", "   ") == "nothing to hide"
     assert redact_text_for_dry_run("nothing to hide", "") == "nothing to hide"
     assert redact_text_for_dry_run("nothing to hide", None) == "nothing to hide"
+
+
+# --- Sixth review pass: terminal conditions and artifact bytes ---------------
+
+
+@pytest.mark.parametrize(
+    "failure_reason", ["network_error", "model_context_window_exceeded"]
+)
+def test_a_documented_failure_finish_reason_outranks_the_done_sentinel(
+    tmp_path: Path, failure_reason: str
+) -> None:
+    """Z.ai documents these next to the successful reasons, so both can arrive.
+
+    ``[DONE]`` says the transport finished, not that the generation did.
+    Letting the sentinel win would publish an aborted generation as a
+    successful measurement.
+
+    https://docs.z.ai/api-reference/llm/chat-completion
+    """
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "partial"}}]}),
+        sse(
+            {
+                "id": "c1",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": ""},
+                        "finish_reason": failure_reason,
+                    }
+                ],
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert result.evidence.success is False
+    assert result.evidence.stream_terminated_with_done is True
+    payload = assert_failure_artifacts(config, FAILURE_PROVIDER_ERROR)
+    assert payload["failure"]["provider_error_code"] == failure_reason
+    assert payload["finish_reason"] == failure_reason
+
+
+def test_a_failure_finish_reason_without_content_is_still_failure_shaped(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    chunks = [
+        sse(
+            {
+                "id": "c1",
+                "choices": [
+                    {"index": 0, "delta": {}, "finish_reason": "network_error"}
+                ],
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert result.evidence.success is False
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.category == FAILURE_PROVIDER_ERROR
+
+
+def test_a_failure_finish_reason_without_done_is_reported_as_the_provider_error(
+    tmp_path: Path,
+) -> None:
+    """The provider's own reason explains more than a generic truncation."""
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "partial"}}]}),
+        sse(
+            {
+                "id": "c1",
+                "choices": [
+                    {"index": 0, "delta": {}, "finish_reason": "network_error"}
+                ],
+            }
+        ),
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.category == FAILURE_PROVIDER_ERROR
+
+
+@pytest.mark.parametrize(
+    "terminal_reason", ["stop", "length", "tool_calls", "sensitive"]
+)
+def test_documented_successful_finish_reasons_still_terminate_cleanly(
+    tmp_path: Path, terminal_reason: str
+) -> None:
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "answer"}}]}),
+        sse(
+            {
+                "id": "c1",
+                "choices": [
+                    {"index": 0, "delta": {}, "finish_reason": terminal_reason}
+                ],
+            }
+        ),
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert result.evidence.success is True
+    assert result.evidence.finish_reason == terminal_reason
+
+
+def test_a_stream_cut_after_partial_content_is_truncated_not_successful(
+    tmp_path: Path,
+) -> None:
+    """A clean socket close mid-frame still loses bytes."""
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "half"}}]}),
+        b'data: {"id": "c1", "choices": [{"index": 0, "delta": {"content": " an',
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert result.evidence.success is False
+    assert result.evidence.stream_had_unterminated_event is True
+    assert_failure_artifacts(config, FAILURE_STREAM_TRUNCATED)
+
+
+def test_a_leading_byte_order_mark_does_not_lose_the_first_content_event(
+    tmp_path: Path,
+) -> None:
+    """Providers may prefix the body with a BOM; the answer must survive it."""
+    config = make_config(tmp_path)
+    chunks = [
+        "\ufeff".encode()
+        + sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "first"}}]}),
+        sse(
+            {
+                "id": "c1",
+                "choices": [{"index": 0, "delta": {"content": " second"}}],
+            }
+        ),
+        sse(
+            {
+                "id": "c1",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert result.evidence.success is True
+    assert result.response_text == "first second"
+
+
+@pytest.mark.parametrize("newline", ["\r\n", "\r", "\n"])
+def test_an_artifact_set_verifies_whatever_line_endings_the_answer_used(
+    tmp_path: Path, newline: str
+) -> None:
+    """Text mode rewrites newlines on the way in and on the way out.
+
+    Hashing the string and verifying a re-read string made a legitimate
+    CRLF answer look tampered with, because the read collapsed it back to
+    ``\\n`` and the digests stopped matching.
+    """
+    config = make_config(tmp_path)
+    answer = f"line one{newline}line two"
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": answer}}]}),
+        sse(
+            {
+                "id": "c1",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert result.evidence.success is True
+    assert artifact_set_is_complete(config.output_dir) is True
+    assert (config.output_dir / "response.txt").read_bytes() == answer.encode("utf-8")
+
+
+def test_a_tampered_artifact_is_still_rejected(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    run(config, glm_stream())
+
+    assert artifact_set_is_complete(config.output_dir) is True
+    (config.output_dir / "response.txt").write_bytes(b"replaced\r\n")
+
+    assert artifact_set_is_complete(config.output_dir) is False
+
+
+def test_the_attached_endpoint_form_is_sanitized_in_every_artifact(
+    tmp_path: Path,
+) -> None:
+    """``--endpoint=<url>`` is as ordinary as the separate form."""
+    endpoint = f"{ENDPOINT}?deployment=private-value"
+    config = make_config(
+        tmp_path,
+        endpoint=endpoint,
+        command_argv=(
+            "llmtracefx-optimizer",
+            "collect-api",
+            f"--endpoint={endpoint}",
+            "--api-key-env",
+            "ZAI_API_KEY",
+        ),
+    )
+
+    result, _ = run(config, glm_stream())
+
+    plan_command = list(result.evidence.plan.command)
+    assert f"--endpoint={endpoint}" not in plan_command
+    assert any(argument.startswith("--endpoint=") for argument in plan_command)
+    for path in sorted(config.output_dir.iterdir()):
+        assert "private-value" not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_the_separate_endpoint_form_is_still_sanitized(tmp_path: Path) -> None:
+    endpoint = f"{ENDPOINT}?deployment=private-value"
+    config = make_config(
+        tmp_path,
+        endpoint=endpoint,
+        command_argv=("llmtracefx-optimizer", "collect-api", "--endpoint", endpoint),
+    )
+
+    result, _ = run(config, glm_stream())
+
+    assert endpoint not in result.evidence.plan.command
+    for path in sorted(config.output_dir.iterdir()):
+        assert "private-value" not in path.read_text(encoding="utf-8"), path.name

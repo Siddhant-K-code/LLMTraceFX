@@ -7,6 +7,8 @@ tests inject a fake transport that replays recorded byte chunks.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -648,3 +650,132 @@ def test_a_percent_encoded_credential_is_refused_through_the_cli(
     assert credential not in captured.err
     assert credential not in captured.out
     assert not (tmp_path / "artifacts" / "request_plan.json").exists()
+
+
+# --- Sixth review pass: parse diagnostics never repeat a value ---------------
+
+_SENTINEL = "sentinel-not-a-real-credential-9137"
+
+
+def run_main(argv: list[str]) -> tuple[int, str, str]:
+    """Drive ``cli.main`` the way a shell does, capturing both streams."""
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code = 0
+    try:
+        with (
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            cli.main(argv)
+    except SystemExit as exit_error:
+        code = int(exit_error.code or 0)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "--api-key",
+        "--api_key",
+        "--apikey",
+        "--API-KEY",
+        "--token",
+        "--access-token",
+        "--bearer-token",
+        "--secret",
+        "--password",
+        "--credential",
+    ],
+)
+@pytest.mark.parametrize("attached", [False, True])
+def test_a_credential_flag_is_rejected_without_repeating_its_value(
+    tmp_path: Path, flag: str, attached: bool
+) -> None:
+    """argparse quotes an unrecognized argument back, value and all.
+
+    The credential is read from the environment and no flag accepts one,
+    so the flag is refused before argparse can format it into a message.
+    """
+    extra = [f"{flag}={_SENTINEL}"] if attached else [flag, _SENTINEL]
+
+    code, out, err = run_main(base_argv(tmp_path) + extra)
+
+    assert code == 2
+    assert _SENTINEL not in err
+    assert _SENTINEL not in out
+    assert flag.split("=")[0] in err
+    assert "--api-key-env" in err
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_the_env_var_flag_is_not_mistaken_for_a_credential_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--api-key-env`` names a variable, so it must keep working."""
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+
+    code, out, err = run_main(
+        base_argv(tmp_path, api_key_env="ZAI_API_KEY") + ["--dry-run"]
+    )
+
+    assert code == 0
+    assert err == ""
+    assert json.loads(out)["credential_env_var"] == "ZAI_API_KEY"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--unknown-flag", _SENTINEL],
+        [f"--unknown-flag={_SENTINEL}"],
+        ["--temperature", _SENTINEL],
+        ["--max-output-tokens", _SENTINEL],
+        ["--reasoning-effort", _SENTINEL],
+    ],
+)
+def test_no_parse_diagnostic_repeats_a_supplied_value(
+    tmp_path: Path, extra: list[str]
+) -> None:
+    """A value typed into the wrong option is still a value worth containing."""
+    code, out, err = run_main(base_argv(tmp_path) + extra)
+
+    assert code == 2
+    assert _SENTINEL not in err
+    assert _SENTINEL not in out
+    assert "error" in err
+
+
+def test_an_unknown_subcommand_value_is_not_echoed(tmp_path: Path) -> None:
+    code, out, err = run_main([_SENTINEL])
+
+    assert code == 2
+    assert _SENTINEL not in err
+    assert _SENTINEL not in out
+
+
+def test_a_valid_invocation_is_unaffected_by_the_rejection_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+
+    code, out, _ = run_main(base_argv(tmp_path) + ["--dry-run"])
+
+    assert code == 0
+    assert json.loads(out)["network_request_performed"] is False
+
+
+def test_a_secret_in_the_endpoint_query_is_not_echoed_by_a_parse_error(
+    tmp_path: Path,
+) -> None:
+    """The endpoint is a value like any other, so its query stays contained."""
+    endpoint = f"{ENDPOINT}?deployment={_SENTINEL}"
+    argv = base_argv(tmp_path)
+    argv[argv.index(ENDPOINT)] = endpoint
+
+    code, out, err = run_main(argv + ["--unknown-flag", "x"])
+
+    assert code == 2
+    assert _SENTINEL not in err
+    assert _SENTINEL not in out

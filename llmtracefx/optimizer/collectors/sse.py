@@ -7,13 +7,15 @@ therefore fed raw ``bytes`` and yields only whole, dispatched events.
 
 Framing follows the WHATWG event-stream rules that matter here:
 
+* one leading U+FEFF byte order mark is ignored, and only the first;
 * lines end with ``\\r\\n``, ``\\n`` or a lone ``\\r``;
 * a line starting with ``:`` is a comment (providers use these as
   keepalives) and never contributes to an event;
 * a field line is split on the first ``:``, with one optional leading
   space removed from the value;
 * ``data`` fields accumulate and are joined with ``\\n``;
-* a blank line dispatches the buffered event.
+* a blank line dispatches the buffered event, and end of stream is not a
+  blank line, so a frame left pending at EOF is discarded.
 
 Nothing here interprets the payload. JSON parsing, ``[DONE]`` handling
 and provider semantics belong to the collector so that a malformed
@@ -53,8 +55,8 @@ class SSEDecoder:
     comment_count: int = 0
     """Number of ``:``-prefixed comment/keepalive lines seen so far."""
 
-    dispatched_unterminated_event: bool = False
-    """True when ``close()`` had to flush an event with no trailing blank line."""
+    incomplete_event_discarded: bool = False
+    """True when the stream ended with a frame that was never dispatched."""
 
     _decoder: codecs.IncrementalDecoder = field(
         default_factory=lambda: codecs.getincrementaldecoder("utf-8")(errors="strict"),
@@ -65,32 +67,35 @@ class SSEDecoder:
     _event_type: str | None = field(default=None, repr=False)
     _last_event_id: str | None = field(default=None, repr=False)
     _closed: bool = field(default=False, repr=False)
+    _decoded_any_text: bool = field(default=False, repr=False)
 
     def feed(self, chunk: bytes) -> Iterator[SSEEvent]:
         """Decode ``chunk`` and yield every event completed by it."""
         if self._closed:
             raise SSEDecodeError("cannot feed a closed SSE decoder")
         try:
-            self._buffer += self._decoder.decode(chunk, False)
+            self._buffer += self._strip_leading_bom(self._decoder.decode(chunk, False))
         except UnicodeDecodeError as exc:
             raise SSEDecodeError(f"stream is not valid UTF-8: {exc}") from exc
         yield from self._drain_complete_lines()
 
     def close(self) -> Iterator[SSEEvent]:
-        """Finish decoding and yield any event still buffered.
+        """Finish decoding and discard any frame the stream left pending.
 
-        A well-behaved server ends the last event with a blank line. When
-        it does not, the buffered event is still dispatched (the payload
-        is complete as far as this layer can tell) and
-        ``dispatched_unterminated_event`` records that the framing was
-        irregular, so the collector can persist that fact instead of
-        hiding it.
+        Dispatch happens on a blank line, and end of stream is not one, so
+        an event still buffered here was cut off in transit and the
+        event-stream rules require discarding it. Dispatching it anyway
+        would let an unterminated ``data: [DONE]`` close a truncated
+        collection as though the provider had ended it cleanly, and would
+        hand the collector a half-received frame as if it were whole.
+        ``incomplete_event_discarded`` records the fact so the collector
+        can classify the run as truncated instead of hiding it.
         """
         if self._closed:
             return
         self._closed = True
         try:
-            self._buffer += self._decoder.decode(b"", True)
+            self._buffer += self._strip_leading_bom(self._decoder.decode(b"", True))
         except UnicodeDecodeError as exc:
             raise SSEDecodeError(
                 f"stream ended mid-character and is not valid UTF-8: {exc}"
@@ -98,14 +103,30 @@ class SSEDecoder:
 
         yield from self._drain_complete_lines()
         if self._buffer:
-            trailing = self._buffer
+            # A line with no terminator: the stream stopped mid-line.
             self._buffer = ""
-            self._consume_line(trailing)
+            self.incomplete_event_discarded = True
         if self._data_lines:
-            self.dispatched_unterminated_event = True
-            event = self._build_event()
-            if event is not None:
-                yield event
+            self.incomplete_event_discarded = True
+            self._data_lines = []
+            self._event_type = None
+
+    def _strip_leading_bom(self, text: str) -> str:
+        """Drop one U+FEFF at the very start of the stream, and only there.
+
+        The UTF-8 incremental decoder keeps the byte order mark, so without
+        this the first field name becomes ``\\ufeffdata``, which is not
+        ``data``, and the whole first event is silently dropped. The mark
+        may also arrive split across chunks, which is why the test is on
+        the first decoded character rather than on the first chunk's bytes.
+        A U+FEFF anywhere later is ordinary content and is left alone.
+        """
+        if self._decoded_any_text or not text:
+            return text
+        self._decoded_any_text = True
+        if text.startswith("\ufeff"):
+            return text[1:]
+        return text
 
     def _drain_complete_lines(self) -> Iterator[SSEEvent]:
         while True:
