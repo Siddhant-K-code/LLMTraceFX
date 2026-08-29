@@ -949,7 +949,12 @@ and are never mixed into a single unlabelled number.
   `finish_reason_classification` holds `terminal`, `failure` or
   `unrecognized`, and `finish_reason_code` holds the documented spelling
   this collector recognized. The code is drawn from a fixed set defined in
-  this repository rather than from provider bytes.
+  this repository rather than from provider bytes. A reported failure is
+  sticky: nothing in the wire format stops a provider sending a second
+  `finish_reason`, and last-write-wins would let a trailing `stop` erase an
+  earlier `network_error` and publish an aborted generation as a success with
+  a full latency timeline. Two ordinary terminal reasons still take the later
+  one.
 
 #### Privacy guarantees
 
@@ -990,6 +995,24 @@ and are never mixed into a single unlabelled number.
   hashed and never included in the reconstructed command. `HTTPRequest`
   overrides `repr` so a traceback cannot surface the `Authorization` header.
   Only header *names* are persisted.
+- **A credential pasted into the name slot is contained as well.** The refusal
+  for `--api-key` points the caller at `--api-key-env`, and the mechanical
+  response is to keep the value and change the flag, which puts the credential
+  exactly where a variable name is expected. Two independent rules apply.
+  First, the value must be a conventional exported variable name, uppercase
+  with digits and underscores, which rejects the `sk-`, `sk_live_` and `ghp_`
+  shapes real keys take; the refusal never repeats the rejected value. Second,
+  a name is only treated as a name when the environment defines it, which is
+  the one thing a caller cannot fake and which catches an all-uppercase key
+  such as an AWS access key id. An unproven name is replaced by `[REDACTED]`
+  in `credential_env_var` and in the reconstructed command, in both the
+  separate and the `--flag=value` spelling. This is the same rule the parse
+  diagnostics use one level down: syntax is not evidence, so the authoritative
+  source is asked instead.
+- The variable name is not part of the request identity hash. It does not
+  change the bytes on the wire, and hashing it would persist a derivation of
+  a value that may be the credential itself. The missing-variable diagnostic
+  does not name the variable either, for the same reason.
 - Collection aborts before any request if the credential value appears in the
   run id, endpoint, provider label, model id, model revision, prompt, system
   prompt, any provider extension string or command arguments. The check also

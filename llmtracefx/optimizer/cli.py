@@ -309,6 +309,21 @@ def _api_collection_config(args: argparse.Namespace) -> APICollectionConfig:
     )
 
 
+def _api_detail(args: argparse.Namespace, exc: BaseException) -> str:
+    """Render a collector diagnostic with no caller-supplied value in it.
+
+    Two independent scrubs, because they cover different gaps. The
+    credential scrub catches a key that reached the message through the
+    endpoint, and it is keyed on the resolved environment value, so it does
+    nothing when the caller put the credential in the ``--api-key-env``
+    name slot and no such variable exists. The argv scrub covers exactly
+    that case, because it replaces every token the caller supplied
+    regardless of whether it names anything.
+    """
+    credential = os.environ.get(args.api_key_env, "").strip() or None
+    return _scrub_argv_values(redact_text_for_dry_run(str(exc), credential))
+
+
 def _cmd_collect_api(args: argparse.Namespace) -> int:
     try:
         config = _api_collection_config(args)
@@ -316,10 +331,10 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
         # Config failure is the most likely moment for a key pasted into the
         # endpoint to surface, so the diagnostic is scrubbed before it is
         # printed even though no request was attempted.
-        detail = redact_text_for_dry_run(
-            str(exc), os.environ.get(args.api_key_env, "").strip() or None
+        print(
+            f"Failed to configure API collection: {_api_detail(args, exc)}",
+            file=sys.stderr,
         )
-        print(f"Failed to configure API collection: {detail}", file=sys.stderr)
         return 1
 
     if args.dry_run:
@@ -327,14 +342,20 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
         try:
             assert_credential_not_embedded(config, os.environ)
         except OpenAIStreamCollectorError as exc:
-            detail = redact_text_for_dry_run(str(exc), credential.strip() or None)
-            print(f"Failed to configure API collection: {detail}", file=sys.stderr)
+            print(
+                f"Failed to configure API collection: {_api_detail(args, exc)}",
+                file=sys.stderr,
+            )
             return 1
-        plan = build_request_plan(config)
+        plan = build_request_plan(config, environ=os.environ)
         payload = {
             "dry_run": True,
             "network_request_performed": False,
-            "credential_env_var": config.credential_env_var,
+            # The plan decides what may be written down. A name the
+            # environment does not define was never proven to be a name and
+            # may be the credential, so the plan masks it and the payload
+            # follows rather than reaching around it to the raw config.
+            "credential_env_var": plan.credential_env_var,
             "credential_env_var_present": bool(credential.strip()),
             "plan": plan.to_dict(),
         }
@@ -354,7 +375,9 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
     try:
         result = collect_openai_stream(config, transport=UrllibStreamingTransport())
     except (OSError, OpenAIStreamCollectorError) as exc:
-        print(f"Failed to collect API evidence: {exc}", file=sys.stderr)
+        print(
+            f"Failed to collect API evidence: {_api_detail(args, exc)}", file=sys.stderr
+        )
         return 1
 
     print(f"API experiment record written to {config.output_dir / 'record.json'}")

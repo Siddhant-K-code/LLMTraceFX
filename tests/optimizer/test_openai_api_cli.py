@@ -137,7 +137,9 @@ def test_dry_run_performs_no_network_request(
     payload = json.loads(capsys.readouterr().out)
     assert payload["dry_run"] is True
     assert payload["network_request_performed"] is False
-    assert payload["credential_env_var"] == "ZAI_API_KEY"
+    # The variable is unset here, so nothing proved this string is a
+    # variable name rather than a credential pasted into the name slot.
+    assert payload["credential_env_var"] == "[REDACTED]"
     assert payload["credential_env_var_present"] is False
     assert payload["plan"]["model_id"] == "glm-5.3"
     assert payload["plan"]["endpoint_origin"] == "https://api.z.ai"
@@ -358,7 +360,9 @@ def test_missing_credential_exits_non_zero_without_artifacts(
     exit_code = invoke(base_argv(tmp_path))
 
     assert exit_code == 1
-    assert "ZAI_API_KEY is not set" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "named by --api-key-env is not set" in error
+    assert "ZAI_API_KEY" not in error
     assert not (tmp_path / "artifacts").exists()
 
 
@@ -721,7 +725,7 @@ def test_the_env_var_flag_is_not_mistaken_for_a_credential_flag(
 
     assert code == 0
     assert err == ""
-    assert json.loads(out)["credential_env_var"] == "ZAI_API_KEY"
+    assert json.loads(out)["credential_env_var"] == "[REDACTED]"
 
 
 @pytest.mark.parametrize(
@@ -1175,3 +1179,103 @@ def test_a_credential_flag_followed_by_an_ordinary_flag_still_redacts_it(
     argv = json.loads(out)["command"]["argv"]
     assert "-Ab9x-secret-value" not in argv
     assert argv == ["llama-server", "--api-key", "[REDACTED]", "--port", "8080"]
+
+
+# --- Tenth review pass -------------------------------------------------------
+
+
+# Uppercase, so it satisfies the conventional-name rule and only the
+# presence rule can stop it. That is the harder of the two vectors.
+NAME_SLOT_KEY = "AKIA1234567890ABCDEF"
+# The shapes real keys take, all rejected by the name rule.
+KEY_SHAPED_NAMES = [
+    "sk-3f0a1c2b-9d8e-7f6a-5b4c",
+    "sk_live_9f2b7d41ca6e4b8f",
+    "ghp_16C7e42F292c6912E7710c838347Ae178B4a",
+]
+
+
+def _artifact_text(root: Path) -> str:
+    if not root.exists():
+        return ""
+    return "".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    )
+
+
+@pytest.mark.parametrize("name", KEY_SHAPED_NAMES)
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_a_credential_in_the_name_slot_never_reaches_a_stream_or_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, dry_run: bool
+) -> None:
+    """Swapping --api-key for --api-key-env must not become the leak.
+
+    The refusal for ``--api-key`` tells the caller to name a variable
+    instead. The mechanical response is to keep the value and change the
+    flag, which puts the credential where the name goes.
+    """
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    argv = base_argv(tmp_path, api_key_env=name)
+    if dry_run:
+        argv = argv + ["--dry-run"]
+
+    code, out, err = run_main(argv)
+
+    assert code == 1
+    assert name not in out
+    assert name not in err
+    assert name not in _artifact_text(tmp_path / "artifacts")
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_an_uppercase_credential_in_the_name_slot_is_contained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dry_run: bool
+) -> None:
+    """The shape rule cannot catch this one, so presence must."""
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    argv = base_argv(tmp_path, api_key_env=NAME_SLOT_KEY)
+    if dry_run:
+        argv = argv + ["--dry-run"]
+
+    _, out, err = run_main(argv)
+
+    assert NAME_SLOT_KEY not in out
+    assert NAME_SLOT_KEY not in err
+    assert NAME_SLOT_KEY not in _artifact_text(tmp_path / "artifacts")
+
+
+def test_the_dry_run_plan_masks_an_unproven_name_in_the_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("ZAI_API_KEY", raising=False)
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+
+    code, out, _ = run_main(
+        base_argv(tmp_path, api_key_env=NAME_SLOT_KEY) + ["--dry-run"]
+    )
+
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["credential_env_var"] == "[REDACTED]"
+    assert payload["credential_env_var_present"] is False
+    assert NAME_SLOT_KEY not in json.dumps(payload)
+
+
+def test_a_set_variable_is_still_named_in_the_dry_run_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Containment must not cost the ordinary case its readability."""
+    monkeypatch.setenv("ZAI_API_KEY", "sentinel-value")
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+
+    code, out, _ = run_main(base_argv(tmp_path) + ["--dry-run"])
+
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["credential_env_var"] == "ZAI_API_KEY"
+    assert payload["credential_env_var_present"] is True
+    assert "sentinel-value" not in json.dumps(payload)

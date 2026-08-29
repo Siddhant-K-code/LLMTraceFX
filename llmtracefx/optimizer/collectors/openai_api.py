@@ -61,7 +61,7 @@ import re
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
@@ -166,10 +166,17 @@ _MAX_ERROR_BODY_BYTES = 64 * 1024
 _MAX_PERSISTED_MESSAGE_CHARS = 600
 _MAX_PERSISTED_HEADER_CHARS = 128
 _REDACTED = "[REDACTED]"
+_ENV_VAR_OPTION = "--api-key-env"
 _MIN_ENCODED_CREDENTIAL_CHARS = 6
 
 _PROVIDER_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_ENV_VAR_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+#: An exported credential variable name. Deliberately narrower than POSIX,
+#: which also permits lowercase. The mechanical response to the ``--api-key``
+#: refusal is to swap the flag for ``--api-key-env`` and keep the value, which
+#: puts the credential in the name slot. Requiring the universal uppercase
+#: convention rejects the shapes keys actually take, ``sk-...`` and
+#: ``sk_live_...``, before any of them can reach a diagnostic or an artifact.
+_ENV_VAR_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 _SECRETISH_QUERY_KEY = re.compile(
     r"(?i)(key|token|secret|password|passwd|credential|signature|sig|auth)"
 )
@@ -517,9 +524,14 @@ class APICollectionConfig:
                 "system_prompt must be non-empty when provided"
             )
         if not _ENV_VAR_PATTERN.match(self.credential_env_var or ""):
+            # The rejected value is never echoed. It reached this branch by
+            # not being a variable name, and the reason it usually is not is
+            # that it is the credential itself.
             raise OpenAIStreamCollectorError(
-                "credential_env_var must be a valid environment variable name, "
-                f"got {self.credential_env_var!r}"
+                "the value of --api-key-env must be an exported environment "
+                "variable name in the conventional uppercase form, such as "
+                "ZAI_API_KEY, and must not be the credential itself; the "
+                "rejected value is not repeated here"
             )
         if not self.command_argv or not all(
             isinstance(item, str) and item for item in self.command_argv
@@ -1022,7 +1034,11 @@ def _config_identity_hash(config: APICollectionConfig) -> str:
             "endpoint_query_identity": _normalized_query_identity(parts.query),
             "model_id": config.model_id,
             "model_revision": config.model_revision,
-            "credential_env_var": config.credential_env_var,
+            # The variable name is deployment plumbing, not request identity.
+            # Two runs differing only in which variable held the key issue
+            # byte-identical requests, and hashing a value that may be the
+            # credential itself would persist a derivation of a secret this
+            # collector promises never to hash.
             "request_parameters": _core_request_parameters(config),
             "provider_extensions": config.extensions.to_request_fields(),
             "request_timeout_seconds": config.request_timeout_seconds,
@@ -1056,7 +1072,54 @@ def _endpoint_for_command(endpoint: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
-def _sanitized_command(config: APICollectionConfig) -> tuple[str, ...]:
+def _persistable_env_var(name: str, environ: Mapping[str, str] | None) -> str:
+    """Persist the variable name only once the environment proves it is one.
+
+    ``--api-key-env`` takes a name, but the mechanical response to the
+    ``--api-key`` refusal is to swap the flag and keep the value, which puts
+    the credential in the name slot. The uppercase shape rule rejects the
+    common key spellings, and an all-uppercase key such as an AWS access key
+    id still passes it. What cannot be faked is presence: a name the
+    environment defines is a real exported variable, so it is safe to write
+    down. A name the environment does not define was never proven to be a
+    name, so it is treated as caller-supplied untrusted text, exactly as an
+    argument token is treated as a value until the parser vouches for it.
+    """
+    source = os.environ if environ is None else environ
+    return name if name in source else _REDACTED
+
+
+def _mask_option_value(
+    arguments: Sequence[str], option: str, replacement: str
+) -> list[str]:
+    """Replace the value of one option in both of its spellings.
+
+    Once a known option consumes the next token that token is its value,
+    whatever it looks like, so it is replaced unconditionally rather than
+    being matched against the raw string.
+    """
+    attached = f"{option}="
+    masked: list[str] = []
+    expect_value = False
+    for argument in arguments:
+        if expect_value:
+            expect_value = False
+            masked.append(replacement)
+            continue
+        if argument == option:
+            expect_value = True
+            masked.append(argument)
+            continue
+        if argument.startswith(attached):
+            masked.append(f"{attached}{replacement}")
+            continue
+        masked.append(argument)
+    return masked
+
+
+def _sanitized_command(
+    config: APICollectionConfig, *, env_var_display: str
+) -> tuple[str, ...]:
     """Replace the raw endpoint wherever it appears in the reconstruction.
 
     Matching whole arguments only would sanitize ``--endpoint <url>`` and
@@ -1065,19 +1128,28 @@ def _sanitized_command(config: APICollectionConfig) -> tuple[str, ...]:
     replacement covers both spellings and any other reconstruction format
     without having to enumerate them, and the replacement is the same URL
     with its query values masked, so it stays a faithful command.
+
+    The credential variable name is masked on the same terms the plan uses:
+    if the environment did not vouch for it, it may be the credential, and
+    the reconstructed command is an artifact like any other.
     """
+    arguments = list(config.command_argv)
     safe_endpoint = _endpoint_for_command(config.endpoint)
-    if safe_endpoint == config.endpoint:
-        return tuple(config.command_argv)
-    return tuple(
-        argument.replace(config.endpoint, safe_endpoint)
-        for argument in config.command_argv
-    )
+    if safe_endpoint != config.endpoint:
+        arguments = [
+            argument.replace(config.endpoint, safe_endpoint) for argument in arguments
+        ]
+    if env_var_display != config.credential_env_var:
+        arguments = _mask_option_value(arguments, _ENV_VAR_OPTION, env_var_display)
+    return tuple(arguments)
 
 
-def build_request_plan(config: APICollectionConfig) -> RequestPlan:
+def build_request_plan(
+    config: APICollectionConfig, *, environ: Mapping[str, str] | None = None
+) -> RequestPlan:
     """Describe the request without sending it and without any secret."""
     parts = parse_endpoint(config.endpoint)
+    env_var_display = _persistable_env_var(config.credential_env_var, environ)
     messages = tuple(
         MessageDigest(
             role=message["role"],
@@ -1097,14 +1169,14 @@ def build_request_plan(config: APICollectionConfig) -> RequestPlan:
         ),
         model_id=config.model_id,
         model_revision=config.model_revision,
-        credential_env_var=config.credential_env_var,
+        credential_env_var=env_var_display,
         credential_header_name="Authorization",
         header_names=("Accept", "Authorization", "Content-Type"),
         messages=messages,
         request_parameters=_core_request_parameters(config),
         provider_extensions=config.extensions.to_request_fields(),
         request_timeout_seconds=float(config.request_timeout_seconds),
-        command=_sanitized_command(config),
+        command=_sanitized_command(config, env_var_display=env_var_display),
         config_hash=_config_identity_hash(config),
         workload_hash=sha256_text(config.prompt),
     )
@@ -1635,13 +1707,25 @@ class _StreamAccumulator:
             if normalized in _FAILURE_FINISH_REASONS:
                 self.finish_outcome = _FINISH_FAILURE
                 self.finish_reason_code = normalized
+                self.finish_reason = redact.identifier(finish_reason)
+            elif self.finish_outcome == _FINISH_FAILURE:
+                # A failure the provider already reported is not undone by a
+                # later chunk. Streams carry one finish reason per choice in
+                # practice, but nothing in the wire format prevents a second,
+                # and last-write-wins would let a trailing "stop" erase
+                # "network_error" and publish an aborted generation as a
+                # success with a full latency timeline. The first failure is
+                # the outcome, so it is kept for both the code and the
+                # persisted text, which therefore always agree.
+                pass
             elif normalized in _TERMINAL_FINISH_REASONS:
                 self.finish_outcome = _FINISH_TERMINAL
                 self.finish_reason_code = normalized
+                self.finish_reason = redact.identifier(finish_reason)
             else:
                 self.finish_outcome = _FINISH_UNRECOGNIZED
                 self.finish_reason_code = None
-            self.finish_reason = redact.identifier(finish_reason)
+                self.finish_reason = redact.identifier(finish_reason)
 
         delta = choice.get("delta")
         if delta is not None and not isinstance(delta, dict):
@@ -1969,10 +2053,13 @@ def _error_code(error: Mapping[str, Any]) -> str | None:
 def _resolve_credential(config: APICollectionConfig, environ: Mapping[str, str]) -> str:
     value = environ.get(config.credential_env_var)
     if value is None:
+        # The name is not repeated. A name absent from the environment was
+        # never proven to be a name, and the likeliest reason it is absent is
+        # that the caller passed the credential in the name slot.
         raise OpenAIStreamCollectorError(
-            f"environment variable {config.credential_env_var} is not set; "
-            "export the API key there (it is never accepted as a command "
-            "argument and never written to any artifact)"
+            "the environment variable named by --api-key-env is not set in "
+            "this environment; export the API key there (it is never accepted "
+            "as a command argument and never written to any artifact)"
         )
     # Strip first. A key read from a file or a ``.env`` routinely carries a
     # trailing newline, and a newline in a header value makes
@@ -2255,7 +2342,7 @@ def collect_openai_stream(
     credential = _resolve_credential(config, resolved_environ)
     _assert_credential_not_embedded(credential, config)
     redact = _Redactor(credential)
-    plan = build_request_plan(config)
+    plan = build_request_plan(config, environ=resolved_environ)
 
     request = HTTPRequest(
         url=config.endpoint,

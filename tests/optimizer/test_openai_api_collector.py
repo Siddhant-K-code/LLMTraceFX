@@ -235,7 +235,8 @@ def run(
         ("model_id", "  ", "model_id"),
         ("prompt", "", "prompt must be non-empty"),
         ("system_prompt", "", "system_prompt must be non-empty"),
-        ("credential_env_var", "9BAD", "credential_env_var"),
+        ("credential_env_var", "9BAD", "--api-key-env"),
+        ("credential_env_var", "lower_case_name", "--api-key-env"),
         ("max_output_tokens", 0, "max_output_tokens"),
         ("max_output_tokens", True, "max_output_tokens"),
         ("seed", 1.5, "seed must be an integer"),
@@ -317,7 +318,7 @@ def test_request_plan_records_identity_without_the_credential(tmp_path: Path) ->
 
     assert plan.endpoint_origin == "https://api.z.ai"
     assert plan.endpoint_path == "/api/paas/v4/chat/completions"
-    assert plan.credential_env_var == "ZAI_API_KEY"
+    assert plan.credential_env_var == "[REDACTED]"
     assert plan.credential_header_name == "Authorization"
     assert "Authorization" in plan.header_names
     assert plan.request_parameters["max_tokens"] == 256
@@ -325,7 +326,12 @@ def test_request_plan_records_identity_without_the_credential(tmp_path: Path) ->
         "reasoning_effort": "high",
         "thinking": {"clear_thinking": False},
     }
-    assert tuple(plan.command) == config.command_argv
+    # The command matches the invocation apart from the credential variable
+    # name, which is masked because nothing here proved it is a name.
+    assert tuple(plan.command) == tuple(
+        "[REDACTED]" if argument == "ZAI_API_KEY" else argument
+        for argument in config.command_argv
+    )
     assert API_KEY not in serialized
     # Prompts are hashed, never copied.
     assert "You are terse." not in serialized
@@ -407,7 +413,9 @@ def test_glm_request_profiles_reach_the_wire(
 def test_missing_credential_variable_is_an_explicit_error(tmp_path: Path) -> None:
     config = make_config(tmp_path)
 
-    with pytest.raises(OpenAIStreamCollectorError, match="ZAI_API_KEY is not set"):
+    with pytest.raises(
+        OpenAIStreamCollectorError, match="named by --api-key-env is not set"
+    ):
         collect_openai_stream(config, transport=ExplodingTransport(), environ={})
 
     assert not config.output_dir.exists()
@@ -848,6 +856,30 @@ def test_a_missing_reasoning_token_count_leaves_the_visible_rate_null(
     assert result.evidence.usage.reasoning_tokens is None
     assert statistics.provider_visible_completion_tokens_per_second is None
     assert statistics.provider_completion_tokens_per_second is not None
+
+
+def test_reasoning_tokens_exceeding_completion_tokens_leaves_the_rate_null(
+    tmp_path: Path,
+) -> None:
+    """An inconsistent provider report yields no rate, not a negative one.
+
+    ``completion_tokens`` is documented as including reasoning tokens, so
+    a reasoning count above it is a provider bug. Subtracting anyway would
+    publish a negative tokens-per-second, which reads as evidence.
+    """
+    config = make_config(tmp_path)
+    usage = {
+        "prompt_tokens": 5,
+        "completion_tokens": 4,
+        "total_tokens": 9,
+        "completion_tokens_details": {"reasoning_tokens": 40},
+    }
+
+    result, _ = run(config, glm_stream(content_parts=("a", "b", "c"), usage=usage))
+
+    statistics = result.evidence.statistics
+    assert result.evidence.usage.reasoning_tokens == 40
+    assert statistics.provider_visible_completion_tokens_per_second is None
 
 
 def test_without_reasoning_deltas_the_two_windows_are_identical(
@@ -3027,3 +3059,187 @@ def test_a_fragmented_event_is_timed_by_the_chunk_that_completed_it(
     assert len(content) == 1
     assert result.evidence.timeline.first_body_chunk_offset_ms is not None
     assert content[0].offset_ms > result.evidence.timeline.first_body_chunk_offset_ms
+
+
+# --- Tenth review pass -------------------------------------------------------
+
+
+def _finish_chunk(reason: str) -> bytes:
+    return sse({"choices": [{"index": 0, "delta": {}, "finish_reason": reason}]})
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        ("network_error", "stop"),
+        ("network_error", "length"),
+        ("model_context_window_exceeded", "stop"),
+        ("stop", "network_error"),
+    ],
+)
+def test_a_later_finish_reason_does_not_erase_a_reported_failure(
+    tmp_path: Path, order: tuple[str, str]
+) -> None:
+    """Failure wins regardless of which chunk carried it.
+
+    Nothing in the wire format stops a provider sending a second
+    ``finish_reason``. Last write wins would let a trailing ``stop`` erase
+    ``network_error`` and publish an aborted generation as a success with a
+    full latency timeline, which is the outcome the terminal-condition
+    check exists to prevent.
+    """
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"choices": [{"index": 0, "delta": {"content": "partial answ"}}]}),
+        *(_finish_chunk(reason) for reason in order),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, FakeResponse(chunks))
+
+    assert result.record.outcome.success is False
+    assert result.evidence.finish_reason_code in _FAILURE_ORDER
+    assert result.evidence.finish_reason_classification == "failure"
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.category == FAILURE_PROVIDER_ERROR
+
+
+_FAILURE_ORDER = {"network_error", "model_context_window_exceeded"}
+
+
+def test_the_persisted_finish_reason_agrees_with_the_classified_code(
+    tmp_path: Path,
+) -> None:
+    """The evidence must not show ``stop`` next to a failure code."""
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"choices": [{"index": 0, "delta": {"content": "partial"}}]}),
+        _finish_chunk("network_error"),
+        _finish_chunk("stop"),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, FakeResponse(chunks))
+
+    assert result.evidence.finish_reason == "network_error"
+    assert result.evidence.finish_reason_code == "network_error"
+
+
+def test_two_terminal_reasons_still_take_the_later_one(tmp_path: Path) -> None:
+    """Only a failure is sticky, so ordinary streams are unaffected."""
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"choices": [{"index": 0, "delta": {"content": "answer"}}]}),
+        _finish_chunk("length"),
+        _finish_chunk("stop"),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, FakeResponse(chunks))
+
+    assert result.record.outcome.success is True
+    assert result.evidence.finish_reason_code == "stop"
+
+
+# The credential in the name slot. Uppercase so it passes the shape rule and
+# only the presence rule can stop it, which is the harder of the two cases.
+NAME_SLOT_CREDENTIAL = "AKIA1234567890ABCDEF"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "sk-3f0a1c2b-9d8e-7f6a-5b4c",
+        "sk_live_9f2b7d41ca6e4b8f",
+        "zai_api_key",
+        "9BAD",
+        "has space",
+        "WITH-HYPHEN",
+        "",
+    ],
+)
+def test_a_name_that_is_not_a_conventional_variable_is_refused_silently(
+    tmp_path: Path, name: str
+) -> None:
+    """The rejected value is never repeated, because it may be the key."""
+    with pytest.raises(OpenAIStreamCollectorError) as raised:
+        make_config(tmp_path, credential_env_var=name)
+
+    message = str(raised.value)
+    assert "--api-key-env" in message
+    if name:
+        assert name not in message
+
+
+def test_an_unproven_variable_name_is_masked_in_the_plan(tmp_path: Path) -> None:
+    """Presence is the only thing a caller cannot fake.
+
+    An uppercase credential passes the shape rule, so the plan falls back
+    to asking the environment. A name the environment does not define was
+    never proven to be a name.
+    """
+    config = make_config(tmp_path, credential_env_var=NAME_SLOT_CREDENTIAL)
+
+    plan = build_request_plan(config, environ={})
+
+    assert plan.credential_env_var == "[REDACTED]"
+    assert NAME_SLOT_CREDENTIAL not in plan.to_json()
+
+
+def test_a_proven_variable_name_is_persisted(tmp_path: Path) -> None:
+    """A real exported variable is not a secret and stays readable."""
+    config = make_config(tmp_path, credential_env_var="ZAI_API_KEY")
+
+    plan = build_request_plan(config, environ={"ZAI_API_KEY": "value"})
+
+    assert plan.credential_env_var == "ZAI_API_KEY"
+
+
+@pytest.mark.parametrize("attached", [False, True])
+def test_an_unproven_name_is_masked_in_both_command_spellings(
+    tmp_path: Path, attached: bool
+) -> None:
+    argv = (
+        ("llmtracefx-optimizer", "collect-api", f"--api-key-env={NAME_SLOT_CREDENTIAL}")
+        if attached
+        else (
+            "llmtracefx-optimizer",
+            "collect-api",
+            "--api-key-env",
+            NAME_SLOT_CREDENTIAL,
+        )
+    )
+    config = make_config(
+        tmp_path, credential_env_var=NAME_SLOT_CREDENTIAL, command_argv=argv
+    )
+
+    plan = build_request_plan(config, environ={})
+
+    assert NAME_SLOT_CREDENTIAL not in plan.to_json()
+    assert "[REDACTED]" in " ".join(plan.command)
+
+
+def test_the_variable_name_is_not_part_of_request_identity(tmp_path: Path) -> None:
+    """Two runs differing only in the variable issue identical requests.
+
+    Hashing the name would also persist a derivation of a value that may be
+    the credential, which this collector promises never to hash.
+    """
+    first = build_request_plan(
+        make_config(tmp_path, credential_env_var="ZAI_API_KEY"), environ={}
+    )
+    second = build_request_plan(
+        make_config(tmp_path, credential_env_var="OTHER_PROVIDER_KEY"), environ={}
+    )
+
+    assert first.config_hash == second.config_hash
+
+
+def test_a_missing_variable_is_reported_without_naming_it(tmp_path: Path) -> None:
+    config = make_config(tmp_path, credential_env_var="ZAI_API_KEY")
+
+    with pytest.raises(OpenAIStreamCollectorError) as raised:
+        collect_openai_stream(config, transport=ExplodingTransport(), environ={})
+
+    assert "ZAI_API_KEY" not in str(raised.value)
+    assert not config.output_dir.exists()
