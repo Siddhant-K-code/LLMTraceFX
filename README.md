@@ -668,9 +668,19 @@ GitHub Actions runs three jobs on every pull request and on pushes to `main`
 
 | Job | What it does |
 | --- | --- |
-| `test` | Full `pytest` suite on Python 3.10, 3.11, 3.12 and 3.13 |
+| `test` | Full `pytest` suite on Python 3.10, 3.11, 3.12 and 3.13 on Linux, plus 3.10 and 3.13 on macOS |
 | `quality ratchet` | `ruff check`, `black`, `isort` and `mypy` on changed files only |
 | `build` | `uv build`, then installs the wheel into a clean environment and imports it |
+
+macOS is included because GitHub's macOS runners are Apple Silicon. MLX
+collection is gated on Darwin plus arm64 in
+`llmtracefx/optimizer/collectors/mlx.py`, and `optimizer/manifest.py` records
+platform details, so a Linux-only matrix never executes those branches.
+
+A separate `.github/workflows/codeql.yml` runs CodeQL static analysis for Python
+on pull requests, pushes to `main`, and weekly. It reports into the repository
+Security tab rather than blocking pull requests. `.github/dependabot.yml` keeps
+Python dependencies and the SHA-pinned GitHub Actions up to date.
 
 The quality job checks only the Python files a change touches, rather than the
 whole repository. Older modules still carry lint and typing debt, so a repo-wide
