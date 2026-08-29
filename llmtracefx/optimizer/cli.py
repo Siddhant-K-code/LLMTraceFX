@@ -52,8 +52,10 @@ from .collectors.openai_api import (
     OpenAIStreamCollectorError,
     ProviderExtensions,
     UrllibStreamingTransport,
+    assert_credential_not_embedded,
     build_request_plan,
     collect_openai_stream,
+    redact_text_for_dry_run,
 )
 from .doctor.speculative import diagnose_speculative_regression
 from .manifest import collect_environment_manifest
@@ -309,21 +311,36 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
     try:
         config = _api_collection_config(args)
     except (OSError, UnicodeError, OpenAIStreamCollectorError) as exc:
-        print(f"Failed to configure API collection: {exc}", file=sys.stderr)
+        # Config failure is the most likely moment for a key pasted into the
+        # endpoint to surface, so the diagnostic is scrubbed before it is
+        # printed even though no request was attempted.
+        detail = redact_text_for_dry_run(
+            str(exc), os.environ.get(args.api_key_env, "").strip() or None
+        )
+        print(f"Failed to configure API collection: {detail}", file=sys.stderr)
         return 1
 
     if args.dry_run:
+        credential = os.environ.get(config.credential_env_var, "")
+        try:
+            assert_credential_not_embedded(config, os.environ)
+        except OpenAIStreamCollectorError as exc:
+            detail = redact_text_for_dry_run(str(exc), credential.strip() or None)
+            print(f"Failed to configure API collection: {detail}", file=sys.stderr)
+            return 1
         plan = build_request_plan(config)
         payload = {
             "dry_run": True,
             "network_request_performed": False,
             "credential_env_var": config.credential_env_var,
-            "credential_env_var_present": bool(
-                os.environ.get(config.credential_env_var, "").strip()
-            ),
+            "credential_env_var_present": bool(credential.strip()),
             "plan": plan.to_dict(),
         }
         text = json.dumps(payload, indent=2, allow_nan=False)
+        # Defence in depth behind the check above: the rendered document is
+        # scrubbed rather than trusting every field to have been sanitized
+        # individually.
+        text = redact_text_for_dry_run(text, credential.strip() or None)
         print(text)
         try:
             atomic_write_text(config.output_dir / "request_plan.json", text + "\n")

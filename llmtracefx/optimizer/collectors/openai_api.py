@@ -66,7 +66,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
 from typing import Any, Protocol
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from ..manifest import collect_environment_manifest
 from ..schema import (
@@ -93,6 +93,8 @@ from ._shared import (
 from .sse import SSEDecodeError, SSEDecoder, SSEEvent
 
 API_EVIDENCE_SCHEMA_VERSION = "1"
+ARTIFACT_MANIFEST_NAME = "artifacts.json"
+ARTIFACT_MANIFEST_SCHEMA_VERSION = "1"
 
 RUNTIME_NAME = "openai-compatible-api"
 """``RuntimeInfo.name`` for every record this collector writes."""
@@ -116,6 +118,14 @@ FAILURE_CONNECTION = "connection"
 FAILURE_STREAM_DECODE = "stream_decode"
 FAILURE_PROVIDER_ERROR = "provider_error_payload"
 FAILURE_MISSING_CONTENT = "missing_content"
+FAILURE_STREAM_TRUNCATED = "stream_truncated"
+
+# Terminal ``finish_reason`` values. A stream that stops without one of
+# these and without ``[DONE]`` was cut short, however much content it
+# already delivered.
+_TERMINAL_FINISH_REASONS = frozenset(
+    {"stop", "length", "content_filter", "tool_calls", "function_call"}
+)
 
 _EVENT_KIND_CONTENT = "content"
 _EVENT_KIND_REASONING = "reasoning"
@@ -245,6 +255,7 @@ class _UrllibResponse:
         self._raw = raw
         self._status_code = status_code
         self._headers = headers
+        self._bytes_read = 0
 
     @property
     def status_code(self) -> int:
@@ -254,10 +265,29 @@ class _UrllibResponse:
     def headers(self) -> Mapping[str, str]:
         return self._headers
 
+    def _declared_length(self) -> int | None:
+        """``Content-Length`` when the body is fixed-length, else ``None``."""
+        raw_value = self._headers.get("content-length")
+        if raw_value is None:
+            return None
+        try:
+            length = int(str(raw_value).strip())
+        except ValueError:
+            return None
+        return length if length >= 0 else None
+
     def iter_bytes(self) -> Iterator[bytes]:
+        # ``read(n)`` blocks until it has n bytes or the stream ends, so on a
+        # long-lived SSE body it would hold every early delta hostage until
+        # 8 KiB accumulated and destroy time-to-first-token. ``read1`` returns
+        # whatever one underlying socket read produced, which is what makes
+        # incremental timing observable at all.
+        reader = getattr(self._raw, "read1", None)
+        if not callable(reader):
+            reader = self._raw.read
         while True:
             try:
-                chunk = self._raw.read(self._CHUNK_SIZE)
+                chunk = reader(self._CHUNK_SIZE)
             except TimeoutError as exc:
                 raise TransportTimeout(f"stream read timed out: {exc}") from exc
             except http.client.HTTPException as exc:
@@ -271,8 +301,17 @@ class _UrllibResponse:
             except OSError as exc:
                 raise TransportConnectionError(f"stream read failed: {exc}") from exc
             if not chunk:
-                return
+                break
+            self._bytes_read += len(chunk)
             yield chunk
+
+        # A fixed-length body that ends early is a truncated response, not a
+        # short one. CPython returns a clean EOF here rather than raising,
+        # so the shortfall has to be detected explicitly.
+        declared = self._declared_length()
+        if declared is not None and self._bytes_read < declared:
+            detail = f"{self._bytes_read} of {declared} declared bytes"
+            raise TransportConnectionError(f"stream ended after {detail}")
 
     def close(self) -> None:
         self._raw.close()
@@ -498,16 +537,43 @@ def _validate_optional_ratio(name: str, value: Any, *, maximum: float) -> None:
         )
 
 
+def _safe_endpoint_for_message(endpoint: str) -> str:
+    """Render an endpoint for an error message without leaking secrets.
+
+    A misconfigured endpoint is exactly the case where a key is most
+    likely to have been pasted into the URL, so the raw string must never
+    reach stderr or an artifact. Only the scheme, host, port and the
+    *shape* of the path and query survive.
+    """
+    try:
+        parts = urlsplit(endpoint)
+    except ValueError:
+        return "<unparsable endpoint>"
+    if not parts.scheme and not parts.netloc:
+        return "<endpoint>"
+    host = parts.hostname or "<no-host>"
+    authority = f"{host}:{parts.port}" if parts.port else host
+    rendered = f"{parts.scheme or '<no-scheme>'}://{authority}"
+    if parts.path:
+        segments = [segment for segment in parts.path.split("/") if segment]
+        rendered += "/" + "/".join(_REDACTED for _ in segments) if segments else "/"
+    if parts.query:
+        keys = sorted(
+            {key for key, _ in parse_qsl(parts.query, keep_blank_values=True)}
+        )
+        rendered += "?" + "&".join(f"{key}={_REDACTED}" for key in keys)
+    return rendered
+
+
 def _validate_endpoint(endpoint: str) -> None:
     if not endpoint:
         raise OpenAIStreamCollectorError("endpoint must be non-empty")
+    safe = _safe_endpoint_for_message(endpoint)
     parts = urlsplit(endpoint)
     if parts.scheme not in ("http", "https"):
-        raise OpenAIStreamCollectorError(
-            f"endpoint must use http or https, got {endpoint!r}"
-        )
+        raise OpenAIStreamCollectorError(f"endpoint must use http or https, got {safe}")
     if not parts.hostname:
-        raise OpenAIStreamCollectorError(f"endpoint must include a host: {endpoint!r}")
+        raise OpenAIStreamCollectorError(f"endpoint must include a host: {safe}")
     if parts.username is not None or parts.password is not None:
         raise OpenAIStreamCollectorError(
             "endpoint must not embed credentials; pass the API key through the "
@@ -518,7 +584,7 @@ def _validate_endpoint(endpoint: str) -> None:
     if parts.scheme == "http" and parts.hostname not in _LOCAL_HOSTS:
         raise OpenAIStreamCollectorError(
             "endpoint must use https for non-local hosts so the Authorization "
-            f"header is not sent in clear text, got {endpoint!r}"
+            f"header is not sent in clear text, got {safe}"
         )
     for key, _value in parse_qsl(parts.query, keep_blank_values=True):
         if _SECRETISH_QUERY_KEY.search(key):
@@ -532,22 +598,54 @@ def _validate_endpoint(endpoint: str) -> None:
 
 
 class _Redactor:
-    """Scrub a known credential (and bearer-token shapes) out of any string."""
+    """Scrub a known credential (and bearer-token shapes) out of any string.
+
+    Every provider-controlled string that reaches an artifact goes through
+    this, not just error messages. A server that echoes the key back in a
+    response id, a model name, a finish reason or the generated text
+    itself would otherwise write it straight to disk.
+    """
 
     _BEARER = re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]+")
 
     def __init__(self, credential: str | None) -> None:
         self._credential = credential or None
 
-    def __call__(self, text: str, *, limit: int = _MAX_PERSISTED_MESSAGE_CHARS) -> str:
+    def _scrub(self, text: str) -> str:
         cleaned = text
         if self._credential:
             cleaned = cleaned.replace(self._credential, _REDACTED)
-        cleaned = self._BEARER.sub(rf"\1 {_REDACTED}", cleaned)
-        cleaned = " ".join(cleaned.split())
+        return self._BEARER.sub(rf"\1 {_REDACTED}", cleaned)
+
+    def __call__(self, text: str, *, limit: int = _MAX_PERSISTED_MESSAGE_CHARS) -> str:
+        cleaned = " ".join(self._scrub(text).split())
         if len(cleaned) > limit:
             cleaned = cleaned[: limit - 3] + "..."
         return cleaned
+
+    def text(self, value: str) -> str:
+        """Scrub generated text, preserving whitespace, newlines and length.
+
+        ``__call__`` collapses whitespace and truncates, which is right for
+        a one-line diagnostic and wrong for the model's answer.
+        """
+        return self._scrub(value)
+
+    def identifier(self, value: str | None) -> str | None:
+        """Scrub a provider-supplied identifier such as an id or model name."""
+        if value is None:
+            return None
+        return self(value, limit=_MAX_PERSISTED_HEADER_CHARS)
+
+
+def redact_text_for_dry_run(text: str, credential: str | None) -> str:
+    """Scrub a rendered document that is about to be printed or written.
+
+    Used where no request is made and therefore no per-field redactor is
+    in play, so a configured key cannot escape through a plan, a
+    reconstructed command or a diagnostic.
+    """
+    return _Redactor(credential).text(text)
 
 
 # --- Request plan ------------------------------------------------------------
@@ -651,6 +749,22 @@ def _request_body(config: APICollectionConfig) -> dict[str, Any]:
     return body
 
 
+def _normalized_query_identity(query: str) -> list[list[str]]:
+    """Query pairs with each value replaced by a digest of that value.
+
+    Dropping the values entirely made ``?api-version=2024-01`` and
+    ``?api-version=2025-06`` share one identity, which silently merges two
+    different deployments in any downstream comparison. Hashing keeps the
+    values identity-bearing without ever persisting them, which matters
+    because a value here is provider-controlled and may be sensitive even
+    when its key does not look like a credential.
+    """
+    return sorted(
+        [key, sha256_text(value)]
+        for key, value in parse_qsl(query, keep_blank_values=True)
+    )
+
+
 def _config_identity_hash(config: APICollectionConfig) -> str:
     parts = urlsplit(config.endpoint)
     return config_hash(
@@ -661,6 +775,7 @@ def _config_identity_hash(config: APICollectionConfig) -> str:
             "endpoint_query_keys": sorted(
                 key for key, _ in parse_qsl(parts.query, keep_blank_values=True)
             ),
+            "endpoint_query_identity": _normalized_query_identity(parts.query),
             "model_id": config.model_id,
             "model_revision": config.model_revision,
             "credential_env_var": config.credential_env_var,
@@ -673,6 +788,32 @@ def _config_identity_hash(config: APICollectionConfig) -> str:
                 else sha256_text(config.system_prompt)
             ),
         }
+    )
+
+
+def _endpoint_for_command(endpoint: str) -> str:
+    """The endpoint as it may appear in a persisted command.
+
+    Query *values* are stripped. The plan only ever records query keys, so
+    keeping raw values in the reconstructed command would reintroduce
+    exactly what the rest of the plan is careful to leave out, and a value
+    is provider or user supplied and may hold a token.
+    """
+    parts = urlsplit(endpoint)
+    if not parts.query:
+        return endpoint
+    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    query = "&".join(f"{key}={_REDACTED}" for key, _ in pairs)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+
+
+def _sanitized_command(config: APICollectionConfig) -> tuple[str, ...]:
+    safe_endpoint = _endpoint_for_command(config.endpoint)
+    if safe_endpoint == config.endpoint:
+        return tuple(config.command_argv)
+    return tuple(
+        safe_endpoint if argument == config.endpoint else argument
+        for argument in config.command_argv
     )
 
 
@@ -705,7 +846,7 @@ def build_request_plan(config: APICollectionConfig) -> RequestPlan:
         request_parameters=_core_request_parameters(config),
         provider_extensions=config.extensions.to_request_fields(),
         request_timeout_seconds=float(config.request_timeout_seconds),
-        command=tuple(config.command_argv),
+        command=_sanitized_command(config),
         config_hash=_config_identity_hash(config),
         workload_hash=sha256_text(config.prompt),
     )
@@ -868,6 +1009,15 @@ class StreamStatistics:
     rate. ``provider_completion_tokens_per_second`` mixes a
     provider-reported token count with a client-measured window and is
     labeled accordingly.
+
+    Both rates are computed over one window, ``content_window_ms``, which
+    runs from the first content delta arrival to the last. That window
+    deliberately excludes the request, the response headers, any leading
+    metadata chunk, and the trailing usage, finish-reason and ``[DONE]``
+    events, none of which carry generated content. It is persisted so a
+    consumer can see how wide the measurement actually was: a rate over a
+    window of a few microseconds with two samples is arithmetic, not
+    evidence, and only the window makes that visible.
     """
 
     content_delta_count: int = 0
@@ -877,6 +1027,7 @@ class StreamStatistics:
     metadata_event_count: int = 0
     comment_count: int = 0
     inter_content_delta: LatencyDistribution | None = None
+    content_window_ms: float | None = None
     content_delta_rate_per_second: float | None = None
     provider_completion_tokens_per_second: float | None = None
 
@@ -893,14 +1044,25 @@ class StreamStatistics:
                 if self.inter_content_delta is None
                 else self.inter_content_delta.to_dict()
             ),
+            "content_window_ms": self.content_window_ms,
+            "content_window_definition": (
+                "first content delta arrival to last content delta arrival, "
+                "client-observed; excludes request, headers, leading metadata "
+                "and the trailing usage/finish-reason/[DONE] events"
+            ),
             "content_delta_rate_per_second": self.content_delta_rate_per_second,
             "content_delta_rate_provenance": MetricProvenance.DERIVED.value,
             "provider_completion_tokens_per_second": (
                 self.provider_completion_tokens_per_second
             ),
             "provider_completion_tokens_per_second_note": (
-                "provider-reported completion tokens divided by a "
-                "client-measured decode window; mixed provenance"
+                "provider-reported completion tokens divided by "
+                "content_window_ms; mixed provenance. The window starts at "
+                "the first content delta, so the first delta's own "
+                "generation time is excluded, and when content_delta_count "
+                "is far below completion_tokens the window endpoints are "
+                "delta boundaries rather than token boundaries. Treat this "
+                "as a coarse estimate, not a measured per-token rate."
             ),
         }
 
@@ -988,7 +1150,13 @@ class APICollectionResult:
 class _StreamAccumulator:
     """Consume SSE events, timing each one, without keeping any secret text."""
 
-    def __init__(self, *, clock: Callable[[], float], started: float) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float],
+        started: float,
+        redactor: _Redactor,
+    ) -> None:
         self._clock = clock
         self._started = started
         self.response_headers_at: float | None = None
@@ -997,6 +1165,7 @@ class _StreamAccumulator:
         self.last_content_at: float | None = None
         self.last_event_at: float | None = None
         self.content_parts: list[str] = []
+        self._redactor = redactor
         self.content_delta_count = 0
         self.reasoning_delta_count = 0
         self.reasoning_characters = 0
@@ -1053,6 +1222,15 @@ class _StreamAccumulator:
         if data == "[DONE]":
             self.terminated_with_done = True
             return None
+
+        # A named ``event: error`` frame is an error regardless of what its
+        # data carries, including a bare message with no JSON envelope.
+        named_error = (event.event or "").strip().lower() == "error"
+        if named_error and not data:
+            return APIFailure(
+                category=FAILURE_PROVIDER_ERROR,
+                message="provider sent an 'error' event with an empty payload",
+            )
         if not data:
             self._record_event(_EVENT_KIND_METADATA, 0, now)
             return None
@@ -1060,11 +1238,21 @@ class _StreamAccumulator:
         try:
             payload = json.loads(data)
         except json.JSONDecodeError as exc:
+            if named_error:
+                return APIFailure(
+                    category=FAILURE_PROVIDER_ERROR,
+                    message=redact(f"provider 'error' event: {data}"),
+                )
             return APIFailure(
                 category=FAILURE_STREAM_DECODE,
                 message=redact(f"stream chunk is not valid JSON: {exc}"),
             )
         if not isinstance(payload, dict):
+            if named_error:
+                return APIFailure(
+                    category=FAILURE_PROVIDER_ERROR,
+                    message=redact(f"provider 'error' event: {payload}"),
+                )
             return APIFailure(
                 category=FAILURE_STREAM_DECODE,
                 message="stream chunk is not a JSON object",
@@ -1072,10 +1260,17 @@ class _StreamAccumulator:
 
         provider_failure = _provider_error_from_payload(payload, redact=redact)
         if provider_failure is not None:
-            self._absorb_identity(payload)
+            self._absorb_identity(payload, redact=redact)
             return provider_failure
 
-        self._absorb_identity(payload)
+        self._absorb_identity(payload, redact=redact)
+
+        if named_error:
+            return APIFailure(
+                category=FAILURE_PROVIDER_ERROR,
+                message=redact(_error_message(payload)),
+                provider_error_code=redact.identifier(_error_code(payload)),
+            )
 
         usage_payload = payload.get("usage")
         if usage_payload is not None:
@@ -1086,7 +1281,15 @@ class _StreamAccumulator:
                 )
             self.usage = ProviderUsage.from_payload(usage_payload)
 
-        choice = _first_choice(payload)
+        choice, choices_malformed = _first_choice(payload)
+        if choices_malformed:
+            # ``{"choices": {}}`` or ``{"choices": [7]}`` is a broken frame,
+            # not a metadata frame. Treating it as metadata would let a
+            # malformed tail be published as a successful run.
+            return APIFailure(
+                category=FAILURE_STREAM_DECODE,
+                message="stream chunk 'choices' is present but malformed",
+            )
         if choice is None:
             self._record_event(_EVENT_KIND_METADATA, 0, now)
             return None
@@ -1098,7 +1301,7 @@ class _StreamAccumulator:
                     category=FAILURE_STREAM_DECODE,
                     message="stream chunk 'finish_reason' is not a string",
                 )
-            self.finish_reason = finish_reason
+            self.finish_reason = redact.identifier(finish_reason)
 
         delta = choice.get("delta")
         if delta is not None and not isinstance(delta, dict):
@@ -1125,6 +1328,10 @@ class _StreamAccumulator:
             )
 
         if content:
+            # Scrubbed before it is stored, so a provider that echoes the
+            # credential back inside generated text cannot reach response.txt.
+            content = redact.text(content)
+        if content:
             if self.first_content_token_at is None:
                 self.first_content_token_at = now
             self.content_arrival_times.append(now)
@@ -1146,7 +1353,9 @@ class _StreamAccumulator:
         self._record_event(_EVENT_KIND_METADATA, 0, now)
         return None
 
-    def _absorb_identity(self, payload: Mapping[str, Any]) -> None:
+    def _absorb_identity(
+        self, payload: Mapping[str, Any], *, redact: _Redactor
+    ) -> None:
         for key, attribute in (
             ("id", "response_id"),
             ("request_id", "provider_request_id"),
@@ -1154,7 +1363,9 @@ class _StreamAccumulator:
         ):
             value = payload.get(key)
             if isinstance(value, str) and value and getattr(self, attribute) is None:
-                setattr(self, attribute, value)
+                # Provider-controlled, so it is scrubbed like any other
+                # untrusted string before it can reach an artifact.
+                setattr(self, attribute, redact.identifier(value))
 
     def _record_event(self, kind: str, characters: int, moment: float) -> None:
         if kind == _EVENT_KIND_METADATA:
@@ -1169,6 +1380,30 @@ class _StreamAccumulator:
             )
         )
 
+    def terminated_cleanly(self) -> bool:
+        """True when the provider signalled a real end of stream.
+
+        Either the ``[DONE]`` sentinel or a terminal ``finish_reason`` is
+        accepted, because both are documented endings and not every
+        OpenAI-compatible provider sends both.
+        """
+        if self.terminated_with_done:
+            return True
+        reason = self.finish_reason
+        return reason is not None and reason in _TERMINAL_FINISH_REASONS
+
+    def content_text(self) -> str:
+        """The final answer, scrubbed as one string.
+
+        Per-delta redaction is not sufficient on its own. A provider that
+        wants the key back can dribble it across delta boundaries, five
+        characters at a time, and no individual delta ever contains it.
+        The assembled text is therefore the authoritative scrub, and every
+        persisted length is derived from this value so the record cannot
+        disagree with ``response.txt``.
+        """
+        return self._redactor.text("".join(self.content_parts))
+
     def statistics(self) -> StreamStatistics:
         gaps = [
             (later - earlier) * 1000
@@ -1177,34 +1412,41 @@ class _StreamAccumulator:
             )
         ]
         distribution = _latency_distribution(gaps)
-        delta_rate = None
+
+        # One window for both rates: first content arrival to last content
+        # arrival. Anchoring the end on ``last_event_at`` instead would
+        # fold the trailing usage/finish-reason/[DONE] events, which carry
+        # no generated content, into a decode denominator.
+        window_seconds: float | None = None
         if (
             len(self.content_arrival_times) > 1
             and self.content_arrival_times[-1] > self.content_arrival_times[0]
         ):
-            window = self.content_arrival_times[-1] - self.content_arrival_times[0]
-            delta_rate = (len(self.content_arrival_times) - 1) / window
-
-        token_rate = None
-        completion_tokens = self.usage.completion_tokens
-        if (
-            completion_tokens is not None
-            and self.first_content_token_at is not None
-            and self.last_event_at is not None
-            and self.last_event_at > self.first_content_token_at
-        ):
-            token_rate = completion_tokens / (
-                self.last_event_at - self.first_content_token_at
+            window_seconds = (
+                self.content_arrival_times[-1] - self.content_arrival_times[0]
             )
+
+        delta_rate = None
+        token_rate = None
+        if window_seconds is not None:
+            # ``n`` arrivals bound ``n - 1`` intervals, so the delta rate is
+            # measured over the gaps it actually observed.
+            delta_rate = (len(self.content_arrival_times) - 1) / window_seconds
+            completion_tokens = self.usage.completion_tokens
+            if completion_tokens is not None:
+                token_rate = completion_tokens / window_seconds
 
         return StreamStatistics(
             content_delta_count=self.content_delta_count,
-            content_characters=sum(len(part) for part in self.content_parts),
+            content_characters=len(self.content_text()),
             reasoning_delta_count=self.reasoning_delta_count,
             reasoning_characters=self.reasoning_characters,
             metadata_event_count=self.metadata_event_count,
             comment_count=self.comment_count,
             inter_content_delta=distribution,
+            content_window_ms=(
+                None if window_seconds is None else window_seconds * 1000
+            ),
             content_delta_rate_per_second=delta_rate,
             provider_completion_tokens_per_second=token_rate,
         )
@@ -1235,12 +1477,27 @@ def _latency_distribution(gaps: list[float]) -> LatencyDistribution | None:
     )
 
 
-def _first_choice(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+def _first_choice(payload: Mapping[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+    """Return ``(choice, malformed)`` for the first choice in a chunk.
+
+    An absent or empty ``choices`` is normal: GLM's usage-only final chunk
+    has none. A ``choices`` that is present with the wrong type, or whose
+    first element is not an object, is a broken frame and is reported as
+    malformed so it cannot be mistaken for a metadata frame.
+    """
+    if "choices" not in payload:
+        return None, False
     choices = payload.get("choices")
-    if not isinstance(choices, list) or not choices:
-        return None
+    if choices is None:
+        return None, False
+    if not isinstance(choices, list):
+        return None, True
+    if not choices:
+        return None, False
     first = choices[0]
-    return first if isinstance(first, dict) else None
+    if not isinstance(first, dict):
+        return None, True
+    return first, False
 
 
 def _reasoning_delta(delta: Mapping[str, Any]) -> Any:
@@ -1265,7 +1522,7 @@ def _provider_error_from_payload(
         return APIFailure(
             category=FAILURE_PROVIDER_ERROR,
             message=redact(_error_message(error)),
-            provider_error_code=_error_code(error),
+            provider_error_code=redact.identifier(_error_code(error)),
         )
     if error is not None:
         return APIFailure(
@@ -1278,7 +1535,7 @@ def _provider_error_from_payload(
         return APIFailure(
             category=FAILURE_PROVIDER_ERROR,
             message=redact(_error_message(payload)),
-            provider_error_code=_error_code(payload),
+            provider_error_code=redact.identifier(_error_code(payload)),
         )
     return None
 
@@ -1376,6 +1633,22 @@ def _assert_credential_not_embedded(
             )
 
 
+def assert_credential_not_embedded(
+    config: APICollectionConfig, environ: Mapping[str, str]
+) -> None:
+    """Public pre-flight check used by ``--dry-run``.
+
+    A real run refuses to start when the key is sitting in the endpoint or
+    the command, so a dry run has to apply the same rule. Otherwise the
+    validation step would report a plan as fine and the real call would
+    then refuse, which is the opposite of what a pre-flight check is for.
+    """
+    credential = environ.get(config.credential_env_var)
+    if credential is None or not credential.strip():
+        return
+    _assert_credential_not_embedded(credential.strip(), config)
+
+
 def _rate_limit_headers(
     headers: Mapping[str, str], *, redact: _Redactor
 ) -> dict[str, str]:
@@ -1471,7 +1744,7 @@ def collect_openai_stream(
 
     started_at = utc_now_iso()
     started = clock()
-    accumulator = _StreamAccumulator(clock=clock, started=started)
+    accumulator = _StreamAccumulator(clock=clock, started=started, redactor=redact)
     failure: APIFailure | None = None
     rate_limit_headers: dict[str, str] = {}
     header_request_id: str | None = None
@@ -1488,6 +1761,7 @@ def collect_openai_stream(
             headers = response.headers
             rate_limit_headers = _rate_limit_headers(headers, redact=redact)
             header_request_id = _request_id_from_headers(headers)
+            header_request_id = redact.identifier(header_request_id)
             if response.status_code != 200:
                 failure = _http_status_failure(response, redact=redact)
             else:
@@ -1500,7 +1774,7 @@ def collect_openai_stream(
                 pass
 
     completed = clock()
-    response_text = "".join(accumulator.content_parts)
+    response_text = accumulator.content_text()
 
     if failure is None and not response_text:
         failure = APIFailure(
@@ -1508,6 +1782,21 @@ def collect_openai_stream(
             message=(
                 "stream completed without any content delta; finish_reason="
                 f"{accumulator.finish_reason!r}"
+            ),
+            provider_error_code=None,
+        )
+
+    if failure is None and not accumulator.terminated_cleanly():
+        # Content alone does not mean the answer is whole. Without ``[DONE]``
+        # or a terminal finish_reason the body was cut short, and publishing
+        # a truncated answer as a success would corrupt every downstream
+        # comparison that reads it.
+        failure = APIFailure(
+            category=FAILURE_STREAM_TRUNCATED,
+            message=(
+                "stream ended without a terminal condition: no [DONE] "
+                "sentinel and finish_reason="
+                f"{accumulator.finish_reason!r}; the response is truncated"
             ),
             provider_error_code=None,
         )
@@ -1546,17 +1835,91 @@ def collect_openai_stream(
 
     _assert_finite_evidence(record, evidence)
 
-    config.output_dir.mkdir(parents=True, exist_ok=True)
-    record.write_json(config.output_dir / "record.json")
-    atomic_write_text(config.output_dir / "response.txt", response_text)
-    atomic_write_text(
-        config.output_dir / "api_evidence.json", evidence.to_json() + "\n"
+    _publish_artifacts(
+        config.output_dir,
+        run_id=config.run_id,
+        record=record,
+        evidence=evidence,
+        response_text=response_text,
     )
-    manifest = collect_environment_manifest()
-    atomic_write_text(config.output_dir / "environment.json", manifest.to_json() + "\n")
     return APICollectionResult(
         record=record, evidence=evidence, response_text=response_text
     )
+
+
+def _publish_artifacts(
+    output_dir: Path,
+    *,
+    run_id: str,
+    record: ExperimentRecord,
+    evidence: APIEvidence,
+    response_text: str,
+) -> None:
+    """Write the artifact set, marking it complete only once it all landed.
+
+    Each individual write is atomic, but a run produces four files and a
+    crash between them used to leave a brand new record.json beside a
+    stale api_evidence.json from an earlier run of the same id. That set
+    reads as successful and is silently wrong. The marker is removed
+    first and written last, so any interruption leaves a set that
+    ``artifact_set_is_complete`` rejects instead of one that lies.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    marker_path = output_dir / ARTIFACT_MANIFEST_NAME
+    marker_path.unlink(missing_ok=True)
+
+    payloads: list[tuple[str, str]] = [
+        ("record.json", record.to_json() + "\n"),
+        ("response.txt", response_text),
+        ("api_evidence.json", evidence.to_json() + "\n"),
+        ("environment.json", collect_environment_manifest().to_json() + "\n"),
+    ]
+    for name, text in payloads:
+        atomic_write_text(output_dir / name, text)
+
+    marker = {
+        "schema_version": ARTIFACT_MANIFEST_SCHEMA_VERSION,
+        "run_id": run_id,
+        "artifacts": [
+            {"name": name, "sha256": sha256_text(text)} for name, text in payloads
+        ],
+    }
+    atomic_write_text(marker_path, json.dumps(marker, indent=2, allow_nan=False) + "\n")
+
+
+def artifact_set_is_complete(output_dir: Path) -> bool:
+    """True when ``output_dir`` holds a complete, self-consistent set.
+
+    A consumer must call this before trusting a run directory. A missing
+    marker means an interrupted write; a hash mismatch means a file was
+    replaced independently of the set it belongs to.
+    """
+    marker_path = output_dir / ARTIFACT_MANIFEST_NAME
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(marker, dict):
+        return False
+    if marker.get("schema_version") != ARTIFACT_MANIFEST_SCHEMA_VERSION:
+        return False
+    artifacts = marker.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        return False
+    for entry in artifacts:
+        if not isinstance(entry, dict):
+            return False
+        name = entry.get("name")
+        digest = entry.get("sha256")
+        if not isinstance(name, str) or not isinstance(digest, str):
+            return False
+        try:
+            text = (output_dir / name).read_text(encoding="utf-8")
+        except OSError:
+            return False
+        if sha256_text(text) != digest:
+            return False
+    return True
 
 
 def _assert_finite_evidence(record: ExperimentRecord, evidence: APIEvidence) -> None:

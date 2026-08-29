@@ -868,9 +868,20 @@ artifacts/<run-id>/
   response.txt        final answer text only
   api_evidence.json   streaming timeline, statistics, provider usage, failure detail
   environment.json    non-sensitive client package and platform metadata
+  artifacts.json      completion marker listing every file above with its sha256
 ```
 
 `--dry-run` writes only `request_plan.json`.
+
+The four evidence files are written one at a time, so a crash or a full disk
+partway through would otherwise leave a fresh `record.json` sitting next to
+stale or missing evidence from an earlier run, which reads as a success. To
+make that detectable, `artifacts.json` is deleted before the set is written
+and written last. A reader can call
+`llmtracefx.optimizer.collectors.artifact_set_is_complete(output_dir)`, which
+returns `True` only when the marker exists, every file it lists is present and
+every sha256 still matches. Treat a directory without a valid marker as an
+incomplete run rather than as evidence.
 
 #### What is measured and how it is labelled
 
@@ -897,6 +908,21 @@ and are never mixed into a single unlabelled number.
   than tokens. `provider_completion_tokens_per_second` combines a
   provider-reported count with a client-measured window and carries an
   explicit mixed-provenance note.
+- **One window for both rates.** `content_window_ms` runs from the first
+  content delta arrival to the last, and both rates divide by it. It
+  excludes the request, the response headers, any leading metadata chunk
+  and the trailing usage, finish-reason and `[DONE]` events, none of which
+  carry generated content. The window is persisted alongside the rates
+  because a rate is only as trustworthy as the window it came from: two
+  deltas a few microseconds apart produce a very large number that is
+  arithmetic rather than evidence, and only the window makes that visible.
+  With a single content delta there are no intervals to measure, so the
+  window and both rates are `null` rather than zero.
+- **The token rate is an estimate, not a measurement.** Its window starts
+  at the first content delta, so that delta's own generation time is
+  outside it, and when `content_delta_count` is far below
+  `completion_tokens` the window endpoints are delta boundaries rather
+  than token boundaries. The persisted note says so.
 
 #### Privacy guarantees
 
@@ -923,8 +949,20 @@ and are never mixed into a single unlabelled number.
   `reasoning_delta_count`, `reasoning_characters` and
   `reasoning_text_persisted: false`, and `response.txt` holds the final
   answer only.
-- Every persisted message is passed through a redactor that removes the
-  known credential and any `Bearer <token>` shape before writing.
+- Every provider-controlled string is passed through a redactor before it is
+  persisted, not only error messages: generated content, response and request
+  IDs, the echoed model name, the finish reason, response header request IDs,
+  provider error codes and rate-limit values. A provider that echoes your key
+  back in any of those fields cannot get it into an artifact or onto the
+  terminal. The redactor removes the known credential and any bearer-token
+  shape, and it preserves whitespace in generated text so redaction does not
+  quietly alter the answer.
+- `--dry-run` applies the same refusal a real run does. If the configured
+  environment variable holds a value that appears in the endpoint or the
+  command, the pre-flight check fails instead of printing a plan that a real
+  run would reject, and the rendered plan is scrubbed as a second line of
+  defence. Validation errors never echo the endpoint back: the message shows
+  the scheme and host, with path segments and query values replaced.
 
 #### Failure evidence
 
@@ -932,7 +970,7 @@ Transport and protocol failures produce a failure-shaped record instead of
 an exception or a silent success: `outcome.success = false`, an
 `error.category`, and the same four artifacts. Categories are
 `http_status`, `timeout`, `connection`, `stream_decode`,
-`provider_error_payload` and `missing_content`. Safe status code, provider
+`stream_truncated`, `provider_error_payload` and `missing_content`. Safe status code, provider
 error code, provider request ID and rate-limit headers are preserved where
 the provider returns them. Both the OpenAI `{"error": {...}}` shape and
 Z.ai's bare `{"code": ..., "message": ...}` shape are recognized. Protocol
@@ -940,6 +978,23 @@ level failures that Python raises as `http.client.HTTPException` rather than
 `OSError`, such as an `IncompleteRead` when a proxy hangs up mid chunk or a
 `BadStatusLine` from a garbled response, are recorded as `connection`
 failures.
+
+A stream is only accepted when it reaches a terminal condition the provider
+documents: a `[DONE]` sentinel, or a `finish_reason` of `stop`, `length`,
+`content_filter`, `tool_calls` or `function_call`. A connection that closes
+cleanly after some content but before either of those is recorded as
+`stream_truncated`, not as a short success. Accepting it would silently
+convert a dropped connection into a real answer and, worse, into a plausible
+latency measurement. A body shorter than its own `Content-Length` is a
+`connection` failure: `http.client` returns a clean end of file there rather
+than raising, so the collector compares bytes read against the declared
+length itself.
+
+A named `event: error` frame is treated as a provider error even when its
+payload is only a message string or is empty, and a `choices` field that is
+present but not a list of objects is a `stream_decode` failure rather than an
+ignorable metadata chunk. Both remain failures when they arrive after partial
+content has already been received.
 
 Invalid configuration and a missing credential remain hard errors with no
 artifacts, because neither describes a request that was actually attempted.
@@ -960,7 +1015,11 @@ artifacts, because neither describes a request that was actually attempted.
 - **Model revision is usually unavailable.** Hosted APIs generally do not
   expose a build identifier. `--model-revision` stays unset in that case
   instead of guessing, and the config hash pins the request identity that
-  *is* observable.
+  *is* observable. The hash covers normalized endpoint query pairs, so an
+  endpoint carrying `?api-version=2024-08-01` gets a different identity from
+  the same endpoint at a different version. Query *values* are hashed rather
+  than recorded, so a value that happens to be sensitive still affects
+  identity without being persisted.
 - **`reasoning_tokens` is not documented for GLM.** It is captured if the
   provider sends it and stays `null` otherwise.
 - **No pricing.** Cost per correct case belongs to a later versioned

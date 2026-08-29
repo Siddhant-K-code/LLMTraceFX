@@ -19,11 +19,13 @@ from typing import Any
 import pytest
 
 from llmtracefx.optimizer.collectors.openai_api import (
+    ARTIFACT_MANIFEST_NAME,
     FAILURE_CONNECTION,
     FAILURE_HTTP_STATUS,
     FAILURE_MISSING_CONTENT,
     FAILURE_PROVIDER_ERROR,
     FAILURE_STREAM_DECODE,
+    FAILURE_STREAM_TRUNCATED,
     FAILURE_TIMEOUT,
     APICollectionConfig,
     HTTPRequest,
@@ -31,6 +33,7 @@ from llmtracefx.optimizer.collectors.openai_api import (
     ProviderExtensions,
     TransportConnectionError,
     TransportTimeout,
+    artifact_set_is_complete,
     build_request_plan,
     collect_openai_stream,
 )
@@ -529,6 +532,7 @@ def test_successful_stream_produces_evidence_and_artifacts(tmp_path: Path) -> No
 
     assert sorted(path.name for path in config.output_dir.iterdir()) == [
         "api_evidence.json",
+        "artifacts.json",
         "environment.json",
         "record.json",
         "response.txt",
@@ -740,7 +744,94 @@ def test_inter_token_latency_is_derived_from_content_deltas_only(
     assert payload["statistics"]["content_delta_rate_provenance"] == "derived"
 
 
+def test_both_rates_share_one_content_window(tmp_path: Path) -> None:
+    """The delta rate and the token rate must use the same denominator.
+
+    Anchoring the token rate on the last event of any kind would fold the
+    trailing usage, finish-reason and ``[DONE]`` events into a decode
+    window, making the two published rates incomparable.
+    """
+    config = make_config(tmp_path)
+    usage = {"prompt_tokens": 5, "completion_tokens": 12, "total_tokens": 17}
+
+    result, _ = run(config, glm_stream(content_parts=("a", "b", "c", "d"), usage=usage))
+
+    statistics = result.evidence.statistics
+    timeline = result.evidence.timeline
+    content_offsets = [
+        event.offset_ms for event in timeline.events if event.kind == "content"
+    ]
+    expected_window = content_offsets[-1] - content_offsets[0]
+
+    assert statistics.content_window_ms == pytest.approx(expected_window)
+    # Three gaps across four arrivals, over the same window.
+    assert statistics.content_delta_rate_per_second == pytest.approx(
+        3 / (expected_window / 1000)
+    )
+    assert statistics.provider_completion_tokens_per_second == pytest.approx(
+        12 / (expected_window / 1000)
+    )
+
+
+def test_the_content_window_ignores_trailing_usage_and_done_events(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    usage = {"prompt_tokens": 5, "completion_tokens": 12, "total_tokens": 17}
+
+    result, _ = run(config, glm_stream(content_parts=("a", "b", "c", "d"), usage=usage))
+
+    statistics = result.evidence.statistics
+    timeline = result.evidence.timeline
+    assert statistics.content_window_ms is not None
+    # The stream keeps running after the last content delta, so a window
+    # that reached the end of the stream would be strictly wider.
+    assert timeline.completed_offset_ms > statistics.content_window_ms
+    assert timeline.last_event_offset_ms is not None
+    assert timeline.last_event_offset_ms > statistics.content_window_ms
+
+
+def test_a_single_content_delta_yields_no_window_and_no_rates(
+    tmp_path: Path,
+) -> None:
+    """One arrival bounds zero intervals, so no rate is observable."""
+    config = make_config(tmp_path)
+    usage = {"prompt_tokens": 5, "completion_tokens": 12, "total_tokens": 17}
+
+    result, _ = run(config, glm_stream(content_parts=("only",), usage=usage))
+
+    statistics = result.evidence.statistics
+    assert statistics.content_delta_count == 1
+    assert statistics.content_window_ms is None
+    assert statistics.content_delta_rate_per_second is None
+    assert statistics.provider_completion_tokens_per_second is None
+    assert statistics.inter_content_delta is None
+
+
+def test_the_content_window_is_persisted_with_its_definition(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+
+    run(config, glm_stream(content_parts=("a", "b")))
+
+    payload = json.loads(
+        (config.output_dir / "api_evidence.json").read_text(encoding="utf-8")
+    )
+    statistics = payload["statistics"]
+    assert statistics["content_window_ms"] is not None
+    assert "last content delta arrival" in statistics["content_window_definition"]
+    note = statistics["provider_completion_tokens_per_second_note"]
+    assert "content_window_ms" in note
+    assert "coarse estimate" in note
+
+
 def test_stream_without_a_done_sentinel_is_recorded_honestly(tmp_path: Path) -> None:
+    """A stream cut short mid-answer is a failure, not a short success.
+
+    Content alone is not evidence that the answer is whole, so without
+    ``[DONE]`` or a terminal ``finish_reason`` the run is failure-shaped
+    and the partial text is preserved for inspection rather than
+    published as the model's answer.
+    """
     config = make_config(tmp_path)
     chunks = [
         sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "partial"}}]})
@@ -748,9 +839,59 @@ def test_stream_without_a_done_sentinel_is_recorded_honestly(tmp_path: Path) -> 
 
     result, _ = run(config, chunks)
 
-    assert result.evidence.success is True
+    assert result.evidence.success is False
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.category == FAILURE_STREAM_TRUNCATED
     assert result.evidence.stream_terminated_with_done is False
     assert result.response_text == "partial"
+    assert_failure_artifacts(config, FAILURE_STREAM_TRUNCATED)
+
+
+def test_a_terminal_finish_reason_terminates_a_stream_without_done(
+    tmp_path: Path,
+) -> None:
+    """Not every OpenAI-compatible provider sends the ``[DONE]`` sentinel."""
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "whole"}}]}),
+        sse(
+            {
+                "id": "c1",
+                "choices": [
+                    {"index": 0, "delta": {"content": ""}, "finish_reason": "stop"}
+                ],
+            }
+        ),
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert result.evidence.success is True
+    assert result.evidence.stream_terminated_with_done is False
+    assert result.evidence.finish_reason == "stop"
+
+
+def test_a_non_terminal_finish_reason_does_not_terminate_a_stream(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "partial"}}]}),
+        sse(
+            {
+                "id": "c1",
+                "choices": [
+                    {"index": 0, "delta": {"content": ""}, "finish_reason": "null"}
+                ],
+            }
+        ),
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert result.evidence.success is False
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.category == FAILURE_STREAM_TRUNCATED
 
 
 def test_unterminated_final_event_is_flagged(tmp_path: Path) -> None:
@@ -1080,3 +1221,424 @@ def test_a_non_finite_measurement_is_refused_rather_than_persisted(
         )
 
     assert not config.output_dir.exists()
+
+
+# --- Provider-controlled string redaction ------------------------------------
+
+
+def test_a_provider_echoing_the_credential_everywhere_leaks_nothing(
+    tmp_path: Path,
+) -> None:
+    """A hostile or misconfigured provider must not get the key onto disk.
+
+    Every provider-controlled string is echoed back containing the
+    credential: the response id, the request id, the model name, the
+    finish reason and the generated text itself. None of them may survive
+    into any artifact.
+    """
+    config = make_config(tmp_path)
+    chunks = [
+        sse(
+            {
+                "id": f"resp-{API_KEY}",
+                "request_id": f"req-{API_KEY}",
+                "model": f"glm-5.3-{API_KEY}",
+                "choices": [{"index": 0, "delta": {"content": f"key is {API_KEY}!"}}],
+            }
+        ),
+        sse(
+            {
+                "id": f"resp-{API_KEY}",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": ""},
+                        "finish_reason": f"stop-{API_KEY}",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 4,
+                    "total_tokens": 7,
+                },
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks)
+
+    for path in sorted(config.output_dir.iterdir()):
+        assert API_KEY not in path.read_text(encoding="utf-8"), path.name
+    assert API_KEY not in result.response_text
+    assert "[REDACTED]" in result.response_text
+    assert result.evidence.response_id is not None
+    assert API_KEY not in result.evidence.response_id
+    assert result.evidence.provider_request_id is not None
+    assert API_KEY not in result.evidence.provider_request_id
+    assert result.evidence.response_model is not None
+    assert API_KEY not in result.evidence.response_model
+    assert result.evidence.finish_reason is not None
+    assert API_KEY not in result.evidence.finish_reason
+
+
+def test_a_credential_split_across_deltas_still_never_reaches_disk(
+    tmp_path: Path,
+) -> None:
+    """Per-delta scrubbing alone is not enough.
+
+    A provider that wants the key back can dribble it out a few characters
+    per SSE delta, so no single delta ever contains it while the assembled
+    answer does. The scrub therefore has to run on the joined text.
+    """
+    config = make_config(tmp_path)
+    fragments = [API_KEY[i : i + 4] for i in range(0, len(API_KEY), 4)]
+    assert len(fragments) > 2
+    for fragment in fragments:
+        assert fragment not in ("", API_KEY)
+
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": fragment}}]})
+        for fragment in fragments
+    ]
+    chunks.append(
+        sse(
+            {
+                "id": "c1",
+                "choices": [
+                    {"index": 0, "delta": {"content": ""}, "finish_reason": "stop"}
+                ],
+            }
+        )
+    )
+    chunks.append(b"data: [DONE]\n\n")
+
+    result, _ = run(config, chunks)
+
+    assert API_KEY not in result.response_text
+    for path in sorted(config.output_dir.iterdir()):
+        assert API_KEY not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_persisted_content_length_matches_the_scrubbed_response(
+    tmp_path: Path,
+) -> None:
+    """The recorded character count must describe what was actually written."""
+    config = make_config(tmp_path)
+    fragments = [API_KEY[i : i + 4] for i in range(0, len(API_KEY), 4)]
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": fragment}}]})
+        for fragment in fragments
+    ]
+    chunks.append(
+        sse(
+            {
+                "id": "c1",
+                "choices": [
+                    {"index": 0, "delta": {"content": ""}, "finish_reason": "stop"}
+                ],
+            }
+        )
+    )
+    chunks.append(b"data: [DONE]\n\n")
+
+    result, _ = run(config, chunks)
+
+    written = (config.output_dir / "response.txt").read_text(encoding="utf-8")
+    assert result.response_text == written
+    assert result.evidence.statistics.content_characters == len(written)
+
+
+def test_redacting_generated_text_preserves_shape(tmp_path: Path) -> None:
+    """Scrubbing the answer must not collapse it into a single line."""
+    config = make_config(tmp_path)
+    chunks = [
+        sse(
+            {"id": "c1", "choices": [{"index": 0, "delta": {"content": "line one\n"}}]}
+        ),
+        sse(
+            {"id": "c1", "choices": [{"index": 0, "delta": {"content": "  line two"}}]}
+        ),
+        sse(
+            {
+                "id": "c1",
+                "choices": [
+                    {"index": 0, "delta": {"content": ""}, "finish_reason": "stop"}
+                ],
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert result.response_text == "line one\n  line two"
+
+
+def test_a_credential_echoed_in_a_rate_limit_header_is_redacted(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    response = FakeResponse(
+        list(glm_stream()),
+        headers={
+            "content-type": "text/event-stream",
+            "x-ratelimit-remaining-requests": f"{API_KEY}",
+            "x-request-id": f"hdr-{API_KEY}",
+        },
+    )
+
+    result, _ = run(config, response)
+
+    for path in sorted(config.output_dir.iterdir()):
+        assert API_KEY not in path.read_text(encoding="utf-8"), path.name
+    for value in result.evidence.rate_limit_headers.values():
+        assert API_KEY not in value
+
+
+# --- Named error events and malformed choices --------------------------------
+
+
+def test_a_named_error_event_carrying_json_is_a_failure(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    chunks = [
+        b'event: error\ndata: {"code": "1301", "message": "content blocked"}\n\n',
+    ]
+
+    result, _ = run(config, chunks)
+
+    payload = assert_failure_artifacts(config, FAILURE_PROVIDER_ERROR)
+    assert "content blocked" in payload["failure"]["message"]
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.provider_error_code == "1301"
+
+
+def test_a_named_error_event_carrying_a_bare_message_is_a_failure(
+    tmp_path: Path,
+) -> None:
+    """Not every provider wraps an error event payload in JSON."""
+    config = make_config(tmp_path)
+    chunks = [b"event: error\ndata: upstream capacity exceeded\n\n"]
+
+    run(config, chunks)
+
+    payload = assert_failure_artifacts(config, FAILURE_PROVIDER_ERROR)
+    assert "upstream capacity exceeded" in payload["failure"]["message"]
+
+
+def test_a_named_error_event_with_an_empty_payload_is_a_failure(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    chunks = [b"event: error\ndata:\n\n"]
+
+    run(config, chunks)
+
+    payload = assert_failure_artifacts(config, FAILURE_PROVIDER_ERROR)
+    assert "empty payload" in payload["failure"]["message"]
+
+
+def test_a_named_error_event_after_partial_content_is_a_failure(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "half"}}]}),
+        b'event: error\ndata: {"code": 500, "message": "upstream died"}\n\n',
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert_failure_artifacts(config, FAILURE_PROVIDER_ERROR)
+    assert result.response_text == "half"
+
+
+@pytest.mark.parametrize(
+    "choices",
+    [
+        pytest.param({}, id="object"),
+        pytest.param([7], id="list-of-scalar"),
+        pytest.param("stop", id="string"),
+        pytest.param(3, id="number"),
+    ],
+)
+def test_a_present_but_malformed_choices_is_a_decode_failure(
+    tmp_path: Path, choices: Any
+) -> None:
+    """``{"choices": {}}`` is a broken frame, not a metadata frame."""
+    config = make_config(tmp_path)
+    chunks = [sse({"id": "c1", "choices": choices})]
+
+    run(config, chunks)
+
+    payload = assert_failure_artifacts(config, FAILURE_STREAM_DECODE)
+    assert "malformed" in payload["failure"]["message"]
+
+
+def test_a_malformed_choices_after_partial_content_is_not_a_success(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "half"}}]}),
+        sse({"id": "c1", "choices": {}}),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert_failure_artifacts(config, FAILURE_STREAM_DECODE)
+    assert result.response_text == "half"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"id": "c1"}, id="absent"),
+        pytest.param({"id": "c1", "choices": []}, id="empty-list"),
+        pytest.param({"id": "c1", "choices": None}, id="null"),
+    ],
+)
+def test_an_absent_or_empty_choices_stays_a_metadata_frame(
+    tmp_path: Path, payload: dict[str, Any]
+) -> None:
+    """GLM's usage-only final chunk legitimately carries no choices."""
+    config = make_config(tmp_path)
+    chunks = [
+        sse(payload),
+        *glm_stream(),
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert result.evidence.success is True
+    assert result.evidence.statistics.metadata_event_count >= 1
+
+
+# --- Config identity ---------------------------------------------------------
+
+
+def test_query_values_change_the_config_hash(tmp_path: Path) -> None:
+    """Two API versions on one endpoint must not share an identity."""
+    base = "https://example.test/v1/chat/completions"
+    first = build_request_plan(
+        make_config(tmp_path, endpoint=f"{base}?api-version=2024-01")
+    )
+    second = build_request_plan(
+        make_config(tmp_path, endpoint=f"{base}?api-version=2025-06")
+    )
+
+    assert first.config_hash != second.config_hash
+    assert first.endpoint_query_keys == second.endpoint_query_keys
+
+
+def test_an_identical_query_keeps_a_stable_config_hash(tmp_path: Path) -> None:
+    endpoint = "https://example.test/v1/chat/completions?api-version=2024-01"
+    first = build_request_plan(make_config(tmp_path, endpoint=endpoint))
+    second = build_request_plan(make_config(tmp_path, endpoint=endpoint))
+
+    assert first.config_hash == second.config_hash
+
+
+def test_raw_query_values_are_never_persisted_in_the_plan(tmp_path: Path) -> None:
+    config = make_config(
+        tmp_path,
+        endpoint="https://example.test/v1/chat?deployment=super-secret-deployment",
+        command_argv=(
+            "llmtracefx-optimizer",
+            "collect-api",
+            "--endpoint",
+            "https://example.test/v1/chat?deployment=super-secret-deployment",
+        ),
+    )
+
+    plan = build_request_plan(config)
+    rendered = plan.to_json()
+
+    assert "super-secret-deployment" not in rendered
+    assert plan.endpoint_query_keys == ("deployment",)
+    assert "[REDACTED]" in " ".join(plan.command)
+
+
+# --- Artifact set publication ------------------------------------------------
+
+
+def test_a_successful_run_publishes_a_complete_artifact_set(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+
+    run(config, glm_stream())
+
+    assert artifact_set_is_complete(config.output_dir) is True
+    marker = json.loads(
+        (config.output_dir / ARTIFACT_MANIFEST_NAME).read_text(encoding="utf-8")
+    )
+    assert marker["run_id"] == "api-run"
+    assert sorted(entry["name"] for entry in marker["artifacts"]) == [
+        "api_evidence.json",
+        "environment.json",
+        "record.json",
+        "response.txt",
+    ]
+
+
+def test_an_artifact_replaced_independently_fails_the_completeness_check(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    run(config, glm_stream())
+    assert artifact_set_is_complete(config.output_dir) is True
+
+    (config.output_dir / "response.txt").write_text("tampered", encoding="utf-8")
+
+    assert artifact_set_is_complete(config.output_dir) is False
+
+
+def test_a_missing_marker_fails_the_completeness_check(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    run(config, glm_stream())
+
+    (config.output_dir / ARTIFACT_MANIFEST_NAME).unlink()
+
+    assert artifact_set_is_complete(config.output_dir) is False
+
+
+def test_a_failed_late_write_leaves_no_complete_marker_beside_stale_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failure the marker exists to catch.
+
+    A first run publishes a complete set. A second run crashes after
+    record.json is replaced, so the directory now holds a new record next
+    to the previous run's evidence. That set must not read as complete.
+    """
+    config = make_config(tmp_path)
+    run(config, glm_stream(content_parts=("first",)))
+    assert artifact_set_is_complete(config.output_dir) is True
+    first_evidence = (config.output_dir / "api_evidence.json").read_text(
+        encoding="utf-8"
+    )
+
+    import llmtracefx.optimizer.collectors.openai_api as module
+
+    real_write = module.atomic_write_text
+    calls: list[str] = []
+
+    def failing_write(path: Path, text: str) -> None:
+        calls.append(path.name)
+        if path.name == "api_evidence.json":
+            raise OSError("disk full")
+        real_write(path, text)
+
+    monkeypatch.setattr(module, "atomic_write_text", failing_write)
+
+    with pytest.raises(OSError, match="disk full"):
+        run(config, glm_stream(content_parts=("second",)))
+
+    assert "record.json" in calls
+    assert artifact_set_is_complete(config.output_dir) is False
+    assert not (config.output_dir / ARTIFACT_MANIFEST_NAME).exists()
+    # The new record really is sitting next to the old evidence, which is
+    # exactly why the set has to be rejected rather than trusted.
+    assert (config.output_dir / "api_evidence.json").read_text(
+        encoding="utf-8"
+    ) == first_evidence

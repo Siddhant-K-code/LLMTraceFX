@@ -15,7 +15,10 @@ from typing import Any
 import pytest
 
 from llmtracefx.optimizer import cli
-from llmtracefx.optimizer.collectors.openai_api import HTTPRequest
+from llmtracefx.optimizer.collectors.openai_api import (
+    HTTPRequest,
+    redact_text_for_dry_run,
+)
 
 ENDPOINT = "https://api.z.ai/api/paas/v4/chat/completions"
 API_KEY = "cli-test-key-not-a-real-credential"
@@ -307,6 +310,7 @@ def test_successful_collection_writes_artifacts_and_exits_zero(
     artifacts = tmp_path / "artifacts"
     assert sorted(path.name for path in artifacts.iterdir()) == [
         "api_evidence.json",
+        "artifacts.json",
         "environment.json",
         "record.json",
         "response.txt",
@@ -375,3 +379,182 @@ def test_custom_credential_env_var_is_honoured(
     )
     assert evidence["plan"]["credential_env_var"] == "OTHER_PROVIDER_KEY"
     assert evidence["plan"]["provider"] == "other-provider"
+
+
+# --- Dry-run credential containment ------------------------------------------
+
+
+def test_dry_run_refuses_a_credential_pasted_into_the_endpoint_query(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A dry run still handles a configured key.
+
+    If the operator pasted it into the endpoint, it is inside the plan and
+    the reconstructed command that are about to be printed and written.
+    """
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    monkeypatch.setenv("ZAI_API_KEY", API_KEY)
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("hello", encoding="utf-8")
+    argv = [
+        "collect-api",
+        "--run-id",
+        "cli-run",
+        "--endpoint",
+        f"https://example.test/v1/chat?deployment={API_KEY}",
+        "--model-id",
+        "glm-5.3",
+        "--prompt-file",
+        str(prompt),
+        "--output-dir",
+        str(tmp_path / "artifacts"),
+        "--dry-run",
+    ]
+
+    exit_code = invoke(argv)
+
+    # A real run refuses this configuration, so the pre-flight check must
+    # refuse it too rather than reporting a plan that could never be used.
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert API_KEY not in captured.out
+    assert API_KEY not in captured.err
+    assert "appears in endpoint" in captured.err
+    assert not (tmp_path / "artifacts" / "request_plan.json").exists()
+
+
+def test_dry_run_refuses_a_credential_pasted_into_the_endpoint_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    monkeypatch.setenv("ZAI_API_KEY", API_KEY)
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("hello", encoding="utf-8")
+    argv = [
+        "collect-api",
+        "--run-id",
+        "cli-run",
+        "--endpoint",
+        f"https://example.test/v1/{API_KEY}/chat",
+        "--model-id",
+        "glm-5.3",
+        "--prompt-file",
+        str(prompt),
+        "--output-dir",
+        str(tmp_path / "artifacts"),
+        "--dry-run",
+    ]
+
+    exit_code = invoke(argv)
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert API_KEY not in captured.out
+    assert API_KEY not in captured.err
+    assert "appears in endpoint" in captured.err
+    assert not (tmp_path / "artifacts" / "request_plan.json").exists()
+
+
+def test_an_invalid_endpoint_is_never_echoed_back_verbatim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Config failure is where a pasted key is most likely to surface."""
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    monkeypatch.setenv("ZAI_API_KEY", API_KEY)
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("hello", encoding="utf-8")
+    argv = [
+        "collect-api",
+        "--run-id",
+        "cli-run",
+        "--endpoint",
+        f"ftp://example.test/v1/{API_KEY}/chat?token={API_KEY}",
+        "--model-id",
+        "glm-5.3",
+        "--prompt-file",
+        str(prompt),
+        "--output-dir",
+        str(tmp_path / "artifacts"),
+        "--dry-run",
+    ]
+
+    exit_code = invoke(argv)
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert API_KEY not in captured.err
+    assert API_KEY not in captured.out
+    assert "http or https" in captured.err
+    assert not (tmp_path / "artifacts" / "request_plan.json").exists()
+
+
+def test_a_plain_http_endpoint_error_does_not_echo_the_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    monkeypatch.setenv("ZAI_API_KEY", API_KEY)
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("hello", encoding="utf-8")
+    argv = [
+        "collect-api",
+        "--run-id",
+        "cli-run",
+        "--endpoint",
+        "http://example.test/v1/super-secret-path/chat",
+        "--model-id",
+        "glm-5.3",
+        "--prompt-file",
+        str(prompt),
+        "--output-dir",
+        str(tmp_path / "artifacts"),
+        "--dry-run",
+    ]
+
+    exit_code = invoke(argv)
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "super-secret-path" not in captured.err
+    assert "example.test" in captured.err
+
+
+def test_dry_run_still_performs_no_network_request_when_a_key_is_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The pre-flight check must not turn into a request."""
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    monkeypatch.setenv("ZAI_API_KEY", API_KEY)
+
+    exit_code = invoke(base_argv(tmp_path) + ["--dry-run"])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert API_KEY not in captured.out
+    assert API_KEY not in captured.err
+    payload = json.loads(captured.out)
+    assert payload["network_request_performed"] is False
+    assert payload["credential_env_var_present"] is True
+    written = (tmp_path / "artifacts" / "request_plan.json").read_text(encoding="utf-8")
+    assert API_KEY not in written
+
+
+def test_the_dry_run_scrubber_removes_a_credential_and_bearer_shapes() -> None:
+    """Defence in depth behind the pre-flight refusal.
+
+    The refusal covers the fields the collector knows about. This scrubber
+    is the last gate on the rendered document, so it is tested directly.
+    """
+    text = f'{{"a": "{API_KEY}", "b": "Bearer {API_KEY}", "c": "Bearer other"}}'
+
+    cleaned = redact_text_for_dry_run(text, API_KEY)
+
+    assert API_KEY not in cleaned
+    assert "Bearer other" not in cleaned
+    assert cleaned.count("[REDACTED]") == 3
+
+
+def test_the_dry_run_scrubber_is_safe_without_a_configured_credential() -> None:
+    cleaned = redact_text_for_dry_run('{"a": "Bearer sk-abc123"}', None)
+
+    assert "sk-abc123" not in cleaned
+    assert "[REDACTED]" in cleaned

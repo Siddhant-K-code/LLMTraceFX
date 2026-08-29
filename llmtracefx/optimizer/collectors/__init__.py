@@ -9,6 +9,8 @@ from .mlx import (
 )
 from .openai_api import (
     API_EVIDENCE_SCHEMA_VERSION,
+    ARTIFACT_MANIFEST_NAME,
+    ARTIFACT_MANIFEST_SCHEMA_VERSION,
     GLM_REASONING_EFFORT_LEVELS,
     THINKING_TYPES,
     APICollectionConfig,
@@ -18,13 +20,18 @@ from .openai_api import (
     ProviderExtensions,
     StreamingTransport,
     UrllibStreamingTransport,
+    artifact_set_is_complete,
+    assert_credential_not_embedded,
     build_request_plan,
     collect_openai_stream,
+    redact_text_for_dry_run,
 )
 from .sse import SSEDecodeError, SSEDecoder, SSEEvent
 
 __all__ = [
     "API_EVIDENCE_SCHEMA_VERSION",
+    "ARTIFACT_MANIFEST_NAME",
+    "ARTIFACT_MANIFEST_SCHEMA_VERSION",
     "APICollectionConfig",
     "APICollectionResult",
     "APIEvidence",
@@ -41,7 +48,10 @@ __all__ = [
     "StreamingTransport",
     "THINKING_TYPES",
     "UrllibStreamingTransport",
+    "artifact_set_is_complete",
+    "assert_credential_not_embedded",
     "build_request_plan",
     "collect_mlx",
     "collect_openai_stream",
+    "redact_text_for_dry_run",
 ]
