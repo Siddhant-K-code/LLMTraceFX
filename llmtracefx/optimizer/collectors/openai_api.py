@@ -688,13 +688,20 @@ class _Redactor:
 
     def __init__(self, credential: str | None) -> None:
         self._credential = credential or None
-        # Match more than the literal form. A credential may legally contain
-        # spaces and ``__call__`` collapses whitespace, so a provider could
-        # echo the key with tabs, newlines or doubled spaces, survive an
-        # exact-substring scrub, and have it normalized back afterwards.
-        # Header names are lowercased before persistence, so the lowered
-        # form has to be matched as well or an uppercase key is written out
-        # in a fully reversible form.
+        # Match more than the literal value. A credential may legally contain
+        # spaces, and different sinks treat whitespace differently: ``text``
+        # must preserve the answer's own spacing, while ``__call__``
+        # collapses it. Matching each internal whitespace run as ``\s+``, case
+        # insensitively, gives every sink the same coverage without any sink
+        # having to alter what it persists. Case insensitivity also covers
+        # header names, which are lowercased before they are persisted.
+        self._pattern: re.Pattern[str] | None = None
+        if self._credential:
+            parts = [re.escape(part) for part in self._credential.split()]
+            joined = r"\s+".join(parts) if len(parts) > 1 else parts[0]
+            self._pattern = re.compile(joined, re.IGNORECASE)
+        # Prefix forms used only by ``boundary``, which compares against a
+        # truncated tail and so cannot use the pattern.
         variants: list[str] = []
         if self._credential:
             for variant in (
@@ -704,16 +711,12 @@ class _Redactor:
             ):
                 if variant and variant != self._credential and variant not in variants:
                     variants.append(variant)
-        # Longest first so a shorter variant cannot partially consume a
-        # longer match and leave a remainder behind.
         self._variants = tuple(sorted(variants, key=len, reverse=True))
 
     def _scrub(self, text: str) -> str:
         cleaned = text
-        if self._credential:
-            cleaned = cleaned.replace(self._credential, _REDACTED)
-        for variant in self._variants:
-            cleaned = cleaned.replace(variant, _REDACTED)
+        if self._pattern is not None:
+            cleaned = self._pattern.sub(_REDACTED, cleaned)
         return self._BEARER.sub(rf"\1 {_REDACTED}", cleaned)
 
     def __call__(self, text: str, *, limit: int = _MAX_PERSISTED_MESSAGE_CHARS) -> str:
@@ -1381,9 +1384,13 @@ class _StreamAccumulator:
             payload = json.loads(data)
         except json.JSONDecodeError as exc:
             if named_error:
+                # ``data`` reaches here mainly when the payload was cut in
+                # half, since a complete line would have parsed. The cut can
+                # fall inside an echoed credential, so repair the boundary
+                # before the raw line is interpolated.
                 return APIFailure(
                     category=FAILURE_PROVIDER_ERROR,
-                    message=redact(f"provider 'error' event: {data}"),
+                    message=redact(f"provider 'error' event: {redact.boundary(data)}"),
                 )
             return APIFailure(
                 category=FAILURE_STREAM_DECODE,
@@ -1543,8 +1550,16 @@ class _StreamAccumulator:
         The assembled text is therefore the authoritative scrub, and every
         persisted length is derived from this value so the record cannot
         disagree with ``response.txt``.
+
+        A truncated stream is still persisted, so a cut that landed inside
+        an echoed credential leaves a trailing fragment the substring scrub
+        cannot see. That boundary is repaired only when the stream did not
+        end cleanly, so a complete answer is never altered.
         """
-        return self._redactor.text("".join(self.content_parts))
+        joined = self._redactor.text("".join(self.content_parts))
+        if self.terminated_cleanly():
+            return joined
+        return self._redactor.boundary(joined)
 
     def statistics(self) -> StreamStatistics:
         gaps = [

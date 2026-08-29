@@ -2112,3 +2112,99 @@ def test_a_credential_with_doubled_spaces_is_redacted_from_response_text(
         text = path.read_text(encoding="utf-8")
         assert credential not in text, path.name
         assert normalized not in text, path.name
+
+
+@pytest.mark.parametrize("keep", [29, 20, 12, 6])
+def test_a_truncated_error_event_payload_does_not_leak_a_credential_prefix(
+    tmp_path: Path, keep: int
+) -> None:
+    """An unterminated ``error`` event is dispatched with its raw data line.
+
+    A complete data line parses as JSON and takes a safe branch, so the raw
+    interpolation is reached mainly when the provider cut the payload. The
+    cut can fall inside an echoed credential, and no oversized body or
+    padding trick is needed: the provider just closes the connection at a
+    chosen offset.
+    """
+    config = make_config(tmp_path)
+    chunks = [
+        b'event: error\ndata: {"error":{"message":"' + API_KEY[:keep].encode("utf-8")
+    ]
+
+    result, _ = run(config, FakeResponse(chunks))
+
+    failure = result.evidence.failure
+    assert failure is not None
+    prefixes = [API_KEY[:n] for n in range(_MIN_LEAKED_PREFIX_CHARS, len(API_KEY) + 1)]
+    for prefix in prefixes:
+        assert prefix not in failure.message, f"{len(prefix)} characters survived"
+    for path in sorted(config.output_dir.iterdir()):
+        text = path.read_text(encoding="utf-8")
+        for prefix in prefixes:
+            assert prefix not in text, f"{path.name} leaked {len(prefix)} characters"
+
+
+def test_content_cut_mid_credential_does_not_leak_into_the_response_file(
+    tmp_path: Path,
+) -> None:
+    """A truncated run still persists ``response.txt``.
+
+    The credential is dribbled across deltas and the stream is cut partway
+    through the last one, so no delta and no assembled string contains the
+    whole value. The assembled tail is a credential prefix, which only the
+    boundary repair can see.
+    """
+    config = make_config(tmp_path)
+    # Cut one character short so the assembled text is a prefix, not the key.
+    partial = API_KEY[:-1]
+    parts = [partial[i : i + 5] for i in range(0, len(partial), 5)]
+    assert "".join(parts) != API_KEY
+    chunks = [
+        sse({"choices": [{"index": 0, "delta": {"content": part}}]}) for part in parts
+    ]
+
+    result, _ = run(config, FakeResponse(chunks))
+
+    assert result.evidence.failure is not None
+    answer = (config.output_dir / "response.txt").read_text(encoding="utf-8")
+    prefixes = [API_KEY[:n] for n in range(_MIN_LEAKED_PREFIX_CHARS, len(API_KEY) + 1)]
+    for prefix in prefixes:
+        assert prefix not in answer, f"{len(prefix)} characters survived"
+    for path in sorted(config.output_dir.iterdir()):
+        text = path.read_text(encoding="utf-8")
+        for prefix in prefixes:
+            assert prefix not in text, f"{path.name} leaked {len(prefix)} characters"
+
+
+@pytest.mark.parametrize(
+    "echoed",
+    [
+        "ZQXJV\tKWPMB\tGHFDS\tRTNCL",
+        "ZQXJV\nKWPMB\nGHFDS\nRTNCL",
+        "ZQXJV  KWPMB  GHFDS  RTNCL",
+        "ZQXJV \t KWPMB \t GHFDS \t RTNCL",
+    ],
+)
+def test_response_text_redacts_a_whitespace_bearing_credential(
+    tmp_path: Path, echoed: str
+) -> None:
+    """``response.txt`` preserves whitespace, so it cannot normalize first.
+
+    Matching each internal whitespace run flexibly gives the answer sink the
+    same coverage as a collapsed diagnostic without altering what is written.
+    """
+    credential = "ZQXJV KWPMB GHFDS RTNCL"
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"choices": [{"index": 0, "delta": {"content": f"key is {echoed}"}}]}),
+        sse({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
+        b"data: [DONE]\n\n",
+    ]
+
+    run(config, FakeResponse(chunks), environ={"ZAI_API_KEY": credential})
+
+    answer = (config.output_dir / "response.txt").read_text(encoding="utf-8")
+    assert "[REDACTED]" in answer
+    assert "ZQXJV" not in " ".join(answer.split())
+    for path in sorted(config.output_dir.iterdir()):
+        assert "ZQXJV" not in path.read_text(encoding="utf-8"), path.name

@@ -973,13 +973,17 @@ and are never mixed into a single unlabelled number.
   credential and any bearer-token shape, and it preserves whitespace in
   generated text so redaction does not quietly alter the answer.
 - Redaction runs before any transform that could hide a match, and it matches
-  more than the literal value. Header names are lowercased before persistence,
-  so the lowered form is matched as well. Diagnostics collapse runs of
-  whitespace, so a credential containing spaces is matched in its normalized
-  form as well, and normalization happens before the scrub rather than after.
-  Provider payloads that exceed the body cap are repaired at the cut point,
-  because a byte cap can slice through an echoed credential and leave a
-  trailing fragment that an exact-substring match would not recognize.
+  more than the literal value. The credential is matched case insensitively,
+  because header names are lowercased before they are persisted, and each run
+  of whitespace inside the credential is matched flexibly, because a space is
+  a legal header value character and different sinks treat whitespace
+  differently. `response.txt` preserves the answer's own spacing and still
+  gets the same coverage as a collapsed diagnostic. Provider payloads that a
+  byte cap or a cut connection truncated are repaired at the cut point,
+  because truncation can slice through an echoed credential and leave a
+  trailing fragment that an exact-substring match would not recognize. That
+  repair is applied to truncated evidence only, so a complete answer is never
+  altered.
 - `--dry-run` applies the same refusal a real run does. If the configured
   environment variable holds a value that appears in the endpoint or the
   command, the pre-flight check fails instead of printing a plan that a real
