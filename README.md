@@ -989,6 +989,30 @@ and are never mixed into a single unlabelled number.
   deliberately not a synonym for terminal: an unknown reason is no evidence
   that generation completed, so a stream ending on one without `[DONE]` is
   still reported as truncated.
+- **The canonical `prefill` and `decode` fields are left unset.** They name
+  model phases, prompt processing and generation, and neither is observable
+  from outside a hosted API. The client-side interval before the first
+  content token also contains DNS, connection setup, TLS, request transfer
+  and any server-side queueing. The interval after it runs to the last SSE
+  event, which can be a usage chunk or `[DONE]` sent long after generation
+  ended: a provider that waits a minute before its sentinel would add that
+  minute to `decode`, with no generation in it. Publishing those two numbers
+  under those names would assert a decomposition the evidence does not
+  support. `total` is genuinely measurable end to end and is kept, and the
+  client-observed offsets are kept in the API evidence timeline under names
+  that say they are client-observed and include transport.
+- **`runtime.backend` stays empty for a hosted run.** That field is the
+  local compute backend (`Metal`, `CUDA`, `CPU`). `runtime.provider` exists
+  so a remote run is recorded without overloading it, and writing a
+  transport into `backend` would put `remote-http` everywhere a reader
+  expects hardware.
+- **The request timeout is a whole-response budget, not just an idle
+  timeout.** Passed to the transport it applies per socket operation, so a
+  server that emits a keepalive comment before each one expires resets it
+  forever and the run neither completes nor fails. The stream is checked
+  against a monotonic deadline as well, and a response that outlives its
+  budget is abandoned as a `timeout` failure. That also bounds the memory a
+  single collection can consume, since every event appends a timing row.
 - **Asking for reasoning and hearing nothing back suppresses the rate too.**
   When the request enabled thinking or set `reasoning_effort` and the
   provider returns neither reasoning deltas nor a reasoning token count,
@@ -1129,6 +1153,20 @@ and are never mixed into a single unlabelled number.
   credential character's literal, `%XX` or `%25XX` form is treated as that
   character having been cut, and redaction starts from where the credential
   began. Single and double encodings and mixed-case hex are all covered.
+- Backslash escapes count as spellings of the credential, alongside
+  percent-encoding. A JSON encoder writes the key as `\u0073\u006b...`
+  and a Python `repr` writes it as `\x73\x6b...`; both are one mechanical
+  decode away from the key. This matters most where the text is not
+  re-parsed: a non-JSON error body is persisted as it arrived, so an escape
+  in it stays an escape rather than being decoded back into characters the
+  literal matcher would catch. `\xXX`, `\uXXXX`, `\UXXXXXXXX` and the
+  UTF-16 surrogate pair a JSON encoder emits outside the BMP are all
+  matched, in either hex case, and a cut inside one is repaired the same
+  way a cut inside `%2F` is. The same applies to a space spelled `%2520` or
+  `\u0020`: a cut inside an encoded whitespace run used to leave every
+  credential character before it exposed. The matcher and the truncation
+  repair are generated from one list of spellings, so a form cannot be
+  added to one without the other.
 - The pre-flight check that refuses to persist a credential uses that same
   matcher, not a plain substring test. The two controls guard the same
   threat from opposite ends, so a difference between them is a gap: a

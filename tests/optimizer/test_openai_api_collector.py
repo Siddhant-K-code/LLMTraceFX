@@ -12,7 +12,7 @@ documentation:
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -562,7 +562,11 @@ def test_successful_stream_produces_evidence_and_artifacts(tmp_path: Path) -> No
         json.loads((config.output_dir / "record.json").read_text(encoding="utf-8"))
     )
     assert restored.runtime.provider == "z.ai"
-    assert restored.runtime.backend == "remote-http"
+    # No local compute backend ran this. The hosted service goes in
+    # ``provider``, which exists so a transport is never mistaken for
+    # hardware.
+    assert restored.runtime.backend is None
+    assert restored.runtime.provider == "z.ai"
 
 
 def test_time_to_first_token_ignores_empty_and_reasoning_only_chunks(
@@ -582,8 +586,12 @@ def test_time_to_first_token_ignores_empty_and_reasoning_only_chunks(
     assert timeline.first_body_chunk_offset_ms < timeline.first_content_token_offset_ms
     # The role-only chunk carried content="" and must not count as a token.
     assert timeline.events[0].offset_ms < timeline.first_content_token_offset_ms
-    assert result.record.timing.prefill is not None
-    assert result.record.timing.prefill.value == timeline.first_content_token_offset_ms
+    # The canonical model-phase fields stay unset: neither prompt
+    # processing nor generation is separable from transport here. The
+    # client-observed offsets live in the evidence timeline instead.
+    assert result.record.timing.prefill is None
+    assert result.record.timing.decode is None
+    assert result.record.timing.total is not None
 
 
 def test_stream_split_across_arbitrary_byte_boundaries(tmp_path: Path) -> None:
@@ -3954,3 +3962,188 @@ def test_changing_the_vocabulary_changes_the_config_identity(
 
     assert default.request_parameters == narrowed.request_parameters
     assert default.config_hash != narrowed.config_hash
+
+
+# --- Thirteenth review pass ---------------------------------------------------
+
+
+def assert_artifacts_are_credential_free(config: APICollectionConfig) -> None:
+    """No artifact holds the key, literally or in any escaped spelling."""
+    spellings = (
+        API_KEY,
+        _u_escape(API_KEY),
+        _x_escape(API_KEY),
+        "".join(f"%{byte:02X}" for byte in API_KEY.encode()),
+    )
+    for path in sorted(config.output_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for spelling in spellings:
+            assert spelling not in text, f"{spelling[:12]}... in {path.name}"
+
+
+def _u_escape(value: str) -> str:
+    return "".join(f"\\u{ord(character):04x}" for character in value)
+
+
+def _x_escape(value: str) -> str:
+    return "".join(f"\\x{ord(character):02x}" for character in value)
+
+
+@pytest.mark.parametrize(
+    ("label", "encode"),
+    [
+        ("json unicode escape", _u_escape),
+        ("uppercase hex", lambda v: "".join(f"\\u{ord(c):04X}" for c in v)),
+        ("wide unicode escape", lambda v: "".join(f"\\U{ord(c):08X}" for c in v)),
+        ("python byte escape", _x_escape),
+        ("mixed literal and escape", lambda v: v[:3] + _u_escape(v[3:])),
+    ],
+)
+def test_a_backslash_escaped_credential_is_redacted(
+    label: str, encode: Callable[[str], str]
+) -> None:
+    """A JSON encoder or a Python repr renders the key as an escape
+    sequence. It is one mechanical decode away from the key, so an artifact
+    holding it is holding the credential."""
+    redactor = _Redactor(API_KEY)
+    encoded = encode(API_KEY)
+
+    assert encoded not in redactor.text(f"provider said {encoded}")
+
+
+def test_an_escaped_credential_in_a_non_json_error_body_is_not_persisted(
+    tmp_path: Path,
+) -> None:
+    """The path that matters: a body that is not re-parsed is persisted as
+    it arrived, so an escape in it stays an escape."""
+    config = make_config(tmp_path)
+    encoded = _u_escape(API_KEY)
+    body = f"upstream rejected token {encoded}".encode()
+
+    result, _ = run(
+        config,
+        FakeResponse([body], status_code=400, headers={"content-type": "text/plain"}),
+    )
+
+    assert result.evidence.failure is not None
+    assert encoded not in result.evidence.failure.message
+    assert_artifacts_are_credential_free(config)
+
+
+@pytest.mark.parametrize("encode", [_u_escape, _x_escape])
+def test_truncation_inside_an_escape_redacts_from_the_credential_start(
+    encode: Callable[[str], str],
+) -> None:
+    """A cut inside ``\\u0073`` leaves ``\\u00``, which no element matcher
+    accepts. Without the repair the scrub stops at the cut and every
+    credential character before it survives."""
+    redactor = _Redactor(API_KEY)
+    encoded = encode(API_KEY)
+
+    for cut in range(len(encoded) // 2, len(encoded) + 1):
+        cleaned = redactor.boundary(f"body {encoded[:cut]}")
+
+        assert encoded[:cut] not in cleaned, f"cut at {cut} survived"
+
+
+def test_a_cut_inside_an_encoded_whitespace_run_is_repaired() -> None:
+    """A space spelled ``%2520`` or ``\\u0020`` can be cut too, and the run
+    then matches nothing, leaving every character before it exposed."""
+    credential = "sk-Ab9 zQ7"
+    redactor = _Redactor(credential)
+    head = "sk-Ab9"
+
+    for spelling in ("%2520", "\\u0020", "%20"):
+        encoded = head + spelling
+        for cut in range(len(head) + 1, len(encoded) + 1):
+            cleaned = redactor.boundary(f"body {encoded[:cut]}")
+
+            assert head not in cleaned, f"{spelling!r} cut at {cut} kept the head"
+
+
+def test_an_escaped_credential_is_caught_by_the_preflight_check() -> None:
+    """The pre-flight check and the redactor must not disagree."""
+    assert _contains_credential(f"?trace={_u_escape(API_KEY)}", API_KEY) is True
+
+
+def test_escapes_that_are_not_the_credential_are_left_alone() -> None:
+    """Over-matching would corrupt ordinary provider text."""
+    redactor = _Redactor(API_KEY)
+    message = "decode error at \\u0041\\u0042, byte \\x41 unexpected"
+
+    assert redactor.text(message) == message
+
+
+def test_the_canonical_record_leaves_the_model_phase_timings_unset(
+    tmp_path: Path,
+) -> None:
+    """``prefill`` and ``decode`` name model phases. Neither is separable
+    from transport for a hosted API, and ``decode`` would additionally
+    absorb a usage chunk or ``[DONE]`` sent after generation ended."""
+    config = make_config(tmp_path)
+
+    result, _ = run(config, glm_stream())
+
+    assert result.record.timing.prefill is None
+    assert result.record.timing.decode is None
+    assert result.record.timing.total is not None
+    # The client-observed decomposition is kept, under names that say it is
+    # client-observed and includes transport.
+    timeline = result.evidence.timeline
+    assert timeline.first_content_token_offset_ms is not None
+    assert timeline.response_headers_offset_ms is not None
+    assert timeline.first_body_chunk_offset_ms is not None
+
+
+def test_a_hosted_run_records_no_local_compute_backend(tmp_path: Path) -> None:
+    """``runtime.backend`` is the local backend ('Metal', 'CUDA', 'CPU').
+    ``runtime.provider`` exists so a transport is not stored as hardware."""
+    config = make_config(tmp_path)
+
+    result, _ = run(config, glm_stream())
+
+    assert result.record.runtime.backend is None
+    assert result.record.runtime.provider == "z.ai"
+    assert result.record.runtime.name == "openai-compatible-api"
+
+
+def test_a_stream_that_outlives_the_timeout_budget_fails_as_a_timeout(
+    tmp_path: Path,
+) -> None:
+    """A server emitting a keepalive before each socket timeout expires
+    resets the transport timeout forever, so the run would otherwise never
+    complete and never fail."""
+    config = make_config(tmp_path, request_timeout_seconds=0.05)
+    chunks = [b": keepalive\n\n"] * 200
+
+    result, _ = run(config, chunks)
+
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.category == FAILURE_TIMEOUT
+    assert "request timeout" in result.evidence.failure.message
+    assert result.record.outcome.success is False
+    assert_failure_artifacts(config, FAILURE_TIMEOUT)
+
+
+def test_the_deadline_does_not_cut_short_a_stream_inside_its_budget(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path, request_timeout_seconds=600.0)
+
+    result, _ = run(config, glm_stream())
+
+    assert result.evidence.failure is None
+    assert result.record.outcome.success is True
+
+
+def test_the_timeout_message_never_repeats_provider_text(tmp_path: Path) -> None:
+    config = make_config(tmp_path, request_timeout_seconds=0.05)
+    chunks = [b": keepalive\n\n"] * 200
+
+    result, _ = run(config, chunks)
+
+    assert result.evidence.failure is not None
+    assert API_KEY not in result.evidence.failure.message
+    assert_artifacts_are_credential_free(config)

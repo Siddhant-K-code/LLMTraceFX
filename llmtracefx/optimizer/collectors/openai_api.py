@@ -822,9 +822,12 @@ class _Redactor:
     _BEARER = re.compile(r"(?i)\b(bearer)(?:\s|%20|%2520)+[A-Za-z0-9._~+/=%-]+")
 
     # A whitespace run, in any rendering a provider might echo it in: real
-    # whitespace, the form-encoded ``+``, or the percent-encoded byte.
+    # whitespace, the form-encoded ``+``, the percent-encoded byte, or a
+    # backslash escape from a JSON or Python repr. Generated from
+    # ``_character_forms`` so the run matcher and the truncation repair
+    # cannot disagree about what spells a space.
     # Bounded repetition so a pathological run cannot make matching blow up.
-    _WHITESPACE_ELEMENT = r"(?:\s|\+|%(?:09|0[ABCD]|20)|%25(?:09|0[ABCD]|20)){1,64}"
+    _WHITESPACE_CHARACTERS = "\t\n\v\f\r "
 
     @staticmethod
     def _character_forms(character: str) -> tuple[str, ...]:
@@ -834,31 +837,86 @@ class _Redactor:
         is a proper prefix of one of them. ``_character_element`` compiles
         the same list into a pattern, so the matcher and the truncation
         repair can never disagree about what counts as a spelling.
+
+        Percent-encoding covers a provider that echoes the key through a
+        URL builder. Backslash escapes cover the other mechanical rendering
+        a provider produces: a JSON encoder emitting ``\\u0073``, or a
+        Python ``repr`` emitting ``\\x73``. Both are one mechanical decode
+        away from the key, so an artifact holding either is holding the
+        credential. This matters most where the text is *not* re-parsed:
+        a non-JSON error body is persisted as it arrived, so an escape in
+        it stays an escape rather than being decoded back into characters
+        the literal matcher would catch.
         """
+        codepoint = ord(character)
         encoded = "".join(f"%{byte:02X}" for byte in character.encode("utf-8"))
         forms = [character, encoded, encoded.replace("%", "%25")]
+        if codepoint < 0x100:
+            forms.append(f"\\x{codepoint:02X}")
+        if codepoint <= 0xFFFF:
+            forms.append(f"\\u{codepoint:04X}")
+        else:
+            # Outside the BMP a JSON encoder emits a UTF-16 surrogate pair.
+            high, low = (
+                int.from_bytes(character.encode("utf-16-be")[i : i + 2], "big")
+                for i in (0, 2)
+            )
+            forms.append(f"\\u{high:04X}\\u{low:04X}")
+        forms.append(f"\\U{codepoint:08X}")
         return tuple(dict.fromkeys(forms))
 
     @classmethod
     def _character_element(cls, character: str) -> str:
-        """One character, in literal and percent-encoded renderings.
+        """One character, in every spelling ``_character_forms`` lists.
 
         A provider that echoes the credential back through a URL builder
         returns ``sk-slash%2Fcredential`` for ``sk-slash/credential``. That
         is the credential: anyone reading the artifact can decode it in one
-        step. Matching each character as ``(?:c|%XX|%25XX)`` catches the
-        encoded form wherever it appears, including the partial encoding a
-        real quoting function produces when it encodes only the characters
-        it considers unsafe. ``re.IGNORECASE`` on the compiled pattern
-        covers ``%2f`` as well as ``%2F``. Double encoding is included
-        because a value passed through two layers of quoting is still one
-        mechanical decode away from the key, and the expansion stops there
-        so the pattern stays bounded.
+        step. Matching each character as ``(?:c|%XX|%25XX|\\xXX|\\uXXXX)``
+        catches the encoded form wherever it appears, including the partial
+        encoding a real quoting function produces when it encodes only the
+        characters it considers unsafe. ``re.IGNORECASE`` on the compiled
+        pattern covers ``%2f`` as well as ``%2F``, and ``\\u0073`` as well
+        as ``\\U0073``. Double encoding is included because a value passed
+        through two layers of quoting is still one mechanical decode away
+        from the key, and the expansion stops there so the pattern stays
+        bounded.
+
+        Built from ``_character_forms`` rather than from a second list, so
+        a spelling can never be added to the matcher without also being
+        known to the truncation repair, or the other way around.
         """
-        literal = re.escape(character)
-        encoded = "".join(f"%{byte:02X}" for byte in character.encode("utf-8"))
-        forms = [literal, encoded, encoded.replace("%", "%25")]
-        return "(?:" + "|".join(dict.fromkeys(forms)) + ")"
+        return (
+            "(?:"
+            + "|".join(re.escape(form) for form in cls._character_forms(character))
+            + ")"
+        )
+
+    @classmethod
+    def _whitespace_forms(cls) -> tuple[str, ...]:
+        """Every spelling of a single whitespace character.
+
+        The literal one-character spellings are dropped: they cannot be cut
+        short, and ``\\s`` already covers them in the run pattern. What
+        remains is the multi-character renderings, which truncation *can*
+        cut through, leaving ``%2``, ``%25`` or ``\\u00`` where a space
+        belonged. ``+`` is the form encoding of a space and is included as
+        a whole spelling.
+        """
+        forms: list[str] = ["+", "\\t", "\\n", "\\v", "\\f", "\\r"]
+        for character in cls._WHITESPACE_CHARACTERS:
+            forms.extend(
+                form for form in _Redactor._character_forms(character) if len(form) > 1
+            )
+        return tuple(dict.fromkeys(forms))
+
+    @classmethod
+    def _whitespace_element(cls) -> str:
+        return (
+            "(?:\\s|"
+            + "|".join(re.escape(form) for form in cls._whitespace_forms())
+            + "){1,64}"
+        )
 
     @classmethod
     def _elements_with_forms(
@@ -866,9 +924,11 @@ class _Redactor:
     ) -> list[tuple[str, tuple[str, ...] | None]]:
         """``_elements`` paired with the raw spellings behind each element.
 
-        Whitespace runs carry ``None``: a run is already matched flexibly
-        and a cut inside one exposes no credential character, so there is
-        nothing for the truncation repair to do with it.
+        Whitespace runs carry the multi-character spellings of one
+        whitespace character. A cut inside a literal space exposes nothing,
+        but a cut inside ``%2520`` or ``\\u0020`` leaves the run unmatchable
+        and every credential character *before* it surviving, so the
+        truncation repair needs to know those spellings too.
         """
         elements: list[tuple[str, tuple[str, ...] | None]] = []
         stripped = fragment.strip()
@@ -877,7 +937,7 @@ class _Redactor:
             if stripped[index].isspace():
                 while index < len(stripped) and stripped[index].isspace():
                     index += 1
-                elements.append((cls._WHITESPACE_ELEMENT, None))
+                elements.append((cls._whitespace_element(), cls._whitespace_forms()))
                 continue
             character = stripped[index]
             elements.append(
@@ -1732,9 +1792,22 @@ class _StreamAccumulator:
         return max(0.0, moment - self._started) * 1000
 
     def consume(
-        self, response: StreamingResponse, *, redact: _Redactor
+        self,
+        response: StreamingResponse,
+        *,
+        redact: _Redactor,
+        deadline: float | None = None,
     ) -> APIFailure | None:
-        """Drain the body. Returns a failure, or ``None`` when it streamed."""
+        """Drain the body. Returns a failure, or ``None`` when it streamed.
+
+        ``deadline`` is an absolute monotonic time past which the stream is
+        abandoned. The transport timeout is a per-socket-operation timeout,
+        so it only fires when the connection goes quiet; a server that emits
+        a keepalive comment before each socket timeout expires resets it
+        forever, and the run neither completes nor fails. That also bounds
+        the memory a stream can consume, since every event appends a timing
+        row.
+        """
         decoder = SSEDecoder()
         observed_at: float | None = None
         try:
@@ -1747,6 +1820,16 @@ class _StreamAccumulator:
                 observed_at = self._clock()
                 if self.first_body_chunk_at is None:
                     self.first_body_chunk_at = observed_at
+                if deadline is not None and observed_at >= deadline:
+                    return APIFailure(
+                        category=FAILURE_TIMEOUT,
+                        message=(
+                            "the response did not finish within the configured "
+                            f"{self._budget_text(deadline)} request timeout; "
+                            "the stream was still open and is abandoned "
+                            "incomplete"
+                        ),
+                    )
                 for event in decoder.feed(chunk):
                     failure = self._handle_event(event, observed_at, redact=redact)
                     if failure is not None or self.terminated_with_done:
@@ -1766,6 +1849,10 @@ class _StreamAccumulator:
             self.comment_count = decoder.comment_count
             self.incomplete_event_discarded = decoder.incomplete_event_discarded
         return None
+
+    def _budget_text(self, deadline: float) -> str:
+        """The configured budget, rendered from the deadline and start."""
+        return f"{deadline - self._started:g}s"
 
     def _handle_event(
         self, event: SSEEvent, observed_at: float, *, redact: _Redactor
@@ -2643,7 +2730,15 @@ def collect_openai_stream(
                     response, redact=redact, accumulator=accumulator
                 )
             else:
-                failure = accumulator.consume(response, redact=redact)
+                # The same budget the transport gets per socket operation
+                # is also the whole-response budget. A stream that stays
+                # chatty past it is abandoned as a timeout rather than
+                # followed indefinitely.
+                failure = accumulator.consume(
+                    response,
+                    redact=redact,
+                    deadline=started + float(config.request_timeout_seconds),
+                )
         finally:
             try:
                 response.close()
@@ -2864,7 +2959,12 @@ def _build_record(
         runtime=RuntimeInfo(
             name=RUNTIME_NAME,
             version=None,
-            backend="remote-http",
+            # No local compute backend executed this run. ``backend`` is
+            # documented as the local one ('Metal', 'CUDA', 'CPU'), and
+            # ``provider`` exists precisely so a hosted run is recorded
+            # without overloading it. Writing a transport there would put
+            # "remote-http" everywhere a reader expects hardware.
+            backend=None,
             git_revision=None,
             provider=config.provider,
         ),
@@ -2886,11 +2986,21 @@ def _build_record(
         timing=TimingMetrics(
             model_load=None,
             tokenize=None,
-            # Client-observed time to first content token, transport included.
-            prefill=milliseconds(started, accumulator.first_content_token_at),
-            decode=milliseconds(
-                accumulator.first_content_token_at, accumulator.last_event_at
-            ),
+            # ``prefill`` and ``decode`` name model phases: prompt
+            # processing and generation. Neither is observable from
+            # outside a hosted API. The client-side interval before the
+            # first content token also contains DNS, connection setup,
+            # TLS, request transfer and any server-side queueing, and the
+            # interval after it runs to the last SSE event, which can be
+            # a usage chunk or [DONE] sent long after generation
+            # finished. Publishing those two numbers under these names
+            # would state a decomposition the evidence does not support,
+            # so they are left unset and the client-observed offsets are
+            # kept, under their own names and with transport called out,
+            # in the API evidence timeline.
+            prefill=None,
+            decode=None,
+            # End to end wall clock is genuinely measurable from here.
             total=milliseconds(started, completed),
         ),
         memory=MemoryMetrics(),
