@@ -779,3 +779,125 @@ def test_a_secret_in_the_endpoint_query_is_not_echoed_by_a_parse_error(
     assert code == 2
     assert _SENTINEL not in err
     assert _SENTINEL not in out
+
+
+# Seventh review pass: attached short clusters, choice literals, and REMAINDER.
+
+
+@pytest.mark.parametrize("flag", ["-p", "-k", "-H", "-u", "-1"])
+def test_an_attached_short_cluster_value_is_not_echoed(
+    tmp_path: Path, flag: str
+) -> None:
+    """``-p<password>`` is the attached form, so the tail is a value."""
+    code, out, err = run_main(base_argv(tmp_path) + [f"{flag}{_SENTINEL}"])
+
+    assert code == 2
+    assert _SENTINEL not in err
+    assert _SENTINEL not in out
+
+
+def test_an_attached_short_cluster_keeps_its_flag_letter(tmp_path: Path) -> None:
+    """Redacting the value must not cost the caller the option they typed."""
+    _, _, err = run_main(base_argv(tmp_path) + [f"-p{_SENTINEL}"])
+
+    assert "-p[REDACTED]" in err
+
+
+def test_a_mistyped_subcommand_leaves_the_valid_choices_readable() -> None:
+    """A typo is a prefix of the real name, and the real name must survive."""
+    code, _, err = run_main(["collect-ap"])
+
+    assert code == 2
+    assert "'collect-api'" in err
+    assert "[REDACTED]i" not in err
+
+
+def test_a_value_containing_an_option_name_is_still_replaced_whole(
+    tmp_path: Path,
+) -> None:
+    """Protecting this program's vocabulary must not carve a hole in the scrub."""
+    embedded = f"x--api-key-env{_SENTINEL}"
+    code, out, err = run_main(base_argv(tmp_path) + ["--unknown-flag", embedded])
+
+    assert code == 2
+    assert embedded not in err + out
+    assert _SENTINEL not in err + out
+
+
+def test_a_credential_flag_after_a_bare_separator_is_not_rejected(
+    tmp_path: Path,
+) -> None:
+    """Everything after ``--`` belongs to a recorded command, not to us."""
+    stdout_file = tmp_path / "llama.txt"
+    stdout_file.write_text("llama_perf_context_print: eval time = 1.0 ms\n")
+
+    code, out, err = run_main(
+        [
+            "parse-llama-cpp",
+            "--run-id",
+            "r1",
+            "--model-id",
+            "local.gguf",
+            "--stdout-file",
+            str(stdout_file),
+            "--",
+            "llama-server",
+            "--api-key",
+            _SENTINEL,
+        ]
+    )
+
+    assert code == 0
+    assert err == ""
+    assert _SENTINEL not in out
+    assert json.loads(out)["command"]["argv"] == [
+        "llama-server",
+        "--api-key",
+        "[REDACTED]",
+    ]
+
+
+def test_an_attached_credential_flag_in_a_recorded_command_is_redacted(
+    tmp_path: Path,
+) -> None:
+    stdout_file = tmp_path / "llama.txt"
+    stdout_file.write_text("llama_perf_context_print: eval time = 1.0 ms\n")
+
+    code, out, _ = run_main(
+        [
+            "parse-llama-cpp",
+            "--run-id",
+            "r1",
+            "--model-id",
+            "local.gguf",
+            "--stdout-file",
+            str(stdout_file),
+            "--",
+            "llama-server",
+            f"--api-key={_SENTINEL}",
+            "--port",
+            "8080",
+        ]
+    )
+
+    assert code == 0
+    assert _SENTINEL not in out
+    assert json.loads(out)["command"]["argv"] == [
+        "llama-server",
+        "--api-key=[REDACTED]",
+        "--port",
+        "8080",
+    ]
+
+
+def test_a_credential_flag_before_the_separator_is_still_rejected(
+    tmp_path: Path,
+) -> None:
+    """The separator relaxes the scan, it does not disable it."""
+    code, _, err = run_main(
+        ["parse-llama-cpp", "--api-key", _SENTINEL, "--", "llama-server"]
+    )
+
+    assert code == 2
+    assert _SENTINEL not in err
+    assert "--api-key is not a supported option" in err

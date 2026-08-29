@@ -936,10 +936,20 @@ and are never mixed into a single unlabelled number.
   `--flag=value` form, is refused before argparse sees it, because argparse
   quotes an unrecognized argument straight back into stderr, value and all.
   The refusal names the flag and points at `--api-key-env`, never the value.
+  The scan stops at a bare `--`, because everything after it belongs to a
+  recorded external command rather than to this program, and `llama-server`
+  has its own `--api-key`. Those values are redacted where `parse-llama-cpp`
+  persists them instead, so the flag stays visible as evidence and the
+  credential does not reach `record.command.argv`.
 - No parse diagnostic repeats a value the caller supplied. Option names and
   the usage block are kept, since they carry no caller input and are what make
-  the error actionable, but anything typed as a value is replaced. A secret
-  pasted into the wrong option is still a secret.
+  the error actionable, but anything typed as a value is replaced. That
+  includes the tail of an attached short cluster such as `-p<secret>`, which
+  is a value wearing an option's clothes. This program's own vocabulary is put
+  beyond reach first, so mistyping `collect-ap` does not rewrite the valid
+  `collect-api` in the list of choices; a literal is only protected when no
+  supplied value contains it, so a secret that embeds an option name is still
+  replaced whole. A secret pasted into the wrong option is still a secret.
 - The credential value is never written to an artifact, never logged, never
   hashed and never included in the reconstructed command. `HTTPRequest`
   overrides `repr` so a traceback cannot surface the `Authorization` header.
@@ -1043,7 +1053,11 @@ event-stream rules dispatch on a blank line, and end of stream is not one, so a
 frame still buffered when the body ends was cut in transit. Dispatching it
 anyway would let an unterminated `data: [DONE]` close a truncated collection as
 though the provider had ended it cleanly. The run is recorded as
-`stream_truncated` instead. One leading U+FEFF byte order mark is ignored, as
+`stream_truncated` instead. A lone `\r` at the very end of a body is the
+exception: it is deferred while streaming because the next chunk may start with
+`\n`, but at end of stream nothing can follow it, so it is resolved as the line
+terminator the rules say it is rather than treated as a cut line. One leading
+U+FEFF byte order mark is ignored, as
 the rules require, including when its bytes arrive split across chunks;
 without that the first field name is not `data` and the whole first event is
 silently dropped.

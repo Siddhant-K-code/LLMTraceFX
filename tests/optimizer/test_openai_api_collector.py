@@ -2534,3 +2534,27 @@ def test_the_separate_endpoint_form_is_still_sanitized(tmp_path: Path) -> None:
     assert endpoint not in result.evidence.plan.command
     for path in sorted(config.output_dir.iterdir()):
         assert "private-value" not in path.read_text(encoding="utf-8"), path.name
+
+
+# --- Seventh review pass -----------------------------------------------------
+
+
+def test_a_carriage_return_framed_stream_collects_as_a_success(tmp_path: Path) -> None:
+    """Lone CR framing is legal SSE and must not read as a truncated stream."""
+    body = b"".join(glm_stream()).replace(b"\n", b"\r")
+    result, _ = run(make_config(tmp_path), [body])
+
+    assert result.evidence.success is True
+    assert result.response_text == "Hello world"
+    assert result.evidence.stream_had_unterminated_event is False
+
+
+def test_a_stream_ending_on_a_stray_carriage_return_is_still_a_success(
+    tmp_path: Path,
+) -> None:
+    chunks = [*glm_stream(), b"\r"]
+    result, _ = run(make_config(tmp_path), chunks)
+
+    assert result.evidence.success is True
+    assert result.evidence.stream_had_unterminated_event is False
+    assert result.record.outcome.success is True

@@ -232,3 +232,51 @@ def test_a_byte_order_mark_alone_does_not_start_an_event() -> None:
 
     assert events == []
     assert decoder.incomplete_event_discarded is False
+
+
+# Seventh review pass: a lone CR at end of stream is a terminator, not a cut.
+
+
+def test_a_lone_carriage_return_stream_delivers_its_final_event() -> None:
+    """Lone CR is a legal terminator, and at EOF no LF can follow it."""
+    decoder = SSEDecoder()
+    events = drain(decoder, [b"data: one\r\rdata: two\r\r"])
+
+    assert [event.data for event in events] == ["one", "two"]
+    assert decoder.incomplete_event_discarded is False
+
+
+def test_a_trailing_carriage_return_after_a_clean_end_is_not_a_cut() -> None:
+    decoder = SSEDecoder()
+    events = drain(decoder, [b"data: [DONE]\n\n\r"])
+
+    assert [event.data for event in events] == ["[DONE]"]
+    assert decoder.incomplete_event_discarded is False
+
+
+@pytest.mark.parametrize("split", [9, 10, 20, 21])
+def test_a_deferred_carriage_return_survives_a_chunk_boundary(split: int) -> None:
+    """The deferral exists for split chunks, so EOF must not undo it early."""
+    body = b"data: one\r\rdata: two\r\r"
+    decoder = SSEDecoder()
+    events = drain(decoder, [body[:split], body[split:]])
+
+    assert [event.data for event in events] == ["one", "two"]
+    assert decoder.incomplete_event_discarded is False
+
+
+def test_a_carriage_return_followed_by_a_newline_across_chunks_is_one_break() -> None:
+    decoder = SSEDecoder()
+    events = drain(decoder, [b"data: one\r", b"\n\r\n"])
+
+    assert [event.data for event in events] == ["one"]
+    assert decoder.incomplete_event_discarded is False
+
+
+def test_a_carriage_return_terminated_line_without_a_blank_line_is_discarded() -> None:
+    """The CR ends the line, but nothing dispatches the frame it built."""
+    decoder = SSEDecoder()
+    events = drain(decoder, [b"data: one\r"])
+
+    assert events == []
+    assert decoder.incomplete_event_discarded is True

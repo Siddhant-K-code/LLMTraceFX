@@ -489,6 +489,7 @@ def _cmd_parse_llama_cpp(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    command_argv = _redact_credential_flag_values(command_argv)
 
     try:
         record = build_experiment_record(
@@ -1336,6 +1337,7 @@ _CREDENTIAL_ARGUMENT_STEMS = frozenset(
 )
 
 _argv_values_to_scrub: tuple[str, ...] = ()
+_protected_argument_literals: tuple[str, ...] = ()
 
 
 def _option_stem(token: str) -> str:
@@ -1349,32 +1351,93 @@ def _option_stem(token: str) -> str:
     return "".join(character for character in name.lower() if character.isalnum())
 
 
+def _redact_credential_flag_values(argv: Sequence[str]) -> tuple[str, ...]:
+    """Replace the value of any credential-shaped flag in a recorded command.
+
+    ``parse-llama-cpp`` records the command the operator actually ran, and
+    ``llama-server`` has its own ``--api-key``. The flag itself is evidence
+    worth keeping, the value is a credential that would otherwise be
+    written verbatim into ``record.command.argv``. Both the separate and
+    the attached form are covered.
+    """
+    redacted: list[str] = []
+    skip_next = False
+    for index, token in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            redacted.append("[REDACTED]")
+            continue
+        if not token.startswith("-") or _option_stem(token) not in (
+            _CREDENTIAL_ARGUMENT_STEMS
+        ):
+            redacted.append(token)
+            continue
+        name, separator, _ = token.partition("=")
+        if separator:
+            redacted.append(f"{name}=[REDACTED]")
+            continue
+        following = argv[index + 1] if index + 1 < len(argv) else None
+        skip_next = following is not None and not following.startswith("-")
+        redacted.append(token)
+    return tuple(redacted)
+
+
 def _argument_values(raw_argv: Sequence[str]) -> tuple[str, ...]:
     """Every caller-supplied value in ``raw_argv``, longest first.
 
-    Option names are excluded because they are what makes a diagnostic
+    Long option names are excluded because they are what makes a diagnostic
     actionable and they are chosen by this program, not by the caller.
     Everything else is a value that argparse would otherwise quote back
     into stderr, so it is treated as possibly secret. Longest first so a
     value that contains another is replaced whole.
+
+    A short cluster such as ``-p<secret>`` is the attached form, so only
+    the flag letter is a name and the rest is a value. That is the shape
+    ``mysql -p<password>`` teaches, and skipping it as though the whole
+    token were an option name puts the credential straight into
+    "unrecognized arguments".
     """
     values: set[str] = set()
     for token in raw_argv:
         candidate = token
         if token.startswith("-"):
             name, separator, attached = token.partition("=")
-            if not separator:
+            if separator:
+                candidate = attached
+            elif token.startswith("--"):
                 continue
-            candidate = attached
+            else:
+                candidate = token[2:]
         if len(candidate) >= _MIN_SCRUBBED_ARGUMENT_CHARS:
             values.add(candidate)
     return tuple(sorted(values, key=len, reverse=True))
 
 
 def _scrub_argv_values(message: str) -> str:
+    """Replace every caller-supplied value in ``message``.
+
+    This program's own vocabulary is put beyond reach first, because a
+    caller value can be a prefix of one: mistyping ``collect-ap`` would
+    otherwise rewrite the valid ``collect-api`` in the list of choices and
+    leave the caller without a correct spelling to copy. A literal is only
+    protected when no value contains it, so a secret that happens to
+    embed an option name is still replaced whole.
+    """
+    values = _argv_values_to_scrub
+    if not values:
+        return message
+    protected = {
+        f"\x00{index}\x00": literal
+        for index, literal in enumerate(_protected_argument_literals)
+        if not any(literal in value for value in values)
+    }
     scrubbed = message
-    for value in _argv_values_to_scrub:
+    for placeholder, literal in protected.items():
+        scrubbed = scrubbed.replace(literal, placeholder)
+    for value in values:
         scrubbed = scrubbed.replace(value, "[REDACTED]")
+    for placeholder, literal in protected.items():
+        scrubbed = scrubbed.replace(placeholder, literal)
     return scrubbed
 
 
@@ -1395,14 +1458,23 @@ class SecureArgumentParser(argparse.ArgumentParser):
 def _reject_credential_arguments(raw_argv: Sequence[str]) -> None:
     """Refuse a credential-bearing flag before argparse can echo its value.
 
-    The collector reads the credential from the environment and has no
+    The collectors read the credential from the environment and have no
     flag that accepts one, so any such flag is a mistake. Rejecting it here
     rather than letting it fall through to "unrecognized arguments" means
     the value is never formatted into a message in the first place, and the
     caller is told where the credential actually belongs.
+
+    Scanning stops at a bare ``--``. Everything after it belongs to a
+    recorded external command, not to this program, and ``llama-server``
+    has its own ``--api-key``. Refusing that would leave no way to record
+    such a run and would point the caller at a flag that does not exist on
+    the subcommand they used. Those values are redacted where they are
+    persisted instead.
     """
     for token in raw_argv:
-        if not token.startswith("-") or token == "--":
+        if token == "--":
+            return
+        if not token.startswith("-"):
             continue
         if _option_stem(token) not in _CREDENTIAL_ARGUMENT_STEMS:
             continue
@@ -1415,6 +1487,26 @@ def _reject_credential_arguments(raw_argv: Sequence[str]) -> None:
             file=sys.stderr,
         )
         raise SystemExit(2)
+
+
+def _parser_literals(parser: argparse.ArgumentParser) -> tuple[str, ...]:
+    """Every option string and subcommand name this program defines.
+
+    These are the parts of a diagnostic worth keeping, so they are
+    collected once and put beyond the reach of the value scrub.
+    """
+    literals: set[str] = set()
+    for action in parser._actions:
+        literals.update(action.option_strings)
+        choices = action.choices
+        if isinstance(choices, dict):
+            for name, subparser in choices.items():
+                literals.add(name)
+                if isinstance(subparser, argparse.ArgumentParser):
+                    literals.update(_parser_literals(subparser))
+        elif choices is not None:
+            literals.update(choice for choice in choices if isinstance(choice, str))
+    return tuple(sorted(literals, key=len, reverse=True))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2106,10 +2198,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> None:
     global _argv_values_to_scrub
+    global _protected_argument_literals
 
     parser = build_parser()
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     _argv_values_to_scrub = _argument_values(raw_argv)
+    _protected_argument_literals = _parser_literals(parser)
     _reject_credential_arguments(raw_argv)
     args = parser.parse_args(raw_argv)
     args._invocation = (parser.prog, *raw_argv)

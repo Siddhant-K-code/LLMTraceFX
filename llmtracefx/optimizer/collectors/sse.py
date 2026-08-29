@@ -101,6 +101,14 @@ class SSEDecoder:
                 f"stream ended mid-character and is not valid UTF-8: {exc}"
             ) from exc
 
+        if self._buffer.endswith("\r"):
+            # While streaming, a buffer-final CR is deferred because the next
+            # chunk may start with LF. At end of stream no chunk can follow,
+            # so the event-stream rules make this CR a line terminator rather
+            # than a line cut in transit. Rewriting it removes the ambiguity
+            # the deferral existed to protect against.
+            self._buffer = f"{self._buffer[:-1]}\n"
+
         yield from self._drain_complete_lines()
         if self._buffer:
             # A line with no terminator: the stream stopped mid-line.
