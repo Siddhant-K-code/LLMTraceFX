@@ -686,32 +686,49 @@ class _Redactor:
 
     _BEARER = re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]+")
 
+    @staticmethod
+    def _flexible(fragment: str, *, anchored: bool) -> re.Pattern[str] | None:
+        """Compile a fragment so whitespace runs and case cannot hide it.
+
+        A provider that echoes the credential back with tabs for spaces, or
+        with the case folded, is echoing the credential. Matching each
+        internal whitespace run flexibly under ``re.IGNORECASE`` keeps every
+        sink at the same strength without any sink having to alter what it
+        persists.
+        """
+        parts = [re.escape(part) for part in fragment.split()]
+        if not parts:
+            return None
+        body = r"\s+".join(parts)
+        if anchored:
+            # A prefix cut inside a whitespace run leaves a trailing run
+            # that the split above dropped.
+            if fragment != fragment.rstrip():
+                body += r"\s*"
+            body += r"\Z"
+        return re.compile(body, re.IGNORECASE)
+
     def __init__(self, credential: str | None) -> None:
         self._credential = credential or None
-        # Match more than the literal value. A credential may legally contain
-        # spaces, and different sinks treat whitespace differently: ``text``
-        # must preserve the answer's own spacing, while ``__call__``
-        # collapses it. Matching each internal whitespace run as ``\s+``, case
-        # insensitively, gives every sink the same coverage without any sink
-        # having to alter what it persists. Case insensitivity also covers
-        # header names, which are lowercased before they are persisted.
-        self._pattern: re.Pattern[str] | None = None
+        self._pattern = (
+            self._flexible(self._credential, anchored=False)
+            if self._credential
+            else None
+        )
+        # ``boundary`` compares against a tail that truncation cut, so it
+        # cannot use the whole-credential pattern. It uses the same
+        # construction per candidate prefix length instead, so the two
+        # matchers guarding the same threat have equal strength.
+        tails: list[re.Pattern[str]] = []
         if self._credential:
-            parts = [re.escape(part) for part in self._credential.split()]
-            joined = r"\s+".join(parts) if len(parts) > 1 else parts[0]
-            self._pattern = re.compile(joined, re.IGNORECASE)
-        # Prefix forms used only by ``boundary``, which compares against a
-        # truncated tail and so cannot use the pattern.
-        variants: list[str] = []
-        if self._credential:
-            for variant in (
-                " ".join(self._credential.split()),
-                self._credential.lower(),
-                " ".join(self._credential.lower().split()),
+            for length in range(
+                len(self._credential) - 1, _MIN_ENCODED_CREDENTIAL_CHARS - 1, -1
             ):
-                if variant and variant != self._credential and variant not in variants:
-                    variants.append(variant)
-        self._variants = tuple(sorted(variants, key=len, reverse=True))
+                pattern = self._flexible(self._credential[:length], anchored=True)
+                if pattern is not None:
+                    tails.append(pattern)
+        # Longest prefix first, so the repair removes as much as it can.
+        self._tail_patterns = tuple(tails)
 
     def _scrub(self, text: str) -> str:
         cleaned = text
@@ -728,23 +745,19 @@ class _Redactor:
         return cleaned
 
     def boundary(self, text: str) -> str:
-        """Scrub a string that a byte cap may have cut through.
+        """Scrub a string that truncation may have cut through.
 
-        Truncation always removes the tail, so a credential split by the cap
-        survives as a trailing proper prefix that the exact-substring scrub
-        cannot see. Whitespace collapse then pulls that tail back into the
-        persisted window, which is how a 64 KiB body can leak all but the
-        last character of a key.
+        Truncation always removes the tail, so a credential split by a byte
+        cap or a closed connection survives as a trailing proper prefix that
+        the whole-credential scrub cannot see. Whitespace collapse then
+        pulls that tail back into the persisted window, which is how a 64
+        KiB body can leak all but the last character of a key.
         """
         cleaned = text.rstrip("\ufffd")
-        forms = [self._credential, *self._variants] if self._credential else []
-        for credential in forms:
-            if len(credential) < _MIN_ENCODED_CREDENTIAL_CHARS:
-                continue
-            longest = min(len(cleaned), len(credential) - 1)
-            for length in range(longest, _MIN_ENCODED_CREDENTIAL_CHARS - 1, -1):
-                if cleaned.endswith(credential[:length]):
-                    return cleaned[:-length] + _REDACTED
+        for pattern in self._tail_patterns:
+            repaired, count = pattern.subn(_REDACTED, cleaned)
+            if count:
+                return repaired
         return cleaned
 
     def text(self, value: str) -> str:

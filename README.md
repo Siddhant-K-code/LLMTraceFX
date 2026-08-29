@@ -983,7 +983,8 @@ and are never mixed into a single unlabelled number.
   because truncation can slice through an echoed credential and leave a
   trailing fragment that an exact-substring match would not recognize. That
   repair is applied to truncated evidence only, so a complete answer is never
-  altered.
+  altered, and it uses the same flexible matching as the whole-value scrub so
+  the two controls guarding the same threat have equal strength.
 - `--dry-run` applies the same refusal a real run does. If the configured
   environment variable holds a value that appears in the endpoint or the
   command, the pre-flight check fails instead of printing a plan that a real

@@ -38,6 +38,7 @@ from llmtracefx.optimizer.collectors.openai_api import (
     artifact_set_is_complete,
     build_request_plan,
     collect_openai_stream,
+    redact_text_for_dry_run,
 )
 from llmtracefx.optimizer.schema import ExperimentRecord, MetricProvenance
 
@@ -2208,3 +2209,81 @@ def test_response_text_redacts_a_whitespace_bearing_credential(
     assert "ZQXJV" not in " ".join(answer.split())
     for path in sorted(config.output_dir.iterdir()):
         assert "ZQXJV" not in path.read_text(encoding="utf-8"), path.name
+
+
+@pytest.mark.parametrize("fold", ["lower", "upper", "swapcase"])
+def test_a_case_folded_truncated_tail_is_repaired(tmp_path: Path, fold: str) -> None:
+    """The boundary repair must be as strong as the whole-value scrub.
+
+    Both guard the same threat. A literal, case sensitive prefix comparison
+    would let any case folding defeat the repair while the scrub would have
+    caught the same echo in full.
+    """
+    credential = "ZqXjVkWpMbGhFdSaTrNcLy0123"
+    config = make_config(tmp_path)
+    cap = 64 * 1024
+    surviving = 20
+    tail: str = getattr(credential[:surviving], fold)()
+    body = (" " * (cap - surviving) + tail).encode("utf-8")
+
+    result, _ = run(
+        config,
+        FakeResponse([body], status_code=402),
+        environ={"ZAI_API_KEY": credential},
+    )
+
+    failure = result.evidence.failure
+    assert failure is not None
+    assert "[REDACTED]" in failure.message
+    for path in sorted(config.output_dir.iterdir()):
+        text = path.read_text(encoding="utf-8").lower()
+        for length in range(_MIN_LEAKED_PREFIX_CHARS, surviving + 1):
+            assert credential[:length].lower() not in text, path.name
+
+
+@pytest.mark.parametrize("substitute", ["\t", "  ", "\u00a0"])
+def test_a_whitespace_altered_truncated_tail_is_repaired(
+    tmp_path: Path, substitute: str
+) -> None:
+    """Collapsing whitespace turns an altered tail back into the prefix.
+
+    The persisted diagnostic normalizes runs of whitespace, so a tab in the
+    echo becomes a space again and the result is exactly the credential
+    prefix unless the repair matches whitespace flexibly.
+    """
+    credential = "ZQXJVK WPMBGH FDSART"
+    config = make_config(tmp_path)
+    surviving = 12
+    tail = credential[:surviving].replace(" ", substitute)
+    body = tail.encode("utf-8")
+
+    result, _ = run(
+        config,
+        FakeResponse([body], status_code=402),
+        environ={"ZAI_API_KEY": credential},
+    )
+
+    failure = result.evidence.failure
+    assert failure is not None
+    assert "[REDACTED]" in failure.message
+    normalized = " ".join(failure.message.split())
+    for length in range(_MIN_LEAKED_PREFIX_CHARS, surviving + 1):
+        assert credential[:length] not in normalized
+    for path in sorted(config.output_dir.iterdir()):
+        text = " ".join(path.read_text(encoding="utf-8").split())
+        for length in range(_MIN_LEAKED_PREFIX_CHARS, surviving + 1):
+            assert credential[:length] not in text, path.name
+
+
+def test_a_whitespace_only_credential_does_not_crash_the_redactor(
+    tmp_path: Path,
+) -> None:
+    """``redact_text_for_dry_run`` is exported, so the constructor is public.
+
+    A whitespace-only value is unreachable through the normal resolution
+    path, which strips and then rejects an empty credential, but the
+    constructor must not raise for a caller that builds one directly.
+    """
+    assert redact_text_for_dry_run("nothing to hide", "   ") == "nothing to hide"
+    assert redact_text_for_dry_run("nothing to hide", "") == "nothing to hide"
+    assert redact_text_for_dry_run("nothing to hide", None) == "nothing to hide"
