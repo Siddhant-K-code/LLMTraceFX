@@ -691,10 +691,14 @@ separately.
 Note that the unit is the whole file, not the changed lines. Touching a module
 that still carries debt means inheriting all of it: a one line edit to
 `llmtracefx/modal_app.py` currently fails on 39 ruff findings and 10 mypy
-errors that the change did not introduce, and `make format` does not clear
-them. That is deliberate, since it is what makes the debt shrink rather than
-persist, but it is worth knowing before editing an older module. Files added by
-recent work are already clean and stay that way.
+errors that the change did not introduce.
+
+Most of that is mechanical. `make format` satisfies black and isort and clears
+36 of the 39 ruff findings, and `ruff check --fix llmtracefx/modal_app.py`
+clears the last 3, which leaves the 10 mypy errors as the only part that needs
+real edits. That is deliberate, since it is what makes the debt shrink rather
+than persist, but it is worth knowing before editing an older module. Files
+added by recent work are already clean and stay that way.
 
 Run the same check locally before pushing:
 
