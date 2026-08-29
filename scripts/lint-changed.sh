@@ -38,7 +38,18 @@
 
 set -euo pipefail
 
-BASE="${1:-origin/main}"
+BASE="${1-origin/main}"
+
+# `${1-...}` rather than `${1:-...}` on purpose. An explicitly passed empty
+# string means the caller tried to supply a base and came up with nothing, which
+# is the "cannot work out what changed" condition, not a request for the default.
+# Coercing it to origin/main would diff HEAD against itself on a push build and
+# pass having checked nothing.
+if [ "$#" -gt 0 ] && [ -z "$1" ]; then
+    echo "lint-changed: empty base argument." >&2
+    echo "lint-changed: pass a base ref or SHA, or pass nothing for origin/main." >&2
+    exit 1
+fi
 
 # The empty tree. Used as the base for an initial push, where there is no
 # previous commit to compare against and every tracked file is new.

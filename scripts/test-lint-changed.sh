@@ -59,6 +59,12 @@ new_repo() {
     for arg in "$@"; do printf '\t%s' "$arg"; done
     printf '\n'
 } >>"$STUB_LOG"
+# "$1" is always "run" and "$2" is the tool name. Failing one tool at a time is
+# what lets the status tests tell the four apart. Failing them all at once would
+# only prove that at least one of them propagates.
+if [ -n "${STUB_FAIL_TOOL:-}" ] && [ "${2:-}" = "$STUB_FAIL_TOOL" ]; then
+    exit 1
+fi
 exit "${STUB_EXIT:-0}"
 STUB
     chmod +x "${REPO}/bin/uv"
@@ -83,7 +89,8 @@ commit_file() {
 # Runs the script under test inside $REPO. Sets RC and OUT.
 run_script() {
     ( cd "$REPO" && PATH="${REPO}/bin:${PATH}" STUB_LOG="$STUB_LOG" \
-        STUB_EXIT="${STUB_EXIT:-0}" "$SCRIPT" "$@" ) >"${REPO}/out.txt" 2>&1
+        STUB_EXIT="${STUB_EXIT:-0}" STUB_FAIL_TOOL="${STUB_FAIL_TOOL:-}" \
+        "$SCRIPT" "$@" ) >"${REPO}/out.txt" 2>&1
     RC=$?
     OUT="$(cat "${REPO}/out.txt")"
 }
@@ -123,6 +130,8 @@ BASE="$(git -C "$REPO" rev-parse HEAD)"
 commit_file "b.py"
 run_script "$BASE"
 check "added file is checked" "b.py" "$(files_for ruff)"
+check "black gets the same file list" "b.py" "$(files_for black)"
+check "isort gets the same file list" "b.py" "$(files_for isort)"
 
 new_repo
 commit_file "a.py"
@@ -130,6 +139,8 @@ BASE="$(git -C "$REPO" rev-parse HEAD)"
 commit_file "a file with spaces.py"
 run_script "$BASE"
 check "path with spaces stays one argument" "a file with spaces.py" "$(files_for ruff)"
+check "black keeps the space intact" "a file with spaces.py" "$(files_for black)"
+check "isort keeps the space intact" "a file with spaces.py" "$(files_for isort)"
 
 new_repo
 commit_file "a.py"
@@ -188,6 +199,16 @@ commit_file "a.py"
 run_script "refs/heads/does-not-exist"
 check "missing base ref fails closed" "1" "$RC"
 
+# An explicitly empty argument means the caller could not work out a base. On a
+# push build the old default would have been origin/main, which is HEAD, so the
+# diff came out empty and the job passed having checked nothing.
+new_repo
+commit_file "a.py"
+git -C "$REPO" update-ref refs/remotes/origin/main HEAD
+run_script ""
+check "empty base argument fails closed" "1" "$RC"
+check "empty base argument runs no tools" "0" "$(calls_for ruff)"
+
 # --- initial push ---------------------------------------------------------
 
 # A root commit has no parent, so there is nothing to diff against. The empty
@@ -201,12 +222,47 @@ check "empty tree base exits 0 when clean" "0" "$RC"
 
 # --- status propagation ---------------------------------------------------
 
+# Every tool has to actually run. Deleting one from the script would otherwise be
+# invisible here: the remaining assertions still pass and the suite still goes
+# green, so half the ratchet could disappear without a test noticing.
+new_repo
+commit_file "llmtracefx/__init__.py"
+BASE="$(git -C "$REPO" rev-parse HEAD)"
+commit_file "llmtracefx/mod.py"
+run_script "$BASE"
+check "ruff is invoked" "1" "$(calls_for ruff)"
+check "black is invoked" "1" "$(calls_for black)"
+check "isort is invoked" "1" "$(calls_for isort)"
+check "mypy is invoked" "1" "$(calls_for mypy)"
+
+# Each tool's failure has to fail the script on its own. Failing all of them at
+# once only proves that at least one status is propagated, which would leave a
+# single swallowed status undetected.
 new_repo
 commit_file "a.py"
 BASE="$(git -C "$REPO" rev-parse HEAD)"
 commit_file "b.py"
-STUB_EXIT=1 run_script "$BASE"
-check "a failing tool fails the script" "1" "$RC"
+for tool in ruff black isort; do
+    STUB_FAIL_TOOL="$tool"
+    run_script "$BASE"
+    check "a failing ${tool} fails the script" "1" "$RC"
+done
+unset STUB_FAIL_TOOL
+
+# mypy only runs when something under llmtracefx/ changed, so its status test
+# needs a fixture there rather than the root level files used above.
+new_repo
+commit_file "llmtracefx/__init__.py"
+BASE="$(git -C "$REPO" rev-parse HEAD)"
+commit_file "llmtracefx/mod.py"
+STUB_FAIL_TOOL=mypy
+run_script "$BASE"
+check "a failing mypy fails the script" "1" "$RC"
+unset STUB_FAIL_TOOL
+
+STUB_EXIT=1
+run_script "$BASE"
+check "every tool failing fails the script" "1" "$RC"
 unset STUB_EXIT
 
 # --- mypy scoping ---------------------------------------------------------
