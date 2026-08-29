@@ -172,6 +172,7 @@ def server() -> Iterator[ThreadingHTTPServer]:
 
 def endpoint_for(httpd: ThreadingHTTPServer) -> str:
     host, port = httpd.server_address[0], httpd.server_address[1]
+    assert isinstance(host, str)
     return f"http://{host}:{port}/v1/chat/completions"
 
 
@@ -216,6 +217,7 @@ def test_real_transport_streams_and_measures(
     timeline = evidence.timeline
     assert timeline.response_headers_offset_ms is not None
     assert timeline.first_content_token_offset_ms is not None
+    assert timeline.completed_offset_ms is not None
     assert timeline.completed_offset_ms >= timeline.first_content_token_offset_ms
 
     request = _Handler.seen[0]

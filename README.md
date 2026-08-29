@@ -868,7 +868,7 @@ artifacts/<run-id>/
   response.txt        final answer text only
   api_evidence.json   streaming timeline, statistics, provider usage, failure detail
   environment.json    non-sensitive client package and platform metadata
-  artifacts.json      completion marker listing every file above with its sha256
+  artifacts.json      completion marker listing the evidence files with sha256
 ```
 
 `--dry-run` writes only `request_plan.json`.

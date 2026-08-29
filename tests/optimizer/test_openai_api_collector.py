@@ -1094,6 +1094,7 @@ def assert_failure_artifacts(
     assert record.outcome.success is False
     assert record.error is not None
     assert record.error.category == category
+    assert isinstance(payload, dict)
     return payload
 
 
@@ -3243,3 +3244,28 @@ def test_a_missing_variable_is_reported_without_naming_it(tmp_path: Path) -> Non
 
     assert "ZAI_API_KEY" not in str(raised.value)
     assert not config.output_dir.exists()
+
+
+def test_the_embedded_credential_refusal_names_the_option_not_the_variable(
+    tmp_path: Path,
+) -> None:
+    """The rule is applied uniformly rather than per call site.
+
+    Every caller of this check happens to hold a proven name today, so
+    naming the variable would be safe by construction. Referring to the
+    option instead removes the dependency on that reasoning surviving a
+    later refactor, and stays equally actionable.
+    """
+    config = make_config(tmp_path, prompt=f"summarize this: {API_KEY}")
+
+    with pytest.raises(OpenAIStreamCollectorError) as raised:
+        collect_openai_stream(
+            config,
+            transport=ExplodingTransport(),
+            environ={"ZAI_API_KEY": API_KEY},
+        )
+
+    message = str(raised.value)
+    assert "--api-key-env" in message
+    assert "ZAI_API_KEY" not in message
+    assert API_KEY not in message

@@ -2068,9 +2068,12 @@ def _resolve_credential(config: APICollectionConfig, environ: Mapping[str, str])
     credential = value.strip()
     if not credential:
         raise OpenAIStreamCollectorError(
-            f"environment variable {config.credential_env_var} is empty"
+            f"environment variable {_persistable_env_var(config.credential_env_var, environ)} "
+            "is empty"
         )
-    _assert_header_safe_credential(credential, config.credential_env_var)
+    _assert_header_safe_credential(
+        credential, _persistable_env_var(config.credential_env_var, environ)
+    )
     return credential
 
 
@@ -2169,7 +2172,7 @@ def _assert_credential_not_embedded(
     for label, value in haystacks:
         if _contains_credential(value, credential):
             raise OpenAIStreamCollectorError(
-                f"the value of {config.credential_env_var} appears in {label}; "
+                f"the value named by {_ENV_VAR_OPTION} appears in {label}; "
                 "refusing to run because that value would be persisted"
             )
 
