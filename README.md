@@ -967,11 +967,19 @@ and are never mixed into a single unlabelled number.
 - Every provider-controlled string is passed through a redactor before it is
   persisted, not only error messages: generated content, response and request
   IDs, the echoed model name, the finish reason, response header request IDs,
-  provider error codes and rate-limit values. A provider that echoes your key
-  back in any of those fields cannot get it into an artifact or onto the
-  terminal. The redactor removes the known credential and any bearer-token
-  shape, and it preserves whitespace in generated text so redaction does not
-  quietly alter the answer.
+  provider error codes, and both the names and the values of rate-limit
+  headers. A provider that echoes your key back in any of those fields cannot
+  get it into an artifact or onto the terminal. The redactor removes the known
+  credential and any bearer-token shape, and it preserves whitespace in
+  generated text so redaction does not quietly alter the answer.
+- Redaction runs before any transform that could hide a match, and it matches
+  more than the literal value. Header names are lowercased before persistence,
+  so the lowered form is matched as well. Diagnostics collapse runs of
+  whitespace, so a credential containing spaces is matched in its normalized
+  form as well, and normalization happens before the scrub rather than after.
+  Provider payloads that exceed the body cap are repaired at the cut point,
+  because a byte cap can slice through an echoed credential and leave a
+  trailing fragment that an exact-substring match would not recognize.
 - `--dry-run` applies the same refusal a real run does. If the configured
   environment variable holds a value that appears in the endpoint or the
   command, the pre-flight check fails instead of printing a plan that a real

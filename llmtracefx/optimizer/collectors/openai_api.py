@@ -688,17 +688,60 @@ class _Redactor:
 
     def __init__(self, credential: str | None) -> None:
         self._credential = credential or None
+        # Match more than the literal form. A credential may legally contain
+        # spaces and ``__call__`` collapses whitespace, so a provider could
+        # echo the key with tabs, newlines or doubled spaces, survive an
+        # exact-substring scrub, and have it normalized back afterwards.
+        # Header names are lowercased before persistence, so the lowered
+        # form has to be matched as well or an uppercase key is written out
+        # in a fully reversible form.
+        variants: list[str] = []
+        if self._credential:
+            for variant in (
+                " ".join(self._credential.split()),
+                self._credential.lower(),
+                " ".join(self._credential.lower().split()),
+            ):
+                if variant and variant != self._credential and variant not in variants:
+                    variants.append(variant)
+        # Longest first so a shorter variant cannot partially consume a
+        # longer match and leave a remainder behind.
+        self._variants = tuple(sorted(variants, key=len, reverse=True))
 
     def _scrub(self, text: str) -> str:
         cleaned = text
         if self._credential:
             cleaned = cleaned.replace(self._credential, _REDACTED)
+        for variant in self._variants:
+            cleaned = cleaned.replace(variant, _REDACTED)
         return self._BEARER.sub(rf"\1 {_REDACTED}", cleaned)
 
     def __call__(self, text: str, *, limit: int = _MAX_PERSISTED_MESSAGE_CHARS) -> str:
-        cleaned = " ".join(self._scrub(text).split())
+        # Normalize before scrubbing as well as after. Whitespace collapse
+        # can reassemble a credential that the pre-collapse form hid.
+        cleaned = " ".join(self._scrub(" ".join(text.split())).split())
         if len(cleaned) > limit:
             cleaned = cleaned[: limit - 3] + "..."
+        return cleaned
+
+    def boundary(self, text: str) -> str:
+        """Scrub a string that a byte cap may have cut through.
+
+        Truncation always removes the tail, so a credential split by the cap
+        survives as a trailing proper prefix that the exact-substring scrub
+        cannot see. Whitespace collapse then pulls that tail back into the
+        persisted window, which is how a 64 KiB body can leak all but the
+        last character of a key.
+        """
+        cleaned = text.rstrip("\ufffd")
+        forms = [self._credential, *self._variants] if self._credential else []
+        for credential in forms:
+            if len(credential) < _MIN_ENCODED_CREDENTIAL_CHARS:
+                continue
+            longest = min(len(cleaned), len(credential) - 1)
+            for length in range(longest, _MIN_ENCODED_CREDENTIAL_CHARS - 1, -1):
+                if cleaned.endswith(credential[:length]):
+                    return cleaned[:-length] + _REDACTED
         return cleaned
 
     def text(self, value: str) -> str:
@@ -1805,7 +1848,11 @@ def _rate_limit_headers(
         if lowered in _RATE_LIMIT_HEADER_NAMES or lowered.startswith(
             _RATE_LIMIT_HEADER_PREFIXES
         ):
-            collected[lowered] = redact(str(value), limit=_MAX_PERSISTED_HEADER_CHARS)
+            # The name is provider controlled too. Header name tokens allow
+            # the same alphabet most API keys use, so a server can echo the
+            # credential in the name and have it persisted as a dict key.
+            safe_name = redact(lowered, limit=_MAX_PERSISTED_HEADER_CHARS)
+            collected[safe_name] = redact(str(value), limit=_MAX_PERSISTED_HEADER_CHARS)
     return collected
 
 
@@ -1841,6 +1888,9 @@ def _http_status_failure(
     response: StreamingResponse, *, redact: _Redactor
 ) -> APIFailure:
     body = _read_error_body(response).decode("utf-8", errors="replace")
+    # The byte cap in ``_read_error_body`` can cut through an echoed
+    # credential, so repair that boundary before the body is parsed or used.
+    body = redact.boundary(body)
     message = f"HTTP {response.status_code}"
     code: str | None = None
     try:

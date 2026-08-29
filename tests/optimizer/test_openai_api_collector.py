@@ -1954,3 +1954,161 @@ def test_a_long_request_id_header_cannot_leak_a_credential_prefix(
         text = path.read_text(encoding="utf-8")
         for prefix in prefixes:
             assert prefix not in text, f"{path.name} leaked {len(prefix)} characters"
+
+
+# --- Third review pass: transform-before-redact orderings ---------------------
+
+
+def test_a_credential_echoed_in_a_rate_limit_header_name_is_redacted(
+    tmp_path: Path,
+) -> None:
+    """Header names are provider controlled and were persisted as dict keys.
+
+    The HTTP token alphabet covers the alphabet most API keys use, so a
+    server can put the credential in the name rather than the value. Names
+    are lowercased before persistence, so the lowered form has to be
+    matched too or an uppercase key is written in reversible form.
+    """
+    config = make_config(tmp_path)
+    response = FakeResponse(
+        list(glm_stream()),
+        headers={
+            "content-type": "text/event-stream",
+            f"X-RateLimit-{API_KEY}": "1",
+            f"X-RateLimit-Remaining-{API_KEY.upper()}": "0",
+        },
+    )
+
+    result, _ = run(config, response)
+
+    for name, value in result.evidence.rate_limit_headers.items():
+        assert API_KEY not in name
+        assert API_KEY.lower() not in name
+        assert API_KEY not in value
+    for path in sorted(config.output_dir.iterdir()):
+        text = path.read_text(encoding="utf-8")
+        assert API_KEY not in text, path.name
+        assert API_KEY.lower() not in text, path.name
+
+
+@pytest.mark.parametrize("padding", [" ", "\n", "\t", "x"])
+def test_an_error_body_cut_through_a_credential_does_not_leak_a_prefix(
+    tmp_path: Path, padding: str
+) -> None:
+    """The body byte cap can slice an echoed credential in half.
+
+    Whitespace padding makes this reachable: the redactor collapses runs of
+    whitespace after scrubbing, which pulls the truncated tail back into the
+    persisted window. The cut always lands at the end of the buffer, so the
+    surviving fragment is a trailing prefix of the credential.
+    """
+    config = make_config(tmp_path)
+    cap = 64 * 1024
+    surviving = len(API_KEY) - 1
+    body = (padding * (cap - surviving) + API_KEY).encode("utf-8")
+    assert body[:cap].endswith(API_KEY[:surviving].encode("utf-8"))
+
+    result, _ = run(config, FakeResponse([body], status_code=402))
+
+    failure = result.evidence.failure
+    assert failure is not None
+    prefixes = [API_KEY[:n] for n in range(_MIN_LEAKED_PREFIX_CHARS, len(API_KEY) + 1)]
+    for prefix in prefixes:
+        assert prefix not in failure.message, f"{len(prefix)} characters survived"
+    for path in sorted(config.output_dir.iterdir()):
+        text = path.read_text(encoding="utf-8")
+        for prefix in prefixes:
+            assert prefix not in text, f"{path.name} leaked {len(prefix)} characters"
+
+
+@pytest.mark.parametrize(
+    "echoed",
+    [
+        "key with spaces here",
+        "key\twith\tspaces\there",
+        "key  with  spaces  here",
+        "key\nwith\nspaces\nhere",
+        "key \t with \t spaces \t here",
+    ],
+)
+def test_a_credential_containing_spaces_survives_whitespace_normalization(
+    tmp_path: Path, echoed: str
+) -> None:
+    """A space is a legal header value character, so it is a legal key.
+
+    Diagnostics collapse whitespace after scrubbing, so a provider that
+    echoes the key with tabs or doubled spaces would evade the exact match
+    and then be normalized back into the credential.
+    """
+    credential = "key with spaces here"
+    config = make_config(tmp_path)
+    body = json.dumps({"error": {"message": echoed, "code": "1002"}}).encode("utf-8")
+
+    result, _ = run(
+        config,
+        FakeResponse([body], status_code=401),
+        environ={"ZAI_API_KEY": credential},
+    )
+
+    failure = result.evidence.failure
+    assert failure is not None
+    assert credential not in failure.message
+    assert "[REDACTED]" in failure.message
+    for path in sorted(config.output_dir.iterdir()):
+        assert credential not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_an_uppercase_credential_echoed_in_a_header_name_is_redacted(
+    tmp_path: Path,
+) -> None:
+    """Header names are lowercased before persistence.
+
+    Matching only the literal credential would spare an uppercase key
+    cosmetically while still writing the lowered form, which is fully
+    reversible for the hex and base32 alphabets keys usually use.
+    """
+    credential = "SK-9F3A2B7C1D4E5F60ZAIKEY"
+    config = make_config(tmp_path)
+    response = FakeResponse(
+        list(glm_stream()),
+        headers={
+            "content-type": "text/event-stream",
+            f"X-RateLimit-{credential}": "1",
+        },
+    )
+
+    result, _ = run(config, response, environ={"ZAI_API_KEY": credential})
+
+    for name in result.evidence.rate_limit_headers:
+        assert credential.lower() not in name
+    for path in sorted(config.output_dir.iterdir()):
+        assert credential.lower() not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_a_credential_with_doubled_spaces_is_redacted_from_response_text(
+    tmp_path: Path,
+) -> None:
+    """``response.txt`` is scrubbed without whitespace normalization.
+
+    Preserving the answer's own whitespace is correct, but it means a
+    credential whose stored form has doubled spaces would not match an echo
+    that uses single spaces unless the normalized form is matched too.
+    """
+    credential = "key  with  doubled  spaces"
+    normalized = "key with doubled spaces"
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"choices": [{"index": 0, "delta": {"content": normalized}}]}),
+        sse({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
+        b"data: [DONE]\n\n",
+    ]
+
+    run(config, FakeResponse(chunks), environ={"ZAI_API_KEY": credential})
+
+    answer = (config.output_dir / "response.txt").read_text(encoding="utf-8")
+    assert normalized not in answer
+    assert "[REDACTED]" in answer
+    for path in sorted(config.output_dir.iterdir()):
+        text = path.read_text(encoding="utf-8")
+        assert credential not in text, path.name
+        assert normalized not in text, path.name
