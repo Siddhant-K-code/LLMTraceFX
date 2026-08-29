@@ -77,10 +77,46 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --extra dev --extra test
+        run: uv sync --locked --extra dev --extra test
+
+      # macOS is the only place the MLX extra can install, because its dependency
+      # markers require Darwin on arm64. Installing it here is what makes the
+      # macOS jobs worth running: without it the MLX tests exercise a
+      # monkeypatched stand-in, and the real import path is never executed.
+      - name: Install MLX runtime (macOS only)
+        if: runner.os == 'macOS'
+        run: uv sync --locked --extra dev --extra test --extra mlx
 
       - name: Run test suite
         run: uv run pytest
+
+      # Constructing MLXLMRuntime is the actual runtime boundary: it rejects
+      # anything that is not Darwin on arm64, and raises if mlx or mlx_lm cannot
+      # be imported. Every call below is model free, so this downloads nothing.
+      # load_model and stream_generate are deliberately not exercised.
+      - name: MLX runtime smoke check (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          uv run python - <<'PY'
+          import platform
+
+          from llmtracefx.optimizer.collectors.mlx import MLXLMRuntime
+
+          runtime = MLXLMRuntime()
+          runtime.seed(0)
+          runtime.synchronize()
+          runtime.reset_peak_memory()
+          snapshot = runtime.memory_snapshot()
+
+          assert runtime.mlx_version, "mlx version did not resolve"
+          assert runtime.mlx_lm_version, "mlx-lm version did not resolve"
+
+          print(f"platform:    {platform.system()}/{platform.machine()}")
+          print(f"mlx:         {runtime.mlx_version}")
+          print(f"mlx-lm:      {runtime.mlx_lm_version}")
+          print(f"accelerator: {runtime.accelerator_name()}")
+          print(f"memory:      {snapshot}")
+          PY
 
   quality:
     name: quality ratchet (changed files)
@@ -101,7 +137,13 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: uv sync --extra dev --extra test
+        run: uv sync --locked --extra dev --extra test
+
+      - name: Test the ratchet itself
+        # Runs before the ratchet does. If file selection regresses, the gate can
+        # start passing on an empty file list, which is indistinguishable from a
+        # clean run. These tests stub uv, so they need no toolchain.
+        run: scripts/test-lint-changed.sh
 
       - name: Resolve diff base
         id: diff-base
@@ -111,26 +153,35 @@ jobs:
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
+          # The empty tree. Diffing against it yields every tracked file, which
+          # is the correct baseline when a push has no usable predecessor.
+          EMPTY_TREE=4b825dc642cb6eb9a060e54bf8d69288fbee4904
           if [ "$EVENT_NAME" = "pull_request" ]; then
             base="$PR_BASE_SHA"
+            if ! git rev-parse --verify --quiet "${base}^{commit}" >/dev/null; then
+              echo "::error::Pull request base ${base} is missing from the checkout."
+              exit 1
+            fi
           else
-            # github.event.before is all zeros for a new branch, and can point at
-            # an object that no longer exists after a force push.
+            # github.event.before is all zeros on the first push of a branch, and
+            # after a force push it can name an object that no longer exists.
+            # The previous fallback here was HEAD^, which was wrong twice over:
+            # it only covers the final commit of a multi-commit push, and it does
+            # not exist at all for a root commit. The empty tree errs towards
+            # checking every file rather than silently checking none.
             base="$PUSH_BEFORE_SHA"
             if ! git rev-parse --verify --quiet "${base}^{commit}" >/dev/null; then
-              base="$(git rev-parse --verify --quiet 'HEAD^{commit}^' || true)"
+              echo "Push base ${base} is unusable. Falling back to the empty tree."
+              base="$EMPTY_TREE"
             fi
           fi
-          if [ -z "$base" ]; then
-            echo "Could not resolve a diff base, skipping the ratchet."
-            echo "base=" >> "$GITHUB_OUTPUT"
-          else
-            echo "Diff base: $base"
-            echo "base=$base" >> "$GITHUB_OUTPUT"
-          fi
+          echo "Diff base: $base"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
 
+      # No `if:` guard here on purpose. Skipping this step registers as success,
+      # so an unresolvable base would quietly pass the ratchet. Resolution above
+      # either produces a usable base or fails the job.
       - name: Run quality ratchet on changed files
-        if: steps.diff-base.outputs.base != ''
         run: scripts/lint-changed.sh "${{ steps.diff-base.outputs.base }}"
 
   build:

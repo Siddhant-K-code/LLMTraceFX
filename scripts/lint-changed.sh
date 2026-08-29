@@ -20,13 +20,18 @@
 # BASE defaults to origin/main. CI passes an explicit base SHA.
 #
 # Notes on the file selection, which is deliberately picky:
-#   --merge-base    three-dot semantics, so unrelated commits that landed on the
-#                   base branch are not attributed to this change
+#   merge base     resolved explicitly, then used as a two dot diff. Equivalent
+#                  to --merge-base, but a missing merge base can be reported on
+#                  its own rather than surfacing as a generic diff error.
 #   --diff-filter   A/C/M/R only. Deleted files are excluded so no tool is ever
 #                   handed a path that no longer exists. For a rename, git
 #                   reports the new path, which is the one worth checking.
 #   -z              NUL separated output, so paths containing spaces survive
 #   -- '*.py'       a git pathspec, which matches nested directories
+#
+# Every failure here is a hard failure. A ratchet that cannot work out what
+# changed must not fall back to checking nothing, because that reports success.
+# scripts/test-lint-changed.sh covers the cases that used to slip through.
 #
 # Written for bash 3.2 so it also runs on a stock macOS shell. That rules out
 # mapfile, hence the read -d '' loop below.
@@ -35,16 +40,50 @@ set -euo pipefail
 
 BASE="${1:-origin/main}"
 
-if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
-    echo "lint-changed: base commit '${BASE}' not found." >&2
-    echo "lint-changed: fetch the base branch, or pass an explicit base SHA." >&2
+# The empty tree. Used as the base for an initial push, where there is no
+# previous commit to compare against and every tracked file is new.
+EMPTY_TREE="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+if [ "$BASE" = "$EMPTY_TREE" ]; then
+    # No merge base exists against a bare tree, and none is wanted. Comparing
+    # HEAD to the empty tree yields every tracked Python file, which is the
+    # correct baseline for a branch with no history behind it.
+    DIFF_BASE="$EMPTY_TREE"
+else
+    if ! git rev-parse --verify --quiet "${BASE}^{commit}" >/dev/null; then
+        echo "lint-changed: base commit '${BASE}' not found." >&2
+        echo "lint-changed: fetch the base branch, or pass an explicit base SHA." >&2
+        exit 1
+    fi
+
+    # Resolving the merge base as its own step means an unrelated history gets a
+    # clear message. Folding it into `git diff --merge-base` would still fail,
+    # but the reason would be buried in a diff error.
+    if ! DIFF_BASE="$(git merge-base "$BASE" HEAD 2>/dev/null)"; then
+        echo "lint-changed: no merge base between '${BASE}' and HEAD." >&2
+        echo "lint-changed: refusing to guess a base, because checking nothing" >&2
+        echo "lint-changed: would silently pass the ratchet." >&2
+        exit 1
+    fi
+fi
+
+# The file list goes through a temporary file so the exit status of git diff can
+# be checked. Read through a process substitution instead, a git failure is
+# invisible: the loop reads nothing, the list comes out empty, and the script
+# reports "nothing to check" and exits 0. That turns any git error into a silent
+# pass, which is the one failure mode a ratchet must not have.
+DIFF_LIST="$(mktemp)"
+trap 'rm -f "$DIFF_LIST"' EXIT
+
+if ! git diff --name-only --diff-filter=ACMR -z "$DIFF_BASE" HEAD -- '*.py' >"$DIFF_LIST"; then
+    echo "lint-changed: git diff against '${DIFF_BASE}' failed." >&2
     exit 1
 fi
 
 CHANGED=()
 while IFS= read -r -d '' file; do
     CHANGED+=("$file")
-done < <(git diff --merge-base "$BASE" HEAD --name-only --diff-filter=ACMR -z -- '*.py')
+done <"$DIFF_LIST"
 
 if [ ${#CHANGED[@]} -eq 0 ]; then
     echo "No Python files changed against ${BASE}. Nothing to check."
