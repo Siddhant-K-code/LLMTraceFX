@@ -28,11 +28,12 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict
 from itertools import combinations
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, TypeVar, overload
 
 from .collectors._shared import atomic_write_text
 from .collectors.mlx import (
@@ -1518,6 +1519,45 @@ def _scrub_argv_values(message: str) -> str:
     return scrubbed
 
 
+@contextmanager
+def _argument_scrub_scope(
+    parser: argparse.ArgumentParser, argv: Sequence[str] | None
+) -> Iterator[None]:
+    """Install the scrub state for the duration of one parse.
+
+    ``main`` is not the only way in: ``build_parser().parse_args(...)`` is
+    public, is what a test or an embedding caller reaches for, and used to
+    run with the scrub state still at its module defaults. An empty state
+    makes ``_scrub_argv_values`` a no-op, so argparse echoed invalid
+    choices and unrecognized arguments verbatim.
+
+    An enclosing scope wins. Subparsers are instances of this class too and
+    parse a suffix of the command line, so letting the inner parse reinstall
+    the state would narrow it to the tokens that subparser happens to see.
+    """
+    global _argv_values_to_scrub
+    global _protected_argument_literals
+
+    if _protected_argument_literals:
+        yield
+        return
+    previous_values = _argv_values_to_scrub
+    previous_literals = _protected_argument_literals
+    literals = _parser_literals(parser)
+    _protected_argument_literals = literals
+    _argv_values_to_scrub = _argument_values(
+        list(sys.argv[1:] if argv is None else argv), literals
+    )
+    try:
+        yield
+    finally:
+        _argv_values_to_scrub = previous_values
+        _protected_argument_literals = previous_literals
+
+
+_N = TypeVar("_N")
+
+
 class SecureArgumentParser(argparse.ArgumentParser):
     """An ``ArgumentParser`` whose diagnostics never repeat a value.
 
@@ -1527,6 +1567,54 @@ class SecureArgumentParser(argparse.ArgumentParser):
     block are kept, since they carry no caller input and are what make the
     error actionable; every value the caller supplied is replaced.
     """
+
+    @overload
+    def parse_args(
+        self,
+        args: Sequence[str] | None = None,
+        namespace: None = None,
+    ) -> argparse.Namespace: ...
+
+    @overload
+    def parse_args(self, args: Sequence[str] | None, namespace: _N) -> _N: ...
+
+    @overload
+    def parse_args(self, *, namespace: _N) -> _N: ...
+
+    def parse_args(
+        self,
+        args: Sequence[str] | None = None,
+        namespace: _N | None = None,
+    ) -> _N | argparse.Namespace:
+        # ``parse_args`` reports unrecognized arguments itself, after
+        # ``parse_known_args`` has returned and its scope has been undone,
+        # so the scope has to cover this call too or that one diagnostic
+        # echoes the leftover tokens verbatim.
+        with _argument_scrub_scope(self, args):
+            return super().parse_args(args, namespace)
+
+    @overload
+    def parse_known_args(
+        self,
+        args: Sequence[str] | None = None,
+        namespace: None = None,
+    ) -> tuple[argparse.Namespace, list[str]]: ...
+
+    @overload
+    def parse_known_args(
+        self, args: Sequence[str] | None, namespace: _N
+    ) -> tuple[_N, list[str]]: ...
+
+    @overload
+    def parse_known_args(self, *, namespace: _N) -> tuple[_N, list[str]]: ...
+
+    def parse_known_args(
+        self,
+        args: Sequence[str] | None = None,
+        namespace: _N | None = None,
+    ) -> tuple[_N | argparse.Namespace, list[str]]:
+        with _argument_scrub_scope(self, args):
+            return super().parse_known_args(args, namespace)
 
     def error(self, message: str) -> NoReturn:
         super().error(_scrub_argv_values(message))

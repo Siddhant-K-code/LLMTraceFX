@@ -34,8 +34,11 @@ from llmtracefx.optimizer.collectors.openai_api import (
     ProviderExtensions,
     TransportConnectionError,
     TransportTimeout,
+    _contains_credential,
+    _Redactor,
     _safe_endpoint_for_message,
     artifact_set_is_complete,
+    assert_credential_not_embedded,
     build_request_plan,
     collect_openai_stream,
     redact_text_for_dry_run,
@@ -3269,3 +3272,298 @@ def test_the_embedded_credential_refusal_names_the_option_not_the_variable(
     assert "--api-key-env" in message
     assert "ZAI_API_KEY" not in message
     assert API_KEY not in message
+
+
+# --- Eleventh review pass ----------------------------------------------------
+
+
+# The pre-flight refusal and the redactor guard the same threat: the
+# credential ending up in an artifact. They only agree if they recognise the
+# same spellings, so these cases are stated once and asserted against both.
+_EQUIVALENT_SPELLINGS = (
+    ("lowercased", lambda value: value.lower()),
+    ("uppercased", lambda value: value.upper()),
+    ("tab for space", lambda value: value.replace(" ", "\t")),
+    ("newline for space", lambda value: value.replace(" ", "\n")),
+    ("percent encoded slash", lambda value: value.replace("/", "%2F")),
+    ("lowercase hex", lambda value: value.replace("/", "%2f")),
+    ("double encoded", lambda value: value.replace("/", "%252F")),
+    ("plus for space", lambda value: value.replace(" ", "+")),
+)
+
+# Mixed case with a slash and a space, so every transformation above
+# produces a genuinely different string from the original.
+_SPELLING_CREDENTIAL = "sk-Live/Key Value-8712"
+
+
+@pytest.mark.parametrize("label,transform", _EQUIVALENT_SPELLINGS)
+def test_preflight_and_redactor_agree_on_credential_spellings(
+    label: str, transform: Any
+) -> None:
+    """Both matchers recognise every spelling, or neither is trustworthy.
+
+    A pre-flight that is merely literal passes a provider identifier
+    echoing the key in lower case, or an extension value with a tab where
+    the key has a space. The refusal exists precisely to stop such a value
+    being persisted, so it has to be as flexible as the redaction it backs.
+    """
+    echo = transform(_SPELLING_CREDENTIAL)
+    assert echo != _SPELLING_CREDENTIAL, label
+
+    assert _contains_credential(echo, _SPELLING_CREDENTIAL), label
+    assert _Redactor(_SPELLING_CREDENTIAL).text(echo) != echo, label
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "ZAI_API_KEY",
+        "glm-5.3",
+        "https://api.z.ai/api/paas/v4/chat/completions",
+        "Explain a stack in one sentence.",
+        "chatcmpl-abc123",
+        "",
+    ],
+)
+def test_preflight_does_not_fire_on_unrelated_values(value: str) -> None:
+    """Flexibility must not turn into matching everything.
+
+    A refusal that fires on ordinary configuration teaches people to work
+    around the check, which costs more than the check buys.
+    """
+    assert not _contains_credential(value, _SPELLING_CREDENTIAL)
+
+
+@pytest.mark.parametrize(
+    "field,build",
+    [
+        ("run_id", lambda echo: {"run_id": echo}),
+        ("provider", lambda echo: {"provider": echo}),
+        ("model_id", lambda echo: {"model_id": echo}),
+        ("prompt", lambda echo: {"prompt": echo}),
+        ("model_revision", lambda echo: {"model_revision": echo}),
+        ("system_prompt", lambda echo: {"system_prompt": echo}),
+        (
+            "endpoint",
+            lambda echo: {"endpoint": f"https://api.z.ai/v4/chat?x={echo}"},
+        ),
+        (
+            "provider_request_id",
+            lambda echo: {"extensions": ProviderExtensions(provider_request_id=echo)},
+        ),
+        (
+            "command_argv",
+            lambda echo: {
+                "command_argv": ("llmtracefx-optimizer", "collect-api", echo)
+            },
+        ),
+    ],
+)
+def test_every_persisted_field_refuses_a_case_folded_credential(
+    tmp_path: Path, field: str, build: Any
+) -> None:
+    """Each field that reaches an artifact is checked, not just the obvious ones.
+
+    ``build_request_plan`` is the sink under test because it renders the
+    plan and the reconstructed command, which is where a value that slips
+    past the refusal would be written.
+    """
+    credential = "SECRETVALUE1234567890"
+    echo = credential.lower()
+    config = make_config(tmp_path, **build(echo))
+    environ = {"ZAI_API_KEY": credential}
+
+    with pytest.raises(OpenAIStreamCollectorError) as raised:
+        assert_credential_not_embedded(config, environ)
+
+    message = str(raised.value)
+    assert field.split("[")[0] in message
+    assert credential not in message
+    assert echo not in message
+
+
+def test_preflight_refuses_a_credential_used_as_the_variable_name() -> None:
+    """The variable name is persisted, so it is checked like any other field.
+
+    Contrived, but the name is written into the plan whenever it resolves,
+    and a rule that holds for every other persisted field should not have
+    an exception carved out of it.
+    """
+    credential = "SELFNAMINGSECRET1234"
+    config = APICollectionConfig(
+        run_id="api-run",
+        provider="z.ai",
+        endpoint=ENDPOINT,
+        model_id="glm-5.3",
+        prompt="hi",
+        output_dir=Path("/tmp/does-not-matter"),
+        command_argv=("llmtracefx-optimizer", "collect-api"),
+        credential_env_var=credential,
+    )
+
+    with pytest.raises(OpenAIStreamCollectorError) as raised:
+        assert_credential_not_embedded(config, {credential: credential})
+
+    assert "credential_env_var" in str(raised.value)
+    assert credential not in str(raised.value)
+
+
+# A credential whose seventh character is a slash, so a cut immediately
+# after the sixth lands inside that character's percent escape. Six is the
+# threshold, so this is the shortest prefix the repair may act on.
+_CUT_CREDENTIAL = "secret/key-abcdefgh"
+
+
+@pytest.mark.parametrize(
+    "cut",
+    ["%", "%2", "%2f", "%2F", "%25", "%252", "%252f", "%252F"],
+)
+def test_boundary_repairs_a_cut_inside_a_percent_escape(cut: str) -> None:
+    """Truncation inside an escape must not strand the credential head.
+
+    ``boundary`` walks the credential element by element, and an element
+    matcher rejects a half-written escape. Without the repair the walk
+    stops at the cut and every character before it survives, which is
+    almost the whole key for a cut near the end.
+    """
+    text = f"provider said error secret{cut}"
+
+    scrubbed = _Redactor(_CUT_CREDENTIAL).boundary(text)
+
+    assert scrubbed == "provider said error [REDACTED]"
+    assert "secret" not in scrubbed
+
+
+def test_boundary_repair_covers_every_cut_position() -> None:
+    """No offset into the encoded credential leaves a usable prefix behind."""
+    encoded = "secret" + "%252F" + "key-abcdefgh"
+    for length in range(6, len(encoded) + 1):
+        text = f"error {encoded[:length]}"
+        scrubbed = _Redactor(_CUT_CREDENTIAL).boundary(text)
+        assert scrubbed == "error [REDACTED]", encoded[:length]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "all done 100%",
+        "progress 50%2 of the way",
+        "sec%2",
+        "a discount of 25% applies",
+        "%",
+    ],
+)
+def test_boundary_repair_leaves_innocent_text_alone(text: str) -> None:
+    """A trailing percent sign is ordinary text far more often than a cut key.
+
+    The repair only fires once enough whole credential elements have
+    already matched, so a bare percent, and a prefix shorter than the
+    threshold, are both left as they are.
+    """
+    assert _Redactor(_CUT_CREDENTIAL).boundary(text) == text
+
+
+def test_boundary_repair_survives_the_transformations_applied_after_it() -> None:
+    """The repaired string is still clean once collapsed and truncated."""
+    redactor = _Redactor(_CUT_CREDENTIAL)
+    repaired = redactor.boundary("x" * 400 + " error secret%2")
+
+    collapsed = redactor(repaired)
+
+    assert "secret" not in collapsed
+    assert "[REDACTED]" in collapsed or collapsed.endswith("...")
+
+
+def test_hidden_reasoning_leaves_the_provider_token_rate_unavailable(
+    tmp_path: Path,
+) -> None:
+    """Tokens generated in an unobserved period have no window to divide by.
+
+    Z.ai counts reasoning tokens inside ``completion_tokens``. When it
+    reports them but streams no reasoning delta, the generation window
+    collapses onto the visible answer while the numerator still carries
+    the hidden work, so any rate computed here overstates throughput by
+    whatever fraction of the response was silent reasoning.
+    """
+    config = make_config(tmp_path)
+    usage = {
+        "prompt_tokens": 5,
+        "completion_tokens": 100,
+        "total_tokens": 105,
+        "completion_tokens_details": {"reasoning_tokens": 90},
+    }
+
+    result, _ = run(
+        config,
+        glm_stream(content_parts=("a", "b"), reasoning_parts=(), usage=usage),
+    )
+
+    statistics = result.evidence.statistics
+    assert statistics.reasoning_delta_count == 0
+    assert statistics.generation_window_ms == statistics.content_window_ms
+    assert statistics.provider_completion_tokens_per_second is None
+    reason = statistics.provider_completion_tokens_per_second_unavailable_reason
+    assert reason is not None
+    assert "never observed" in reason
+    # The visible rate stays available: it subtracts the reasoning tokens
+    # from its numerator, so the window it uses does match what it counts.
+    assert statistics.provider_visible_completion_tokens_per_second is not None
+
+
+@pytest.mark.parametrize(
+    "reasoning_tokens,reasoning_parts",
+    [
+        (90, ("thinking", "harder")),
+        (0, ()),
+        (None, ()),
+    ],
+)
+def test_provider_token_rate_is_published_when_the_window_is_observable(
+    tmp_path: Path, reasoning_tokens: int | None, reasoning_parts: tuple[str, ...]
+) -> None:
+    """Streamed, zero and missing reasoning counts all leave the rate usable.
+
+    Suppression targets exactly one case, hidden reasoning. A count of
+    zero means no reasoning happened, and a missing count means the
+    provider said nothing, neither of which makes the observed window
+    wrong for the tokens it is dividing.
+    """
+    config = make_config(tmp_path)
+    usage: dict[str, Any] = {
+        "prompt_tokens": 5,
+        "completion_tokens": 100,
+        "total_tokens": 105,
+    }
+    if reasoning_tokens is not None:
+        usage["completion_tokens_details"] = {"reasoning_tokens": reasoning_tokens}
+
+    result, _ = run(
+        config,
+        glm_stream(
+            content_parts=("a", "b"), reasoning_parts=reasoning_parts, usage=usage
+        ),
+    )
+
+    statistics = result.evidence.statistics
+    assert statistics.provider_completion_tokens_per_second is not None
+    assert statistics.provider_completion_tokens_per_second_unavailable_reason is None
+
+
+def test_the_unavailable_reason_is_persisted_in_the_record(tmp_path: Path) -> None:
+    """A consumer reading the artifact sees why the rate is missing."""
+    config = make_config(tmp_path)
+    usage = {
+        "prompt_tokens": 5,
+        "completion_tokens": 100,
+        "total_tokens": 105,
+        "completion_tokens_details": {"reasoning_tokens": 90},
+    }
+
+    result, _ = run(
+        config,
+        glm_stream(content_parts=("a", "b"), reasoning_parts=(), usage=usage),
+    )
+
+    payload = result.evidence.statistics.to_dict()
+    assert payload["provider_completion_tokens_per_second"] is None
+    assert payload["provider_completion_tokens_per_second_unavailable_reason"]

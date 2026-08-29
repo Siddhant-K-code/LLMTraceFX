@@ -1279,3 +1279,169 @@ def test_a_set_variable_is_still_named_in_the_dry_run_plan(
     assert payload["credential_env_var"] == "ZAI_API_KEY"
     assert payload["credential_env_var_present"] is True
     assert "sentinel-value" not in json.dumps(payload)
+
+
+# --- Eleventh review pass ----------------------------------------------------
+
+
+def run_parser(argv: list[str]) -> tuple[int, str, str, str]:
+    """Drive the public parser directly, as an embedding caller would.
+
+    ``main`` is not the only entry point. ``build_parser().parse_args(...)``
+    is public and is what a test or another program reaches for, so it has
+    to be as safe as the path that goes through ``main``.
+    """
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code = 0
+    detail = ""
+    try:
+        with (
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            cli.build_parser().parse_args(list(argv))
+    except SystemExit as exit_error:
+        code = int(exit_error.code or 0)
+        detail = str(exit_error)
+    return code, stdout.getvalue(), stderr.getvalue(), detail
+
+
+@pytest.fixture(autouse=True)
+def _reset_scrub_state() -> Iterator[None]:
+    """Start each case with the state a fresh process would have.
+
+    The leak this guards only appears when nothing has populated the
+    module globals, which is exactly the situation on first use.
+    """
+    values = cli._argv_values_to_scrub
+    literals = cli._protected_argument_literals
+    cli._argv_values_to_scrub = ()
+    cli._protected_argument_literals = ()
+    try:
+        yield
+    finally:
+        cli._argv_values_to_scrub = values
+        cli._protected_argument_literals = literals
+
+
+_PARSER_SECRET = "sk-live-CANARY-4f9a2b7c1d8e"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        # An unsupported credential flag, separate and attached.
+        ["collect-api", "--api-key", _PARSER_SECRET],
+        ["collect-api", f"--api-key={_PARSER_SECRET}"],
+        # Left over after an otherwise complete command line, which is the
+        # path argparse reports itself rather than through parse_known_args.
+        # Every required option is present, so parsing gets far enough for
+        # the unrecognized-argument report to be what fails.
+        [
+            "collect-api",
+            "--run-id",
+            "cli-run",
+            "--endpoint",
+            "https://api.z.ai/api/paas/v4/chat/completions",
+            "--model-id",
+            "glm-5.3",
+            "--prompt-file",
+            "prompt.txt",
+            "--output-dir",
+            "out",
+            "--api-key",
+            _PARSER_SECRET,
+        ],
+        # An arbitrary rejected value, with no credential flag involved.
+        ["collect-api", "--reasoning-effort", _PARSER_SECRET],
+        ["collect-api", "--thinking-type", _PARSER_SECRET],
+        [_PARSER_SECRET],
+        ["--", _PARSER_SECRET],
+        [f"--endpoint={_PARSER_SECRET}"],
+    ],
+)
+def test_direct_parser_use_never_echoes_a_value(argv: list[str]) -> None:
+    """No stream, and no exit detail, repeats what the caller supplied."""
+    code, out, err, detail = run_parser(argv)
+
+    assert code != 0
+    for stream in (out, err, detail):
+        assert _PARSER_SECRET not in stream
+        assert _PARSER_SECRET.lower() not in stream.lower()
+
+
+def test_direct_parser_use_still_names_the_option() -> None:
+    """Scrubbing values must not take the actionable part with it."""
+    _, _, err, _ = run_parser(["collect-api", "--reasoning-effort", _PARSER_SECRET])
+
+    assert "--reasoning-effort" in err
+    assert _PARSER_SECRET not in err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["collect-api", "--reasoning-effort", _PARSER_SECRET],
+        ["collect-api", f"--reasoning-effort={_PARSER_SECRET}"],
+        ["collect-api", "--thinking-type", _PARSER_SECRET],
+        [_PARSER_SECRET],
+    ],
+)
+def test_direct_parse_known_args_never_echoes_a_value(argv: list[str]) -> None:
+    """``parse_known_args`` is public too, and is reached on its own.
+
+    Callers that want to forward unrecognized tokens use it directly, so
+    it cannot rely on ``parse_args`` having installed the scrub state for
+    it. Its own diagnostics have to be safe when it is the entry point.
+    """
+    stdout, stderr = io.StringIO(), io.StringIO()
+    detail = ""
+    try:
+        with (
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            cli.build_parser().parse_known_args(list(argv))
+    except SystemExit as exit_error:
+        detail = str(exit_error)
+
+    for stream in (stdout.getvalue(), stderr.getvalue(), detail):
+        assert _PARSER_SECRET not in stream
+        assert _PARSER_SECRET.lower() not in stream.lower()
+
+
+def test_parser_scrub_state_is_restored_after_a_direct_parse() -> None:
+    """A parse must not leave process-wide state behind it.
+
+    The scope exists for the duration of one parse. Leaking it would make
+    a later, unrelated diagnostic scrub tokens from a command line that
+    has nothing to do with it.
+    """
+    run_parser(["collect-api", "--reasoning-effort", _PARSER_SECRET])
+
+    assert cli._argv_values_to_scrub == ()
+    assert cli._protected_argument_literals == ()
+
+
+def test_a_valid_direct_parse_returns_the_parsed_arguments() -> None:
+    """The scope is a wrapper, not a change in behaviour."""
+    args = cli.build_parser().parse_args(
+        [
+            "collect-api",
+            "--endpoint",
+            "https://api.z.ai/api/paas/v4/chat/completions",
+            "--model-id",
+            "glm-5.3",
+            "--prompt-file",
+            "prompt.txt",
+            "--run-id",
+            "r1",
+            "--output-dir",
+            "out",
+            "--api-key-env",
+            "ZAI_API_KEY",
+        ]
+    )
+
+    assert args.model_id == "glm-5.3"
+    assert args.api_key_env == "ZAI_API_KEY"

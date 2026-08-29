@@ -925,6 +925,21 @@ and are never mixed into a single unlabelled number.
   very large number that is arithmetic rather than evidence, and only the
   window makes that visible. A window with no measurable width leaves its
   rate `null` rather than zero.
+- **Reasoning that was billed but never observed withdraws the rate.** The
+  window above only works because a reasoning phase announces itself as
+  reasoning deltas. Z.ai can report a positive `reasoning_tokens` while
+  streaming no reasoning delta at all, which is what happens when the
+  thinking is done server-side and only the answer is sent. The numerator
+  still contains those tokens, but the window now starts at the first
+  visible content delta, so the entire reasoning phase sits outside the
+  denominator and the rate reads high in proportion to how long the model
+  spent thinking. There is no honest window to divide by, because the
+  evidence never showed when that work began. So
+  `provider_completion_tokens_per_second` is left `null` in that case and
+  `provider_completion_tokens_per_second_unavailable_reason` records why,
+  rather than publishing a number that is wrong in a flattering direction.
+  A zero or absent reasoning count is unaffected, and so is a stream that
+  actually carries reasoning deltas.
 - **A visible-token rate is published only when it can be.**
   `provider_visible_completion_tokens_per_second` divides
   `completion_tokens` minus the provider-reported reasoning tokens by
@@ -1074,12 +1089,36 @@ and are never mixed into a single unlabelled number.
   a mixed encoding is covered without enumerating whole-string variants.
   Matching starts from candidate positions found by a single scan rather
   than by compiling one pattern per prefix length, which keeps the cost of
-  a long credential flat.
+  a long credential flat. Truncation is repaired inside an encoding too, not
+  only between characters. A cut that lands after `%` or `%2` leaves a
+  fragment that is not yet a character in any spelling, so an exact match
+  fails and, without the repair, everything before the cut survives: a
+  20 character key truncated to `secret%2` would keep 6 of its characters in
+  the artifact. A trailing fragment that is a proper prefix of the next
+  credential character's literal, `%XX` or `%25XX` form is treated as that
+  character having been cut, and redaction starts from where the credential
+  began. Single and double encodings and mixed-case hex are all covered.
+- The pre-flight check that refuses to persist a credential uses that same
+  matcher, not a plain substring test. The two controls guard the same
+  threat from opposite ends, so a difference between them is a gap: a
+  provider request ID echoing the key in lowercase, or a provider extension
+  holding it with a tab where a space was, would be scrubbed on the way out
+  by the redactor and yet pass the check that decides whether a
+  `RequestPlan`, its reconstructed command or a persisted config may be
+  written at all. Both now match case insensitively, tolerate whitespace
+  differences and see through percent-encoding, and the credential
+  environment variable's own name is part of what is checked.
 - No parse diagnostic repeats a value the caller supplied, in any
   rendering. argparse formats several of its messages with `%r`, so a value
   containing a newline, a tab, a zero-width space or a backslash reaches
   stderr as an escape sequence that does not match the raw string. Both the
-  value and its `repr` body are scrubbed, longest rendering first.
+  value and its `repr` body are scrubbed, longest rendering first. The scrub
+  state is installed per parse rather than once by `main`, so
+  `build_parser().parse_args(...)` is as safe as the real entrypoint.
+  `parse_args` and `parse_known_args` are both public and both reachable on
+  their own, and `parse_args` reports unrecognized arguments itself after the
+  inner call has returned, so each installs the scope and a nested parse
+  inherits the enclosing one instead of narrowing it.
 - `--dry-run` applies the same refusal a real run does. If the configured
   environment variable holds a value that appears in the endpoint or the
   command, the pre-flight check fails instead of printing a plan that a real

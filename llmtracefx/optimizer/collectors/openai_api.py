@@ -728,7 +728,20 @@ class _Redactor:
     _WHITESPACE_ELEMENT = r"(?:\s|\+|%(?:09|0[ABCD]|20)|%25(?:09|0[ABCD]|20)){1,64}"
 
     @staticmethod
-    def _character_element(character: str) -> str:
+    def _character_forms(character: str) -> tuple[str, ...]:
+        """Every spelling of one character the scrub treats as equivalent.
+
+        Returned unescaped so ``boundary`` can ask whether a truncated tail
+        is a proper prefix of one of them. ``_character_element`` compiles
+        the same list into a pattern, so the matcher and the truncation
+        repair can never disagree about what counts as a spelling.
+        """
+        encoded = "".join(f"%{byte:02X}" for byte in character.encode("utf-8"))
+        forms = [character, encoded, encoded.replace("%", "%25")]
+        return tuple(dict.fromkeys(forms))
+
+    @classmethod
+    def _character_element(cls, character: str) -> str:
         """One character, in literal and percent-encoded renderings.
 
         A provider that echoes the credential back through a URL builder
@@ -749,6 +762,32 @@ class _Redactor:
         return "(?:" + "|".join(dict.fromkeys(forms)) + ")"
 
     @classmethod
+    def _elements_with_forms(
+        cls, fragment: str
+    ) -> list[tuple[str, tuple[str, ...] | None]]:
+        """``_elements`` paired with the raw spellings behind each element.
+
+        Whitespace runs carry ``None``: a run is already matched flexibly
+        and a cut inside one exposes no credential character, so there is
+        nothing for the truncation repair to do with it.
+        """
+        elements: list[tuple[str, tuple[str, ...] | None]] = []
+        stripped = fragment.strip()
+        index = 0
+        while index < len(stripped):
+            if stripped[index].isspace():
+                while index < len(stripped) and stripped[index].isspace():
+                    index += 1
+                elements.append((cls._WHITESPACE_ELEMENT, None))
+                continue
+            character = stripped[index]
+            elements.append(
+                (cls._character_element(character), cls._character_forms(character))
+            )
+            index += 1
+        return elements
+
+    @classmethod
     def _elements(cls, fragment: str) -> list[str]:
         """Split a fragment into per-character (or per-whitespace-run) parts.
 
@@ -759,18 +798,7 @@ class _Redactor:
         is not a credential and yields no elements at all, so it cannot
         compile into a pattern that matches every space in every artifact.
         """
-        elements: list[str] = []
-        stripped = fragment.strip()
-        index = 0
-        while index < len(stripped):
-            if stripped[index].isspace():
-                while index < len(stripped) and stripped[index].isspace():
-                    index += 1
-                elements.append(cls._WHITESPACE_ELEMENT)
-                continue
-            elements.append(cls._character_element(stripped[index]))
-            index += 1
-        return elements
+        return [element for element, _ in cls._elements_with_forms(fragment)]
 
     @classmethod
     def _flexible(cls, fragment: str) -> re.Pattern[str] | None:
@@ -788,7 +816,9 @@ class _Redactor:
 
     def __init__(self, credential: str | None) -> None:
         self._credential = credential or None
-        self._parts = self._elements(self._credential) if self._credential else []
+        table = self._elements_with_forms(self._credential) if self._credential else []
+        self._parts = [element for element, _ in table]
+        self._forms = [forms for _, forms in table]
         self._pattern = (
             re.compile("".join(self._parts), re.IGNORECASE) if self._parts else None
         )
@@ -825,6 +855,27 @@ class _Redactor:
                 re.compile(part, re.IGNORECASE) for part in self._parts
             )
         return self._tail_patterns
+
+    def _is_truncated_tail(self, index: int, remainder: str) -> bool:
+        """True when ``remainder`` is element ``index`` cut short.
+
+        Truncation can land inside a percent escape, leaving ``%``, ``%2``
+        or ``%25`` where ``%2F`` belonged. The element matcher rejects a
+        partial escape, so without this repair the scrub stops at the cut
+        and every credential character before it survives. Only the encoded
+        spellings can be cut this way, since a literal character is one
+        character long and a non-empty remainder can never be shorter.
+        """
+        if not remainder or index >= len(self._forms):
+            return False
+        forms = self._forms[index]
+        if forms is None:
+            return False
+        lowered = remainder.lower()
+        return any(
+            len(remainder) < len(form) and form.lower().startswith(lowered)
+            for form in forms
+        )
 
     def _scrub(self, text: str) -> str:
         cleaned = text
@@ -865,6 +916,13 @@ class _Redactor:
             for index, pattern in enumerate(patterns):
                 match = pattern.match(cleaned, cursor)
                 if match is None:
+                    # The cut may sit inside this element's percent escape.
+                    # ``index`` whole elements matched before it, so the
+                    # same length rule the exact path uses applies here.
+                    if index >= _MIN_ENCODED_CREDENTIAL_CHARS and (
+                        self._is_truncated_tail(index, cleaned[cursor:ending])
+                    ):
+                        return cleaned[:start] + _REDACTED
                     break
                 cursor = match.end()
                 if cursor >= ending:
@@ -1368,6 +1426,7 @@ class StreamStatistics:
     generation_window_ms: float | None = None
     content_delta_rate_per_second: float | None = None
     provider_completion_tokens_per_second: float | None = None
+    provider_completion_tokens_per_second_unavailable_reason: str | None = None
     provider_visible_completion_tokens_per_second: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -1410,6 +1469,9 @@ class StreamStatistics:
                 "count is far below completion_tokens the window endpoints "
                 "are delta boundaries rather than token boundaries. Treat "
                 "this as a coarse estimate, not a measured per-token rate."
+            ),
+            "provider_completion_tokens_per_second_unavailable_reason": (
+                self.provider_completion_tokens_per_second_unavailable_reason
             ),
             "provider_visible_completion_tokens_per_second": (
                 self.provider_visible_completion_tokens_per_second
@@ -1903,6 +1965,7 @@ class _StreamAccumulator:
         delta_rate = None
         token_rate = None
         visible_token_rate = None
+        rate_unavailable: str | None = None
         if window_seconds is not None:
             # ``n`` arrivals bound ``n - 1`` intervals, so the delta rate is
             # measured over the gaps it actually observed.
@@ -1919,7 +1982,24 @@ class _StreamAccumulator:
                 ) / window_seconds
         if generation_seconds is not None:
             completion_tokens = self.usage.completion_tokens
-            if completion_tokens is not None:
+            reasoning_tokens = self.usage.reasoning_tokens
+            if (
+                reasoning_tokens is not None
+                and reasoning_tokens > 0
+                and self.reasoning_delta_count == 0
+            ):
+                # The provider counted reasoning tokens but streamed no
+                # reasoning delta, so the generation window collapses onto
+                # the visible answer while the numerator still carries
+                # tokens produced before it. There is no window here that
+                # spans the numerator, so no honest rate exists.
+                rate_unavailable = (
+                    "provider reported reasoning tokens but streamed no "
+                    "reasoning delta, so the period those tokens were "
+                    "generated in was never observed and any rate over the "
+                    "visible window would overstate throughput"
+                )
+            elif completion_tokens is not None:
                 token_rate = completion_tokens / generation_seconds
 
         return StreamStatistics(
@@ -1938,6 +2018,7 @@ class _StreamAccumulator:
             ),
             content_delta_rate_per_second=delta_rate,
             provider_completion_tokens_per_second=token_rate,
+            provider_completion_tokens_per_second_unavailable_reason=rate_unavailable,
             provider_visible_completion_tokens_per_second=visible_token_rate,
         )
 
@@ -2133,7 +2214,15 @@ def _percent_decodings(value: str) -> list[str]:
 
 
 def _contains_credential(value: str, credential: str) -> bool:
-    """True when ``credential`` is present literally or percent encoded.
+    """True when ``credential`` is present in any spelling the scrub knows.
+
+    This guards the same threat as ``_Redactor`` and therefore uses the
+    same matcher: case-insensitive, whitespace-flexible and encoding
+    aware. A preflight that were merely literal would pass a provider
+    identifier echoing the key in lower case, or an extension value with a
+    tab where the key has a space, and the refusal that exists to stop the
+    value being persisted would not fire on the exact shapes redaction was
+    built to catch.
 
     Short credentials are compared literally only. A one or two character
     value would otherwise match a decoded byte by coincidence, and a
@@ -2141,9 +2230,15 @@ def _contains_credential(value: str, credential: str) -> bool:
     """
     if credential in value:
         return True
-    if len(credential) < _MIN_ENCODED_CREDENTIAL_CHARS:
+    if len(credential.strip()) < _MIN_ENCODED_CREDENTIAL_CHARS:
         return False
-    return any(credential in decoded for decoded in _percent_decodings(value))
+    pattern = _Redactor._flexible(credential)
+    if pattern is None:
+        return False
+    # ``_percent_decodings`` yields the value itself first, so this covers
+    # the direct search as well as the ``+``-for-space and multi-round
+    # decodings that a per-character pattern cannot express.
+    return any(pattern.search(decoded) for decoded in _percent_decodings(value))
 
 
 def _assert_credential_not_embedded(
@@ -2156,6 +2251,10 @@ def _assert_credential_not_embedded(
         ("provider", config.provider),
         ("model_id", config.model_id),
         ("prompt", config.prompt),
+        # The variable name is persisted in the plan whenever it resolves,
+        # so a value that is somehow both the name and the secret has to be
+        # refused here rather than relied on to be masked downstream.
+        ("credential_env_var", config.credential_env_var),
     ]
     optional: tuple[tuple[str, str | None], ...] = (
         ("model_revision", config.model_revision),
