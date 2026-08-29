@@ -66,7 +66,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
 from typing import Any, Protocol
-from urllib.parse import parse_qsl, urlsplit, urlunsplit
+from urllib.parse import (
+    SplitResult,
+    parse_qsl,
+    unquote,
+    unquote_plus,
+    urlsplit,
+    urlunsplit,
+)
 
 from ..manifest import collect_environment_manifest
 from ..schema import (
@@ -135,6 +142,7 @@ _MAX_ERROR_BODY_BYTES = 64 * 1024
 _MAX_PERSISTED_MESSAGE_CHARS = 600
 _MAX_PERSISTED_HEADER_CHARS = 128
 _REDACTED = "[REDACTED]"
+_MIN_ENCODED_CREDENTIAL_CHARS = 6
 
 _PROVIDER_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _ENV_VAR_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -197,8 +205,13 @@ class HTTPRequest:
         return tuple(sorted(self.headers))
 
     def __repr__(self) -> str:
+        # The URL is stripped of query *values* for the same reason the
+        # persisted command is: a value there is user or provider supplied
+        # and the rest of the collector never lets one reach an artifact,
+        # so a traceback must not be the one place that does.
         return (
-            f"HTTPRequest(url={self.url!r}, method={self.method!r}, "
+            f"HTTPRequest(url={_endpoint_for_command(self.url)!r}, "
+            f"method={self.method!r}, "
             f"header_names={self.header_names()!r}, "
             f"body_bytes={len(self.body)}, "
             f"timeout_seconds={self.timeout_seconds!r})"
@@ -537,6 +550,56 @@ def _validate_optional_ratio(name: str, value: Any, *, maximum: float) -> None:
         )
 
 
+def _try_urlsplit(endpoint: str) -> SplitResult | None:
+    """``urlsplit`` that reports failure instead of raising.
+
+    ``urlsplit`` raises ``ValueError`` on a malformed authority such as an
+    unclosed IPv6 bracket, and its message can quote the netloc.
+    """
+    try:
+        return urlsplit(endpoint)
+    except ValueError:
+        return None
+
+
+def _try_parse_qsl(query: str) -> list[tuple[str, str]] | None:
+    try:
+        return parse_qsl(query, keep_blank_values=True)
+    except ValueError:
+        return None
+
+
+def parse_endpoint(endpoint: str) -> SplitResult:
+    """Split an endpoint, turning any parse failure into a safe error.
+
+    Every caller that needs the parsed form goes through this, so a
+    malformed URL cannot escape as a raw ``ValueError`` whose message
+    quotes the netloc, the port or anything else the operator typed. The
+    raised message describes the shape only.
+    """
+    parts = _try_urlsplit(endpoint)
+    if parts is None:
+        raise OpenAIStreamCollectorError(
+            "endpoint could not be parsed as a URL; check the host and any "
+            "IPv6 brackets"
+        )
+    # Both are lazily parsed properties, so reading them here is what
+    # forces the netloc to be validated inside this guard.
+    try:
+        _host = parts.hostname
+    except ValueError:
+        raise OpenAIStreamCollectorError(
+            "endpoint has a host that could not be parsed"
+        ) from None
+    try:
+        _port = parts.port
+    except ValueError:
+        raise OpenAIStreamCollectorError(
+            "endpoint has a port that is not an integer in the range 0 to 65535"
+        ) from None
+    return parts
+
+
 def _safe_endpoint_for_message(endpoint: str) -> str:
     """Render an endpoint for an error message without leaking secrets.
 
@@ -545,23 +608,35 @@ def _safe_endpoint_for_message(endpoint: str) -> str:
     reach stderr or an artifact. Only the scheme, host, port and the
     *shape* of the path and query survive.
     """
-    try:
-        parts = urlsplit(endpoint)
-    except ValueError:
+    parts = _try_urlsplit(endpoint)
+    if parts is None:
         return "<unparsable endpoint>"
     if not parts.scheme and not parts.netloc:
         return "<endpoint>"
-    host = parts.hostname or "<no-host>"
-    authority = f"{host}:{parts.port}" if parts.port else host
+    # ``hostname`` and ``port`` are properties that parse the netloc lazily,
+    # so both can raise even though ``urlsplit`` itself succeeded. This
+    # function builds error messages, so it must never raise.
+    try:
+        host = parts.hostname or "<no-host>"
+    except ValueError:
+        host = "<invalid-host>"
+    try:
+        port = parts.port
+    except ValueError:
+        authority = f"{host}:<invalid-port>"
+    else:
+        authority = f"{host}:{port}" if port else host
     rendered = f"{parts.scheme or '<no-scheme>'}://{authority}"
     if parts.path:
         segments = [segment for segment in parts.path.split("/") if segment]
         rendered += "/" + "/".join(_REDACTED for _ in segments) if segments else "/"
     if parts.query:
-        keys = sorted(
-            {key for key, _ in parse_qsl(parts.query, keep_blank_values=True)}
-        )
-        rendered += "?" + "&".join(f"{key}={_REDACTED}" for key in keys)
+        pairs = _try_parse_qsl(parts.query)
+        if pairs is None:
+            rendered += "?" + _REDACTED
+        else:
+            keys = sorted({key for key, _ in pairs})
+            rendered += "?" + "&".join(f"{key}={_REDACTED}" for key in keys)
     return rendered
 
 
@@ -569,7 +644,7 @@ def _validate_endpoint(endpoint: str) -> None:
     if not endpoint:
         raise OpenAIStreamCollectorError("endpoint must be non-empty")
     safe = _safe_endpoint_for_message(endpoint)
-    parts = urlsplit(endpoint)
+    parts = parse_endpoint(endpoint)
     if parts.scheme not in ("http", "https"):
         raise OpenAIStreamCollectorError(f"endpoint must use http or https, got {safe}")
     if not parts.hostname:
@@ -586,7 +661,10 @@ def _validate_endpoint(endpoint: str) -> None:
             "endpoint must use https for non-local hosts so the Authorization "
             f"header is not sent in clear text, got {safe}"
         )
-    for key, _value in parse_qsl(parts.query, keep_blank_values=True):
+    pairs = _try_parse_qsl(parts.query)
+    if pairs is None:
+        raise OpenAIStreamCollectorError(f"endpoint query could not be parsed: {safe}")
+    for key, _value in pairs:
         if _SECRETISH_QUERY_KEY.search(key):
             raise OpenAIStreamCollectorError(
                 f"endpoint query parameter {key!r} looks like a credential; "
@@ -749,8 +827,8 @@ def _request_body(config: APICollectionConfig) -> dict[str, Any]:
     return body
 
 
-def _normalized_query_identity(query: str) -> list[list[str]]:
-    """Query pairs with each value replaced by a digest of that value.
+def _normalized_query_identity(query: str) -> list[list[Any]]:
+    """Query keys in a stable order, values hashed, per-key order preserved.
 
     Dropping the values entirely made ``?api-version=2024-01`` and
     ``?api-version=2025-06`` share one identity, which silently merges two
@@ -758,15 +836,21 @@ def _normalized_query_identity(query: str) -> list[list[str]]:
     values identity-bearing without ever persisting them, which matters
     because a value here is provider-controlled and may be sensitive even
     when its key does not look like a credential.
+
+    Keys are sorted so that ``?a=1&b=2`` and ``?b=2&a=1`` agree, since the
+    order of distinct keys is not significant in a query string. Values
+    under a *repeated* key keep their original order, because there the
+    order can carry meaning and sorting the flat pair list would make
+    ``?a=1&a=2`` and ``?a=2&a=1`` collide.
     """
-    return sorted(
-        [key, sha256_text(value)]
-        for key, value in parse_qsl(query, keep_blank_values=True)
-    )
+    grouped: dict[str, list[str]] = {}
+    for key, value in parse_qsl(query, keep_blank_values=True):
+        grouped.setdefault(key, []).append(sha256_text(value))
+    return [[key, grouped[key]] for key in sorted(grouped)]
 
 
 def _config_identity_hash(config: APICollectionConfig) -> str:
-    parts = urlsplit(config.endpoint)
+    parts = parse_endpoint(config.endpoint)
     return config_hash(
         {
             "provider": config.provider,
@@ -799,10 +883,14 @@ def _endpoint_for_command(endpoint: str) -> str:
     exactly what the rest of the plan is careful to leave out, and a value
     is provider or user supplied and may hold a token.
     """
-    parts = urlsplit(endpoint)
+    parts = _try_urlsplit(endpoint)
+    if parts is None:
+        return "<unparsable endpoint>"
     if not parts.query:
         return endpoint
-    pairs = parse_qsl(parts.query, keep_blank_values=True)
+    pairs = _try_parse_qsl(parts.query)
+    if pairs is None:
+        return _safe_endpoint_for_message(endpoint)
     query = "&".join(f"{key}={_REDACTED}" for key, _ in pairs)
     return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
 
@@ -819,7 +907,7 @@ def _sanitized_command(config: APICollectionConfig) -> tuple[str, ...]:
 
 def build_request_plan(config: APICollectionConfig) -> RequestPlan:
     """Describe the request without sending it and without any secret."""
-    parts = urlsplit(config.endpoint)
+    parts = parse_endpoint(config.endpoint)
     messages = tuple(
         MessageDigest(
             role=message["role"],
@@ -1219,18 +1307,29 @@ class _StreamAccumulator:
         now = self._clock()
         self.last_event_at = now
         data = event.data.strip()
-        if data == "[DONE]":
-            self.terminated_with_done = True
-            return None
 
         # A named ``event: error`` frame is an error regardless of what its
-        # data carries, including a bare message with no JSON envelope.
+        # data carries. The event name is therefore resolved before the data
+        # is interpreted at all: checking for ``[DONE]`` first would let a
+        # provider close a failed stream as though it had finished cleanly.
         named_error = (event.event or "").strip().lower() == "error"
+        if named_error and data == "[DONE]":
+            return APIFailure(
+                category=FAILURE_PROVIDER_ERROR,
+                message=(
+                    "provider sent an 'error' event carrying the [DONE] "
+                    "sentinel; the stream ended in error, not cleanly"
+                ),
+            )
         if named_error and not data:
             return APIFailure(
                 category=FAILURE_PROVIDER_ERROR,
                 message="provider sent an 'error' event with an empty payload",
             )
+
+        if data == "[DONE]":
+            self.terminated_with_done = True
+            return None
         if not data:
             self._record_event(_EVENT_KIND_METADATA, 0, now)
             return None
@@ -1602,6 +1701,54 @@ def _assert_header_safe_credential(credential: str, env_var: str) -> None:
         ) from None
 
 
+_MAX_PERCENT_DECODE_ROUNDS = 3
+
+
+def _percent_decodings(value: str) -> list[str]:
+    """``value`` plus the forms it decodes to, up to a bounded depth.
+
+    A credential pasted into a URL is usually percent encoded, so a literal
+    containment test misses it: ``abc/def`` is written ``abc%2Fdef`` and
+    survives the check while remaining trivially reversible once
+    persisted. Decoding the haystack rather than enumerating encodings of
+    the needle handles case variants (``%2F`` and ``%2f``), ``+`` for
+    space, and mixed encodings for free. A few rounds are applied because
+    ``%252F`` decodes to ``%2F`` before it decodes to ``/``.
+    """
+    seen = [value]
+    current = value
+    for _ in range(_MAX_PERCENT_DECODE_ROUNDS):
+        if "%" not in current and "+" not in current:
+            break
+        candidates = []
+        for decoder in (unquote, unquote_plus):
+            try:
+                decoded = decoder(current)
+            except (UnicodeDecodeError, ValueError):
+                continue
+            if decoded not in seen:
+                candidates.append(decoded)
+                seen.append(decoded)
+        if not candidates:
+            break
+        current = candidates[0]
+    return seen
+
+
+def _contains_credential(value: str, credential: str) -> bool:
+    """True when ``credential`` is present literally or percent encoded.
+
+    Short credentials are compared literally only. A one or two character
+    value would otherwise match a decoded byte by coincidence, and a
+    refusal that fires on noise trains people to work around it.
+    """
+    if credential in value:
+        return True
+    if len(credential) < _MIN_ENCODED_CREDENTIAL_CHARS:
+        return False
+    return any(credential in decoded for decoded in _percent_decodings(value))
+
+
 def _assert_credential_not_embedded(
     credential: str, config: APICollectionConfig
 ) -> None:
@@ -1626,7 +1773,7 @@ def _assert_credential_not_embedded(
         for index, value in enumerate(config.command_argv)
     )
     for label, value in haystacks:
-        if credential in value:
+        if _contains_credential(value, credential):
             raise OpenAIStreamCollectorError(
                 f"the value of {config.credential_env_var} appears in {label}; "
                 "refusing to run because that value would be persisted"
@@ -1663,11 +1810,16 @@ def _rate_limit_headers(
 
 
 def _request_id_from_headers(headers: Mapping[str, str]) -> str | None:
+    # Deliberately untruncated. Redaction matches the credential as an exact
+    # substring, so cutting the value here first would slice through an
+    # echoed credential and let the surviving prefix pass the scrub. The
+    # caller bounds the value through ``redact.identifier``, which scrubs
+    # before it truncates, the same order ``_rate_limit_headers`` uses.
     lowered = {name.lower(): value for name, value in headers.items()}
     for name in _REQUEST_ID_HEADER_NAMES:
         value = lowered.get(name)
         if isinstance(value, str) and value.strip():
-            return value.strip()[:_MAX_PERSISTED_HEADER_CHARS]
+            return value.strip()
     return None
 
 
@@ -1706,7 +1858,7 @@ def _http_status_failure(
         category=FAILURE_HTTP_STATUS,
         message=redact(message),
         status_code=response.status_code,
-        provider_error_code=code,
+        provider_error_code=redact.identifier(code),
     )
 
 
@@ -2005,7 +2157,10 @@ def _build_record(
             provider=config.provider,
         ),
         command=CommandInfo(
-            argv=tuple(config.command_argv),
+            # The plan already holds the sanitized argv. Rebuilding it from
+            # the raw config here would put endpoint query values straight
+            # into record.json, which is exactly what the plan avoids.
+            argv=tuple(plan.command),
             config_hash=plan.config_hash,
             workload_hash=plan.workload_hash,
         ),

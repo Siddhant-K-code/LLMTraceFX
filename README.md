@@ -936,7 +936,22 @@ and are never mixed into a single unlabelled number.
   Only header *names* are persisted.
 - Collection aborts before any request if the credential value appears in the
   run id, endpoint, provider label, model id, model revision, prompt, system
-  prompt, any provider extension string or command arguments.
+  prompt, any provider extension string or command arguments. The check also
+  decodes percent-encoded forms, because a key pasted into a URL is normally
+  encoded and `abc%2Fdef` is trivially reversible once persisted. Case
+  variants, `+` for space and a few rounds of double encoding are covered by
+  decoding the candidate rather than enumerating encodings of the key. Very
+  short values are compared literally only, so the refusal does not fire on
+  coincidence.
+- Endpoint query *values* are stripped from every persisted form of the
+  command, including `record.json`, and from `HTTPRequest.__repr__`, so a
+  private deployment name in a query string does not reach an artifact, a log
+  line or a traceback.
+- A malformed endpoint is reported as a sanitized error rather than an
+  escaping `ValueError`. `urlsplit` raises on an unclosed IPv6 bracket and
+  `SplitResult.port` raises on a port that is not an integer in range, both
+  with messages that can quote the netloc, so every parse and every lazy
+  property access is guarded.
 - Surrounding whitespace is stripped from the credential, and a value that
   cannot be sent as an HTTP header value (control characters, non latin-1) is
   rejected by name before the request is built. An unencodable header would
@@ -991,10 +1006,13 @@ than raising, so the collector compares bytes read against the declared
 length itself.
 
 A named `event: error` frame is treated as a provider error even when its
-payload is only a message string or is empty, and a `choices` field that is
-present but not a list of objects is a `stream_decode` failure rather than an
-ignorable metadata chunk. Both remain failures when they arrive after partial
-content has already been received.
+payload is only a message string, is empty, or is the `[DONE]` sentinel. The
+event name is resolved before its data is interpreted, because handling
+`[DONE]` first would let a provider close a failed stream as though it had
+finished cleanly. A `choices` field that is present but not a list of objects
+is a `stream_decode` failure rather than an ignorable metadata chunk. All of
+these remain failures when they arrive after partial content has already been
+received.
 
 Invalid configuration and a missing credential remain hard errors with no
 artifacts, because neither describes a request that was actually attempted.
@@ -1019,7 +1037,9 @@ artifacts, because neither describes a request that was actually attempted.
   endpoint carrying `?api-version=2024-08-01` gets a different identity from
   the same endpoint at a different version. Query *values* are hashed rather
   than recorded, so a value that happens to be sensitive still affects
-  identity without being persisted.
+  identity without being persisted. Distinct keys are sorted, since their
+  order carries no meaning, but values under a repeated key keep their
+  original order, so `?a=1&a=2` and `?a=2&a=1` do not collide.
 - **`reasoning_tokens` is not documented for GLM.** It is captured if the
   provider sends it and stays `null` otherwise.
 - **No pricing.** Cost per correct case belongs to a later versioned

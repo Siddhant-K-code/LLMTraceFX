@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from llmtracefx.optimizer.collectors.openai_api import (
+    _MAX_PERSISTED_HEADER_CHARS,
     ARTIFACT_MANIFEST_NAME,
     FAILURE_CONNECTION,
     FAILURE_HTTP_STATUS,
@@ -33,6 +34,7 @@ from llmtracefx.optimizer.collectors.openai_api import (
     ProviderExtensions,
     TransportConnectionError,
     TransportTimeout,
+    _safe_endpoint_for_message,
     artifact_set_is_complete,
     build_request_plan,
     collect_openai_stream,
@@ -41,6 +43,9 @@ from llmtracefx.optimizer.schema import ExperimentRecord, MetricProvenance
 
 ENDPOINT = "https://api.z.ai/api/paas/v4/chat/completions"
 API_KEY = "test-key-not-a-real-credential"
+# Shortest credential prefix whose appearance in an artifact is a real leak
+# rather than an incidental character match.
+_MIN_LEAKED_PREFIX_CHARS = 8
 ENVIRON = {"ZAI_API_KEY": API_KEY}
 
 
@@ -1642,3 +1647,310 @@ def test_a_failed_late_write_leaves_no_complete_marker_beside_stale_evidence(
     assert (config.output_dir / "api_evidence.json").read_text(
         encoding="utf-8"
     ) == first_evidence
+
+
+# --- Second review pass -------------------------------------------------------
+
+
+def test_the_persisted_command_never_carries_raw_query_values(
+    tmp_path: Path,
+) -> None:
+    """record.json must use the sanitized command, like the plan does.
+
+    The plan already strips query values from the reconstructed command.
+    Rebuilding the record's argv from the raw config put them straight
+    back into record.json, which is the artifact most likely to be shared.
+    """
+    endpoint = f"{ENDPOINT}?deployment=private-value"
+    config = make_config(
+        tmp_path,
+        endpoint=endpoint,
+        command_argv=(
+            "llmtracefx-optimizer",
+            "collect-api",
+            "--endpoint",
+            endpoint,
+            "--api-key-env",
+            "ZAI_API_KEY",
+        ),
+    )
+
+    result, _ = run(config, glm_stream())
+
+    assert "private-value" not in json.dumps(result.record.to_dict())
+    for path in sorted(config.output_dir.iterdir()):
+        assert "private-value" not in path.read_text(encoding="utf-8"), path.name
+    assert "deployment" in " ".join(result.record.command.argv)
+
+
+@pytest.mark.parametrize(
+    "encoded",
+    [
+        "sk-slash%2Fcredential",
+        "sk-slash%2fcredential",
+        "sk-slash%252Fcredential",
+    ],
+    ids=["upper-hex", "lower-hex", "double-encoded"],
+)
+def test_a_percent_encoded_credential_in_the_endpoint_is_refused(
+    tmp_path: Path, encoded: str
+) -> None:
+    """Percent encoding must not defeat the pre-flight refusal.
+
+    A credential pasted into a URL is normally encoded, and the encoded
+    form is trivially reversible once persisted, so containment has to be
+    checked against the decoded representations too.
+    """
+    credential = "sk-slash/credential"
+    config = make_config(
+        tmp_path, endpoint=f"https://api.z.ai/v1/{encoded}/completions"
+    )
+
+    with pytest.raises(OpenAIStreamCollectorError) as excinfo:
+        collect_openai_stream(
+            config,
+            transport=ExplodingTransport(),
+            environ={"ZAI_API_KEY": credential},
+            clock=StepClock(),
+        )
+
+    assert "appears in endpoint" in str(excinfo.value)
+    assert credential not in str(excinfo.value)
+    assert not config.output_dir.exists()
+
+
+def test_a_percent_encoded_credential_in_the_query_is_refused(tmp_path: Path) -> None:
+    credential = "sk-slash/credential"
+    config = make_config(
+        tmp_path, endpoint=f"{ENDPOINT}?deployment=sk-slash%2Fcredential"
+    )
+
+    with pytest.raises(OpenAIStreamCollectorError) as excinfo:
+        collect_openai_stream(
+            config,
+            transport=ExplodingTransport(),
+            environ={"ZAI_API_KEY": credential},
+            clock=StepClock(),
+        )
+
+    assert "appears in endpoint" in str(excinfo.value)
+
+
+def test_an_unrelated_encoded_endpoint_is_not_falsely_refused(tmp_path: Path) -> None:
+    """Decoding must not turn ordinary escaped URLs into refusals."""
+    config = make_config(tmp_path, endpoint=f"{ENDPOINT}?filter=a%2Fb&q=one+two")
+
+    result, _ = run(config, glm_stream())
+
+    assert result.record.outcome.success is True
+
+
+def test_a_short_credential_does_not_trigger_encoded_false_positives(
+    tmp_path: Path,
+) -> None:
+    """A tiny value would match a decoded byte by coincidence."""
+    config = make_config(tmp_path, endpoint=f"{ENDPOINT}?path=a%2Fb")
+
+    result, _ = run(config, glm_stream(), environ={"ZAI_API_KEY": "a/b"})
+
+    assert result.record.outcome.success is True
+
+
+def test_an_http_error_code_echoing_the_credential_is_redacted(
+    tmp_path: Path,
+) -> None:
+    """The non-200 path builds its own failure and must redact it too."""
+    config = make_config(tmp_path)
+    body = json.dumps(
+        {"error": {"code": f"invalid_key_{API_KEY}", "message": f"bad {API_KEY}"}}
+    ).encode()
+
+    result, _ = run(config, FakeResponse([body], status_code=401))
+
+    failure = result.evidence.failure
+    assert failure is not None
+    assert failure.category == FAILURE_HTTP_STATUS
+    assert failure.provider_error_code is not None
+    assert API_KEY not in failure.provider_error_code
+    assert API_KEY not in failure.message
+    for path in sorted(config.output_dir.iterdir()):
+        assert API_KEY not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_a_bare_zai_error_code_echoing_the_credential_is_redacted(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    body = json.dumps({"code": API_KEY, "message": "rate limited"}).encode()
+
+    result, _ = run(config, FakeResponse([body], status_code=429))
+
+    failure = result.evidence.failure
+    assert failure is not None
+    assert failure.provider_error_code is not None
+    assert API_KEY not in failure.provider_error_code
+    for path in sorted(config.output_dir.iterdir()):
+        assert API_KEY not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_an_error_event_carrying_done_is_not_a_clean_termination(
+    tmp_path: Path,
+) -> None:
+    """The event name must be resolved before its data is interpreted.
+
+    Handling ``[DONE]`` first let a provider close a failed stream as
+    though it had finished normally, producing a success record from an
+    explicit error frame.
+    """
+    config = make_config(tmp_path)
+    chunks = [
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "partial"}}]}),
+        b"event: error\ndata: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks)
+
+    assert result.record.outcome.success is False
+    failure = result.evidence.failure
+    assert failure is not None
+    assert failure.category == FAILURE_PROVIDER_ERROR
+    assert "[DONE]" in failure.message
+
+
+def test_an_error_event_carrying_done_as_the_first_event_is_a_failure(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+
+    result, _ = run(config, [b"event: error\ndata: [DONE]\n\n"])
+
+    assert result.record.outcome.success is False
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.category == FAILURE_PROVIDER_ERROR
+
+
+def test_repeated_query_keys_keep_their_value_order_in_the_hash(
+    tmp_path: Path,
+) -> None:
+    """``?a=1&a=2`` and ``?a=2&a=1`` are not necessarily the same request."""
+    first = build_request_plan(make_config(tmp_path, endpoint=f"{ENDPOINT}?a=1&a=2"))
+    second = build_request_plan(make_config(tmp_path, endpoint=f"{ENDPOINT}?a=2&a=1"))
+
+    assert first.config_hash != second.config_hash
+
+
+def test_distinct_query_keys_are_order_insensitive_in_the_hash(
+    tmp_path: Path,
+) -> None:
+    """The order of distinct keys carries no meaning in a query string."""
+    first = build_request_plan(make_config(tmp_path, endpoint=f"{ENDPOINT}?a=1&b=2"))
+    second = build_request_plan(make_config(tmp_path, endpoint=f"{ENDPOINT}?b=2&a=1"))
+
+    assert first.config_hash == second.config_hash
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://api.z.ai:99999/v1/chat",
+        "https://api.z.ai:notaport/v1/chat",
+        "https://[unclosed/v1/chat",
+    ],
+    ids=["port-out-of-range", "port-not-an-integer", "malformed-ipv6"],
+)
+def test_a_malformed_endpoint_raises_a_sanitized_collector_error(
+    tmp_path: Path, endpoint: str
+) -> None:
+    """Parsing failures must not escape as a raw ValueError.
+
+    ``urlsplit`` raises on a malformed authority and ``SplitResult.port``
+    raises on a bad port, both after the safe renderer has already run, so
+    the guard has to cover the property access as well as the split.
+    """
+    with pytest.raises(OpenAIStreamCollectorError) as excinfo:
+        make_config(tmp_path, endpoint=endpoint)
+
+    message = str(excinfo.value)
+    assert "/v1/chat" not in message
+    assert "notaport" not in message
+    assert "unclosed" not in message
+
+
+def test_a_malformed_endpoint_does_not_leak_a_secret_path(tmp_path: Path) -> None:
+    with pytest.raises(OpenAIStreamCollectorError) as excinfo:
+        make_config(tmp_path, endpoint=f"https://api.z.ai:99999/v1/{API_KEY}/chat")
+
+    assert API_KEY not in str(excinfo.value)
+
+
+def test_the_safe_endpoint_renderer_never_raises() -> None:
+    """It builds error messages, so raising would replace the diagnostic."""
+    for endpoint in (
+        "https://api.z.ai:99999/v1",
+        "https://api.z.ai:notaport/v1",
+        "https://[unclosed/v1",
+        "not-a-url-at-all",
+        "",
+    ):
+        assert isinstance(_safe_endpoint_for_message(endpoint), str)
+
+
+def test_the_request_repr_does_not_expose_endpoint_query_values(
+    tmp_path: Path,
+) -> None:
+    """The same rule the persisted command follows applies to a traceback.
+
+    Query values are stripped from every artifact, so a debugger dump or
+    an accidental log line must not be the one place that prints them.
+    """
+    endpoint = f"{ENDPOINT}?deployment=private-value"
+    config = make_config(tmp_path, endpoint=endpoint)
+
+    _, transport = run(config, glm_stream())
+
+    rendered = repr(transport.requests[0])
+    assert "private-value" not in rendered
+    assert "deployment" in rendered
+    assert API_KEY not in rendered
+    assert transport.requests[0].url == endpoint
+
+
+def test_a_long_request_id_header_cannot_leak_a_credential_prefix(
+    tmp_path: Path,
+) -> None:
+    """Truncating a header before redacting it would slice the credential.
+
+    Redaction matches the credential as an exact substring, so a value cut
+    at the persistence limit mid credential leaves a prefix the scrub can no
+    longer recognise. A provider, proxy or CDN that can set a response header
+    chooses the padding, so it can position the boundary anywhere.
+    """
+    config = make_config(tmp_path)
+    # Place the credential so the 128 character limit falls inside it.
+    padding = "A" * (_MAX_PERSISTED_HEADER_CHARS - len(API_KEY) + 1)
+    # No body level request_id, so the header supplies the persisted value.
+    chunks = [
+        sse({"choices": [{"index": 0, "delta": {"content": "Hi"}}]}),
+        sse({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
+        b"data: [DONE]\n\n",
+    ]
+    response = FakeResponse(
+        chunks,
+        headers={
+            "content-type": "text/event-stream",
+            "x-request-id": f"{padding}{API_KEY}",
+        },
+    )
+
+    result, _ = run(config, response)
+
+    persisted = result.evidence.provider_request_id or ""
+    assert len(persisted) <= _MAX_PERSISTED_HEADER_CHARS
+    assert "[REDACTED]" in persisted
+    prefixes = [API_KEY[:n] for n in range(_MIN_LEAKED_PREFIX_CHARS, len(API_KEY) + 1)]
+    for prefix in prefixes:
+        assert prefix not in persisted, f"{len(prefix)} credential characters survived"
+    for path in sorted(config.output_dir.iterdir()):
+        text = path.read_text(encoding="utf-8")
+        for prefix in prefixes:
+            assert prefix not in text, f"{path.name} leaked {len(prefix)} characters"

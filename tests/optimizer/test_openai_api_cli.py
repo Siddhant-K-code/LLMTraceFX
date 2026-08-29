@@ -558,3 +558,93 @@ def test_the_dry_run_scrubber_is_safe_without_a_configured_credential() -> None:
 
     assert "sk-abc123" not in cleaned
     assert "[REDACTED]" in cleaned
+
+
+# --- Malformed endpoints through the CLI --------------------------------------
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://api.z.ai:99999/v1/chat/completions",
+        "https://api.z.ai:notaport/v1/chat/completions",
+        "https://[unclosed/v1/chat/completions",
+    ],
+    ids=["port-out-of-range", "port-not-an-integer", "malformed-ipv6"],
+)
+@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+def test_a_malformed_endpoint_fails_cleanly_without_a_traceback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    endpoint: str,
+    dry_run: bool,
+) -> None:
+    """A parse failure must be a diagnostic, not an escaping ValueError."""
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    monkeypatch.setenv("ZAI_API_KEY", API_KEY)
+    argv = base_argv(tmp_path)
+    argv[argv.index("--endpoint") + 1] = endpoint
+    if dry_run:
+        argv.append("--dry-run")
+
+    exit_code = invoke(argv)
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    assert "ValueError" not in captured.err
+    assert "notaport" not in captured.err
+    assert "unclosed" not in captured.err
+    assert "/v1/chat/completions" not in captured.err
+    assert not (tmp_path / "artifacts" / "request_plan.json").exists()
+
+
+@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+def test_a_malformed_endpoint_holding_a_secret_leaks_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    dry_run: bool,
+) -> None:
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    monkeypatch.setenv("ZAI_API_KEY", API_KEY)
+    argv = base_argv(tmp_path)
+    argv[argv.index("--endpoint") + 1] = f"https://api.z.ai:99999/v1/{API_KEY}/chat"
+    if dry_run:
+        argv.append("--dry-run")
+
+    exit_code = invoke(argv)
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert API_KEY not in captured.err
+    assert API_KEY not in captured.out
+
+
+@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+def test_a_percent_encoded_credential_is_refused_through_the_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    dry_run: bool,
+) -> None:
+    """The encoded form must be refused on both paths, not just the real run."""
+    credential = "sk-slash/credential"
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", ExplodingTransport)
+    monkeypatch.setenv("ZAI_API_KEY", credential)
+    argv = base_argv(tmp_path)
+    argv[argv.index("--endpoint") + 1] = (
+        "https://api.z.ai/v1/sk-slash%2Fcredential/completions"
+    )
+    if dry_run:
+        argv.append("--dry-run")
+
+    exit_code = invoke(argv)
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "appears in endpoint" in captured.err
+    assert credential not in captured.err
+    assert credential not in captured.out
+    assert not (tmp_path / "artifacts" / "request_plan.json").exists()
