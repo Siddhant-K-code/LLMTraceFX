@@ -96,6 +96,19 @@ _IS_POSIX = os.name == "posix"
 _MAX_CPU_SECONDS = 10
 _MAX_ADDRESS_SPACE_BYTES = 1 * 1024 * 1024 * 1024  # 1 GiB
 _MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MiB
+_POST_TERMINATION_GRACE_SECONDS = 1.0
+
+_PROCESS_TERMINATION_PERMISSION_WARNING = (
+    "warning: the operating system denied permission to terminate the candidate "
+    "process group; individual process cleanup was attempted"
+)
+
+
+class _CandidateTimeoutError(Exception):
+    """Internal timeout that preserves a process-cleanup warning."""
+
+    def __init__(self, cleanup_warning: str | None) -> None:
+        self.cleanup_warning = cleanup_warning
 
 
 def _minimal_subprocess_env() -> dict[str, str]:
@@ -183,21 +196,32 @@ def _process_ids_in_group(process_group_id: int) -> tuple[int, ...]:
 
 def _terminate_candidate_process(
     process: subprocess.Popen[str], *, process_group_id: int | None
-) -> None:
-    """Terminate the candidate and its descendants where the OS permits."""
+) -> str | None:
+    """Terminate the candidate and return any cleanup limitation."""
     if _IS_POSIX:
         if process_group_id is None:
-            return
+            return None
+        permission_denied = False
         try:
             os.killpg(process_group_id, signal.SIGKILL)
         except ProcessLookupError:
-            for pid in _process_ids_in_group(process_group_id):
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    continue
+            pass
+        except PermissionError:
+            permission_denied = True
+        else:
+            return None
+
+        for pid in _process_ids_in_group(process_group_id):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                permission_denied = True
+        return _PROCESS_TERMINATION_PERMISSION_WARNING if permission_denied else None
     elif process.poll() is None:
         process.kill()
+    return None
 
 
 def _run_candidate(
@@ -205,7 +229,7 @@ def _run_candidate(
     *,
     cwd: str,
     timeout_seconds: float,
-) -> subprocess.CompletedProcess[str]:
+) -> tuple[subprocess.CompletedProcess[str], str | None]:
     """Run candidate code while containing its process tree on POSIX."""
     process = subprocess.Popen(
         [sys.executable, str(program_path)],
@@ -214,28 +238,50 @@ def _run_candidate(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        errors="replace",
         shell=False,
         start_new_session=_IS_POSIX,
         preexec_fn=(_posix_preexec_resource_limits if _IS_POSIX else None),
     )
     process_group_id = process.pid if _IS_POSIX else None
+    cleanup_warning = None
+    timed_out = False
+    stdout = ""
+    stderr = ""
     try:
         stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
-        _terminate_candidate_process(process, process_group_id=process_group_id)
-        process.communicate()
-        raise
+        timed_out = True
+        cleanup_warning = _terminate_candidate_process(
+            process, process_group_id=process_group_id
+        )
+        try:
+            process.communicate(timeout=_POST_TERMINATION_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            # A surviving candidate or descendant can keep the pipes open after
+            # cleanup. The configured evaluation timeout has already elapsed, so
+            # allow only a fixed termination grace and never block on another read.
+            pass
     finally:
         # A candidate can let its direct process exit while leaving detached
         # workers in the new process group. Clean up the whole group before
         # returning from the evaluator.
-        _terminate_candidate_process(process, process_group_id=process_group_id)
+        final_cleanup_warning = _terminate_candidate_process(
+            process, process_group_id=process_group_id
+        )
+        cleanup_warning = cleanup_warning or final_cleanup_warning
 
-    return subprocess.CompletedProcess(
-        args=process.args,
-        returncode=process.returncode,
-        stdout=stdout,
-        stderr=stderr,
+    if timed_out:
+        raise _CandidateTimeoutError(cleanup_warning)
+
+    return (
+        subprocess.CompletedProcess(
+            args=process.args,
+            returncode=process.returncode,
+            stdout=stdout,
+            stderr=stderr,
+        ),
+        cleanup_warning,
     )
 
 
@@ -258,21 +304,26 @@ def evaluate_code_completion(
         program_path = Path(tmp_dir) / "candidate.py"
         program_path.write_text(program, encoding="utf-8")
         try:
-            completed = _run_candidate(
+            completed, cleanup_warning = _run_candidate(
                 program_path,
                 cwd=tmp_dir,
                 timeout_seconds=timeout_seconds,
             )
-        except subprocess.TimeoutExpired:
+        except _CandidateTimeoutError as exc:
+            timeout_notes = f"candidate completion timed out after {timeout_seconds}s"
+            if exc.cleanup_warning:
+                timeout_notes = f"{timeout_notes}; {exc.cleanup_warning}"
             return OutcomeInfo(
                 success=False,
                 quality_score=0.0,
                 quality_metric="unit_test_pass",
-                notes=f"candidate completion timed out after {timeout_seconds}s",
+                notes=timeout_notes,
             )
 
     success = completed.returncode == 0
     notes = None if success else completed.stderr.strip()[-500:] or "non-zero exit"
+    if cleanup_warning:
+        notes = f"{notes}; {cleanup_warning}" if notes else cleanup_warning
     return OutcomeInfo(
         success=success,
         quality_score=1.0 if success else 0.0,
