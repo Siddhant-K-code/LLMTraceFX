@@ -138,8 +138,15 @@ _CREDENTIAL_PHRASES: tuple[str, ...] = (
 #: secret. curl's `--user` and `--proxy-user` are the common ones. They
 #: are listed explicitly because `user` on its own is a username, which
 #: is not a secret and must stay readable.
+#: Long forms only. `-u` is curl's short spelling, but it is python's
+#: unbuffered switch, sort's unique switch and docker's uid switch, none
+#: of which take a credential. Treating it as value-taking would replace
+#: the next unrelated argument, which is the exact defect that removing
+#: `netrc` fixed, and `python -u infer.py` is the likeliest command this
+#: project will ever record. Single-dash short options stay outside the
+#: classifier, as the module docstring already states.
 _USER_CREDENTIAL_NAMES: frozenset[str] = frozenset(
-    {"user", "proxy_user", "proxy_credential", "u"}
+    {"user", "proxy_user", "proxy_credential"}
 )
 
 #: Segments that mark a ``token`` name as a *quantity* rather than a

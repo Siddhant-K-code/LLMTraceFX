@@ -83,6 +83,32 @@ class InstrumentsExportError(ValueError):
     """Raised when exported XML is missing, malformed or unsupported."""
 
 
+class AmbiguousProcessError(InstrumentsExportError):
+    """Raised when one pid appears under several process labels.
+
+    Carries two wordings on purpose. ``str(...)`` names the conflicting
+    labels, which is what an operator debugging their own machine needs
+    to see on stderr. :attr:`summary` omits them, and is what gets
+    persisted, because the labels belong to other processes and a
+    derived artifact must not name them.
+    """
+
+    def __init__(self, pid: int, labels: tuple[str, ...]) -> None:
+        self.pid = pid
+        self.labels = labels
+        self.summary = (
+            f"pid {pid} is ambiguous in this trace: it appears under "
+            f"{len(labels)} different process labels. Refusing to "
+            "attribute GPU intervals to one of them."
+        )
+        super().__init__(
+            f"pid {pid} is ambiguous in this trace: it appears under "
+            f"{len(labels)} different process labels "
+            f"({', '.join(labels)}). Refusing to attribute GPU intervals "
+            "to one of them."
+        )
+
+
 def _parse_xml(text: str, *, source: str) -> ElementTree.Element:
     """Parse XML with entity-expansion inputs refused up front.
 
@@ -638,11 +664,8 @@ class MetalGpuIntervalSummary:
         if not matches:
             return None
         if len(matches) > 1:
-            labels = ", ".join(sorted(entry.process_label for entry in matches))
-            raise InstrumentsExportError(
-                f"pid {pid} is ambiguous in this trace: it appears under "
-                f"{len(matches)} different process labels ({labels}). "
-                "Refusing to attribute GPU intervals to one of them."
+            raise AmbiguousProcessError(
+                pid, tuple(sorted(entry.process_label for entry in matches))
             )
         return matches[0]
 

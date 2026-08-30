@@ -489,6 +489,7 @@ def import_trace(
 
     if not resolved_capability.supported:
         evidence = unsupported_evidence(resolved_capability, template=template)
+        _clear_stale_exports(output_dir)
         _write_evidence(output_dir, evidence)
         return TraceCollection(
             capability=resolved_capability,

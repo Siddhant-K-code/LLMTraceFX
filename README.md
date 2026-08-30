@@ -1901,6 +1901,9 @@ measurement.
   GPU table, which lists every process that produced a GPU interval. The
   derived artifacts do not: `instruments_evidence.json` and `trace_toc.json`
   carry only your own process's pid and counts, never another process's name.
+  When a pid is ambiguous the evidence note reports how many labels conflicted
+  but not what they were; the labels appear only in the error shown to whoever
+  ran the command.
 - **One run per artifact directory.** The trace path and the output directory
   are both claimed with atomic `O_CREAT | O_EXCL` reservations held for the
   whole run, so two concurrent runs cannot interleave metadata or exports even

@@ -21,8 +21,8 @@ from ..schema import InstrumentsEvidence, Measurement, MetricProvenance
 from .capability import XctraceCapabilityReport
 from .export import (
     SUPPORTED_TABLE_SCHEMAS,
+    AmbiguousProcessError,
     ExportedTable,
-    InstrumentsExportError,
     MetalGpuIntervalSummary,
     ProcessGpuIntervals,
     summarize_metal_gpu_intervals,
@@ -121,11 +121,14 @@ def build_instruments_evidence(inputs: TraceEvidenceInputs) -> InstrumentsEviden
                 entry = None
                 try:
                     entry = summary.for_process(inputs.target_pid)
-                except InstrumentsExportError as exc:
+                except AmbiguousProcessError as exc:
                     # An ambiguous pid is a refusal, not a crash: the
                     # trace is still valid evidence, there is just no
                     # honest way to attribute a scalar to one process.
-                    notes.append(str(exc))
+                    # The summary omits the conflicting labels, which
+                    # name other processes and must not be persisted
+                    # into a derived artifact.
+                    notes.append(exc.summary)
                 else:
                     if entry is None:
                         notes.append(

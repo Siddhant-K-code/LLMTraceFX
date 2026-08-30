@@ -645,7 +645,7 @@ def test_further_password_spellings_are_redacted(flag):
     assert SENTINEL not in " ".join(plan.to_redacted_argv())
 
 
-@pytest.mark.parametrize("flag", ["--user", "--proxy-user", "-u"])
+@pytest.mark.parametrize("flag", ["--user", "--proxy-user"])
 def test_user_password_pairs_are_redacted(flag):
     """curl's `--user alice:hunter2` carries the secret in the pair.
 
@@ -687,3 +687,35 @@ def test_netrc_file_paths_are_still_readable():
         target=LaunchTarget(argv=("curl", "--netrc-file", "/home/u/.netrc"))
     )
     assert plan.to_redacted_argv()[-1] == "/home/u/.netrc"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("python3", "-u", "infer.py", "--model", "llama3"),
+        ("python3", "-u", "-m", "llmtracefx.bench"),
+        ("sort", "-u", "results.txt"),
+        ("docker", "run", "-u", "1000:1000", "image"),
+    ],
+)
+def test_short_options_never_consume_the_next_argument(argv):
+    """`-u` is curl's credential flag and nothing else's.
+
+    In `python -u` it is the unbuffered switch, which is the likeliest
+    command this project will ever record. Hardcoding curl's grammar for
+    every program erased the script name from the run's own evidence.
+    Single-dash short options stay outside the classifier.
+    """
+    plan = make_plan(target=LaunchTarget(argv=argv))
+    redacted = plan.to_redacted_argv()
+    assert REDACTED not in redacted
+    assert redacted[-len(argv) :] == argv
+
+
+def test_long_user_options_are_still_redacted():
+    """Removing the short form must not lose the real coverage."""
+    for flag in ("--user", "--proxy-user"):
+        plan = make_plan(
+            target=LaunchTarget(argv=("curl", flag, f"alice:{SENTINEL}", "https://h"))
+        )
+        assert SENTINEL not in " ".join(plan.to_redacted_argv()), flag

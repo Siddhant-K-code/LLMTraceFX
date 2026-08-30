@@ -1742,3 +1742,67 @@ def test_derived_artifacts_never_name_another_process(tmp_path):
         assert "WindowServer" not in (out / name).read_text("utf-8"), name
     # The raw export does, by nature. Pinned so the boundary is explicit.
     assert "WindowServer" in (out / "trace_table.xml").read_text("utf-8")
+
+
+def test_an_ambiguous_pid_note_does_not_name_other_processes(tmp_path):
+    """The refusal must stay actionable without leaking a name.
+
+    An operator needs the conflicting labels on stderr; a persisted
+    artifact must not carry another process's name, which is what the
+    README promises of instruments_evidence.json.
+    """
+    rows = "".join(
+        f'<row><start-time id="{i * 4 + 1}">{i * 10}</start-time>'
+        f'<duration id="{i * 4 + 2}">5</duration>'
+        f'<process id="{i * 4 + 3}" fmt="{name} (4242)">'
+        f'<pid id="{i * 4 + 4}">4242</pid></process></row>'
+        for i, name in enumerate(["Signal", "probe"])
+    )
+    table = (
+        '<trace-query-result><node><schema name="metal-gpu-intervals">'
+        "<col><mnemonic>start</mnemonic>"
+        "<engineering-type>start-time</engineering-type></col>"
+        "<col><mnemonic>duration</mnemonic>"
+        "<engineering-type>duration</engineering-type></col>"
+        "<col><mnemonic>process</mnemonic>"
+        "<engineering-type>process</engineering-type></col>"
+        f"</schema>{rows}</node></trace-query-result>"
+    )
+    trace = tmp_path / "run.trace"
+    trace.mkdir()
+    out = tmp_path / "artifacts"
+    import_trace(
+        runner=exporting_runner(**{"metal-gpu-intervals": ok((), table)}),
+        trace_path=trace,
+        output_dir=out,
+    )
+
+    notes = json.loads((out / "instruments_evidence.json").read_text("utf-8"))["notes"]
+    assert "is ambiguous" in notes
+    assert "2 different process labels" in notes
+    assert "Signal" not in notes
+
+
+def test_import_clears_stale_exports_when_xctrace_is_unavailable(tmp_path):
+    """The one evidence-writing path that was missed.
+
+    `instruments import` is reachable directly, so an unavailable
+    xctrace wrote fresh no-metrics evidence on top of a previous run's
+    exported GPU table and left it in place.
+    """
+    out = tmp_path / "artifacts"
+    out.mkdir()
+    for name in ("trace_toc.xml", "trace_toc.json", "trace_table.xml"):
+        (out / name).write_text("PREVIOUS RUN", encoding="utf-8")
+
+    trace = tmp_path / "run.trace"
+    trace.mkdir()
+    runner = FakeCommandRunner(
+        version=fail((), returncode=1, stderr=COMMAND_LINE_TOOLS_STDERR)
+    )
+    collection = import_trace(runner=runner, trace_path=trace, output_dir=out)
+
+    assert collection.capability.supported is False
+    for name in ("trace_toc.xml", "trace_toc.json", "trace_table.xml"):
+        assert not (out / name).exists(), f"{name} survived from the earlier run"
+    assert (out / "instruments_evidence.json").exists()
