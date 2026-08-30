@@ -37,8 +37,20 @@ from .verify import RowStatus, RowVerification, VerifyError
 AGGREGATE_SCHEMA_VERSION = "2"
 """Schema version for the ``workloads summarize`` document.
 
-v2 is a strict superset of v1: it adds the ``by_backend`` and
-``by_provider`` breakdowns. Every v1 field keeps its v1 meaning.
+v2 adds the ``by_backend`` and ``by_provider`` breakdowns, and adds
+``timing_comparable``, ``timing_unavailable_reason`` and
+``measurement_contexts`` to every group.
+
+It is additive in shape, but one v1 field changed meaning and a reader
+that ignores that will draw the wrong conclusion.
+``correct_cases_per_minute`` was null in v1 only when no passing row
+carried timing. In v2 it is *also* null when the group spans more than
+one measurement context and the figure was deliberately withheld. Those
+are different statements -- "nothing to measure" versus "measuring this
+together would be wrong" -- and the field alone no longer distinguishes
+them, which is exactly the conflation this version exists to prevent.
+Consult ``timing_comparable`` to tell them apart, and
+``timing_unavailable_reason`` for why.
 """
 
 

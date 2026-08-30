@@ -1975,8 +1975,17 @@ resume actually reads both sat outside every integrity check, so either
 could be edited and would still be trusted. `run.json` is removed before a
 row is rewritten and written last, so an interrupted run leaves a directory
 that is rejected rather than one that reads as trustworthy. A stale
-binding, an interrupted write, a missing marker or a file edited after the
-fact all rerun the row. `--no-resume` reruns everything regardless.
+binding, an interrupted write, a missing marker, or a file edited *without*
+regenerating the marker all rerun the row. `--no-resume` reruns everything
+regardless.
+
+This is tamper evidence, not tamper proofing, and the distinction is worth
+stating plainly: `run.json` is unsigned and derives from nothing outside
+the run directory, so anyone who can edit `final_record.json` can also
+rewrite the marker over it and resume will trust the result. What the
+marker buys is that the failures which actually happen -- a crash between
+files, a half-written directory, a hand edit nobody thought to re-seal --
+stop resume rather than sail through it.
 
 The API binding hash covers the sanitized endpoint identity (origin, path,
 query keys and hashed query values), the provider label, the model ID and
