@@ -694,6 +694,9 @@ class _DeadlineHTTPConnection(_DeadlineConnectionMixin, http.client.HTTPConnecti
 
 
 class _DeadlineHTTPSConnection(_DeadlineConnectionMixin, http.client.HTTPSConnection):
+    _context: ssl.SSLContext
+    _tunnel_host: str | None
+
     def __init__(
         self,
         *args: Any,
