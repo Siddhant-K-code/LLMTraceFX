@@ -20,6 +20,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -66,6 +68,9 @@ from .recorder import (
 #: Default table exported after a recording. The only Metal schema this
 #: project has a strict summarizer for.
 DEFAULT_TABLE_SCHEMA = "metal-gpu-intervals"
+
+#: Scratch directory used while exporting, removed on every exit.
+STAGING_DIR_NAME = ".import-staging"
 
 
 @dataclass(frozen=True)
@@ -323,16 +328,41 @@ def _record_reserved(
     )
 
 
-def _promote_staged(staging: Path, output_dir: Path) -> None:
-    """Move a completed staging set into place, then remove staging.
+@contextmanager
+def _staging_dir(output_dir: Path) -> Iterator[Path]:
+    """A scratch directory that never outlives this call.
 
-    Every file is written before any is promoted, so output_dir never
-    holds a half-updated mixture of two runs. Each individual move is an
-    atomic replace within the same directory tree.
+    Without the ``finally``, a failed export left the partial staging
+    set sitting in the user's output directory until the next run
+    happened to clear it.
+    """
+    staging = output_dir / STAGING_DIR_NAME
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    try:
+        yield staging
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def _promote_staged(staging: Path, output_dir: Path) -> None:
+    """Move a completed staging set into place.
+
+    Every file is written before any is promoted, so a failed export
+    cannot leave one run's table of contents beside another run's
+    evidence. Each individual move is an atomic replace within the same
+    filesystem. The loop itself is not atomic as a whole: an error
+    partway leaves some files promoted. That is deliberate and is still
+    strictly better than the alternative, because the promoted files all
+    belong to this run, whereas exporting in place mixed two runs.
     """
     for staged in sorted(staging.iterdir()):
+        if staged.is_dir():
+            raise InstrumentsExportError(
+                f"unexpected directory in the export staging set: " f"{staged.name}"
+            )
         os.replace(staged, output_dir / staged.name)
-    shutil.rmtree(staging, ignore_errors=True)
 
 
 def _write_evidence(output_dir: Path, evidence: InstrumentsEvidence) -> None:
@@ -378,10 +408,31 @@ def import_trace(
     # output_dir meant a failure between the two left this run's TOC
     # sitting beside a previous run's evidence.
     xctrace = resolved_capability.xctrace_path or "xctrace"
-    staging = output_dir / ".import-staging"
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True)
+    with _staging_dir(output_dir) as staging:
+        return _export_and_build(
+            runner=runner,
+            xctrace=xctrace,
+            trace_path=trace_path,
+            output_dir=output_dir,
+            staging=staging,
+            resolved_capability=resolved_capability,
+            template=template,
+            table_schema=table_schema,
+        )
+
+
+def _export_and_build(
+    *,
+    runner: CommandRunner,
+    xctrace: str,
+    trace_path: Path,
+    output_dir: Path,
+    staging: Path,
+    resolved_capability: XctraceCapabilityReport,
+    template: str,
+    table_schema: str | None,
+) -> TraceCollection:
+    """Export into ``staging`` and promote once evidence is built."""
     toc_path = staging / "trace_toc.xml"
     toc_plan = ExportPlan(
         xctrace_path=xctrace,

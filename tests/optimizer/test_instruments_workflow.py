@@ -1342,3 +1342,33 @@ def test_a_normal_record_still_works_with_the_reservation(tmp_path):
     assert collection.succeeded is True
     # The marker must not survive the run.
     assert not list(tmp_path.glob(".*reservation"))
+
+
+def test_a_failed_import_leaves_no_staging_directory_behind(tmp_path):
+    """Scratch state must not outlive the call that created it.
+
+    Without guaranteed cleanup the partial staging set sat in the user's
+    output directory until some later run happened to clear it.
+    """
+    from llmtracefx.optimizer.instruments.workflow import STAGING_DIR_NAME
+
+    trace = tmp_path / "run.trace"
+    trace.mkdir()
+    out = tmp_path / "artifacts"
+
+    runner = exporting_runner(**{"metal-gpu-intervals": fail((), returncode=1)})
+    with pytest.raises(InstrumentsExportError):
+        import_trace(runner=runner, trace_path=trace, output_dir=out)
+
+    assert not (out / STAGING_DIR_NAME).exists()
+    assert list(out.iterdir()) == []
+
+
+def test_a_successful_import_leaves_no_staging_directory_behind(tmp_path):
+    from llmtracefx.optimizer.instruments.workflow import STAGING_DIR_NAME
+
+    trace = tmp_path / "run.trace"
+    trace.mkdir()
+    out = tmp_path / "artifacts"
+    import_trace(runner=exporting_runner(), trace_path=trace, output_dir=out)
+    assert not (out / STAGING_DIR_NAME).exists()
