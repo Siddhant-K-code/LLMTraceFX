@@ -149,6 +149,9 @@ _DONE_SENTINEL = "[DONE]"
 RUN_MANIFEST_NAME = "run.json"
 RUN_MANIFEST_SCHEMA_VERSION = "1"
 
+#: Stand-in for a value this module refuses to repeat.
+_REJECTED = "[REJECTED]"
+
 #: Exactly what the run-level marker seals, as relative names under the run
 #: directory. Fixed here rather than taken from the marker, because the
 #: marker is a file and its contents are not authority over which paths
@@ -633,7 +636,10 @@ def _unsafe_run_id_reason(run_id: str) -> str | None:
         return "run_id contains a path separator"
     if "\x00" in run_id:
         return "run_id contains a null byte"
-    if not _SAFE_RUN_ID.match(run_id):
+    # ``fullmatch`` rather than ``match``: ``$`` also matches just
+    # before a trailing newline, so ``match`` would accept "row\\n" and
+    # create a directory whose name the refusal text says is impossible.
+    if not _SAFE_RUN_ID.fullmatch(run_id):
         return (
             "run_id is not a single safe path component matching "
             "[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
@@ -720,6 +726,10 @@ class APIRowPlan:
     request_plan: RequestPlan | None
     binding_hash: str | None
     credential_env_var_present: bool
+    path_rejected: bool = False
+    """True when this row was refused for an unsafe or credential-bearing
+    artifact path, in which case its ``run_id`` is withheld from the
+    rendered plan along with the paths derived from it."""
 
     def to_dict(self) -> dict[str, Any]:
         """A secret-safe rendering of this plan.
@@ -731,7 +741,9 @@ class APIRowPlan:
         reported as a boolean, never as its contents.
         """
         return {
-            "run_id": self.entry.run_id,
+            # Withheld on the refusal path for the same reason the paths
+            # are: the value that was refused may be the credential.
+            "run_id": _REJECTED if self.path_rejected else self.entry.run_id,
             "workload_id": self.entry.workload_id,
             "workload_version": self.entry.workload_version,
             "category": self.entry.category,
@@ -789,7 +801,7 @@ def plan_api_row(
             "value into the filesystem"
         )
     if refusal is not None:
-        placeholder = Path("[REJECTED]")
+        placeholder = Path(_REJECTED)
         return APIRowPlan(
             entry=entry,
             unsupported=False,
@@ -803,6 +815,7 @@ def plan_api_row(
             request_plan=None,
             binding_hash=None,
             credential_env_var_present=credential_present,
+            path_rejected=True,
         )
 
     unsupported_reason = _unsupported_reason(entry)
@@ -1053,7 +1066,7 @@ def execute_api_row(
             entry=entry,
             verification=RowVerification(
                 schema_version=VERIFICATION_SCHEMA_VERSION,
-                run_id="[REJECTED]",
+                run_id=_REJECTED,
                 workload_id=entry.workload_id,
                 workload_version=entry.workload_version,
                 category=entry.category,

@@ -1153,3 +1153,120 @@ def test_a_non_utf8_manifest_is_reported_not_crashed(
     assert code == 1
     assert "Failed to load matrix manifest" in err
     assert _SENTINEL not in out + err
+
+
+def _manifest_with_run_id(tmp_path: Path, run_id: str) -> Path:
+    """Write a matrix manifest whose first row carries ``run_id``."""
+    matrix_path = build_matrix(tmp_path)
+    payload = json.loads(matrix_path.read_text(encoding="utf-8"))
+    for entry in payload["entries"]:
+        if entry["decode_mode"] == DECODE_MODE_AUTOREGRESSIVE:
+            entry["run_id"] = run_id
+            break
+    matrix_path.write_text(json.dumps(payload), encoding="utf-8")
+    return matrix_path
+
+
+def test_a_credential_in_a_manifest_run_id_never_reaches_a_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal must not print the value it refused.
+
+    A key shaped like an ordinary identifier passes the path-component
+    rules, so the credential branch is the only one that fires. Rendering
+    the row's own run_id then put the key on stdout, which is precisely
+    what declining to create the directory was protecting against. The
+    CLI guard cannot help here: it inspects the flags, and this value came
+    from the manifest.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", _SENTINEL)
+
+    code, out, err = run_main(
+        [
+            "workloads",
+            "run-api",
+            "--matrix",
+            str(_manifest_with_run_id(tmp_path, _SENTINEL)),
+            "--output-dir",
+            str(tmp_path / "results"),
+            "--profile",
+            "openrouter",
+            "--model-id",
+            "z-ai/glm-5.3",
+            "--mode",
+            DECODE_MODE_AUTOREGRESSIVE,
+        ]
+    )
+
+    assert code == 1
+    assert "[FAILED]" in out
+    assert _SENTINEL not in out
+    assert _SENTINEL not in err
+    assert not (tmp_path / "results").exists()
+
+
+def test_a_credential_in_a_manifest_run_id_is_withheld_from_the_dry_run_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", _SENTINEL)
+
+    code, out, err = run_main(
+        [
+            "workloads",
+            "run-api",
+            "--matrix",
+            str(_manifest_with_run_id(tmp_path, _SENTINEL)),
+            "--output-dir",
+            str(tmp_path / "results"),
+            "--profile",
+            "openrouter",
+            "--model-id",
+            "z-ai/glm-5.3",
+            "--mode",
+            DECODE_MODE_AUTOREGRESSIVE,
+            "--dry-run",
+        ]
+    )
+
+    assert code == 2
+    assert _SENTINEL not in out + err
+    row = json.loads(out)["rows"][0]
+    # Withheld structurally by the refusal, rather than only by the
+    # whole-document redactor that would otherwise have caught it.
+    assert row["run_id"] == "[REJECTED]"
+
+
+def test_an_unsafe_manifest_run_id_is_withheld_from_the_dry_run_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A traversal string is the caller's own, but it is still withheld.
+
+    The plan withholds the rejected value whatever it turned out to be,
+    rather than deciding case by case which rejected values are safe to
+    repeat.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "present-but-unused")
+
+    code, out, _ = run_main(
+        [
+            "workloads",
+            "run-api",
+            "--matrix",
+            str(_manifest_with_run_id(tmp_path, "../escaped")),
+            "--output-dir",
+            str(tmp_path / "results"),
+            "--profile",
+            "openrouter",
+            "--model-id",
+            "z-ai/glm-5.3",
+            "--mode",
+            DECODE_MODE_AUTOREGRESSIVE,
+            "--dry-run",
+        ]
+    )
+
+    assert code == 2
+    assert "../escaped" not in out
+    row = json.loads(out)["rows"][0]
+    assert row["run_id"] == "[REJECTED]"
+    assert row["status"] == "blocked"

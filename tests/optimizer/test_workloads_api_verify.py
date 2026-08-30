@@ -1601,6 +1601,10 @@ def _entry_with_run_id(manifest, run_id: str) -> MatrixEntry:
         "",
         "with space",
         "semi;colon",
+        # `$` matches before a trailing newline, so `re.match` accepted
+        # this and created a directory the refusal text calls impossible.
+        "trailing-newline\n",
+        "embedded\nnewline",
     ],
 )
 def test_an_unsafe_run_id_is_refused_and_writes_nothing(tmp_path, run_id):
@@ -1655,6 +1659,14 @@ def test_an_absolute_run_id_cannot_escape_the_output_directory(tmp_path):
 
 
 def test_an_unsafe_run_id_is_refused_in_the_plan_without_echoing_it(tmp_path):
+    """The rendered plan withholds the value, not just the paths.
+
+    ``to_dict`` used to emit ``entry.run_id`` on the refusal path while
+    blanking only the four path fields, so the rejected value still
+    reached stdout and ``api_request_plan.json``. The credential case was
+    saved by the whole-document redactor, which is incidental cover
+    rather than the property this asserts.
+    """
     manifest, manifest_dir, matrix_path = build_manifest(tmp_path)
     plan = plan_api_row(
         _entry_with_run_id(manifest, "../escaped"),
@@ -1669,6 +1681,11 @@ def test_an_unsafe_run_id_is_refused_in_the_plan_without_echoing_it(tmp_path):
     assert plan.request_plan is None
     assert any("unsafe artifact path" in blocker for blocker in plan.blockers)
     assert not (tmp_path / "results").exists()
+
+    # The whole rendered row, which is what a caller actually sees.
+    rendered = json.dumps(plan.to_dict())
+    assert "../escaped" not in rendered
+    assert plan.to_dict()["run_id"] == "[REJECTED]"
 
 
 def test_a_credential_in_the_effective_row_path_is_refused(tmp_path):

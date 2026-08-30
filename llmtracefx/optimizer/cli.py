@@ -1000,7 +1000,11 @@ def _cmd_workloads_run_api(args: argparse.Namespace) -> int:
     for result in results:
         status = result.verification.status.value.upper()
         suffix = f": {result.verification.reason}" if result.verification.reason else ""
-        print(f"[{status}] {result.entry.run_id}{suffix}")
+        # The verification's run_id, not the row's. A row refused for
+        # carrying the credential in its path reports "[REJECTED]"
+        # there; printing the row's own value would put the key on
+        # stdout, which is the thing the refusal exists to prevent.
+        print(f"[{status}] {result.verification.run_id}{suffix}")
 
     failed = sum(1 for r in results if r.verification.status == RowStatus.FAILED)
     inconclusive = sum(
