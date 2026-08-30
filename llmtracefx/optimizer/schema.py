@@ -16,6 +16,7 @@ existing field changes meaning, type, or requiredness.
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
@@ -951,6 +952,13 @@ class ExperimentRecord:
                     f"instruments.metrics.{name} must have provenance "
                     f"'{expected_provenance.value}', got "
                     f"'{measurement.provenance.value}'"
+                )
+            if not math.isfinite(measurement.value):
+                raise SchemaValidationError(
+                    f"instruments.metrics.{name} must be a finite number, "
+                    f"got {measurement.value}. NaN and infinity pass a "
+                    "'>= 0' check silently and would propagate as though "
+                    "they were measurements."
                 )
             if measurement.value < 0:
                 raise SchemaValidationError(

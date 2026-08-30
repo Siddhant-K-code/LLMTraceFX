@@ -1156,3 +1156,25 @@ def test_the_four_real_metrics_pass_every_rule(tmp_path):
 
     assert set(collection.evidence.metrics) == set(INSTRUMENT_METRIC_SPECS)
     base_record(instruments=collection.evidence).validate()
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_metrics_are_rejected(bad):
+    """NaN and infinity both pass a `>= 0` check silently.
+
+    A NaN interval count is not a measurement, and would propagate into
+    every downstream comparison as though it were one.
+    """
+    from llmtracefx.optimizer.schema import Measurement, MetricProvenance
+
+    evidence = _evidence(
+        metrics={
+            "metal_gpu_interval_count": Measurement(
+                value=bad,
+                provenance=MetricProvenance.MEASURED_NATIVE,
+                unit="intervals",
+            )
+        }
+    )
+    with pytest.raises(SchemaValidationError, match="finite number|must be >= 0"):
+        base_record(instruments=evidence).validate()

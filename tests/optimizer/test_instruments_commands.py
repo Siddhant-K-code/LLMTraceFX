@@ -469,3 +469,46 @@ def test_single_dash_attached_values_are_a_documented_limit():
     """
     plan = make_plan(target=LaunchTarget(argv=("bench", f"-k{SENTINEL}")))
     assert SENTINEL in " ".join(plan.to_redacted_argv())
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "--Authorization",
+        "--authorization",
+        "--auth",
+        "--client-secret",
+        "--refresh-token",
+        "--x-api-key",
+        "--aws-secret-access-key",
+        "--apiKey",
+        "-api-key",
+    ],
+)
+def test_further_credential_spellings_are_redacted(flag):
+    plan = make_plan(target=LaunchTarget(argv=("bench", flag, SENTINEL)))
+    assert SENTINEL not in " ".join(plan.to_redacted_argv())
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "--auth-mode",
+        "--auth-type",
+        "--private-key-path",
+        "--api-key-file",
+        "--token-file",
+        "--credential-dir",
+        "--secret-name",
+        "--tokenizer-path",
+    ],
+)
+def test_location_names_are_not_secrets(flag):
+    """A name that points at where a secret lives is not the secret.
+
+    Redacting `--private-key-path /etc/k.pem` hides a filename, gains no
+    privacy, and loses the reproducibility the recorded argv exists for.
+    """
+    plan = make_plan(target=LaunchTarget(argv=("bench", flag, "/some/value")))
+    assert REDACTED not in plan.to_redacted_argv()
+    assert plan.to_redacted_argv()[-1] == "/some/value"

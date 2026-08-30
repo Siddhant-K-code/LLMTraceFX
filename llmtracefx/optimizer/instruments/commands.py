@@ -79,7 +79,7 @@ _CREDENTIAL_SEGMENTS: frozenset[str] = frozenset(
         "credentials",
         "apikey",
         "bearer",
-        "auth",
+        "authorization",
     }
 )
 
@@ -124,6 +124,14 @@ _TOKEN_QUANTITY_SEGMENTS: frozenset[str] = frozenset(
     }
 )
 
+#: Trailing segments that make a name refer to a *location* rather than
+#: to a secret. ``--private-key-path /etc/k.pem`` names a file; the path
+#: is not the credential, and redacting it would lose reproducibility
+#: for no privacy gain.
+_LOCATION_SUFFIXES: frozenset[str] = frozenset(
+    {"path", "file", "dir", "directory", "url", "uri", "endpoint", "name"}
+)
+
 REDACTED = "<redacted>"
 
 
@@ -144,23 +152,32 @@ def _normalize_option_name(name: str) -> str:
 def _is_credential_name(name: str) -> bool:
     """Whether a name's value should be treated as a secret.
 
-    Deliberately not a plain substring match. ``token`` appears in both
-    ``--hf-token`` (a secret) and ``--max-tokens`` (a benign quantity),
-    so the two are separated rather than redacting both and corrupting
-    the second.
+    Deliberately not a plain substring match, in both directions.
+
+    ``token`` appears in both ``--hf-token`` (a secret) and
+    ``--max-tokens`` (a benign quantity), so the two are separated
+    rather than redacting both and corrupting the second.
+
+    Conversely a name ending in a location suffix refers to where a
+    secret lives, not to the secret: ``--private-key-path`` is a
+    filename worth keeping for reproducibility.
     """
     normalized = _normalize_option_name(name)
     if not normalized:
         return False
-    segments = set(normalized.split("_"))
+    segments = normalized.split("_")
+    tail = segments[-1]
+    if len(segments) > 1 and tail in _LOCATION_SUFFIXES:
+        return False
 
-    if segments & _CREDENTIAL_SEGMENTS:
+    segment_set = set(segments)
+    if segment_set & _CREDENTIAL_SEGMENTS:
         return True
     if any(phrase in normalized for phrase in _CREDENTIAL_PHRASES):
         return True
-    if normalized in {"key", "token", "pat"}:
+    if normalized in {"key", "token", "pat", "auth"}:
         return True
-    if "token" in segments and not (segments & _TOKEN_QUANTITY_SEGMENTS):
+    if "token" in segment_set and not (segment_set & _TOKEN_QUANTITY_SEGMENTS):
         # `hf_token`, `service_token`. Plural `tokens` is a count, and
         # so is anything carrying a quantity qualifier.
         return True
