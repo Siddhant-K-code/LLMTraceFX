@@ -1436,8 +1436,10 @@ def _names_a_credential(key: str) -> bool:
         ("session", "id"),
     }
     return any(
-        (component, following) in credential_pairs
-        for component, following in zip(components, components[1:], strict=False)
+        (component, following) in credential_pairs and index + 2 == len(components)
+        for index, (component, following) in enumerate(
+            zip(components, components[1:], strict=False)
+        )
     )
 
 
@@ -2255,8 +2257,10 @@ def _request_body(config: APICollectionConfig) -> dict[str, Any]:
     return body
 
 
-def _normalized_query_identity(query: str) -> list[list[Any]]:
-    """Raw query fields in stable key order, hashed before persistence.
+def _normalized_query_identity(
+    query: str, *, delimiter_present: bool
+) -> dict[str, Any]:
+    """Exact raw query representation, hashed before persistence.
 
     Dropping the values entirely made ``?api-version=2024-01`` and
     ``?api-version=2025-06`` share one identity, which silently merges two
@@ -2267,15 +2271,14 @@ def _normalized_query_identity(query: str) -> list[list[Any]]:
 
     Raw percent-encoded text is used rather than ``parse_qsl`` output. The
     parser replaces invalid UTF-8 with U+FFFD, which made distinct request
-    bytes such as ``%FF`` and ``%FE`` share an identity. Keys are sorted so
-    distinct-key order remains insignificant, while repeated values retain
-    their order. The presence of ``=`` is identity-bearing too.
+    bytes such as ``%FF`` and ``%FE`` share an identity. Ordering, separators
+    and an empty ``?`` delimiter all remain identity-bearing because routers,
+    signatures and caches may distinguish those request targets.
     """
-    grouped: dict[str, list[str]] = {}
-    for field_text in query.split("&") if query else ():
-        key, separator, value = field_text.partition("=")
-        grouped.setdefault(key, []).append(sha256_text(f"{separator}{value}"))
-    return [[sha256_text(key), grouped[key]] for key in sorted(grouped)]
+    return {
+        "delimiter_present": delimiter_present,
+        "raw_query_sha256": sha256_text(query),
+    }
 
 
 def _config_identity_hash(config: APICollectionConfig) -> str:
@@ -2288,7 +2291,10 @@ def _config_identity_hash(config: APICollectionConfig) -> str:
             "endpoint_query_pair_count": len(
                 parse_qsl(parts.query, keep_blank_values=True)
             ),
-            "endpoint_query_identity": _normalized_query_identity(parts.query),
+            "endpoint_query_identity": _normalized_query_identity(
+                parts.query,
+                delimiter_present="?" in config.endpoint,
+            ),
             "model_id": config.model_id,
             "model_revision": config.model_revision,
             # The variable name is deployment plumbing, not request identity.
@@ -2836,6 +2842,8 @@ class _StreamAccumulator:
         self.reasoning_characters = 0
         self.metadata_event_count = 0
         self.comment_count = 0
+        self.stream_body_bytes = 0
+        self.content_characters = 0
         self.events: list[StreamEventTiming] = []
         self.total_event_count = 0
         self.content_arrival_times: list[float] = []
@@ -2876,6 +2884,15 @@ class _StreamAccumulator:
         observed_at: float | None = None
         try:
             for chunk in response.iter_bytes():
+                self.stream_body_bytes += len(chunk)
+                if self.stream_body_bytes > _MAX_STREAM_BODY_BYTES:
+                    return APIFailure(
+                        category=FAILURE_STREAM_DECODE,
+                        message=(
+                            "stream body exceeded the collector's bounded "
+                            "response size"
+                        ),
+                    )
                 # One clock read per network chunk, shared by every event it
                 # completes. Reading the clock per event would time the
                 # parser instead of the network and turn microseconds of
@@ -2902,7 +2919,7 @@ class _StreamAccumulator:
                         )
                         return failure
                     if self.terminated_with_done:
-                        return failure
+                        return None
             final_at = self._clock() if observed_at is None else observed_at
             for event in decoder.close():
                 failure = self._handle_event(event, final_at, redact=redact)
@@ -2910,7 +2927,7 @@ class _StreamAccumulator:
                     self._record_event(_EVENT_KIND_ERROR, len(event.data), final_at)
                     return failure
                 if self.terminated_with_done:
-                    return failure
+                    return None
         except SSEDecodeError as exc:
             return APIFailure(category=FAILURE_STREAM_DECODE, message=redact(str(exc)))
         except TransportTimeout as exc:
@@ -3103,6 +3120,18 @@ class _StreamAccumulator:
             )
 
         if content:
+            if (
+                self.content_delta_count >= _MAX_CONTENT_DELTA_TIMINGS
+                or self.content_characters + len(content)
+                > _MAX_RESPONSE_CONTENT_CHARACTERS
+            ):
+                return APIFailure(
+                    category=FAILURE_STREAM_DECODE,
+                    message=(
+                        "stream content exceeded the collector's bounded "
+                        "response evidence limits"
+                    ),
+                )
             if self.first_content_token_at is None:
                 self.first_content_token_at = now
             if self.first_generated_token_at is None:
@@ -3118,6 +3147,7 @@ class _StreamAccumulator:
             # value authoritatively.
             self.content_parts.append(content)
             self.content_delta_count += 1
+            self.content_characters += len(content)
             self._record_event(_EVENT_KIND_CONTENT, len(content), now)
             if reasoning:
                 self.reasoning_delta_count += 1
@@ -3638,6 +3668,14 @@ def _assert_credential_not_embedded(
         (f"command_argv[{index}]", value)
         for index, value in enumerate(config.command_argv)
     )
+    for category, reasons in (
+        ("terminal", config.finish_reasons.terminal),
+        ("failure", config.finish_reasons.failure),
+    ):
+        haystacks.extend(
+            (f"finish_reasons.{category}[{index}]", reason)
+            for index, reason in enumerate(sorted(reasons))
+        )
     for label, value in haystacks:
         if _contains_credential(value, credential):
             raise OpenAIStreamCollectorError(

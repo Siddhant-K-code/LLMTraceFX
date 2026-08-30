@@ -1695,7 +1695,11 @@ def test_an_option_that_only_looks_glued_is_left_intact(
     "token",
     [
         "--api-keylowercasesecret",
+        "--authhuntertwo",
+        "--bearerhuntertwo",
+        "--credentialhuntertwo",
         "--passwordhuntertwo",
+        "--tokenhuntertwo",
     ],
 )
 def test_lowercase_value_glued_to_unambiguous_flag_is_redacted(

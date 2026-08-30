@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import codecs
 import json
+import os
 import time
 import unicodedata
 from collections.abc import Callable, Iterator, Mapping
@@ -1898,6 +1899,23 @@ def test_public_plan_builder_applies_credential_preflight(tmp_path: Path) -> Non
         build_request_plan(config, environ={"TEST_API_KEY": credential})
 
 
+def test_public_plan_builder_checks_finish_reason_vocabularies(tmp_path: Path) -> None:
+    credential = "provider-stop-reason"
+    config = make_config(
+        tmp_path,
+        credential_env_var="TEST_API_KEY",
+        finish_reasons=FinishReasonVocabulary(
+            terminal=frozenset({"stop", credential}),
+        ),
+    )
+
+    with pytest.raises(
+        OpenAIStreamCollectorError,
+        match=r"appears in finish_reasons\.terminal",
+    ):
+        build_request_plan(config, environ={"TEST_API_KEY": credential})
+
+
 # --- Artifact set publication ------------------------------------------------
 
 
@@ -1965,6 +1983,34 @@ def test_a_symlinked_artifact_is_not_trusted(tmp_path: Path) -> None:
     response_path.symlink_to(target)
 
     assert artifact_set_is_complete(config.output_dir) is False
+
+
+def test_a_symlinked_manifest_is_not_trusted(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    run(config, glm_stream())
+    marker_path = config.output_dir / ARTIFACT_MANIFEST_NAME
+    target = tmp_path / "outside-marker.json"
+    target.write_bytes(marker_path.read_bytes())
+    marker_path.unlink()
+    marker_path.symlink_to(target)
+
+    assert artifact_set_is_complete(config.output_dir) is False
+
+
+def test_precreated_legacy_temp_symlink_cannot_overwrite_another_file(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    config.output_dir.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("unchanged", encoding="utf-8")
+    legacy_temp = config.output_dir / f".record.json.tmp-{os.getpid()}"
+    legacy_temp.symlink_to(outside)
+
+    run(config, glm_stream())
+
+    assert outside.read_text(encoding="utf-8") == "unchanged"
+    assert legacy_temp.is_symlink()
 
 
 def test_a_missing_marker_fails_the_completeness_check(tmp_path: Path) -> None:
@@ -2234,14 +2280,23 @@ def test_repeated_query_keys_keep_their_value_order_in_the_hash(
     assert first.config_hash != second.config_hash
 
 
-def test_distinct_query_keys_are_order_insensitive_in_the_hash(
+def test_distinct_query_order_remains_identity_bearing(
     tmp_path: Path,
 ) -> None:
-    """The order of distinct keys carries no meaning in a query string."""
+    """The request target is hashed exactly because routing may use order."""
     first = build_request_plan(make_config(tmp_path, endpoint=f"{ENDPOINT}?a=1&b=2"))
     second = build_request_plan(make_config(tmp_path, endpoint=f"{ENDPOINT}?b=2&a=1"))
 
-    assert first.config_hash == second.config_hash
+    assert first.config_hash != second.config_hash
+
+
+def test_an_empty_query_delimiter_is_identity_bearing(tmp_path: Path) -> None:
+    without_query = build_request_plan(make_config(tmp_path, endpoint=ENDPOINT))
+    with_empty_query = build_request_plan(
+        make_config(tmp_path, endpoint=f"{ENDPOINT}?")
+    )
+
+    assert without_query.config_hash != with_empty_query.config_hash
 
 
 @pytest.mark.parametrize(
@@ -5772,13 +5827,102 @@ def test_bare_code_remains_an_ordinary_query_key() -> None:
     _validate_endpoint("https://api.example.com/v1/chat?code=value")
 
 
+@pytest.mark.parametrize("category", ["terminal", "failure"])
+def test_finish_reason_vocabulary_cannot_persist_the_credential(
+    tmp_path: Path, category: str
+) -> None:
+    credential = "custom-finish-secret"
+    vocabulary = FinishReasonVocabulary(
+        terminal=(
+            frozenset({credential}) if category == "terminal" else frozenset({"stop"})
+        ),
+        failure=(frozenset({credential}) if category == "failure" else frozenset()),
+    )
+    config = make_config(tmp_path, finish_reasons=vocabulary)
+
+    with pytest.raises(OpenAIStreamCollectorError, match="finish_reasons"):
+        run(config, glm_stream(), environ={"ZAI_API_KEY": credential})
+
+    assert not config.output_dir.exists()
+
+
+def test_stream_body_bytes_are_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import llmtracefx.optimizer.collectors.openai_api as module
+
+    monkeypatch.setattr(module, "_MAX_STREAM_BODY_BYTES", 32)
+    config = make_config(tmp_path)
+
+    result, _ = run(config, [b":" + b"x" * 64])
+
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.category == FAILURE_STREAM_DECODE
+    assert "bounded response size" in result.evidence.failure.message
+    assert_failure_artifacts(config, FAILURE_STREAM_DECODE)
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "limit", "content_parts"),
+    [
+        ("_MAX_RESPONSE_CONTENT_CHARACTERS", 5, ("1234", "56")),
+        ("_MAX_CONTENT_DELTA_TIMINGS", 2, ("a", "b", "c")),
+    ],
+)
+def test_content_accumulation_is_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit_name: str,
+    limit: int,
+    content_parts: tuple[str, ...],
+) -> None:
+    import llmtracefx.optimizer.collectors.openai_api as module
+
+    monkeypatch.setattr(module, limit_name, limit)
+
+    result, _ = run(
+        make_config(tmp_path),
+        glm_stream(content_parts=content_parts, reasoning_parts=()),
+    )
+
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.category == FAILURE_STREAM_DECODE
+    assert "bounded response evidence limits" in result.evidence.failure.message
+
+
+@pytest.mark.parametrize("split_invalid_byte", [False, True])
+def test_invalid_utf8_after_done_is_fragmentation_independent(
+    tmp_path: Path, split_invalid_byte: bool
+) -> None:
+    prefix = (
+        b'data: {"choices": [{"index": 0, "delta": {"content": "ok"}, '
+        b'"finish_reason": "stop"}]}\n\ndata: [DONE]\n\n'
+    )
+    chunks = [prefix, b"\xff"] if split_invalid_byte else [prefix + b"\xff"]
+
+    result, _ = run(make_config(tmp_path), chunks)
+
+    assert result.evidence.failure is None
+    assert result.evidence.success is True
+    assert result.response_text == "ok"
+
+
 @pytest.mark.parametrize("key", ["refresh", "session"])
 def test_bare_session_terms_remain_ordinary_query_keys(key: str) -> None:
     assert _names_a_credential(key) is False
     _validate_endpoint(f"https://api.example.com/v1/chat?{key}=value")
 
 
-@pytest.mark.parametrize("key", ["sessionidletimeout", "refreshsessiontimeout"])
+@pytest.mark.parametrize(
+    "key",
+    [
+        "refresh-session-timeout",
+        "refresh_session_timeout",
+        "refreshSessionTimeout",
+        "refreshsessiontimeout",
+        "sessionidletimeout",
+    ],
+)
 def test_session_words_inside_ordinary_settings_are_not_credentials(key: str) -> None:
     assert _names_a_credential(key) is False
     _validate_endpoint(f"https://api.example.com/v1/chat?{key}=value")
