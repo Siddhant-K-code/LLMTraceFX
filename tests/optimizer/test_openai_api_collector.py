@@ -25,6 +25,7 @@ from urllib.parse import quote
 import pytest
 
 from llmtracefx.optimizer.collectors.openai_api import (
+    _MAX_EXACT_TOKEN_COUNT,
     _MAX_PERSISTED_HEADER_CHARS,
     _REDACTED,
     ARTIFACT_MANIFEST_NAME,
@@ -41,9 +42,11 @@ from llmtracefx.optimizer.collectors.openai_api import (
     HTTPRequest,
     OpenAIStreamCollectorError,
     ProviderExtensions,
+    ProviderUsage,
     TransportConnectionError,
     TransportTimeout,
     _contains_credential,
+    _covers_a_credential,
     _names_a_credential,
     _Redactor,
     _response_socket,
@@ -4735,3 +4738,179 @@ def test_an_ordinary_query_key_is_accepted_end_to_end(tmp_path: Path) -> None:
     config = make_config(tmp_path, endpoint=f"{ENDPOINT}?api-version=2024-02-01")
 
     assert config.endpoint.endswith("api-version=2024-02-01")
+
+
+# ---------------------------------------------------------------------------
+# Seventeenth review pass: glued compounds, JSON limits, unmeasurable windows
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "xapikey",
+        "xapikeys",
+        "xauthtoken",
+        "apiaccesskey",
+        "clientsecretkey",
+        "usersessiontoken",
+        "xsharedaccesssignature",
+    ],
+)
+def test_glued_compounds_of_more_than_two_words_are_still_refused(key: str) -> None:
+    """Three glued words must not slip past a two-way split.
+
+    The substring search this replaced caught ``xapikey``. Judging a
+    component by splitting it once into two parts did not, which made the
+    replacement a privacy regression: a credential in the URL would have
+    been accepted and then written into artifacts.
+    """
+    assert _names_a_credential(key) is True
+
+
+def test_a_glued_credential_query_key_is_refused_end_to_end(tmp_path: Path) -> None:
+    with pytest.raises(OpenAIStreamCollectorError) as excinfo:
+        make_config(tmp_path, endpoint=f"{ENDPOINT}?xapikey=CANARY")
+
+    assert "CANARY" not in str(excinfo.value)
+    assert "xapikey" not in str(excinfo.value)
+
+
+def test_a_percent_encoded_glued_credential_query_key_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Percent-encoding the name must not be a way around the check."""
+    with pytest.raises(OpenAIStreamCollectorError):
+        make_config(tmp_path, endpoint=f"{ENDPOINT}?%78apikey=CANARY")
+
+
+def test_a_cover_made_only_of_qualifiers_is_not_a_credential() -> None:
+    """``appid`` covers completely, but no part of it names a credential."""
+    assert _covers_a_credential("appid") is False
+    assert _covers_a_credential("apiid") is False
+    assert _covers_a_credential("apikey") is True
+
+
+def test_an_oversized_integer_in_a_chunk_becomes_a_decode_failure(
+    tmp_path: Path,
+) -> None:
+    """Past the interpreter's digit cap ``json`` raises a plain ValueError.
+
+    Catching only ``JSONDecodeError`` let it escape as an unhandled crash,
+    so a provider could end the run with no canonical evidence written at
+    all rather than with a failure record.
+    """
+    config = make_config(tmp_path)
+    digits = "1" * 5000
+
+    result, _ = run(
+        config, [b'data: {"choices": [], "usage": ' + digits.encode() + b"}\n\n"]
+    )
+
+    failure = result.evidence.failure
+    assert failure is not None
+    assert failure.category == FAILURE_STREAM_DECODE
+    assert digits not in failure.message
+    assert_failure_artifacts(config, FAILURE_STREAM_DECODE)
+
+
+def test_deeply_nested_json_in_a_chunk_becomes_a_decode_failure(
+    tmp_path: Path,
+) -> None:
+    """Deep nesting raises RecursionError, which is not a ValueError."""
+    config = make_config(tmp_path)
+    nested = b"[" * 200_000 + b"]" * 200_000
+
+    result, _ = run(config, [b"data: " + nested + b"\n\n"])
+
+    failure = result.evidence.failure
+    assert failure is not None
+    assert failure.category == FAILURE_STREAM_DECODE
+    assert_failure_artifacts(config, FAILURE_STREAM_DECODE)
+
+
+def test_a_token_count_too_large_for_float_arithmetic_is_malformed() -> None:
+    """A count that cannot become a float cannot produce an honest rate.
+
+    It parsed as an int, reached the statistics, and raised OverflowError
+    there. Recording it as malformed keeps the metric missing rather than
+    crashing, and never substitutes a made-up number.
+    """
+    usage = ProviderUsage.from_payload(
+        {"prompt_tokens": 10, "completion_tokens": int("1" * 400)}
+    )
+
+    assert usage.completion_tokens is None
+    assert "completion_tokens" in usage.malformed_fields
+    assert usage.prompt_tokens == 10
+
+
+def test_a_token_count_at_the_exact_float_boundary_is_kept() -> None:
+    """The bound is the last exactly representable integer, not below it."""
+    at_cap = ProviderUsage.from_payload({"completion_tokens": _MAX_EXACT_TOKEN_COUNT})
+    over_cap = ProviderUsage.from_payload(
+        {"completion_tokens": _MAX_EXACT_TOKEN_COUNT + 1}
+    )
+
+    assert at_cap.completion_tokens == _MAX_EXACT_TOKEN_COUNT
+    assert at_cap.malformed_fields == ()
+    assert over_cap.completion_tokens is None
+    assert "completion_tokens" in over_cap.malformed_fields
+
+
+def test_a_huge_token_count_does_not_crash_a_whole_collection(
+    tmp_path: Path,
+) -> None:
+    """End to end: the run completes and the count is simply absent."""
+    config = make_config(tmp_path)
+    digits = "1" * 400
+
+    result, _ = run(
+        config,
+        [
+            b'data: {"choices": [{"index": 0, "delta": {"content": "hi"}}]}\n\n',
+            b'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}\n\n',
+            b'data: {"choices": [], "usage": {"completion_tokens": '
+            + digits.encode()
+            + b', "prompt_tokens": 7}}\n\n',
+            b"data: [DONE]\n\n",
+        ],
+    )
+
+    assert result.evidence.failure is None
+    usage = result.evidence.usage
+    assert usage.completion_tokens is None
+    assert usage.prompt_tokens == 7
+    assert "completion_tokens" in usage.malformed_fields
+    stats = result.evidence.statistics
+    assert stats.provider_completion_tokens_per_second is None
+
+
+def test_a_null_completion_rate_always_records_why(tmp_path: Path) -> None:
+    """Every generated token in one chunk leaves no window to divide by.
+
+    The rate is null, and it used to be null with no reason recorded,
+    which reads as a metric the provider never sent rather than one that
+    could not be measured.
+    """
+    config = make_config(
+        tmp_path, extensions=ProviderExtensions(thinking_type="disabled")
+    )
+
+    result, _ = run(
+        config,
+        [
+            b'data: {"choices": [{"index": 0, "delta": {"content": "hi"}}]}\n\n'
+            b'data: {"choices": [{"index": 0, "delta": {"content": " there"}}]}\n\n'
+            b'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}\n\n'
+            b'data: {"choices": [], "usage": {"completion_tokens": 2, '
+            b'"reasoning_tokens": 0}}\n\ndata: [DONE]\n\n',
+        ],
+    )
+
+    assert result.evidence.failure is None
+    stats = result.evidence.statistics
+    assert stats.content_delta_count == 2
+    assert stats.generation_window_ms is None
+    assert stats.provider_completion_tokens_per_second is None
+    assert stats.provider_completion_tokens_per_second_unavailable_reason is not None

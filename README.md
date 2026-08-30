@@ -1390,10 +1390,33 @@ and are never mixed into a single unlabelled number.
   `design`, `assignment`, `monkey`, `insignia`, `signal` and `keyword`, all
   ordinary parameter names, on the strength of `sig` or `key` buried inside
   them. A glued compound carries no separator and no case change, so a
-  component is also split once into two parts and counts when both are
-  recognized and at least one names a credential outright. That keeps
-  `apikey`, `secretkey`, `authtoken` and `sessiontoken` refused while letting
-  `keyword` and `monkey` through.
+  component also counts when recognized words cover it end to end and at
+  least one of them names a credential outright. The cover has to be
+  complete, which is what keeps `apikey`, `xapikey`, `secretkey`,
+  `clientsecretkey` and `sessiontoken` refused while letting `keyword` and
+  `monkey` through: their leftover `word` and `mon` are not words this
+  recognizes. A cover made only of qualifiers, such as `appid`, does not
+  count either. Splitting a component once into two parts was not enough,
+  because `xapikey` is three words and the substring search it replaced had
+  caught it.
+- A provider cannot end a run with no evidence at all by sending JSON that
+  `json` refuses past its own limits. An integer literal over the
+  interpreter's digit cap raises a plain `ValueError` and deep nesting raises
+  `RecursionError`, neither of which is a `JSONDecodeError`, so both used to
+  escape as an unhandled crash rather than a failure record. Both are now
+  stream decode failures with the usual canonical artifacts.
+- A provider token count above the largest integer a float represents exactly
+  is recorded as malformed and dropped. Smaller but still enormous counts
+  parsed fine and then raised `OverflowError` in the rate arithmetic; beyond
+  that bound a count either cannot become a float at all or becomes one with
+  silent precision loss, so any rate derived from it would be fiction. The
+  metric stays missing, which is the same rule applied everywhere else.
+- A null provider completion token rate always records why it is null. The
+  reasons that a hidden reasoning phase makes the window unusable were
+  already recorded, but a run whose generated tokens all arrived inside one
+  network chunk has no window with any width to divide by, and that case left
+  the rate null with nothing said about it, which reads as a metric the
+  provider never sent rather than one that could not be measured.
 - No parse diagnostic repeats a value the caller supplied, in any
   rendering. argparse formats several of its messages with `%r`, so a value
   containing a newline, a tab, a zero-width space or a backslash reaches

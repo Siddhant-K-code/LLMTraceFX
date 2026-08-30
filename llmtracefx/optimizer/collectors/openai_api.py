@@ -883,26 +883,46 @@ def _names_a_credential(key: str) -> bool:
     unanchored substring search rejects ``design``, ``assignment``,
     ``monkey`` and ``insignia``, which are ordinary parameter names, and
     the caller cannot learn why because the diagnostic deliberately echoes
-    nothing. A glued compound such as ``apikey`` carries no separator and
-    no case change, so a component is also split once into two parts: it
-    counts when both parts are recognized and at least one of them names a
-    credential outright. That catches ``apikey`` and ``secretkey`` while
-    leaving ``keyword`` and ``monkey`` alone.
+    nothing. A glued compound such as ``apikey`` carries no separator and no
+    case change, so a component also counts when recognized words cover it
+    end to end and at least one of them names a credential outright.
     """
     for raw in _QUERY_KEY_COMPONENT.findall(key):
         component = raw.lower()
         # One trailing plural, so ``keys`` is read as ``key``.
         if component not in _CREDENTIAL_QUERY_TERMS and component.endswith("s"):
             component = component[:-1]
-        if component in _CREDENTIAL_QUERY_TERMS:
+        if _covers_a_credential(component):
             return True
-        for cut in range(1, len(component)):
-            head, tail = component[:cut], component[cut:]
-            known = _CREDENTIAL_QUERY_TERMS | _CREDENTIAL_QUERY_QUALIFIERS
-            if head in known and tail in known:
-                if head in _CREDENTIAL_QUERY_TERMS or tail in _CREDENTIAL_QUERY_TERMS:
-                    return True
     return False
+
+
+def _covers_a_credential(component: str) -> bool:
+    """True when recognized words cover the component end to end.
+
+    Splitting once into two parts is not enough: ``xapikey`` is three
+    words, and stopping at two accepted it while the substring search this
+    replaced had caught it. Requiring a complete cover instead makes the
+    number of glued words irrelevant, and it is the completeness that
+    separates ``apikey`` from ``keyword`` and ``monkey``, whose leftover
+    ``word`` and ``mon`` are not words this recognizes.
+
+    ``reached`` maps each offset a cover can reach to whether some cover
+    reaching it has used a credential noun, so a cover built only from
+    qualifiers, such as ``appid``, does not count.
+    """
+    reached: dict[int, bool] = {0: False}
+    for start in range(len(component)):
+        if start not in reached:
+            continue
+        seen_term = reached[start]
+        for end in range(start + 1, len(component) + 1):
+            word = component[start:end]
+            is_term = word in _CREDENTIAL_QUERY_TERMS
+            if not is_term and word not in _CREDENTIAL_QUERY_QUALIFIERS:
+                continue
+            reached[end] = reached.get(end, False) or seen_term or is_term
+    return reached.get(len(component), False)
 
 
 def _try_parse_qsl(query: str) -> list[tuple[str, str]] | None:
@@ -996,10 +1016,7 @@ def _safe_endpoint_for_message(endpoint: str) -> str:
             # it. Every other key is kept: the shape of the query is what
             # makes a misconfiguration diagnosable.
             keys = sorted(
-                {
-                    _REDACTED if _names_a_credential(key) else key
-                    for key, _ in pairs
-                }
+                {_REDACTED if _names_a_credential(key) else key for key, _ in pairs}
             )
             rendered += "?" + "&".join(f"{key}={_REDACTED}" for key in keys)
     return rendered
@@ -1044,6 +1061,13 @@ def _validate_endpoint(endpoint: str) -> None:
 
 
 # --- Redaction ---------------------------------------------------------------
+
+
+#: The largest token count that survives a round trip through a float.
+#: Above this, ``float(value)`` either overflows outright or loses integer
+#: precision, so any rate derived from the count would be wrong without
+#: saying so. Real counts are many orders of magnitude below it.
+_MAX_EXACT_TOKEN_COUNT = 2**53
 
 
 #: A whitespace run is matched up to this many characters. Bounded so a
@@ -1847,6 +1871,15 @@ class ProviderUsage:
             if value < 0:
                 malformed.append(label)
                 return None
+            if value > _MAX_EXACT_TOKEN_COUNT:
+                # Beyond this a count cannot be converted to a float at all,
+                # or converts with silent precision loss, so every rate
+                # derived from it would be fiction. It is recorded as
+                # malformed and dropped rather than carried, because
+                # inventing a usable number here is the inference this
+                # collector refuses to make everywhere else.
+                malformed.append(label)
+                return None
             return int(value)
 
         details = payload.get("prompt_tokens_details")
@@ -2286,7 +2319,13 @@ class _StreamAccumulator:
 
         try:
             payload = json.loads(data)
-        except json.JSONDecodeError as exc:
+        # ``json`` raises past its own limits with exceptions that are not
+        # ``JSONDecodeError``: an integer literal over the interpreter's
+        # digit cap raises a plain ``ValueError``, and deep nesting raises
+        # ``RecursionError``. Both are reachable from provider-controlled
+        # bytes, and both used to escape as an unhandled crash with no
+        # failure-shaped evidence written at all.
+        except (ValueError, RecursionError) as exc:
             if named_error:
                 # ``data`` reaches here mainly when the payload was cut in
                 # half, since a complete line would have parsed. The cut can
@@ -2624,6 +2663,18 @@ class _StreamAccumulator:
                 )
             elif completion_tokens is not None:
                 token_rate = completion_tokens / generation_seconds
+        elif self.usage.completion_tokens is not None:
+            # There is a completion count but no window with any width to
+            # divide it by: every generated token arrived inside one network
+            # chunk, or only one arrived. The rate is null either way, and
+            # without this it was null with nothing recorded to say why,
+            # which reads as an absent metric rather than an unmeasurable
+            # one.
+            rate_unavailable = (
+                "the generated tokens did not arrive far enough apart to "
+                "measure a window, so no period exists to divide the "
+                "provider's completion token count by"
+            )
 
         return StreamStatistics(
             content_delta_count=self.content_delta_count,
@@ -3045,7 +3096,7 @@ def _http_status_failure(
     code: str | None = None
     try:
         payload = json.loads(body) if body.strip() else None
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
         payload = None
     if isinstance(payload, dict):
         error = payload.get("error")
@@ -3264,7 +3315,7 @@ def artifact_set_is_complete(output_dir: Path) -> bool:
     marker_path = output_dir / ARTIFACT_MANIFEST_NAME
     try:
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError, RecursionError):
         return False
     if not isinstance(marker, dict):
         return False
