@@ -107,12 +107,26 @@ def pinned_host_identity(monkeypatch):
     real_detector = workflow_module.detect_xctrace_capability
 
     def pinned(*, runner, template=METAL_SYSTEM_TRACE_TEMPLATE, **overrides):
-        overrides.setdefault("os_name", PINNED_OS)
-        overrides.setdefault("architecture", PINNED_ARCHITECTURE)
-        overrides.setdefault("path_resolver", lambda: PINNED_XCTRACE_PATH)
+        # Filled when the key is absent *or* explicitly None, because
+        # None is the real API's "resolve this from the host" sentinel.
+        # A plain setdefault would let `os_name=None` reach the detector
+        # unchanged and quietly reintroduce the host dependence this
+        # fixture exists to remove, in the same shape as before: green
+        # on macOS with Xcode, red on Linux.
+        for key, value in (
+            ("os_name", PINNED_OS),
+            ("architecture", PINNED_ARCHITECTURE),
+            ("path_resolver", lambda: PINNED_XCTRACE_PATH),
+        ):
+            if overrides.get(key) is None:
+                overrides[key] = value
         return real_detector(runner=runner, template=template, **overrides)
 
     monkeypatch.setattr(workflow_module, "detect_xctrace_capability", pinned)
+    # `instruments capability` resolves the detector from the CLI
+    # module's own namespace, which is a separate binding. Pinning only
+    # the workflow one would leave that subcommand reading the real host.
+    monkeypatch.setattr(cli_module, "detect_xctrace_capability", pinned)
 
 
 @pytest.fixture
@@ -868,6 +882,59 @@ def test_the_real_detector_would_have_failed_under_that_simulation(monkeypatch):
     assert report.capability is XctraceCapability.UNSUPPORTED_OS
 
 
-def test_cli_tests_do_not_depend_on_a_real_xctrace(cli_command_runner):
-    """The CLI builds its own runner, so it has to be replaced."""
-    assert cli_module.SubprocessCommandRunner() is cli_command_runner
+def test_cli_uses_the_injected_runner_rather_than_a_real_xctrace(
+    tmp_path, cli_command_runner
+):
+    """Asserts the CLI observably went through the fake.
+
+    An earlier version of this test asserted that the patched factory
+    returned the fixture's object, which is true by construction one
+    frame after the fixture sets it and stays true even when the CLI
+    obtains its runner some other way. This drives `main` instead and
+    checks the fake was actually consulted.
+    """
+    run_cli(
+        [
+            "instruments",
+            "import",
+            "--trace",
+            str(tmp_path / "absent.trace"),
+            "--output-dir",
+            str(tmp_path / "a"),
+        ]
+    )
+    assert cli_command_runner.calls, "the CLI never consulted the injected runner"
+    assert all(argv[0] == PINNED_XCTRACE_PATH for argv in cli_command_runner.calls)
+
+
+def test_cli_capability_subcommand_is_host_independent(capsys, cli_command_runner):
+    """`instruments capability` resolves the detector from cli.py.
+
+    That is a different binding from the workflow one, so it needs its
+    own pinning. Without it this subcommand would report unsupported_os
+    on a Linux runner and depend on a local Xcode on a macOS one.
+    """
+    code = run_cli(["instruments", "capability"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["capability"] == "supported"
+    assert payload["os_name"] == PINNED_OS
+    assert payload["architecture"] == PINNED_ARCHITECTURE
+    assert METAL_SYSTEM_TRACE_TEMPLATE in payload["available_templates"]
+
+
+def test_pinning_survives_an_explicit_none_identity():
+    """None is the real API's "read the host" sentinel.
+
+    Passing it must not defeat the pinning, or the host dependence comes
+    straight back in its original shape.
+    """
+    report = workflow_module.detect_xctrace_capability(
+        runner=exporting_runner(),
+        os_name=None,
+        architecture=None,
+        path_resolver=None,
+    )
+    assert report.capability is XctraceCapability.SUPPORTED
+    assert report.os_name == PINNED_OS
