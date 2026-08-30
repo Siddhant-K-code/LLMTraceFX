@@ -5,8 +5,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from llmtracefx.optimizer.workloads.aggregate import summarize_results, write_summary
-from llmtracefx.optimizer.workloads.verify import RowStatus, RowVerification
+from llmtracefx.optimizer.workloads.aggregate import (
+    AGGREGATE_SCHEMA_VERSION,
+    summarize_results,
+    write_summary,
+)
+from llmtracefx.optimizer.workloads.verify import (
+    BACKEND_MLX,
+    BACKEND_OPENAI_API,
+    RowStatus,
+    RowVerification,
+)
 
 SCHEMA_VERSION = "1"
 
@@ -21,6 +30,8 @@ def _write_verification(
     outcome_success: bool | None = None,
     quality_score: float | None = None,
     total_ms: float | None = None,
+    backend: str = BACKEND_MLX,
+    provider: str | None = None,
 ) -> None:
     verification = RowVerification(
         schema_version=SCHEMA_VERSION,
@@ -43,6 +54,8 @@ def _write_verification(
         ended_at="2024-01-01T00:00:01.000000Z",
         final_record_path=str(results_dir / "runs" / run_id / "final_record.json"),
         collection_dir=str(results_dir / "runs" / run_id / "collection"),
+        backend=backend,
+        provider=provider,
     )
     run_dir = results_dir / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -265,4 +278,98 @@ def test_write_summary_persists_json(tmp_path):
 
     payload = json.loads(output_path.read_text())
     assert payload["overall"]["total"] == 1
-    assert payload["schema_version"] == "1"
+    assert payload["schema_version"] == AGGREGATE_SCHEMA_VERSION
+    # v2 is a strict superset of v1: both new axes are always present.
+    assert "by_backend" in payload
+    assert "by_provider" in payload
+
+
+def test_backend_axis_keeps_local_and_api_rows_apart(tmp_path):
+    """A local row and a hosted-API row are never blended into one figure."""
+    results_dir = tmp_path / "results"
+    _write_verification(
+        results_dir,
+        "local",
+        status=RowStatus.COMPLETED,
+        outcome_success=True,
+        quality_score=1.0,
+        total_ms=1000,
+        backend=BACKEND_MLX,
+    )
+    _write_verification(
+        results_dir,
+        "remote",
+        status=RowStatus.COMPLETED,
+        outcome_success=False,
+        quality_score=0.0,
+        total_ms=4000,
+        backend=BACKEND_OPENAI_API,
+        provider="openrouter",
+    )
+    summary = summarize_results(results_dir)
+
+    by_backend = {group.key: group for group in summary.by_backend}
+    assert set(by_backend) == {BACKEND_MLX, BACKEND_OPENAI_API}
+    assert by_backend[BACKEND_MLX].pass_rate == 1.0
+    assert by_backend[BACKEND_OPENAI_API].pass_rate == 0.0
+    # The blended overall figure still exists, but each backend keeps its own.
+    assert summary.overall.pass_rate == 0.5
+
+
+def test_provider_axis_only_covers_rows_that_have_a_provider(tmp_path):
+    """Local rows are absent rather than gathered under a fake provider."""
+    results_dir = tmp_path / "results"
+    _write_verification(
+        results_dir,
+        "local",
+        status=RowStatus.COMPLETED,
+        outcome_success=True,
+        quality_score=1.0,
+        total_ms=1000,
+    )
+    _write_verification(
+        results_dir,
+        "router",
+        status=RowStatus.COMPLETED,
+        outcome_success=True,
+        quality_score=1.0,
+        total_ms=2000,
+        backend=BACKEND_OPENAI_API,
+        provider="openrouter",
+    )
+    _write_verification(
+        results_dir,
+        "direct",
+        status=RowStatus.COMPLETED,
+        outcome_success=True,
+        quality_score=1.0,
+        total_ms=3000,
+        backend=BACKEND_OPENAI_API,
+        provider="z.ai",
+    )
+    summary = summarize_results(results_dir)
+
+    by_provider = {group.key: group for group in summary.by_provider}
+    assert set(by_provider) == {"openrouter", "z.ai"}
+    assert by_provider["openrouter"].total == 1
+    assert by_provider["z.ai"].total == 1
+
+
+def test_group_with_no_evaluated_rows_reports_null_not_zero(tmp_path):
+    """An unavailable metric is never rendered as a measured zero."""
+    results_dir = tmp_path / "results"
+    _write_verification(
+        results_dir,
+        "failed-remote",
+        status=RowStatus.FAILED,
+        backend=BACKEND_OPENAI_API,
+        provider="openrouter",
+    )
+    summary = summarize_results(results_dir)
+
+    group = next(g for g in summary.by_provider if g.key == "openrouter")
+    assert group.evaluated_total == 0
+    assert group.pass_rate is None
+    assert group.correct_cases_per_minute is None
+    payload = json.loads(summary.to_json())
+    assert payload["by_provider"][0]["pass_rate"] is None

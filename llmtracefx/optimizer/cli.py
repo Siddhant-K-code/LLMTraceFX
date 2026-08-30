@@ -10,7 +10,8 @@ Subcommands:
     parse-llama-cpp  Convert llama.cpp text output into a canonical ExperimentRecord.
     doctor speculative  Diagnose whether speculative decoding/MTP is a net regression.
     workloads        Generate a deterministic code/JSON/reasoning workload matrix,
-                     execute selected runnable rows (``workloads run``), and
+                     execute selected runnable rows locally (``workloads run``) or
+                     against an OpenAI-compatible API (``workloads run-api``), and
                      aggregate results (``workloads summarize``).
     tune             Offline, evidence-constrained recommendation of the best
                      verified configuration for a workload/hardware target.
@@ -94,6 +95,21 @@ from .tune.report import GroupOutcome, TuneReport, TuneReportValidationError
 from .tune.report_html import render_tune_report_html
 from .tune.tuner import tune
 from .workloads.aggregate import summarize_results, write_summary
+from .workloads.api_profiles import (
+    API_PROFILES,
+    PROFILE_NAMES,
+    APIProfile,
+    APIProfileError,
+    profile_by_name,
+)
+from .workloads.api_verify import (
+    DEFAULT_MAX_STREAM_EVENTS,
+    APIBinding,
+    APIVerifyError,
+    plan_selected_api_rows,
+    render_plan_document,
+    run_selected_api_rows,
+)
 from .workloads.catalog import WORKLOADS, workload_by_id
 from .workloads.evaluators import evaluate_workload
 from .workloads.matrix import (
@@ -327,8 +343,13 @@ def _api_detail(args: argparse.Namespace, exc: BaseException) -> str:
     that case, because it replaces every token the caller supplied
     regardless of whether it names anything.
     """
-    credential = os.environ.get(args.api_key_env, "").strip() or None
-    return _scrub_argv_values(redact_text_for_dry_run(str(exc), credential))
+    return _scrubbed_detail(args.api_key_env, exc)
+
+
+def _scrubbed_detail(env_var: str | None, exc: BaseException) -> str:
+    """The shared implementation behind every API-facing diagnostic."""
+    credential = os.environ.get(env_var, "").strip() if env_var else ""
+    return _scrub_argv_values(redact_text_for_dry_run(str(exc), credential or None))
 
 
 def _cmd_collect_api(args: argparse.Namespace) -> int:
@@ -745,6 +766,175 @@ def _cmd_workloads_run(args: argparse.Namespace) -> int:
         binding=binding,
         resume=not args.no_resume,
         runtime_factory=MLXLMRuntime,
+    )
+    if not results:
+        print("No matrix rows matched the selection filters", file=sys.stderr)
+        return 1
+
+    for result in results:
+        status = result.verification.status.value.upper()
+        suffix = f": {result.verification.reason}" if result.verification.reason else ""
+        print(f"[{status}] {result.entry.run_id}{suffix}")
+
+    failed = sum(1 for r in results if r.verification.status == RowStatus.FAILED)
+    inconclusive = sum(
+        1 for r in results if r.verification.status == RowStatus.INCONCLUSIVE
+    )
+    print(f"Artifacts written to {output_dir}")
+    if failed:
+        return 1
+    if inconclusive:
+        return 2
+    return 0
+
+
+def _resolved_api_profile(args: argparse.Namespace) -> APIProfile | None:
+    return None if args.profile is None else profile_by_name(args.profile)
+
+
+def _api_binding_from_args(args: argparse.Namespace) -> APIBinding:
+    """Build the provider binding, letting explicit flags beat the profile.
+
+    A profile supplies defaults and nothing more, so every value it
+    carries can be overridden. That keeps an unlisted provider a first
+    class citizen: omit ``--profile`` and pass the three fields it would
+    have filled in.
+    """
+    profile = _resolved_api_profile(args)
+    provider = args.provider or (profile.provider_label if profile else None)
+    endpoint = args.endpoint or (profile.endpoint if profile else None)
+    api_key_env = args.api_key_env or (profile.credential_env_var if profile else None)
+
+    missing = [
+        name
+        for name, value in (
+            ("--provider", provider),
+            ("--endpoint", endpoint),
+            ("--api-key-env", api_key_env),
+        )
+        if not value
+    ]
+    if missing:
+        raise APIVerifyError(
+            f"{', '.join(missing)} must be given explicitly when --profile is "
+            f"not used; known profiles are {', '.join(PROFILE_NAMES)}"
+        )
+
+    system_prompt = (
+        Path(args.system_prompt_file).read_text(encoding="utf-8")
+        if args.system_prompt_file
+        else None
+    )
+    # ``missing`` is empty here, so these three are strings; asserting it
+    # keeps that obvious to a reader and to the type checker.
+    assert provider is not None and endpoint is not None and api_key_env is not None
+    binding = APIBinding(
+        provider=provider,
+        endpoint=endpoint,
+        model_id=args.model_id,
+        credential_env_var=api_key_env,
+        model_revision=args.model_revision,
+        system_prompt=system_prompt,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        seed=args.seed,
+        request_timeout_seconds=args.request_timeout,
+        max_stream_events=args.max_stream_events,
+        extensions=ProviderExtensions(
+            reasoning_effort=args.reasoning_effort,
+            thinking_type=args.thinking,
+            clear_thinking=(
+                None if args.clear_thinking is None else args.clear_thinking == "true"
+            ),
+            provider_request_id=args.provider_request_id,
+        ),
+    )
+    binding.validate()
+    return binding
+
+
+def _cmd_workloads_list_api_profiles(args: argparse.Namespace) -> int:
+    print(
+        json.dumps(
+            {"profiles": [profile.to_dict() for profile in API_PROFILES]}, indent=2
+        )
+    )
+    return 0
+
+
+def _cmd_workloads_run_api(args: argparse.Namespace) -> int:
+    matrix_path = Path(args.matrix)
+    try:
+        manifest = MatrixManifest.read_json(matrix_path)
+    except (OSError, MatrixSchemaError) as exc:
+        print(f"Failed to load matrix manifest: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        binding = _api_binding_from_args(args)
+    except (
+        OSError,
+        UnicodeError,
+        APIProfileError,
+        APIVerifyError,
+        OpenAIStreamCollectorError,
+    ) as exc:
+        # ``ProviderExtensions`` validates in its own constructor and raises
+        # the collector's error type before ``binding.validate()`` gets a
+        # chance to translate it, and its message quotes the rejected value.
+        # It has to be caught here or it escapes as an unscrubbed traceback.
+        print(
+            f"Failed to configure API workload execution: "
+            f"{_scrubbed_detail(args.api_key_env, exc)}",
+            file=sys.stderr,
+        )
+        return 1
+
+    selection = _row_selection_from_args(args)
+    output_dir = Path(args.output_dir)
+    manifest_dir = matrix_path.parent
+
+    if args.dry_run:
+        plans = plan_selected_api_rows(
+            manifest,
+            manifest_dir=manifest_dir,
+            matrix_path=matrix_path,
+            output_dir=output_dir,
+            selection=selection,
+            binding=binding,
+            environ=os.environ,
+        )
+        if not plans:
+            print("No matrix rows matched the selection filters", file=sys.stderr)
+            return 1
+
+        document = render_plan_document(plans, binding=binding, environ=os.environ)
+        print(document)
+        try:
+            atomic_write_text(output_dir / "api_request_plan.json", document + "\n")
+        except OSError as exc:
+            print(f"Failed to write request plan: {exc}", file=sys.stderr)
+            return 1
+
+        blocked = sum(1 for plan in plans if not plan.unsupported and not plan.ready)
+        unsupported = sum(1 for plan in plans if plan.unsupported)
+        print(
+            f"{len(plans)} row(s) selected, {blocked} blocked, "
+            f"{unsupported} unsupported; no network request was performed",
+            file=sys.stderr,
+        )
+        return 0 if blocked == 0 else 2
+
+    results = run_selected_api_rows(
+        manifest,
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=output_dir,
+        selection=selection,
+        binding=binding,
+        resume=not args.no_resume,
+        transport_factory=UrllibStreamingTransport,
+        environ=os.environ,
     )
     if not results:
         print("No matrix rows matched the selection filters", file=sys.stderr)
@@ -2321,6 +2511,182 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_parser.set_defaults(func=_cmd_workloads_run)
+
+    run_api_parser = workloads_subparsers.add_parser(
+        "run-api",
+        help=(
+            "Execute selected runnable matrix rows against an "
+            "OpenAI-compatible streaming API and evaluate them deterministically"
+        ),
+        # Same reasoning as `collect-api`: prefix matching would let
+        # "--api-key <secret>" resolve to "--api-key-env" and persist the
+        # secret as though it were a variable name.
+        allow_abbrev=False,
+    )
+    run_api_parser.add_argument(
+        "--matrix",
+        required=True,
+        help="Path to a `workloads generate-matrix` manifest.json",
+    )
+    run_api_parser.add_argument("--output-dir", required=True)
+    run_api_parser.add_argument(
+        "--profile",
+        choices=PROFILE_NAMES,
+        default=None,
+        help=(
+            "Named provider profile supplying --provider/--endpoint/"
+            "--api-key-env defaults. Any of them may still be given "
+            "explicitly to override the profile, and an unlisted provider "
+            "works by giving all three without --profile. See "
+            "`workloads list-api-profiles`."
+        ),
+    )
+    run_api_parser.add_argument(
+        "--provider",
+        default=None,
+        help="Short provider label recorded in evidence (never a secret)",
+    )
+    run_api_parser.add_argument(
+        "--endpoint",
+        default=None,
+        help=(
+            "Full chat-completions URL. Must be https for non-local hosts "
+            "and must not embed credentials."
+        ),
+    )
+    run_api_parser.add_argument(
+        "--model-id",
+        required=True,
+        help=(
+            "Provider model ID, e.g. z-ai/glm-5.3 on OpenRouter or glm-5.3 "
+            "on Z.ai. This is the provider-side model, not the matrix's "
+            "local model_id."
+        ),
+    )
+    run_api_parser.add_argument(
+        "--model-revision",
+        default=None,
+        help=(
+            "Provider-side model build, when the provider exposes one. "
+            "Hosted APIs usually do not, in which case leave it unset "
+            "rather than guessing."
+        ),
+    )
+    run_api_parser.add_argument(
+        "--api-key-env",
+        default=None,
+        help=(
+            "Name of the environment variable holding the API key. Only the "
+            "name is recorded; the value is never persisted, echoed or "
+            "accepted as a command argument."
+        ),
+    )
+    run_api_parser.add_argument(
+        "--system-prompt-file",
+        default=None,
+        help="Optional UTF-8 system prompt file; hashed into evidence, never copied",
+    )
+    run_api_parser.add_argument("--temperature", type=float, default=None)
+    run_api_parser.add_argument("--top-p", type=float, default=None)
+    run_api_parser.add_argument("--seed", type=int, default=None)
+    run_api_parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=120.0,
+        help="Per-request timeout in seconds; no retries are performed",
+    )
+    run_api_parser.add_argument(
+        "--max-stream-events",
+        type=int,
+        default=DEFAULT_MAX_STREAM_EVENTS,
+        help=(
+            "Ceiling on dispatched SSE events per row. A stream that exceeds "
+            "it is abandoned, and the row fails as truncated rather than "
+            "being graded: what arrived is a prefix of the answer."
+        ),
+    )
+    run_api_parser.add_argument(
+        "--reasoning-effort",
+        choices=GLM_REASONING_EFFORT_LEVELS,
+        default=None,
+        help=(
+            "Provider-specific reasoning budget. Never a substitute for a "
+            "native-mtp row, which stays unsupported."
+        ),
+    )
+    run_api_parser.add_argument(
+        "--thinking",
+        choices=THINKING_TYPES,
+        default=None,
+        help="Provider-specific thinking.type",
+    )
+    run_api_parser.add_argument(
+        "--clear-thinking",
+        choices=("true", "false"),
+        default=None,
+        help=(
+            "Provider-specific thinking.clear_thinking. Controls whether "
+            "reasoning_content from previous turns is cleared; it does not "
+            "change whether this turn thinks."
+        ),
+    )
+    run_api_parser.add_argument(
+        "--provider-request-id",
+        default=None,
+        help="Optional caller-supplied provider request ID",
+    )
+    run_api_parser.add_argument(
+        "--run-id", nargs="+", default=None, help="Select specific run_id(s)"
+    )
+    run_api_parser.add_argument(
+        "--category",
+        nargs="+",
+        default=None,
+        choices=[category.value for category in WorkloadCategory],
+        help="Filter selected rows by workload category",
+    )
+    run_api_parser.add_argument(
+        "--context-tier",
+        nargs="+",
+        default=None,
+        choices=[tier.value for tier in ContextTier],
+        help="Filter selected rows by context tier",
+    )
+    run_api_parser.add_argument(
+        "--mode",
+        nargs="+",
+        default=None,
+        choices=[DECODE_MODE_AUTOREGRESSIVE, DECODE_MODE_NATIVE_MTP],
+        help=(
+            "Filter selected rows by decode mode; native-mtp rows are always "
+            "rejected as unsupported and are never remapped onto API "
+            "reasoning settings"
+        ),
+    )
+    run_api_parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help=(
+            "Re-run all selected rows even if a complete, hash-verified "
+            "artifact set exists"
+        ),
+    )
+    run_api_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Validate selection and configuration, then print and write the "
+            "credential-free request plan without performing any network "
+            "request"
+        ),
+    )
+    run_api_parser.set_defaults(func=_cmd_workloads_run_api)
+
+    list_profiles_parser = workloads_subparsers.add_parser(
+        "list-api-profiles",
+        help="Print the documented OpenAI-compatible provider profiles as JSON",
+    )
+    list_profiles_parser.set_defaults(func=_cmd_workloads_list_api_profiles)
 
     summarize_parser = workloads_subparsers.add_parser(
         "summarize",

@@ -84,7 +84,24 @@ from .evaluators import evaluate_workload
 from .matrix import DECODE_MODE_NATIVE_MTP, MatrixEntry, MatrixManifest
 from .schema import WorkloadSchemaError
 
-VERIFICATION_SCHEMA_VERSION = "1"
+VERIFICATION_SCHEMA_VERSION = "2"
+"""Schema version for ``verification.json``.
+
+v2 is a strict superset of v1: it adds ``backend``, ``provider``,
+``api_model_id`` and ``artifacts_verified``, all optional on read with
+defaults that describe exactly what a v1 artifact meant (a locally
+measured MLX row with no provider and no separately verified artifact
+set). A v1 artifact therefore still parses, still aggregates and still
+resumes; nothing that was written before this version needs rewriting.
+"""
+
+#: Which execution backend produced a row. Recorded so that aggregation can
+#: keep locally measured rows and rows measured through a hosted API apart:
+#: they do not share a hardware definition and their timings are not
+#: comparable. Absent from schema v1 artifacts, which predate any backend
+#: other than local MLX, so reading one back defaults to ``mlx``.
+BACKEND_MLX = "mlx"
+BACKEND_OPENAI_API = "openai-api"
 
 
 class VerifyError(ValueError):
@@ -244,6 +261,22 @@ class RowVerification:
     ended_at: str
     final_record_path: str | None
     collection_dir: str | None
+    backend: str = BACKEND_MLX
+    """Which execution backend produced the row. Defaults to ``mlx`` so a
+    schema v1 artifact, written before any other backend existed, reads
+    back as exactly what it was."""
+
+    provider: str | None = None
+    """Sanitized provider label for API-backed rows; ``None`` for local
+    rows, which have no provider."""
+
+    api_model_id: str | None = None
+    """Provider-side model ID for API-backed rows. Kept separate from the
+    matrix's local ``model_id`` because the two name different things."""
+
+    artifacts_verified: bool | None = None
+    """Whether the backend's own artifact set was hash-verified complete.
+    ``None`` when the backend publishes no such marker."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -254,12 +287,16 @@ class RowVerification:
             "category": self.category,
             "context_tier": self.context_tier,
             "decode_mode": self.decode_mode,
+            "backend": self.backend,
+            "provider": self.provider,
+            "api_model_id": self.api_model_id,
             "status": self.status.value,
             "reason": self.reason,
             "recorded_prompt_hash": self.recorded_prompt_hash,
             "verified_prompt_hash": self.verified_prompt_hash,
             "run_binding_hash": self.run_binding_hash,
             "resumed": self.resumed,
+            "artifacts_verified": self.artifacts_verified,
             "outcome_success": self.outcome_success,
             "quality_score": self.quality_score,
             "total_ms": self.total_ms,
@@ -298,6 +335,12 @@ class RowVerification:
                 ended_at=data["ended_at"],
                 final_record_path=data.get("final_record_path"),
                 collection_dir=data.get("collection_dir"),
+                # Additive v2 fields. A v1 artifact predates any backend
+                # other than local MLX, so its absence is not ambiguous.
+                backend=str(data.get("backend", BACKEND_MLX)),
+                provider=data.get("provider"),
+                api_model_id=data.get("api_model_id"),
+                artifacts_verified=data.get("artifacts_verified"),
             )
         except (KeyError, ValueError) as exc:
             raise VerifyError(f"invalid verification.json: {exc}") from exc

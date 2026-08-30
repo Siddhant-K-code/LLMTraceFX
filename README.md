@@ -1759,8 +1759,230 @@ uv run llmtracefx-optimizer workloads summarize --results artifacts/qwen3.8-run
 
 which reports pass rate and "correct cases per minute" (computed only from
 rows that both passed and have measured timing) overall and broken down by
-decode mode and context tier -- deliberately not blended into one combined
-score.
+decode mode, context tier, backend and provider -- deliberately not blended
+into one combined score.
+
+The `backend` and `provider` breakdowns exist so that figures which are not
+the same quantity stay apart. A row measured on a local checkpoint times a
+model on your machine; a row measured through a hosted API times a request
+to somebody else's, on hardware you cannot see. Locally executed rows have
+no provider and are left out of `by_provider` entirely rather than being
+gathered under a placeholder key, so those groups do not sum to `overall`.
+A metric that is undefined for a group is reported as `null`, never `0`: no
+evaluated rows means there is no pass rate, which is a different statement
+from a pass rate of zero.
+
+### Executing the matrix against an API: `workloads run-api`
+
+`workloads run-api` is the remote counterpart to `workloads run`. It takes
+the same matrix manifest, the same selection filters, the same
+deterministic evaluators and the same canonical `ExperimentRecord`, but
+executes each selected row through the provider-neutral streaming
+`collect-api` collector instead of a local MLX checkpoint. Transport, SSE
+decoding, failure classification and credential redaction are that
+collector's, used unmodified.
+
+> All commands in this section are **unmeasured examples**. They show the
+> shape of an invocation; no number in this repository was produced by
+> running them, and running one measures your endpoint on that day, not a
+> published result.
+
+Providers are named *profiles*, not hardcoded behaviour. A profile only
+supplies defaults for `--provider`, `--endpoint` and `--api-key-env`:
+
+```bash
+uv run llmtracefx-optimizer workloads list-api-profiles
+```
+
+```json
+{
+  "profiles": [
+    {
+      "name": "openrouter",
+      "provider_label": "openrouter",
+      "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+      "credential_env_var": "OPENROUTER_API_KEY",
+      "documented_model_ids": ["z-ai/glm-5.3", "z-ai/glm-5.3-flash"]
+    },
+    {
+      "name": "z.ai",
+      "provider_label": "z.ai",
+      "endpoint": "https://api.z.ai/api/paas/v4/chat/completions",
+      "credential_env_var": "ZAI_API_KEY",
+      "documented_model_ids": ["glm-5.3", "glm-5.3-flash"]
+    }
+  ]
+}
+```
+
+Validate a selection and see exactly what would be sent, with no network
+request and no secret in the output (**unmeasured example**):
+
+```bash
+uv run llmtracefx-optimizer workloads run-api \
+  --matrix artifacts/qwen3.8-matrix/manifest.json \
+  --output-dir artifacts/glm-api-run \
+  --profile openrouter \
+  --model-id z-ai/glm-5.3 \
+  --mode autoregressive \
+  --context-tier 2k \
+  --dry-run
+```
+
+The plan goes to stdout as JSON (so it can be piped into `jq`) and is also
+written to `<output-dir>/api_request_plan.json`; the human-readable row
+count goes to stderr. It carries message *digests* rather than prompt text,
+endpoint query *keys* rather than values, and header *names* rather than
+header values, and the whole document is passed through the collector's
+redactor before it is printed or written.
+
+Then execute against OpenRouter (**unmeasured example**):
+
+```bash
+export OPENROUTER_API_KEY=...   # read by name, never persisted or echoed
+
+uv run llmtracefx-optimizer workloads run-api \
+  --matrix artifacts/qwen3.8-matrix/manifest.json \
+  --output-dir artifacts/glm-api-run \
+  --profile openrouter \
+  --model-id z-ai/glm-5.3-flash \
+  --mode autoregressive \
+  --reasoning-effort high \
+  --thinking enabled
+```
+
+Or directly against Z.ai, whose model IDs carry no vendor prefix
+(**unmeasured example**):
+
+```bash
+export ZAI_API_KEY=...
+
+uv run llmtracefx-optimizer workloads run-api \
+  --matrix artifacts/qwen3.8-matrix/manifest.json \
+  --output-dir artifacts/glm-direct-run \
+  --profile z.ai \
+  --model-id glm-5.3 \
+  --mode autoregressive
+```
+
+An unlisted provider is a first-class citizen, not a special case: drop
+`--profile` and give the three fields it would have filled in
+(**unmeasured example**):
+
+```bash
+uv run llmtracefx-optimizer workloads run-api \
+  --matrix artifacts/qwen3.8-matrix/manifest.json \
+  --output-dir artifacts/self-hosted-run \
+  --provider self-hosted \
+  --endpoint https://vllm.internal.example/v1/chat/completions \
+  --api-key-env SELF_HOSTED_API_KEY \
+  --model-id local-glm \
+  --mode autoregressive
+```
+
+What the command guarantees:
+
+- **The matrix row decides the request.** The prompt is read from the
+  entry's `prompt_path` and its sha256 is checked against the manifest
+  before anything is sent, and the row's `max_tokens` becomes the
+  request's `max_tokens`. A mismatch fails the row instead of quietly
+  measuring a different prompt.
+- **`native-mtp` rows stay `unsupported`.** Native multi-token prediction
+  is a decoding mechanism inside a local runtime. A hosted API exposes no
+  such control, and its reasoning or "thinking" settings are a different
+  mechanism measuring something else, so those rows are rejected rather
+  than re-labelled. Passing `--reasoning-effort` does not change this.
+- **Only the final answer is graded.** The evaluator sees the assembled
+  content stream, never `reasoning_content`, so a model that reasons its
+  way to the answer and then states something else is graded on what it
+  stated.
+- **A provider failure is never overwritten by an evaluator verdict.** A
+  non-200, a timeout, a decode error, a provider error frame or a stream
+  that ends without a clean termination fails the row and the evaluator is
+  not run at all -- including when the failed response body happens to
+  contain a passing answer. A stream counts as cleanly terminated when it
+  sent either the `[DONE]` sentinel or a terminal `finish_reason`, since
+  not every OpenAI-compatible provider sends both; a documented failure
+  reason or a frame left pending at end of stream is truncation either
+  way. If collection succeeded but the evaluator itself raised, the row is
+  `inconclusive`: the timing evidence is kept and `quality_score` is left
+  unset rather than guessed.
+- **`--max-stream-events`** bounds a chatty endpoint that stays under the
+  request timeout while emitting far more events than any answer needs.
+  Tripping the cap fails the row as truncated with the cap named in the
+  reason, even if a terminal `finish_reason` had already arrived: we are
+  the ones who stopped reading, so what arrived is a prefix of the answer
+  and grading it would publish a truncation as a verdict. The timing and
+  usage evidence is still persisted; only the outcome refuses to claim
+  success.
+- **A credential is refused before it can be written down, not after.**
+  Both `--dry-run` and a real run apply the collector's pre-flight check,
+  which fails the row if the key from `--api-key-env` appears in the
+  endpoint, provider label, model ID, prompt, output path or reconstructed
+  command. This runs *before* the request plan is built, because a
+  credential sitting in an endpoint query value would otherwise be folded
+  into the config hash as its sha256 and no redactor can undo a hash.
+- **No credential is ever hashed, persisted or echoed.** There is no
+  `--api-key` flag; `--api-key-env` takes a *name*. The API binding hash
+  deliberately excludes that name, both because two runs differing only in
+  which variable held the key issue byte-identical requests and are graded
+  identically, and because a caller who pastes a key into that slot must
+  not have a derivation of it written into an artifact.
+
+Each row writes `runs/<run_id>/collection/{record.json,response.txt,
+api_evidence.json,environment.json,artifacts.json}` (the collector's own
+artifact set, with `artifacts.json` as its completion marker),
+`final_record.json` (the canonical `ExperimentRecord` carrying the
+evaluator's outcome) and `verification.json`. Aggregate it with the same
+`workloads summarize` used for local runs.
+
+Re-running with the same `--output-dir` resumes, but only on evidence that
+is provably whole. A row is skipped only if *every* one of these holds: the
+prior `verification.json` is `completed`/`skipped`, it was produced by this
+same backend, and its prompt hash, workload version and API binding hash
+all still match, **and** the collector's `artifacts.json` marker verifies
+the sha256 of every file in the collection directory. A stale binding, an
+interrupted write, a missing marker or a file edited after the fact all
+rerun the row. `--no-resume` reruns everything regardless.
+
+The API binding hash covers the sanitized endpoint identity (origin, path,
+query keys and hashed query values), the provider label, the model ID and
+revision, the request parameters including this row's `max_tokens`, the
+provider extensions and reasoning settings, the finish-reason vocabulary,
+the request timeout, the system prompt's hash, the event cap, and the
+workload version the answer is graded against. Changing any of them reruns
+the row rather than trusting evidence gathered under different conditions.
+
+#### Repeating a run
+
+The matrix deliberately has no repetition axis: `run_id` is derived from
+`(workload, context tier, decode mode)`, so one manifest row is one
+invocation. Rather than invent synthetic repetition IDs that no other part
+of the pipeline understands, repeat by giving each repetition its own
+results directory (**unmeasured example**):
+
+```bash
+for repetition in 1 2 3; do
+  uv run llmtracefx-optimizer workloads run-api \
+    --matrix artifacts/qwen3.8-matrix/manifest.json \
+    --output-dir "artifacts/glm-api-run/rep-${repetition}" \
+    --profile openrouter \
+    --model-id z-ai/glm-5.3 \
+    --mode autoregressive
+done
+```
+
+Each repetition is then summarized on its own with `workloads summarize`.
+Keeping them in separate directories is what makes repeated sampling
+honest here: resume is keyed on the run directory, so reusing one directory
+would skip the second repetition rather than measure it, and the spread
+across repetitions stays visible instead of being averaged away by a
+pipeline that never saw it as a spread.
+
+This command deliberately computes no cost, no price and no cross-provider
+ranking. The provider's own usage counters are persisted exactly as
+reported; turning them into money or into a comparison is a separate
+concern with its own correctness burden.
 
 ### Offline tuning and the `tune-report` HTML viewer
 
