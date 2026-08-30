@@ -5480,11 +5480,14 @@ def test_reasoning_after_content_invalidates_completion_rates(
 
     statistics = result.evidence.statistics
     assert statistics.provider_completion_tokens_per_second is None
-    assert "reasoning was observed after visible content" in (
+    unavailable_reason = (
         statistics.provider_completion_tokens_per_second_unavailable_reason or ""
     )
     if reasoning_tokens == 0:
+        assert "reporting zero reasoning tokens" in unavailable_reason
         assert statistics.provider_visible_completion_tokens_per_second is None
+    else:
+        assert "reasoning was observed after visible content" in unavailable_reason
 
 
 def test_error_and_done_frames_participate_in_event_accounting(
