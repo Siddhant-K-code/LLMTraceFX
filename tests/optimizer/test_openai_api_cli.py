@@ -699,28 +699,36 @@ def run_main(argv: list[str]) -> tuple[int, str, str]:
 
 
 @pytest.mark.parametrize(
-    "flag",
+    ("flag", "canonical"),
     [
-        "--api-key",
-        "--api_key",
-        "--apikey",
-        "--API-KEY",
-        "--token",
-        "--access-token",
-        "--bearer-token",
-        "--secret",
-        "--password",
-        "--credential",
+        ("--api-key", "--api-key"),
+        ("--api_key", "--api-key"),
+        ("--apikey", "--api-key"),
+        ("--API-KEY", "--api-key"),
+        ("--token", "--token"),
+        ("--access-token", "--access-token"),
+        ("--bearer-token", "--bearer-token"),
+        ("--secret", "--secret"),
+        ("--password", "--password"),
+        ("--credential", "--credential"),
     ],
 )
 @pytest.mark.parametrize("attached", [False, True])
 def test_a_credential_flag_is_rejected_without_repeating_its_value(
-    tmp_path: Path, flag: str, attached: bool
+    tmp_path: Path, flag: str, canonical: str, attached: bool
 ) -> None:
     """argparse quotes an unrecognized argument back, value and all.
 
     The credential is read from the environment and no flag accepts one,
     so the flag is refused before argparse can format it into a message.
+
+    The message names the flag using this program's own spelling rather
+    than the caller's token. Echoing the token was believed safe because
+    it was split on ``=`` first, but that relied on reasoning about every
+    argument shape instead of on construction, and it kept a value that
+    may be the credential flowing into a write to stderr. So
+    ``--API_KEY`` is answered with ``--api-key``: still actionable, and
+    built only from bytes this program defined.
     """
     extra = [f"{flag}={_SENTINEL}"] if attached else [flag, _SENTINEL]
 
@@ -729,9 +737,27 @@ def test_a_credential_flag_is_rejected_without_repeating_its_value(
     assert code == 2
     assert _SENTINEL not in err
     assert _SENTINEL not in out
-    assert flag.split("=")[0] in err
+    assert canonical in err
     assert "--api-key-env" in err
     assert not (tmp_path / "artifacts").exists()
+
+
+@pytest.mark.parametrize("flag", ["--API_KEY", "--Api-Key", "--apikey"])
+def test_the_refusal_never_echoes_the_callers_own_spelling(
+    tmp_path: Path, flag: str
+) -> None:
+    """No byte of the command line reaches an output stream.
+
+    A spelling this program did not define is caller-supplied text, and
+    the token that reached this check is the one most likely to be
+    holding a credential, so it is answered rather than repeated.
+    """
+    code, out, err = run_main(base_argv(tmp_path) + [f"{flag}={_SENTINEL}"])
+
+    assert code == 2
+    assert flag not in err + out
+    assert _SENTINEL not in err + out
+    assert "--api-key" in err
 
 
 def test_the_env_var_flag_is_not_mistaken_for_a_credential_flag(
