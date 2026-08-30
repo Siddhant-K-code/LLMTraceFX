@@ -8,6 +8,7 @@ exercised together.
 
 from __future__ import annotations
 
+import http.client
 import json
 import socket
 import threading
@@ -30,6 +31,8 @@ from llmtracefx.optimizer.collectors.openai_api import (
     TransportConnectionError,
     TransportTimeout,
     UrllibStreamingTransport,
+    _DeadlineHTTPSConnection,
+    _DeadlineWatchdog,
     _UrllibResponse,
     collect_openai_stream,
 )
@@ -1221,3 +1224,72 @@ def test_dns_unicode_errors_are_sanitized_transport_failures(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == ""
+
+
+def test_tls_handshake_uses_only_the_remaining_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, peer = socket.socketpair()
+    client.settimeout(1.0)
+    started = time.monotonic()
+    deadline = started + 0.2
+    watchdog = _DeadlineWatchdog(deadline, time.monotonic)
+    connection = _DeadlineHTTPSConnection(
+        "example.test",
+        timeout=1.0,
+        deadline=deadline,
+        clock=time.monotonic,
+        watchdog=watchdog,
+    )
+
+    def delayed_tcp_connect(_connection: Any) -> None:
+        time.sleep(0.12)
+        _connection.sock = client
+
+    monkeypatch.setattr(
+        http.client.HTTPConnection,
+        "connect",
+        delayed_tcp_connect,
+    )
+    try:
+        with pytest.raises(OSError):
+            connection.connect()
+    finally:
+        watchdog.cancel()
+        connection.close()
+        peer.close()
+    elapsed = time.monotonic() - started
+
+    assert elapsed >= 0.17
+    assert elapsed < 0.5
+
+
+def test_timed_out_dns_uses_a_bounded_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = threading.Event()
+
+    def blocked_resolution(*_args: Any, **_kwargs: Any) -> Any:
+        release.wait(2.0)
+        return []
+
+    monkeypatch.setattr(socket, "getaddrinfo", blocked_resolution)
+    request = HTTPRequest(
+        url="http://localhost:9/v1/chat/completions",
+        method="POST",
+        headers={"Content-Type": "application/json"},
+        body=b"{}",
+        timeout_seconds=0.03,
+    )
+    try:
+        for _ in range(4):
+            with pytest.raises(TransportTimeout):
+                UrllibStreamingTransport().open_stream(request)
+        workers = [
+            thread
+            for thread in threading.enumerate()
+            if thread.name == "llmtracefx-dns-resolver"
+        ]
+        assert len(workers) == 1
+    finally:
+        release.set()

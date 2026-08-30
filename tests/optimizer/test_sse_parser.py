@@ -123,6 +123,15 @@ def test_unterminated_final_event_is_discarded_and_flagged() -> None:
     assert decoder.incomplete_event_discarded is True
 
 
+def test_eof_terminated_comment_after_done_is_not_incomplete() -> None:
+    decoder = SSEDecoder()
+    events = drain(decoder, [b"data: [DONE]\n\n: keepalive"])
+
+    assert [event.data for event in events] == ["[DONE]"]
+    assert decoder.comment_count == 1
+    assert decoder.incomplete_event_discarded is False
+
+
 def test_close_is_idempotent() -> None:
     decoder = SSEDecoder()
     list(decoder.feed(b"data: one\n\n"))
