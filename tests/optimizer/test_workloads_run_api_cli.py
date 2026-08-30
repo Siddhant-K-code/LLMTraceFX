@@ -946,10 +946,84 @@ def test_a_provider_echoing_the_key_leaks_it_to_neither_stream(
             assert _SENTINEL not in path.read_text(encoding="utf-8", errors="replace")
 
 
-def test_a_sentinel_in_the_matrix_path_is_not_echoed_by_the_load_error(
+@pytest.mark.parametrize("slot", ["--output-dir", "--matrix"])
+def test_a_credential_in_a_path_is_refused_before_anything_is_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slot: str
+) -> None:
+    """A path is the one place a redactor can never reach.
+
+    Creating the directory writes the value into the filesystem itself,
+    where it outlives the process and reaches backups and shell
+    completion. So the refusal has to come before any planning, any
+    mkdir and any diagnostic, not from the collector's own preflight,
+    which a row only reaches after the output directory exists.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", _SENTINEL)
+    root = tmp_path / "root"
+    root.mkdir()
+    poisoned = str(root / f"{_SENTINEL}-path")
+
+    argv = [
+        "workloads",
+        "run-api",
+        "--matrix",
+        str(build_matrix(tmp_path)),
+        "--output-dir",
+        str(tmp_path / "results"),
+        "--profile",
+        "openrouter",
+        "--model-id",
+        "z-ai/glm-5.3",
+        "--dry-run",
+    ]
+    argv[argv.index(slot) + 1] = poisoned
+
+    code, out, err = run_main(argv)
+
+    assert code == 1
+    assert "refusing to run" in err
+    assert _SENTINEL not in out + err
+    # Nothing named after the credential was created anywhere.
+    assert list(root.iterdir()) == []
+    assert not any(_SENTINEL in str(path) for path in tmp_path.rglob("*"))
+
+
+def test_a_credential_in_a_path_is_refused_before_the_network_too(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``OSError`` embeds the path it failed on, and that path is caller text."""
+    """The same refusal on the execution path, not only under --dry-run."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", _SENTINEL)
+    root = tmp_path / "root"
+    root.mkdir()
+
+    code, out, err = run_main(
+        [
+            "workloads",
+            "run-api",
+            "--matrix",
+            str(build_matrix(tmp_path)),
+            "--output-dir",
+            str(root / f"{_SENTINEL}-results"),
+            "--profile",
+            "openrouter",
+            "--model-id",
+            "z-ai/glm-5.3",
+            "--mode",
+            DECODE_MODE_AUTOREGRESSIVE,
+        ]
+    )
+
+    assert code == 1
+    assert _SENTINEL not in out + err
+    assert list(root.iterdir()) == []
+    # The autouse fixture leaves an exploding transport installed, so
+    # reaching the network would have failed the test outright.
+
+
+def test_a_path_without_the_credential_still_reports_its_error_scrubbed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard is narrow: an ordinary bad path still gets a diagnostic."""
     monkeypatch.setenv("OPENROUTER_API_KEY", _SENTINEL)
 
     code, out, err = run_main(
@@ -957,7 +1031,7 @@ def test_a_sentinel_in_the_matrix_path_is_not_echoed_by_the_load_error(
             "workloads",
             "run-api",
             "--matrix",
-            str(tmp_path / f"{_SENTINEL}.json"),
+            str(tmp_path / "no-such-manifest.json"),
             "--output-dir",
             str(tmp_path / "results"),
             "--profile",
@@ -969,39 +1043,6 @@ def test_a_sentinel_in_the_matrix_path_is_not_echoed_by_the_load_error(
 
     assert code == 1
     assert "Failed to load matrix manifest" in err
-    assert _SENTINEL not in out + err
-
-
-def test_a_sentinel_in_the_output_dir_is_not_echoed_by_the_write_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The plan-write failure path scrubs the caller's --output-dir too."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", _SENTINEL)
-    blocked = tmp_path / f"{_SENTINEL}-dir"
-    # A regular file where the results directory must be, so the atomic
-    # write fails with an OSError naming the path.
-    blocked.write_text("not a directory", encoding="utf-8")
-
-    code, out, err = run_main(
-        [
-            "workloads",
-            "run-api",
-            "--matrix",
-            str(build_matrix(tmp_path)),
-            "--output-dir",
-            str(blocked),
-            "--profile",
-            "openrouter",
-            "--model-id",
-            "z-ai/glm-5.3",
-            "--mode",
-            DECODE_MODE_AUTOREGRESSIVE,
-            "--dry-run",
-        ]
-    )
-
-    assert code == 1
-    assert "Failed to write request plan" in err
     assert _SENTINEL not in out + err
 
 

@@ -373,3 +373,120 @@ def test_group_with_no_evaluated_rows_reports_null_not_zero(tmp_path):
     assert group.correct_cases_per_minute is None
     payload = json.loads(summary.to_json())
     assert payload["by_provider"][0]["pass_rate"] is None
+
+
+def test_a_mixed_backend_group_withholds_its_timing_metric(tmp_path):
+    """A local duration and an API duration are not the same quantity.
+
+    Blending them yields a throughput figure describing no system that
+    exists, and the wider the aggregate the more authoritative it looks.
+    """
+    results_dir = tmp_path / "results"
+    _write_verification(
+        results_dir,
+        "local",
+        status=RowStatus.COMPLETED,
+        outcome_success=True,
+        quality_score=1.0,
+        total_ms=1000,
+        backend=BACKEND_MLX,
+    )
+    _write_verification(
+        results_dir,
+        "remote",
+        status=RowStatus.COMPLETED,
+        outcome_success=True,
+        quality_score=1.0,
+        total_ms=9000,
+        backend=BACKEND_OPENAI_API,
+        provider="openrouter",
+    )
+    summary = summarize_results(results_dir)
+
+    # Quality survives: a pass is a pass wherever it was produced.
+    assert summary.overall.pass_rate == 1.0
+    assert summary.overall.evaluated_pass == 2
+    # The timing-derived figure does not, and says why.
+    assert summary.overall.correct_cases_per_minute is None
+    assert summary.overall.timing_comparable is False
+    assert "not the same quantity" in (summary.overall.timing_unavailable_reason or "")
+    assert summary.overall.measurement_contexts == ("mlx", "openai-api/openrouter")
+
+    # The homogeneous per-backend groups keep theirs.
+    by_backend = {group.key: group for group in summary.by_backend}
+    assert by_backend[BACKEND_MLX].correct_cases_per_minute is not None
+    assert by_backend[BACKEND_MLX].timing_comparable is True
+    assert by_backend[BACKEND_OPENAI_API].correct_cases_per_minute is not None
+
+
+def test_two_providers_in_one_group_also_withhold_timing(tmp_path):
+    """Two hosted endpoints are not one measurement context either."""
+    results_dir = tmp_path / "results"
+    for run_id, provider in (("a", "openrouter"), ("b", "z.ai")):
+        _write_verification(
+            results_dir,
+            run_id,
+            status=RowStatus.COMPLETED,
+            outcome_success=True,
+            quality_score=1.0,
+            total_ms=2000,
+            backend=BACKEND_OPENAI_API,
+            provider=provider,
+        )
+    summary = summarize_results(results_dir)
+
+    assert summary.overall.correct_cases_per_minute is None
+    assert summary.overall.timing_comparable is False
+    by_backend = {group.key: group for group in summary.by_backend}
+    # Same backend, still two providers, so still not comparable.
+    assert by_backend[BACKEND_OPENAI_API].correct_cases_per_minute is None
+    by_provider = {group.key: group for group in summary.by_provider}
+    assert by_provider["openrouter"].correct_cases_per_minute is not None
+    assert by_provider["z.ai"].correct_cases_per_minute is not None
+
+
+def test_a_homogeneous_group_is_unaffected(tmp_path):
+    """The suppression is narrow: one context keeps every metric."""
+    results_dir = tmp_path / "results"
+    for run_id in ("a", "b"):
+        _write_verification(
+            results_dir,
+            run_id,
+            status=RowStatus.COMPLETED,
+            outcome_success=True,
+            quality_score=1.0,
+            total_ms=1000,
+            backend=BACKEND_OPENAI_API,
+            provider="openrouter",
+        )
+    summary = summarize_results(results_dir)
+
+    assert summary.overall.timing_comparable is True
+    assert summary.overall.timing_unavailable_reason is None
+    assert summary.overall.correct_cases_per_minute is not None
+
+
+def test_a_failing_row_from_another_backend_does_not_suppress_timing(tmp_path):
+    """Only rows that contribute a duration define the context.
+
+    A failed row has no timing to blend, so its backend must not withhold
+    a figure the passing rows can legitimately support.
+    """
+    results_dir = tmp_path / "results"
+    _write_verification(
+        results_dir,
+        "remote-pass",
+        status=RowStatus.COMPLETED,
+        outcome_success=True,
+        quality_score=1.0,
+        total_ms=2000,
+        backend=BACKEND_OPENAI_API,
+        provider="openrouter",
+    )
+    _write_verification(
+        results_dir, "local-fail", status=RowStatus.FAILED, backend=BACKEND_MLX
+    )
+    summary = summarize_results(results_dir)
+
+    assert summary.overall.timing_comparable is True
+    assert summary.overall.correct_cases_per_minute is not None

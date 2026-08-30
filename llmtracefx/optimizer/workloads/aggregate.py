@@ -93,6 +93,16 @@ class GroupSummary:
     evaluated_pass: int
     pass_rate: float | None
     correct_cases_per_minute: float | None
+    timing_comparable: bool = True
+    """False when the group mixes execution semantics whose durations are
+    not the same quantity."""
+
+    timing_unavailable_reason: str | None = None
+    """Why a timing-derived metric was withheld, when it was."""
+
+    measurement_contexts: tuple[str, ...] = ()
+    """The distinct ``backend/provider`` semantics present in the group,
+    in sorted order. One entry means the group is homogeneous."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -107,6 +117,9 @@ class GroupSummary:
             "evaluated_pass": self.evaluated_pass,
             "pass_rate": self.pass_rate,
             "correct_cases_per_minute": self.correct_cases_per_minute,
+            "timing_comparable": self.timing_comparable,
+            "timing_unavailable_reason": self.timing_unavailable_reason,
+            "measurement_contexts": list(self.measurement_contexts),
         }
 
 
@@ -134,6 +147,35 @@ def _summarize_group(
         item.total_ms for item in evaluated_pass if item.total_ms is not None
     )
 
+    # A duration only means something next to another duration measured the
+    # same way. A local row times a model on this machine; an API row times
+    # a request to somebody else's, over a network, on hardware nobody here
+    # can see. Adding those together produces a "correct cases per minute"
+    # that describes no system that exists, and the more rows an aggregate
+    # covers the more authoritative that number looks.
+    #
+    # Quality is not affected: a pass is a pass wherever it was produced, so
+    # pass counts and pass rate stay populated and only the timing-derived
+    # figure is withheld, with the reason recorded rather than left to be
+    # inferred from a null.
+    contexts = sorted(
+        {
+            f"{item.backend}/{item.provider}" if item.provider else item.backend
+            for item in evaluated_pass
+        }
+    )
+    timing_comparable = len(contexts) <= 1
+    timing_reason = (
+        None
+        if timing_comparable
+        else (
+            "withheld: this group mixes measurement contexts ("
+            + ", ".join(contexts)
+            + "), whose durations are not the same quantity. Read the "
+            "per-backend and per-provider groups instead."
+        )
+    )
+
     return GroupSummary(
         key=key,
         total=len(items),
@@ -145,9 +187,14 @@ def _summarize_group(
         evaluated_total=len(evaluated),
         evaluated_pass=len(evaluated_pass),
         pass_rate=pass_rate(len(evaluated_pass), len(evaluated)),
-        correct_cases_per_minute=correct_cases_per_minute(
-            len(evaluated_pass), total_pass_ms
+        correct_cases_per_minute=(
+            correct_cases_per_minute(len(evaluated_pass), total_pass_ms)
+            if timing_comparable
+            else None
         ),
+        timing_comparable=timing_comparable,
+        timing_unavailable_reason=timing_reason,
+        measurement_contexts=tuple(contexts),
     )
 
 

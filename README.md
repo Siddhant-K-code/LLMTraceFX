@@ -1892,6 +1892,18 @@ What the command guarantees:
   such control, and its reasoning or "thinking" settings are a different
   mechanism measuring something else, so those rows are rejected rather
   than re-labelled. Passing `--reasoning-effort` does not change this.
+- **`code_completion` rows stay `unsupported` too, and this one is a
+  security boundary.** That category is graded by writing the model's
+  answer to disk and running it with this interpreter. Locally that is a
+  considered trade, because the answer came from a checkpoint on your own
+  machine. Over an API it is not: the answer comes from a remote endpoint,
+  and the evaluator has no network namespace, no filesystem confinement
+  and no seccomp policy, only a minimal environment and POSIX resource
+  limits. Executing it would hand the provider local code execution. The
+  row is refused before a request is sent and the evaluator is never
+  invoked. There is deliberately no opt-in flag; the honest time to add
+  one is when a real sandbox exists to put behind it. Run this category
+  locally with `workloads run`.
 - **Only the final answer is graded.** The evaluator sees the assembled
   content stream, never `reasoning_content`, so a model that reasons its
   way to the answer and then states something else is graded on what it
@@ -1935,17 +1947,36 @@ Each row writes `runs/<run_id>/collection/{record.json,response.txt,
 api_evidence.json,environment.json,artifacts.json}` (the collector's own
 artifact set, with `artifacts.json` as its completion marker),
 `final_record.json` (the canonical `ExperimentRecord` carrying the
-evaluator's outcome) and `verification.json`. Aggregate it with the same
-`workloads summarize` used for local runs.
+evaluator's outcome), `verification.json`, and `run.json` sealing all
+three. Aggregate it with the same `workloads summarize` used for local
+runs.
+
+`summarize` withholds `correct_cases_per_minute` for any group that mixes
+measurement contexts, reporting `timing_comparable: false` with a reason
+and listing the contexts involved. A duration only means something beside
+another measured the same way: a local row times a model on your machine,
+an API row times a request to somebody else's over a network. Quality is
+unaffected, since a pass is a pass wherever it was produced, so pass counts
+and pass rate stay populated and only the timing figure is withheld. Read
+the per-backend and per-provider groups for comparable throughput.
 
 Re-running with the same `--output-dir` resumes, but only on evidence that
 is provably whole. A row is skipped only if *every* one of these holds: the
 prior `verification.json` is `completed`/`skipped`, it was produced by this
 same backend, and its prompt hash, workload version and API binding hash
 all still match, **and** the collector's `artifacts.json` marker verifies
-the sha256 of every file in the collection directory. A stale binding, an
-interrupted write, a missing marker or a file edited after the fact all
-rerun the row. `--no-resume` reruns everything regardless.
+the sha256 of every file in the collection directory, **and** the run-level
+`run.json` marker verifies the collection marker together with
+`final_record.json` and `verification.json`.
+
+That second marker exists because the collector's own covers only the four
+files it writes. The record carrying the graded outcome and the summary
+resume actually reads both sat outside every integrity check, so either
+could be edited and would still be trusted. `run.json` is removed before a
+row is rewritten and written last, so an interrupted run leaves a directory
+that is rejected rather than one that reads as trustworthy. A stale
+binding, an interrupted write, a missing marker or a file edited after the
+fact all rerun the row. `--no-resume` reruns everything regardless.
 
 The API binding hash covers the sanitized endpoint identity (origin, path,
 query keys and hashed query values), the provider label, the model ID and

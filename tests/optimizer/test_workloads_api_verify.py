@@ -35,14 +35,17 @@ from llmtracefx.optimizer.workloads.api_profiles import (
     profile_by_name,
 )
 from llmtracefx.optimizer.workloads.api_verify import (
+    RUN_MANIFEST_NAME,
     APIBinding,
     APIVerifyError,
     execute_api_row,
     plan_selected_api_rows,
     render_plan_document,
+    run_artifacts_are_complete,
     run_selected_api_rows,
 )
 from llmtracefx.optimizer.workloads.catalog import (
+    CODE_COMPLETION_PALINDROME,
     PROSE_REASONING_TRAIN_PROBLEM,
     STRUCTURED_JSON_PROFILE_EXTRACTION,
 )
@@ -536,7 +539,7 @@ def test_event_cap_abandons_a_chatty_stream_and_says_so(tmp_path):
     assert "2-event cap" in (result.verification.reason or "")
 
 
-@pytest.mark.parametrize("cap", [1, 2, 3])
+@pytest.mark.parametrize("cap", [1, 2, 3, 4])
 def test_a_cap_the_stream_exceeds_never_yields_a_graded_pass(tmp_path, cap):
     """Exceeding the cap discards the verdict but keeps the measurement."""
     transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
@@ -595,44 +598,73 @@ def test_a_trailing_non_event_chunk_never_trips_the_cap(tmp_path, label, trailer
     assert result.verification.quality_score == 1.0
 
 
-@pytest.mark.parametrize(
-    ("label", "segment"),
-    [
-        ("one read per event", lambda parts: list(parts)),
-        ("sentinel in its own read", lambda parts: list(parts)),
-        (
-            "sentinel glued to the last event",
-            lambda parts: [*parts[:-2], parts[-2] + parts[-1]],
-        ),
-        ("whole body in one read", lambda parts: [b"".join(parts)]),
-        (
-            "sixteen byte reads",
-            lambda parts: [
-                b"".join(parts)[i : i + 16] for i in range(0, len(b"".join(parts)), 16)
-            ],
-        ),
-    ],
-)
-def test_the_verdict_does_not_depend_on_network_segmentation(tmp_path, label, segment):
-    """Identical wire bytes must produce an identical verdict.
+def segmentations(parts: list[bytes]) -> dict[str, list[bytes]]:
+    """The same wire bytes, split the ways a network might deliver them."""
+    body = b"".join(parts)
+    return {
+        "one read per event": list(parts),
+        "sentinel glued to the last event": [*parts[:-2], parts[-2] + parts[-1]],
+        "whole body in one read": [body],
+        "sixteen byte reads": [body[i : i + 16] for i in range(0, len(body), 16)],
+        "sixty four byte reads": [body[i : i + 64] for i in range(0, len(body), 64)],
+    }
 
-    How a body is split across socket reads is a property of the network,
-    not of the answer. A cap that consulted chunk arrival, or that counted
-    only what the collector had not yet abandoned, let TCP decide whether
-    a run passed.
+
+@pytest.mark.parametrize("cap", [2, 3, 4, 5, 6])
+def test_the_verdict_never_depends_on_network_segmentation(tmp_path, cap):
+    """Identical wire bytes must produce one verdict, at every cap.
+
+    Asserting a fixed outcome at a cap the stream cannot exceed proves
+    nothing: every implementation of this class agrees there. The property
+    is that all segmentations agree *with each other*, so it is swept
+    across the boundary rather than pinned to one side of it, and the
+    caps either side of the boundary are included.
     """
     parts = answer_stream(GOOD_JSON_ANSWER)
-    transport = FakeTransport(FakeResponse(segment(parts)))
-    result = run_one(
-        tmp_path,
-        transport=transport,
-        # Five events including the sentinel, so this is the smallest cap
-        # the stream does not exceed.
-        binding=make_binding(max_stream_events=len(parts)),
-    )
+    verdicts = {}
+    for label, chunks in segmentations(parts).items():
+        result = run_one(
+            tmp_path / f"cap{cap}" / label.replace(" ", "-"),
+            transport=FakeTransport(FakeResponse(chunks)),
+            binding=make_binding(max_stream_events=cap),
+        )
+        verdicts[label] = result.verification.status
 
-    assert result.verification.status is RowStatus.COMPLETED, label
-    assert result.verification.quality_score == 1.0
+    assert len(set(verdicts.values())) == 1, verdicts
+
+
+@pytest.mark.parametrize("trailer_label", ["duplicate sentinel", "trailing content"])
+def test_frames_after_the_sentinel_are_never_charged(tmp_path, trailer_label):
+    """A gateway may append frames the collector will never read.
+
+    The collector returns at ``[DONE]``, so anything after it is only
+    ever observed when it shares a socket read with the sentinel. Charging
+    it would let the network decide the verdict, and would fail a
+    complete, correct answer as a truncation.
+    """
+    parts = answer_stream(GOOD_JSON_ANSWER)
+    trailer = (
+        b"data: [DONE]\n\n"
+        if trailer_label == "duplicate sentinel"
+        else sse({"choices": [{"index": 0, "delta": {"content": " extra"}}]})
+    )
+    parts = [*parts, trailer]
+
+    verdicts = {}
+    for label, chunks in segmentations(parts).items():
+        result = run_one(
+            tmp_path / label.replace(" ", "-"),
+            transport=FakeTransport(FakeResponse(chunks)),
+            binding=make_binding(
+                max_stream_events=len(answer_stream(GOOD_JSON_ANSWER))
+            ),
+        )
+        verdicts[label] = (
+            result.verification.status,
+            result.verification.quality_score,
+        )
+
+    assert set(verdicts.values()) == {(RowStatus.COMPLETED, 1.0)}, verdicts
 
 
 def test_a_stream_past_the_cap_still_fails_whatever_the_segmentation(tmp_path):
@@ -1267,3 +1299,179 @@ def test_schema_v1_verification_still_parses_as_a_local_row():
     assert verification.provider is None
     assert verification.api_model_id is None
     assert verification.artifacts_verified is None
+
+
+# --- Executable evaluators are refused over an API ----------------------------
+
+
+def test_a_code_workload_is_unsupported_and_never_sent(tmp_path):
+    """Grading this category runs the answer as a local program.
+
+    Over an API that answer is produced by a remote party, so executing it
+    hands that party local code execution. The row is refused before a
+    transport exists and before the evaluator is chosen.
+    """
+    manifest, manifest_dir, matrix_path = build_manifest(
+        tmp_path, workloads=(CODE_COMPLETION_PALINDROME,)
+    )
+    entry = autoregressive_entry(manifest)
+    assert entry.category == "code_completion"
+
+    result = execute_api_row(
+        entry,
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=tmp_path / "results",
+        binding=make_binding(),
+        resume=True,
+        transport_factory=ExplodingTransport,
+        environ=ENVIRON,
+    )
+
+    assert result.verification.status is RowStatus.UNSUPPORTED
+    reason = (result.verification.reason or "").lower()
+    assert "executing the model's answer" in reason
+    assert "sandbox" in reason
+    assert result.final_record is None
+
+
+def test_a_code_workload_never_reaches_the_evaluator(tmp_path, monkeypatch):
+    """Belt and braces: the evaluator must not be invoked at all."""
+
+    def forbidden(workload, response_text):
+        raise AssertionError("the evaluator must never run for an API code row")
+
+    monkeypatch.setattr(api_verify, "evaluate_workload", forbidden)
+    manifest, manifest_dir, matrix_path = build_manifest(
+        tmp_path, workloads=(CODE_COMPLETION_PALINDROME,)
+    )
+    result = execute_api_row(
+        autoregressive_entry(manifest),
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=tmp_path / "results",
+        binding=make_binding(),
+        resume=True,
+        transport_factory=ExplodingTransport,
+        environ=ENVIRON,
+    )
+    assert result.verification.status is RowStatus.UNSUPPORTED
+
+
+def test_a_code_workload_is_blocked_in_the_dry_run_plan(tmp_path):
+    manifest, manifest_dir, matrix_path = build_manifest(
+        tmp_path, workloads=(CODE_COMPLETION_PALINDROME,)
+    )
+    plans = plan_selected_api_rows(
+        manifest,
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=tmp_path / "results",
+        selection=RowSelection(decode_modes=frozenset({DECODE_MODE_AUTOREGRESSIVE})),
+        binding=make_binding(),
+        environ=ENVIRON,
+    )
+
+    assert plans[0].unsupported is True
+    assert plans[0].request_plan is None
+    assert "local code execution" in (plans[0].unsupported_reason or "")
+
+
+def test_non_executing_categories_are_still_runnable(tmp_path):
+    """The refusal is narrow: only the category that executes is refused."""
+    for workload in (STRUCTURED_JSON_PROFILE_EXTRACTION, PROSE_REASONING_TRAIN_PROBLEM):
+        bundle = build_manifest(tmp_path / workload.workload_id, workloads=(workload,))
+        answer = (
+            GOOD_JSON_ANSWER
+            if workload is STRUCTURED_JSON_PROFILE_EXTRACTION
+            else "The gap closes after 2 hours."
+        )
+        result = run_one(
+            tmp_path / workload.workload_id,
+            transport=FakeTransport(FakeResponse(answer_stream(answer))),
+            manifest_bundle=bundle,
+        )
+        assert result.verification.status is RowStatus.COMPLETED, workload.workload_id
+
+
+# --- Run-level completion marker ---------------------------------------------
+
+
+def test_a_completed_row_writes_a_run_level_marker(tmp_path):
+    result = run_one(
+        tmp_path, transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    )
+    run_dir = Path(result.verification.collection_dir or "").parent
+
+    assert (run_dir / RUN_MANIFEST_NAME).exists()
+    assert run_artifacts_are_complete(run_dir)
+    sealed = {
+        entry["name"]
+        for entry in json.loads(
+            (run_dir / RUN_MANIFEST_NAME).read_text(encoding="utf-8")
+        )["artifacts"]
+    }
+    # The two files the collector's own marker does not cover.
+    assert "final_record.json" in sealed
+    assert "verification.json" in sealed
+
+
+@pytest.mark.parametrize("victim", ["final_record.json", "verification.json"])
+def test_editing_a_file_outside_the_collection_marker_forces_a_rerun(tmp_path, victim):
+    """These two sit outside the collector's marker and were trusted blind."""
+    bundle = build_manifest(tmp_path)
+    first = run_one(
+        tmp_path,
+        transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER))),
+        manifest_bundle=bundle,
+    )
+    run_dir = Path(first.verification.collection_dir or "").parent
+
+    target = run_dir / victim
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    if victim == "verification.json":
+        payload["quality_score"] = 1.0
+        payload["outcome_success"] = True
+    else:
+        payload["outcome"]["quality_score"] = 1.0
+    target.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert not run_artifacts_are_complete(run_dir)
+
+    transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    second = run_one(tmp_path, transport=transport, manifest_bundle=bundle)
+    assert transport.requests, "a tampered run directory must rerun"
+    assert second.verification.status is RowStatus.COMPLETED
+
+
+def test_a_missing_run_marker_forces_a_rerun(tmp_path):
+    """An interrupted write leaves no marker, and no marker means no trust."""
+    bundle = build_manifest(tmp_path)
+    first = run_one(
+        tmp_path,
+        transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER))),
+        manifest_bundle=bundle,
+    )
+    run_dir = Path(first.verification.collection_dir or "").parent
+    (run_dir / RUN_MANIFEST_NAME).unlink()
+
+    transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    second = run_one(tmp_path, transport=transport, manifest_bundle=bundle)
+    assert transport.requests, "a run with no marker must rerun"
+    assert second.verification.status is RowStatus.COMPLETED
+
+
+def test_a_corrupt_run_marker_forces_a_rerun(tmp_path):
+    bundle = build_manifest(tmp_path)
+    first = run_one(
+        tmp_path,
+        transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER))),
+        manifest_bundle=bundle,
+    )
+    run_dir = Path(first.verification.collection_dir or "").parent
+    (run_dir / RUN_MANIFEST_NAME).write_text("{ not json", encoding="utf-8")
+
+    transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    second = run_one(tmp_path, transport=transport, manifest_bundle=bundle)
+    assert transport.requests
+    assert second.verification.status is RowStatus.COMPLETED

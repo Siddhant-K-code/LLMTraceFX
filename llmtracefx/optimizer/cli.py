@@ -59,6 +59,7 @@ from .collectors.openai_api import (
     OpenAIStreamCollectorError,
     ProviderExtensions,
     UrllibStreamingTransport,
+    _contains_credential,
     assert_credential_not_embedded,
     build_request_plan,
     collect_openai_stream,
@@ -883,6 +884,32 @@ def _cmd_workloads_run_api(args: argparse.Namespace) -> int:
     # Resolved once, up front, so that every failure path below scrubs
     # against the same name the request would have used.
     key_env = _effective_api_key_env(args)
+
+    # Before anything is read, planned, created or printed. A credential
+    # pasted into a path is the one leak no downstream redactor can undo,
+    # because creating the directory writes it into the filesystem itself,
+    # where it outlives the process and lands in backups and shell
+    # completion. The collector refuses this too, but only once a row
+    # reaches it, which is after the output directory has been created and
+    # after an unsupported or early-failing row has already written its
+    # verification.json under that name.
+    credential = os.environ.get(key_env, "").strip() if key_env else ""
+    if credential:
+        for label, value in (
+            ("--output-dir", args.output_dir),
+            ("--matrix", args.matrix),
+        ):
+            if _contains_credential(str(value), credential):
+                # The offending value is named by its flag and never
+                # echoed; it is the credential.
+                print(
+                    f"llmtracefx-optimizer: error: the value named by "
+                    f"--api-key-env appears in {label}; refusing to run "
+                    "because that value would be written into the "
+                    "filesystem as a path, where no redactor can reach it",
+                    file=sys.stderr,
+                )
+                return 1
 
     matrix_path = Path(args.matrix)
     try:

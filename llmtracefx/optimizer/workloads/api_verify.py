@@ -87,8 +87,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ..collectors._shared import atomic_write_text, config_hash, sha256_text
+from ..collectors._shared import (
+    atomic_write_text,
+    config_hash,
+    sha256_bytes,
+    sha256_text,
+)
 from ..collectors.openai_api import (
+    ARTIFACT_MANIFEST_NAME,
     FAILURE_STREAM_TRUNCATED,
     APICollectionConfig,
     FinishReasonVocabulary,
@@ -110,7 +116,7 @@ from ..schema import ExperimentRecord, OutcomeInfo, SchemaValidationError, utc_n
 from .catalog import workload_by_id
 from .evaluators import evaluate_workload
 from .matrix import DECODE_MODE_NATIVE_MTP, MatrixEntry, MatrixManifest
-from .schema import WorkloadSchemaError
+from .schema import WorkloadCategory, WorkloadSchemaError
 from .verify import (
     BACKEND_OPENAI_API,
     VERIFICATION_SCHEMA_VERSION,
@@ -132,6 +138,83 @@ API_BINDING_SCHEMA_VERSION = "1"
 #: measurement configurations.
 DEFAULT_MAX_STREAM_EVENTS = 10_000
 
+#: The terminal sentinel an OpenAI-compatible stream closes with. Matched
+#: here only to stop charging events past it; the collector remains the
+#: authority on what the sentinel means.
+_DONE_SENTINEL = "[DONE]"
+
+#: Name of the run-level completion marker, written last.
+RUN_MANIFEST_NAME = "run.json"
+RUN_MANIFEST_SCHEMA_VERSION = "1"
+
+
+def _run_marker_payload(
+    *,
+    run_id: str,
+    collection_dir: Path,
+    final_record_path: Path,
+    verification_path: Path,
+) -> dict[str, Any]:
+    """Seal the whole run directory, not just the collector's own set.
+
+    ``artifact_set_is_complete`` covers the four files the collector
+    writes and nothing else, so ``final_record.json`` and
+    ``verification.json`` sat outside every integrity check: the record
+    carrying the graded outcome, and the summary resume actually reads,
+    could both be edited and would still be trusted. This marker closes
+    that by hashing all three together, including the collector's own
+    marker, so tampering with any file in the run is detected.
+    """
+    return {
+        "schema_version": RUN_MANIFEST_SCHEMA_VERSION,
+        "run_id": run_id,
+        "artifacts": [
+            {"name": name, "sha256": sha256_bytes(path.read_bytes())}
+            for name, path in (
+                (
+                    "collection/" + ARTIFACT_MANIFEST_NAME,
+                    collection_dir / ARTIFACT_MANIFEST_NAME,
+                ),
+                ("final_record.json", final_record_path),
+                ("verification.json", verification_path),
+            )
+        ],
+    }
+
+
+def run_artifacts_are_complete(run_dir: Path) -> bool:
+    """True when the run directory is whole and unmodified since it landed.
+
+    The marker is removed before the run's files are written and written
+    last, so any interruption leaves a directory this rejects rather than
+    one that reads as trustworthy.
+    """
+    try:
+        marker = json.loads((run_dir / RUN_MANIFEST_NAME).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(marker, dict):
+        return False
+    if marker.get("schema_version") != RUN_MANIFEST_SCHEMA_VERSION:
+        return False
+    artifacts = marker.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        return False
+    for entry in artifacts:
+        if not isinstance(entry, dict):
+            return False
+        name, digest = entry.get("name"), entry.get("sha256")
+        if not isinstance(name, str) or not isinstance(digest, str):
+            return False
+        try:
+            raw = (run_dir / name).read_bytes()
+        except OSError:
+            return False
+        if sha256_bytes(raw) != digest:
+            return False
+    return True
+
+
 _TRUSTABLE_RESUME_STATUSES = (RowStatus.COMPLETED, RowStatus.SKIPPED)
 
 _UNSUPPORTED_NATIVE_MTP_REASON = (
@@ -141,6 +224,52 @@ _UNSUPPORTED_NATIVE_MTP_REASON = (
     "thinking settings are a different mechanism measuring something else. "
     "This row is rejected rather than silently re-labelled as API reasoning."
 )
+
+#: Workload categories whose evaluator executes the model's answer.
+#:
+#: ``evaluate_code_completion`` writes the candidate to disk and runs it
+#: with this interpreter. Locally that is a considered trade: the answer
+#: came from a checkpoint on this machine, and the evaluator bounds it
+#: with a minimal environment, a new session and POSIX resource limits.
+#:
+#: None of that is a sandbox. There is no network namespace, no filesystem
+#: confinement and no seccomp policy, so the code may open sockets and
+#: read anything the invoking user can read. Over an API the answer is
+#: produced by a remote party, which turns "grade this workload" into
+#: "execute whatever that endpoint returned", and a compromised or hostile
+#: endpoint gets arbitrary local code execution out of a benchmark run.
+#:
+#: So the API backend fails closed. There is deliberately no opt-in flag:
+#: a flag would make this a default rather than a boundary, and the honest
+#: time to add one is when a real sandbox exists to put behind it.
+_EXECUTING_EVALUATOR_CATEGORIES = frozenset({WorkloadCategory.CODE_COMPLETION.value})
+
+_UNSUPPORTED_EXECUTING_EVALUATOR_REASON = (
+    "this workload is graded by executing the model's answer as a local "
+    "program, which is not something to do with output from a remote "
+    "endpoint. The evaluator bounds the process with a minimal environment "
+    "and resource limits, but it has no network or filesystem sandbox, so "
+    "running an API provider's answer would hand that provider local code "
+    "execution. The row is rejected rather than executed; no request is "
+    "sent and the evaluator is never invoked. Run this category locally "
+    "with `workloads run`, where the answer comes from a checkpoint on "
+    "this machine."
+)
+
+
+def _unsupported_reason(entry: MatrixEntry) -> str | None:
+    """Why this row cannot be run through an API, or ``None`` if it can.
+
+    Checked before anything is planned, sent or graded, so an unsupported
+    row never reaches a transport or an evaluator.
+    """
+    if entry.decode_mode == DECODE_MODE_NATIVE_MTP:
+        return _UNSUPPORTED_NATIVE_MTP_REASON
+    if entry.category in _EXECUTING_EVALUATOR_CATEGORIES:
+        return _UNSUPPORTED_EXECUTING_EVALUATOR_REASON
+    if not entry.runnable:
+        return entry.unsupported_reason or _UNSUPPORTED_NATIVE_MTP_REASON
+    return None
 
 
 class APIVerifyError(VerifyError):
@@ -188,9 +317,16 @@ class _EventCappedResponse:
     arrives in one large read is capped exactly as the same body split
     across many small ones.
 
-    The terminal ``[DONE]`` sentinel is itself a dispatched event and is
-    charged to the budget like any other. That is the only reading under
-    which the count is a property of the bytes alone.
+    Counting stops at the ``[DONE]`` sentinel, because the collector stops
+    there too. Anything a gateway appends after it -- a duplicated
+    sentinel, a stray trailing frame -- is never read by the collector and
+    so must never be charged. Charging it would reintroduce exactly the
+    dependence this class exists to remove, since those frames are only
+    ever seen when they happen to share a socket read with the sentinel.
+
+    The sentinel itself is a dispatched event and is charged like any
+    other, so ``limit`` admits ``limit - 1`` content events. That is the
+    only reading under which the count is a property of the bytes alone.
     """
 
     def __init__(self, inner: StreamingResponse, *, limit: int) -> None:
@@ -209,20 +345,38 @@ class _EventCappedResponse:
     def headers(self) -> Mapping[str, str]:
         return self._inner.headers
 
+    def _charge(self, chunk: bytes) -> bool:
+        """Charge ``chunk``'s events. True when the budget is now exceeded.
+
+        Stops charging at the sentinel and reports no excess for anything
+        past it, so a frame the collector will never read cannot decide
+        this row's verdict.
+        """
+        try:
+            events = list(self._decoder.feed(chunk))
+        except SSEDecodeError:
+            # The collector's own decoder is about to reject this with the
+            # authoritative diagnostic, so counting stops and the bytes go
+            # through untouched.
+            self._counting = False
+            return False
+
+        for event in events:
+            self.events_seen += 1
+            if self.events_seen > self._limit:
+                return True
+            if event.data.strip() == _DONE_SENTINEL:
+                # The collector returns here, so nothing after this frame
+                # is ever read and nothing after it is ever chargeable.
+                self._counting = False
+                return False
+        return False
+
     def iter_bytes(self) -> Iterator[bytes]:
         for chunk in self._inner.iter_bytes():
-            if self._counting:
-                try:
-                    self.events_seen += sum(1 for _ in self._decoder.feed(chunk))
-                except SSEDecodeError:
-                    # The collector's own decoder is about to reject this
-                    # with the authoritative diagnostic, so counting stops
-                    # and the bytes go through untouched.
-                    self._counting = False
-                else:
-                    if self.events_seen > self._limit:
-                        self.cap_tripped = True
-                        return
+            if self._counting and self._charge(chunk):
+                self.cap_tripped = True
+                return
             yield chunk
 
     def close(self) -> None:
@@ -524,15 +678,12 @@ def plan_api_row(
     collection_dir = run_dir / "collection"
     credential_present = bool(environ.get(binding.credential_env_var, "").strip())
 
-    if entry.decode_mode == DECODE_MODE_NATIVE_MTP or not entry.runnable:
+    unsupported_reason = _unsupported_reason(entry)
+    if unsupported_reason is not None:
         return APIRowPlan(
             entry=entry,
             unsupported=True,
-            unsupported_reason=(
-                _UNSUPPORTED_NATIVE_MTP_REASON
-                if entry.decode_mode == DECODE_MODE_NATIVE_MTP
-                else (entry.unsupported_reason or _UNSUPPORTED_NATIVE_MTP_REASON)
-            ),
+            unsupported_reason=unsupported_reason,
             ready=False,
             blockers=(),
             prompt_path=prompt_path,
@@ -799,18 +950,45 @@ def execute_api_row(
             artifacts_verified=artifacts_verified,
         )
         atomic_write_text(verification_path, verification.to_json())
+
+        # The run-level marker is written last and removed first, so a
+        # crash anywhere above leaves a directory `run_artifacts_are_
+        # complete` rejects rather than one that reads as trustworthy. It
+        # is only meaningful for a row that produced a full artifact set;
+        # a rejected or failed-before-execution row has nothing to seal.
+        if final_record is not None and wrote_collection and artifacts_verified:
+            try:
+                atomic_write_text(
+                    run_dir / RUN_MANIFEST_NAME,
+                    json.dumps(
+                        _run_marker_payload(
+                            run_id=entry.run_id,
+                            collection_dir=collection_dir,
+                            final_record_path=final_record_path,
+                            verification_path=verification_path,
+                        ),
+                        indent=2,
+                        allow_nan=False,
+                    )
+                    + "\n",
+                )
+            except OSError:
+                # A marker that cannot be written simply is not written.
+                # The row's evidence still stands on its own; only resume
+                # declines to trust it, which is the safe direction.
+                pass
+
         return APIRowResult(
             entry=entry, verification=verification, final_record=final_record
         )
 
-    # 1. Unsupported rows are rejected, never remapped onto API reasoning.
-    if entry.decode_mode == DECODE_MODE_NATIVE_MTP or not entry.runnable:
-        reason = (
-            _UNSUPPORTED_NATIVE_MTP_REASON
-            if entry.decode_mode == DECODE_MODE_NATIVE_MTP
-            else (entry.unsupported_reason or _UNSUPPORTED_NATIVE_MTP_REASON)
-        )
-        return _finish(RowStatus.UNSUPPORTED, reason)
+    # 1. Unsupported rows are rejected first, before a transport is built
+    #    or an evaluator is chosen. Native-MTP is never remapped onto API
+    #    reasoning, and a workload graded by executing the answer is never
+    #    handed output from a remote endpoint.
+    unsupported_reason = _unsupported_reason(entry)
+    if unsupported_reason is not None:
+        return _finish(RowStatus.UNSUPPORTED, unsupported_reason)
 
     # 2. Verify the fully materialized prompt against the matrix metadata.
     prompt_path = _resolve_path(entry.prompt_path, base_dir=manifest_dir)
@@ -894,6 +1072,9 @@ def execute_api_row(
             and prior.run_binding_hash == binding_hash
             and prior.workload_version == workload.version
             and artifact_set_is_complete(collection_dir)
+            # Seals final_record.json and verification.json too, which the
+            # collector's own marker does not cover.
+            and run_artifacts_are_complete(run_dir)
         ):
             try:
                 trusted_record = ExperimentRecord.read_json(final_record_path)
@@ -912,7 +1093,12 @@ def execute_api_row(
                     artifacts_verified=True,
                 )
 
-    # 6. Execute through the unmodified collector.
+    # 6. Execute through the unmodified collector. Resume has declined to
+    #    trust whatever was here, so the marker vouching for it is dropped
+    #    before the first byte is overwritten and rewritten only once the
+    #    replacement set is complete.
+    (run_dir / RUN_MANIFEST_NAME).unlink(missing_ok=True)
+
     capped = _EventCappedTransport(transport_factory(), limit=binding.max_stream_events)
     try:
         collection_result = collect_openai_stream(
