@@ -10,12 +10,14 @@ only as configuration.
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from llmtracefx.optimizer.collectors._shared import sha256_bytes
 from llmtracefx.optimizer.collectors.openai_api import (
     ARTIFACT_MANIFEST_NAME,
     FAILURE_HTTP_STATUS,
@@ -1406,7 +1408,7 @@ def test_a_completed_row_writes_a_run_level_marker(tmp_path):
     run_dir = Path(result.verification.collection_dir or "").parent
 
     assert (run_dir / RUN_MANIFEST_NAME).exists()
-    assert run_artifacts_are_complete(run_dir)
+    assert run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)
     sealed = {
         entry["name"]
         for entry in json.loads(
@@ -1438,7 +1440,7 @@ def test_editing_a_file_outside_the_collection_marker_forces_a_rerun(tmp_path, v
         payload["outcome"]["quality_score"] = 1.0
     target.write_text(json.dumps(payload), encoding="utf-8")
 
-    assert not run_artifacts_are_complete(run_dir)
+    assert not run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)
 
     transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
     second = run_one(tmp_path, transport=transport, manifest_bundle=bundle)
@@ -1559,7 +1561,7 @@ def test_a_marker_naming_another_file_is_rejected(tmp_path, rewritten_name):
     marker["artifacts"][1]["name"] = rewritten_name
     marker_path.write_text(json.dumps(marker), encoding="utf-8")
 
-    assert not run_artifacts_are_complete(run_dir)
+    assert not run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)
 
 
 def test_a_marker_that_omits_an_artifact_is_rejected(tmp_path):
@@ -1576,4 +1578,250 @@ def test_a_marker_that_omits_an_artifact_is_rejected(tmp_path):
     ]
     marker_path.write_text(json.dumps(marker), encoding="utf-8")
 
-    assert not run_artifacts_are_complete(run_dir)
+    assert not run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)
+
+
+# --- Unsafe artifact paths ----------------------------------------------------
+
+
+def _entry_with_run_id(manifest, run_id: str) -> MatrixEntry:
+    doctored = dict(autoregressive_entry(manifest).to_dict())
+    doctored["run_id"] = run_id
+    return MatrixEntry.from_dict(doctored)
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    [
+        "../escaped",
+        "../../escaped",
+        "nested/child",
+        "..",
+        ".",
+        "",
+        "with space",
+        "semi;colon",
+    ],
+)
+def test_an_unsafe_run_id_is_refused_and_writes_nothing(tmp_path, run_id):
+    """A run_id is read from a manifest and becomes a directory name.
+
+    An absolute value replaces the output directory outright and ``..``
+    climbs out of it, so an edited manifest could plant artifacts
+    anywhere the user can write. The refusal itself must not be written
+    either, since the only path available is the unsafe one.
+    """
+    manifest, manifest_dir, matrix_path = build_manifest(tmp_path)
+    output_dir = tmp_path / "results"
+
+    result = execute_api_row(
+        _entry_with_run_id(manifest, run_id),
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=output_dir,
+        binding=make_binding(),
+        resume=True,
+        transport_factory=ExplodingTransport,
+        environ=ENVIRON,
+    )
+
+    assert result.verification.status is RowStatus.FAILED
+    assert "unsafe artifact path" in (result.verification.reason or "")
+    assert result.final_record is None
+    # Nothing was created anywhere, including the traversal target.
+    assert not output_dir.exists()
+    assert not (tmp_path / "escaped").exists()
+
+
+def test_an_absolute_run_id_cannot_escape_the_output_directory(tmp_path):
+    """The starkest case: an absolute id discards the output directory."""
+    manifest, manifest_dir, matrix_path = build_manifest(tmp_path)
+    target = tmp_path / "planted"
+
+    result = execute_api_row(
+        _entry_with_run_id(manifest, str(target)),
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=tmp_path / "results",
+        binding=make_binding(),
+        resume=True,
+        transport_factory=ExplodingTransport,
+        environ=ENVIRON,
+    )
+
+    assert result.verification.status is RowStatus.FAILED
+    assert not target.exists()
+    assert not (tmp_path / "results").exists()
+
+
+def test_an_unsafe_run_id_is_refused_in_the_plan_without_echoing_it(tmp_path):
+    manifest, manifest_dir, matrix_path = build_manifest(tmp_path)
+    plan = plan_api_row(
+        _entry_with_run_id(manifest, "../escaped"),
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=tmp_path / "results",
+        binding=make_binding(),
+        environ=ENVIRON,
+    )
+
+    assert plan.ready is False
+    assert plan.request_plan is None
+    assert any("unsafe artifact path" in blocker for blocker in plan.blockers)
+    assert not (tmp_path / "results").exists()
+
+
+def test_a_credential_in_the_effective_row_path_is_refused(tmp_path):
+    """--output-dir may be clean while the run_id carries the key."""
+    manifest, manifest_dir, matrix_path = build_manifest(tmp_path)
+    output_dir = tmp_path / "results"
+
+    result = execute_api_row(
+        _entry_with_run_id(manifest, f"row-{API_KEY}"),
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=output_dir,
+        binding=make_binding(),
+        resume=True,
+        transport_factory=ExplodingTransport,
+        environ=ENVIRON,
+    )
+
+    assert result.verification.status is RowStatus.FAILED
+    assert API_KEY not in (result.verification.reason or "")
+    assert API_KEY not in (result.verification.run_id or "")
+    assert not output_dir.exists()
+
+
+# --- Resume binds the row's identity ------------------------------------------
+
+
+def test_a_run_directory_copied_from_another_row_is_never_trusted(tmp_path):
+    """Every hash checks out; the evidence still describes another row.
+
+    Integrity says the bytes were not edited. It says nothing about which
+    row they belong to, so identity has to be asserted separately.
+    """
+    bundle = build_manifest(
+        tmp_path,
+        workloads=(STRUCTURED_JSON_PROFILE_EXTRACTION,),
+        context_tiers=(ContextTier.TIER_2K, ContextTier.TIER_8K),
+    )
+    manifest, manifest_dir, matrix_path = bundle
+    rows = [e for e in manifest.entries if e.decode_mode == DECODE_MODE_AUTOREGRESSIVE]
+    source, destination = rows[0], rows[1]
+    output_dir = tmp_path / "results"
+
+    first = execute_api_row(
+        source,
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=output_dir,
+        binding=make_binding(),
+        resume=True,
+        transport_factory=lambda: FakeTransport(
+            FakeResponse(answer_stream(GOOD_JSON_ANSWER))
+        ),
+        environ=ENVIRON,
+    )
+    assert first.verification.status is RowStatus.COMPLETED
+
+    source_dir = Path(first.verification.collection_dir or "").parent
+    destination_dir = output_dir / "runs" / destination.run_id
+    shutil.copytree(source_dir, destination_dir)
+
+    # The copy is byte-identical, so every hash in it still verifies.
+    assert artifact_set_is_complete(destination_dir / "collection")
+    # But it is not this row's evidence.
+    assert not run_artifacts_are_complete(
+        destination_dir, expected_run_id=destination.run_id
+    )
+
+    transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    second = execute_api_row(
+        destination,
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=output_dir,
+        binding=make_binding(),
+        resume=True,
+        transport_factory=lambda: transport,
+        environ=ENVIRON,
+    )
+    assert transport.requests, "a copied run directory must rerun"
+    assert second.verification.status is RowStatus.COMPLETED
+
+
+def test_a_marker_renamed_to_another_run_is_rejected(tmp_path):
+    result = run_one(
+        tmp_path, transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    )
+    run_dir = Path(result.verification.collection_dir or "").parent
+
+    assert run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)
+    assert not run_artifacts_are_complete(run_dir, expected_run_id="some-other-row")
+
+
+# --- Corrupt, non-UTF-8 artifacts -------------------------------------------
+
+
+@pytest.mark.parametrize("victim", [RUN_MANIFEST_NAME, "verification.json"])
+def test_a_non_utf8_artifact_reruns_instead_of_crashing(tmp_path, victim):
+    """A corrupted file is untrusted evidence, not an unhandled exception.
+
+    ``UnicodeDecodeError`` is neither an ``OSError`` nor a
+    ``JSONDecodeError``, so a file that is not valid UTF-8 escaped every
+    handler and took the whole run down with it.
+    """
+    bundle = build_manifest(tmp_path)
+    first = run_one(
+        tmp_path,
+        transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER))),
+        manifest_bundle=bundle,
+    )
+    run_dir = Path(first.verification.collection_dir or "").parent
+    (run_dir / victim).write_bytes(b"\xff\xfe\x00 not valid utf-8 at all")
+
+    transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    second = run_one(tmp_path, transport=transport, manifest_bundle=bundle)
+
+    assert transport.requests, "a corrupt artifact must rerun"
+    assert second.verification.status is RowStatus.COMPLETED
+
+
+def _reseal(run_dir: Path) -> None:
+    """Rewrite the marker so it matches whatever is on disk now."""
+    marker_path = run_dir / RUN_MANIFEST_NAME
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    for entry in marker["artifacts"]:
+        entry["sha256"] = sha256_bytes((run_dir / entry["name"]).read_bytes())
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+
+def test_a_non_utf8_final_record_behind_a_valid_marker_reruns(tmp_path):
+    """Reaching the record read at all requires the marker to agree.
+
+    Corrupting the record alone breaks the marker, so resume stops
+    earlier and the decode never happens. Reselaing puts the run back
+    into the one state where the record is actually parsed, which is the
+    state an attacker who rewrites the marker would leave behind.
+    """
+    bundle = build_manifest(tmp_path)
+    first = run_one(
+        tmp_path,
+        transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER))),
+        manifest_bundle=bundle,
+    )
+    run_dir = Path(first.verification.collection_dir or "").parent
+    (run_dir / "final_record.json").write_bytes(b"\xff\xfe\x00 not valid utf-8")
+    _reseal(run_dir)
+
+    # The marker now agrees with the corrupt file, so resume gets as far
+    # as parsing it.
+    assert run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)
+
+    transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    second = run_one(tmp_path, transport=transport, manifest_bundle=bundle)
+
+    assert transport.requests, "an unparsable record must rerun"
+    assert second.verification.status is RowStatus.COMPLETED

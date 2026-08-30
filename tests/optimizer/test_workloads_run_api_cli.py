@@ -1119,3 +1119,37 @@ def test_effective_api_key_env_resolves_every_combination(
     )
 
     assert cli._effective_api_key_env(args) == expected
+
+
+def test_a_non_utf8_manifest_is_reported_not_crashed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manifest is a file, and a file can be corrupt.
+
+    ``UnicodeDecodeError`` is neither an ``OSError`` nor a
+    ``MatrixSchemaError``, so a manifest that is not valid UTF-8 escaped
+    the handler and reached the caller as a traceback.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", _SENTINEL)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_bytes(b"\xff\xfe\x00 not valid utf-8")
+
+    code, out, err = run_main(
+        [
+            "workloads",
+            "run-api",
+            "--matrix",
+            str(manifest),
+            "--output-dir",
+            str(tmp_path / "results"),
+            "--profile",
+            "openrouter",
+            "--model-id",
+            "z-ai/glm-5.3",
+            "--dry-run",
+        ]
+    )
+
+    assert code == 1
+    assert "Failed to load matrix manifest" in err
+    assert _SENTINEL not in out + err

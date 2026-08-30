@@ -82,6 +82,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -105,6 +106,7 @@ from ..collectors.openai_api import (
     StreamingResponse,
     StreamingTransport,
     UrllibStreamingTransport,
+    _contains_credential,
     artifact_set_is_complete,
     assert_credential_not_embedded,
     build_request_plan,
@@ -191,7 +193,7 @@ def _run_marker_payload(
     }
 
 
-def run_artifacts_are_complete(run_dir: Path) -> bool:
+def run_artifacts_are_complete(run_dir: Path, *, expected_run_id: str) -> bool:
     """True when the run directory is whole and unmodified since it landed.
 
     The marker is removed before the run's files are written and written
@@ -205,11 +207,17 @@ def run_artifacts_are_complete(run_dir: Path) -> bool:
     """
     try:
         marker = json.loads((run_dir / RUN_MANIFEST_NAME).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return False
     if not isinstance(marker, dict):
         return False
     if marker.get("schema_version") != RUN_MANIFEST_SCHEMA_VERSION:
+        return False
+    # A run directory copied from another row carries that row's evidence
+    # under this row's name. Every hash still checks out, because nothing
+    # in it was edited, so identity has to be asserted rather than
+    # inferred from integrity.
+    if marker.get("run_id") != expected_run_id:
         return False
     artifacts = marker.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
@@ -596,6 +604,43 @@ class APIBinding:
 # --- Planning ----------------------------------------------------------------
 
 
+#: A run_id becomes a directory name, so it has to be one path component
+#: and nothing more. The generated ids are ``<workload>-<tier>-<mode>``
+#: with an optional ``-depth<n>``, so this is the shape they already have.
+_SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _unsafe_run_id_reason(run_id: str) -> str | None:
+    """Why ``run_id`` cannot be used as a directory name, or ``None``.
+
+    A run_id is read straight out of the matrix manifest, which is a file
+    on disk, and is then joined onto the output directory. An absolute
+    value replaces the output directory outright; ``..`` climbs out of it;
+    a separator plants artifacts somewhere nobody asked for. None of that
+    needs an attacker, either: a hand-edited manifest is enough to have a
+    run quietly write outside the directory the caller named.
+
+    The value is not echoed. It failed this check, which is exactly the
+    circumstance in which repeating it is a bad idea.
+    """
+    if not isinstance(run_id, str) or not run_id:
+        return "run_id is empty"
+    if run_id in (".", ".."):
+        return "run_id is a relative directory reference"
+    if os.path.isabs(run_id) or os.path.splitdrive(run_id)[0]:
+        return "run_id is an absolute path"
+    if "/" in run_id or "\\" in run_id or os.sep in run_id:
+        return "run_id contains a path separator"
+    if "\x00" in run_id:
+        return "run_id contains a null byte"
+    if not _SAFE_RUN_ID.match(run_id):
+        return (
+            "run_id is not a single safe path component matching "
+            "[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
+        )
+    return None
+
+
 def _run_dir(entry: MatrixEntry, *, output_dir: Path) -> Path:
     return output_dir / "runs" / entry.run_id
 
@@ -725,7 +770,40 @@ def plan_api_row(
     run_dir = _run_dir(entry, output_dir=output_dir)
     prompt_path = _resolve_path(entry.prompt_path, base_dir=manifest_dir)
     collection_dir = run_dir / "collection"
-    credential_present = bool(environ.get(binding.credential_env_var, "").strip())
+    credential = environ.get(binding.credential_env_var, "").strip()
+    credential_present = bool(credential)
+
+    # The same refusal the execution path applies, so a dry run reports
+    # what a real run would do rather than printing a plan for a row that
+    # would then be rejected. The path is not echoed either way: it is
+    # rejected precisely because of what it may contain.
+    refusal = _unsafe_run_id_reason(entry.run_id)
+    if (
+        refusal is None
+        and credential
+        and _contains_credential(str(run_dir), credential)
+    ):
+        refusal = (
+            "the value named by --api-key-env appears in this row's "
+            "artifact path; refusing because creating it would write that "
+            "value into the filesystem"
+        )
+    if refusal is not None:
+        placeholder = Path("[REJECTED]")
+        return APIRowPlan(
+            entry=entry,
+            unsupported=False,
+            unsupported_reason=None,
+            ready=False,
+            blockers=(f"unsafe artifact path: {refusal}",),
+            prompt_path=placeholder,
+            collection_dir=placeholder,
+            final_record_path=placeholder,
+            verification_path=placeholder,
+            request_plan=None,
+            binding_hash=None,
+            credential_env_var_present=credential_present,
+        )
 
     unsupported_reason = _unsupported_reason(entry)
     if unsupported_reason is not None:
@@ -923,7 +1001,7 @@ def _load_prior_verification(path: Path) -> RowVerification | None:
         return None
     try:
         return RowVerification.read_json(path)
-    except (OSError, json.JSONDecodeError, VerifyError):
+    except (OSError, UnicodeError, json.JSONDecodeError, VerifyError):
         # A corrupt or partial artifact from an interrupted run must never
         # be mistaken for a trustworthy completed result.
         return None
@@ -955,6 +1033,53 @@ def execute_api_row(
     resolved_environ = os.environ if environ is None else environ
     credential = resolved_environ.get(binding.credential_env_var, "").strip() or None
     started_at = utc_now_iso()
+
+    # Before a path is derived, let alone created. Everything below joins
+    # run_id onto the output directory and then writes there, including
+    # the rejection paths, so an unsafe id would have its refusal written
+    # to the very place it should not reach. Nothing is written here for
+    # the same reason: there is no directory this row may safely touch.
+    refusal = _unsafe_run_id_reason(entry.run_id)
+    if refusal is None and credential is not None:
+        candidate = _run_dir(entry, output_dir=output_dir)
+        if _contains_credential(str(candidate), credential):
+            refusal = (
+                "the value named by --api-key-env appears in this row's "
+                "artifact path; refusing because creating it would write "
+                "that value into the filesystem"
+            )
+    if refusal is not None:
+        return APIRowResult(
+            entry=entry,
+            verification=RowVerification(
+                schema_version=VERIFICATION_SCHEMA_VERSION,
+                run_id="[REJECTED]",
+                workload_id=entry.workload_id,
+                workload_version=entry.workload_version,
+                category=entry.category,
+                context_tier=entry.context_tier,
+                decode_mode=entry.decode_mode,
+                status=RowStatus.FAILED,
+                reason=f"unsafe artifact path: {refusal}",
+                recorded_prompt_hash=entry.prompt.prompt_hash,
+                verified_prompt_hash=None,
+                run_binding_hash=None,
+                resumed=False,
+                outcome_success=None,
+                quality_score=None,
+                total_ms=None,
+                started_at=started_at,
+                ended_at=utc_now_iso(),
+                final_record_path=None,
+                collection_dir=None,
+                backend=BACKEND_OPENAI_API,
+                provider=None,
+                api_model_id=None,
+                artifacts_verified=None,
+            ),
+            final_record=None,
+        )
+
     run_dir = _run_dir(entry, output_dir=output_dir)
     verification_path = run_dir / "verification.json"
     collection_dir = run_dir / "collection"
@@ -1148,14 +1273,23 @@ def execute_api_row(
             and prior.verified_prompt_hash == verified_hash
             and prior.run_binding_hash == binding_hash
             and prior.workload_version == workload.version
+            # The summary must be this row's, not one copied in from
+            # another. Integrity says the bytes are unedited; it says
+            # nothing about which row they describe.
+            and prior.run_id == entry.run_id
             and artifact_set_is_complete(collection_dir)
             # Seals final_record.json and verification.json too, which the
-            # collector's own marker does not cover.
-            and run_artifacts_are_complete(run_dir)
+            # collector's own marker does not cover, and asserts the same
+            # identity over the directory as a whole.
+            and run_artifacts_are_complete(run_dir, expected_run_id=entry.run_id)
         ):
             try:
                 trusted_record = ExperimentRecord.read_json(final_record_path)
-            except (OSError, SchemaValidationError):
+            except (OSError, UnicodeError, SchemaValidationError):
+                trusted_record = None
+            # The record carries its own run_id, and a copied directory
+            # is exactly the case where it disagrees with this row.
+            if trusted_record is not None and trusted_record.run_id != entry.run_id:
                 trusted_record = None
             if trusted_record is not None:
                 return _finish(

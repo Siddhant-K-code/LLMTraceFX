@@ -914,7 +914,7 @@ def _cmd_workloads_run_api(args: argparse.Namespace) -> int:
     matrix_path = Path(args.matrix)
     try:
         manifest = MatrixManifest.read_json(matrix_path)
-    except (OSError, MatrixSchemaError) as exc:
+    except (OSError, UnicodeError, MatrixSchemaError) as exc:
         # ``OSError`` embeds the path it failed on, and that path came from
         # the caller, so it is scrubbed like any other caller-supplied text
         # rather than trusted because a path is not usually a secret.
