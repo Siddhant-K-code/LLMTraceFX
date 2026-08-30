@@ -189,6 +189,30 @@ def _coerce_bool_with_default(
     return _validate_bool(data[key], context=context, key=key)
 
 
+def _coerce_str_tuple(
+    data: dict[str, Any], key: str, *, context: str
+) -> tuple[str, ...]:
+    """Read an optional list-of-strings field as a tuple.
+
+    A bare string is a ``Sequence[str]`` in Python, so ``tuple("abc")``
+    would silently become ``("a", "b", "c")``. Require a real list/tuple
+    of non-empty strings instead of quietly shredding a scalar.
+    """
+    value = data.get(key)
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise SchemaValidationError(
+            f"{context}.{key} must be a list of strings, got {value!r}"
+        )
+    items = tuple(value)
+    if not all(isinstance(item, str) and item for item in items):
+        raise SchemaValidationError(
+            f"{context}.{key} must contain only non-empty strings, got {value!r}"
+        )
+    return items
+
+
 @dataclass(frozen=True)
 class PlatformInfo:
     """Hardware/platform/OS context the run executed under."""
@@ -554,6 +578,92 @@ class PowerMetrics:
 
 
 @dataclass(frozen=True)
+class InstrumentsEvidence:
+    """Evidence sourced from an Apple Instruments ``.trace`` bundle.
+
+    Deliberately kept separate from ``MemoryMetrics``/``PowerMetrics``:
+    those carry runtime-allocator and host-side numbers (for example the
+    MLX allocator's active/cache/peak bytes), whereas everything here
+    came out of ``xctrace``. Mixing the two would make it impossible to
+    tell an allocator bookkeeping value apart from a profiler
+    measurement.
+
+    The common case for this dataclass is "a trace exists, and these are
+    the schemas it advertises". ``metrics`` stays empty unless a strict,
+    reproducible parser actually derived a value from an exported table,
+    so an absent GPU/bandwidth/occupancy/power number is always visibly
+    absent rather than silently zero.
+    """
+
+    tool: str = "xctrace"
+    tool_version: str | None = None
+    """Exact ``xctrace version`` output, when it could be read."""
+    capability: str | None = None
+    """Capability state at collection time, e.g. 'supported'."""
+    template: str | None = None
+    """Instruments template requested, e.g. 'Metal System Trace'."""
+    trace_bundle_name: str | None = None
+    """Basename of the ``.trace`` bundle. Never a full path: the bundle
+    lives beside the record, and absolute paths leak home directories."""
+    available_schemas: tuple[str, ...] = ()
+    """Table schemas the bundle's table of contents advertises."""
+    parsed_schemas: tuple[str, ...] = ()
+    """Schemas a strict parser in this project actually understood."""
+    unsupported_schemas: tuple[str, ...] = ()
+    """Schemas present in the bundle that this project cannot parse
+    reproducibly. Listed so the gap is explicit rather than invisible."""
+    metrics: dict[str, Measurement] = field(default_factory=dict)
+    """Only values a strict parser derived from an exported table."""
+    notes: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tool": self.tool,
+            "tool_version": self.tool_version,
+            "capability": self.capability,
+            "template": self.template,
+            "trace_bundle_name": self.trace_bundle_name,
+            "available_schemas": list(self.available_schemas),
+            "parsed_schemas": list(self.parsed_schemas),
+            "unsupported_schemas": list(self.unsupported_schemas),
+            "metrics": {
+                name: measurement.to_dict()
+                for name, measurement in sorted(self.metrics.items())
+            },
+            "notes": self.notes,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> InstrumentsEvidence:
+        metrics_data = data.get("metrics", {})
+        if not isinstance(metrics_data, dict):
+            raise SchemaValidationError(
+                f"InstrumentsEvidence.metrics must be an object, got {metrics_data!r}"
+            )
+        return cls(
+            tool=str(data.get("tool", "xctrace")),
+            tool_version=data.get("tool_version"),
+            capability=data.get("capability"),
+            template=data.get("template"),
+            trace_bundle_name=data.get("trace_bundle_name"),
+            available_schemas=_coerce_str_tuple(
+                data, "available_schemas", context="InstrumentsEvidence"
+            ),
+            parsed_schemas=_coerce_str_tuple(
+                data, "parsed_schemas", context="InstrumentsEvidence"
+            ),
+            unsupported_schemas=_coerce_str_tuple(
+                data, "unsupported_schemas", context="InstrumentsEvidence"
+            ),
+            metrics={
+                str(name): Measurement.from_dict(value)
+                for name, value in metrics_data.items()
+            },
+            notes=data.get("notes"),
+        )
+
+
+@dataclass(frozen=True)
 class OutcomeInfo:
     """Task outcome/quality fields."""
 
@@ -624,6 +734,12 @@ class ExperimentRecord:
     )
     memory: MemoryMetrics = field(default_factory=MemoryMetrics)
     power: PowerMetrics = field(default_factory=PowerMetrics)
+    instruments: InstrumentsEvidence | None = None
+    """Apple Instruments (``xctrace``) evidence, when a trace was taken.
+
+    Additive and optional: records written before this field existed
+    parse unchanged and leave it ``None``. ``None`` means "no trace was
+    taken", not "the trace measured zero"."""
     outcome: OutcomeInfo = field(default_factory=OutcomeInfo)
     error: ErrorInfo | None = None
 
@@ -695,6 +811,52 @@ class ExperimentRecord:
                 "outcome.success cannot be True when error is set"
             )
 
+        self._validate_instruments()
+
+    def _validate_instruments(self) -> None:
+        """Enforce that Instruments metrics cannot overclaim.
+
+        Two invariants, both aimed at the same failure mode (a plausible
+        looking GPU number that nothing actually measured):
+
+        1. A metric may only be labeled ``measured_native`` when at
+           least one table schema was genuinely parsed. Without a parsed
+           schema there is no exported table the value could have come
+           from, so the label would be a fabrication.
+        2. A schema cannot be simultaneously parsed and unsupported.
+        """
+        evidence = self.instruments
+        if evidence is None:
+            return
+
+        parsed = set(evidence.parsed_schemas)
+        overlap = parsed & set(evidence.unsupported_schemas)
+        if overlap:
+            raise SchemaValidationError(
+                "instruments schemas cannot be both parsed and unsupported: "
+                + ", ".join(sorted(overlap))
+            )
+
+        for name, measurement in sorted(evidence.metrics.items()):
+            if not name:
+                raise SchemaValidationError(
+                    "instruments.metrics keys must be non-empty strings"
+                )
+            if measurement.value < 0:
+                raise SchemaValidationError(
+                    f"instruments.metrics.{name} must be >= 0, "
+                    f"got {measurement.value}"
+                )
+            if (
+                measurement.provenance is MetricProvenance.MEASURED_NATIVE
+                and not parsed
+            ):
+                raise SchemaValidationError(
+                    f"instruments.metrics.{name} claims provenance "
+                    "'measured_native' but instruments.parsed_schemas is "
+                    "empty, so no exported table could have produced it"
+                )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
@@ -711,6 +873,9 @@ class ExperimentRecord:
             "speculative": self.speculative.to_dict(),
             "memory": self.memory.to_dict(),
             "power": self.power.to_dict(),
+            "instruments": (
+                None if self.instruments is None else self.instruments.to_dict()
+            ),
             "outcome": self.outcome.to_dict(),
             "error": None if self.error is None else self.error.to_dict(),
         }
@@ -738,6 +903,11 @@ class ExperimentRecord:
                 ),
                 memory=MemoryMetrics.from_dict(data.get("memory", {})),
                 power=PowerMetrics.from_dict(data.get("power", {})),
+                instruments=(
+                    None
+                    if data.get("instruments") is None
+                    else InstrumentsEvidence.from_dict(data["instruments"])
+                ),
                 outcome=OutcomeInfo.from_dict(data.get("outcome", {})),
                 error=(
                     None

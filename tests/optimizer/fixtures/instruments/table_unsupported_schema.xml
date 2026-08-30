@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<!--
+Synthetic export of a schema this project has no strict summarizer for.
+Used to prove that an exportable but unsupported table is reported as
+present and unsupported, and yields no derived metric, rather than being
+interpreted speculatively.
+-->
+<trace-query-result>
+<node xpath='//trace-toc[1]/run[1]/data[1]/table[2]'>
+<schema name="displayed-surfaces-per-second" documentation="Frames shown on screen per second.">
+<col><mnemonic>start</mnemonic><name>Start</name><engineering-type>start-time</engineering-type></col>
+<col><mnemonic>fps</mnemonic><name>Surfaces Per Second</name><engineering-type>uint64</engineering-type></col>
+</schema>
+<row>
+<start-time id="1" fmt="00:00.000.100">100000</start-time>
+<uint64 id="2" fmt="60">60</uint64>
+</row>
+<row>
+<start-time id="3" fmt="00:00.100.100">100100000</start-time>
+<uint64 ref="2"/>
+</row>
+</node>
+</trace-query-result>

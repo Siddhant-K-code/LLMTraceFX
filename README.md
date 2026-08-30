@@ -1709,6 +1709,159 @@ implemented and tested against a fake runtime so it is ready to wrap a
 genuinely stable, metrics-differentiated API if one is published upstream --
 no production adapter claims that today.
 
+### Apple Instruments / Metal traces via `xctrace`
+
+`llmtracefx-optimizer instruments` wraps Apple's Instruments CLI to record a
+**Metal System Trace** around a local inference command and turn the
+resulting `.trace` bundle into canonical `ExperimentRecord` evidence.
+
+**Setup.** `xctrace` ships only with the full Xcode, never with Command Line
+Tools alone. On a Command Line Tools machine `/usr/bin/xctrace` still exists
+and is executable, so a plain "is it on PATH" check is misleading; the
+capability probe therefore always invokes the tool:
+
+```bash
+# Install Xcode from the Mac App Store, then select it:
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+sudo xcodebuild -runFirstLaunch      # run these yourself; the project
+sudo xcodebuild -license accept      # never invokes sudo on your behalf
+
+uv run llmtracefx-optimizer instruments capability
+```
+
+`capability` exits `0` when supported, `3` when a known cause blocks it, and
+`1` on error. Each cause is reported separately with its own remediation
+rather than collapsed into "unavailable": not macOS, not arm64, xctrace
+absent from PATH, Command Line Tools only, license not accepted, first launch
+incomplete, template unavailable, permission denied, and probe failed for an
+unrecognized reason.
+
+**Dry run first.** `plan` validates everything and executes nothing, printing
+the exact argv and the exact artifact paths it would write:
+
+```bash
+uv run llmtracefx-optimizer instruments plan \
+  --output-trace artifacts/metal/run.trace \
+  --output-dir artifacts/metal \
+  --time-limit 45s \
+  -- ./your-inference-command --tokens 128
+```
+
+**Record and import.** `record` performs the capture and then exports and
+parses it; `import` does the export and parse half against a `.trace` bundle
+you already have:
+
+```bash
+uv run llmtracefx-optimizer instruments record \
+  --output-trace artifacts/metal/run.trace \
+  --output-dir artifacts/metal \
+  --time-limit 45s \
+  -- ./your-inference-command --tokens 128
+
+uv run llmtracefx-optimizer instruments import \
+  --trace artifacts/metal/run.trace --output-dir artifacts/metal
+```
+
+#### What is actually measured
+
+Validated live on this hardware, and reproducible with the commands above:
+
+| Fact | Value |
+| --- | --- |
+| Tool | `xctrace version 16.0 (17F113)` |
+| Host | macOS 26.6.2 (25G83), Apple M5 Pro, arm64 |
+| Template | `Metal System Trace` |
+| Table schemas advertised by one capture | 82 |
+| Table this project parses | `metal-gpu-intervals` |
+
+The four metrics emitted, all with provenance `measured_native` and all
+scoped to a single pid:
+
+- `metal_gpu_interval_count` -- GPU intervals attributed to the profiled
+  process.
+- `metal_gpu_interval_duration_sum` (ms) -- the sum of those intervals'
+  durations.
+- `metal_gpu_interval_wall_span` (ms) -- last interval end minus first
+  interval start for that process.
+- `metal_gpu_interval_count_all_processes` -- the trace-wide interval count,
+  so the attributed share is visible rather than implied.
+
+Correctness of the parser was cross-checked against a workload that issues a
+known number of GPU dispatches: 400, 250, 120 and 77 dispatches produced
+exactly 400, 250, 120 and 77 attributed intervals.
+
+#### What is explicitly not claimed
+
+This wrapper reports **no** GPU utilization, GPU busy percentage, kernel
+time, memory bandwidth, occupancy, GPU power, GPU energy or GPU memory
+footprint. Metal System Trace advertises tables whose names gesture at some
+of these, but deriving those numbers needs modelling assumptions this project
+has not validated against ground truth, so they stay absent rather than
+approximated. `ExperimentRecord.validate` enforces the rule structurally: a
+metric may carry `measured_native` provenance only when a table schema was
+genuinely parsed, so a fabricated hardware number cannot be persisted.
+
+Two further limits worth stating plainly:
+
+- `metal_gpu_interval_duration_sum` is **not** GPU busy time and **not** a
+  utilization numerator. Metal runs Vertex, Fragment and Compute channels
+  concurrently, so overlapping intervals are counted more than once and the
+  sum can exceed wall-clock time.
+- Metal System Trace records GPU work for **every** process on the system.
+  A capture of a trivial local Metal program also contained intervals
+  belonging to `WindowServer` and `com.apple.WebKit.GPU`, and in one capture
+  81% of all intervals were `WindowServer`'s. Metrics are therefore always
+  attributed per pid; without a target pid, no scalar metric is emitted at
+  all. Nothing here is a benchmark result or a comparison between runtimes.
+
+The other 81 schemas found in a capture are listed in
+`instruments.unsupported_schemas` so the gap is explicit. Instruments
+evidence is kept separate from `memory` and `power`, which carry
+runtime-allocator and host-side values (the MLX allocator's active, cache and
+peak bytes), so a bookkeeping figure can never be mistaken for a profiler
+measurement.
+
+#### Safety and privacy
+
+- **Traces are never overwritten.** The output path is resolved (symlinks and
+  `..` collapsed, and case-insensitively on a default macOS filesystem) and
+  refused if anything exists there. `--append-run` is never passed.
+- **No shell.** Every invocation is an argv list, so no template name, path
+  or inference argument can be reinterpreted as shell syntax. Schema names
+  are validated against a conservative character set before entering an XPath
+  so they cannot break out of the query.
+- **Bounded and cleaned up.** Each recording has a host deadline strictly
+  greater than `--time-limit`, leaving room for xctrace to finalize the
+  bundle. The child runs in its own process group, and a timeout escalates
+  SIGINT then SIGTERM then SIGKILL across the whole group, because
+  `xctrace record --launch` starts the profiled program itself.
+- **Failures are preserved,** not cleaned away: stdout, stderr, run metadata
+  and any partial bundle stay on disk.
+- **No prompt or completion capture.** `--target-stdin` and `--target-stdout`
+  are never constructed, so the profiled program's own input and output never
+  flow through xctrace into captured logs. `--all-processes` is never used,
+  and attaching is offered by numeric pid only, since attaching by name
+  resolves ambiguously.
+- **Credential redaction.** `--env` values whose names look like credentials
+  (`token`, `secret`, `password`, `api_key`, `access_key`, `private_key`,
+  `credential`) are replaced with `<redacted>` in every argv this project
+  stores or prints, while the real value still reaches the process.
+- **Identity is not ingested.** A trace's table of contents contains the
+  device's display name (routinely a person's name), its hardware UUID, and
+  the target's full argument list. None of these are read. Only the launched
+  process's own pid and name are, because attribution is impossible without
+  them, and records store the trace bundle's basename rather than an absolute
+  path.
+- **Malformed input is refused.** Exports declaring a `DOCTYPE` or `ENTITY`
+  are rejected before parsing (entity expansion denial of service), oversized
+  exports are refused with a suggestion to shorten `--time-limit`, and a row
+  whose value count or engineering types disagree with the declared schema is
+  an error rather than being mapped onto the wrong columns.
+
+The test suite covers all of the above without Xcode installed, by injecting
+the subprocess and process-launch boundaries and parsing small synthetic
+export fixtures.
+
 ### Deterministic code/JSON/reasoning workload matrix
 
 `llmtracefx.optimizer.workloads` pins a small, versioned, redistributable

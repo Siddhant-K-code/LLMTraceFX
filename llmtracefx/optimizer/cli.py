@@ -7,6 +7,8 @@ Subcommands:
     collect-api      Stream one OpenAI-compatible chat completion (e.g. Z.ai GLM)
                      and record normalized, credential-free evidence.
     native-mtp       Native Qwen MTP capability report / evidence collection.
+    instruments      Apple Instruments (xctrace) capability report, dry-run
+                     plan, Metal trace recording, and trace import.
     parse-llama-cpp  Convert llama.cpp text output into a canonical ExperimentRecord.
     doctor speculative  Diagnose whether speculative decoding/MTP is a net regression.
     workloads        Generate a deterministic code/JSON/reasoning workload matrix,
@@ -66,6 +68,23 @@ from .collectors.openai_api import (
     redact_text_for_dry_run,
 )
 from .doctor.speculative import diagnose_speculative_regression
+from .instruments import (
+    METAL_SYSTEM_TRACE_TEMPLATE,
+    InstrumentsCommandError,
+    InstrumentsExportError,
+    InstrumentsRecordError,
+    SubprocessCommandRunner,
+    SubprocessProcessLauncher,
+    detect_xctrace_capability,
+)
+from .instruments.process import InstrumentsProcessError
+from .instruments.workflow import (
+    DEFAULT_TABLE_SCHEMA,
+    capability_exit_code,
+    import_trace,
+    plan_trace,
+    record_trace,
+)
 from .manifest import collect_environment_manifest
 from .optimize_summary import (
     OPTIMIZE_SUMMARY_SCHEMA_VERSION,
@@ -521,6 +540,134 @@ def _cmd_native_mtp_collect(args: argparse.Namespace) -> int:
         file=sys.stderr,
     )
     return 1
+
+
+def _instruments_target_command(args: argparse.Namespace) -> tuple[str, ...]:
+    """Extract the profiled program's argv from a trailing ``-- cmd ...``.
+
+    argparse leaves the separator in place for REMAINDER, so a leading
+    ``--`` is stripped. The command is never joined into a string and is
+    never passed through a shell.
+    """
+    command = list(getattr(args, "target_command", []) or [])
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        raise InstrumentsCommandError(
+            "no program to profile. Append the command after '--', for "
+            "example: instruments record --output-trace run.trace "
+            "--output-dir out -- ./my-inference-script --tokens 128"
+        )
+    return tuple(command)
+
+
+def _cmd_instruments_capability(args: argparse.Namespace) -> int:
+    try:
+        report = detect_xctrace_capability(
+            runner=SubprocessCommandRunner(), template=args.template
+        )
+    except InstrumentsProcessError as exc:
+        print(f"Failed to probe xctrace: {exc}", file=sys.stderr)
+        return 1
+
+    if args.output:
+        report.write_json(args.output)
+        print(f"xctrace capability report written to {args.output}")
+    else:
+        print(report.to_json())
+    if not report.supported:
+        print(f"xctrace unavailable: {report.reason}", file=sys.stderr)
+        if report.remediation:
+            print(f"Remediation: {report.remediation}", file=sys.stderr)
+    return capability_exit_code(report.capability)
+
+
+def _cmd_instruments_plan(args: argparse.Namespace) -> int:
+    try:
+        command = _instruments_target_command(args)
+        plan = plan_trace(
+            runner=SubprocessCommandRunner(),
+            command=command,
+            output_trace=Path(args.output_trace),
+            output_dir=Path(args.output_dir),
+            template=args.template,
+            time_limit=args.time_limit,
+        )
+    except (InstrumentsCommandError, InstrumentsProcessError) as exc:
+        print(f"Failed to plan a trace: {exc}", file=sys.stderr)
+        return 1
+
+    print(plan.to_json())
+    print(
+        "\nDry run: nothing was recorded and no file was written.",
+        file=sys.stderr,
+    )
+    if not plan.ready:
+        for prerequisite in plan.prerequisites:
+            print(f"Unmet prerequisite: {prerequisite}", file=sys.stderr)
+        return 3
+    return 0
+
+
+def _cmd_instruments_record(args: argparse.Namespace) -> int:
+    try:
+        command = _instruments_target_command(args)
+        collection = record_trace(
+            runner=SubprocessCommandRunner(),
+            launcher=SubprocessProcessLauncher(),
+            command=command,
+            output_trace=Path(args.output_trace),
+            output_dir=Path(args.output_dir),
+            template=args.template,
+            time_limit=args.time_limit,
+            table_schema=None if args.no_export else args.table_schema,
+        )
+    except (
+        InstrumentsCommandError,
+        InstrumentsExportError,
+        InstrumentsProcessError,
+        InstrumentsRecordError,
+        OSError,
+    ) as exc:
+        print(f"Failed to record a trace: {exc}", file=sys.stderr)
+        return 1
+
+    output_dir = Path(args.output_dir)
+    print(f"Instruments evidence written to {output_dir / 'instruments_evidence.json'}")
+    if collection.succeeded:
+        if collection.message:
+            print(collection.message)
+        return 0
+    print(f"Recording did not complete: {collection.message}", file=sys.stderr)
+    print(f"Artifacts preserved in {output_dir}", file=sys.stderr)
+    return 1
+
+
+def _cmd_instruments_import(args: argparse.Namespace) -> int:
+    try:
+        collection = import_trace(
+            runner=SubprocessCommandRunner(),
+            trace_path=Path(args.trace),
+            output_dir=Path(args.output_dir),
+            template=args.template,
+            table_schema=None if args.no_export else args.table_schema,
+        )
+    except (
+        InstrumentsExportError,
+        InstrumentsProcessError,
+        OSError,
+    ) as exc:
+        print(f"Failed to import the trace: {exc}", file=sys.stderr)
+        return 1
+
+    output_dir = Path(args.output_dir)
+    print(f"Instruments evidence written to {output_dir / 'instruments_evidence.json'}")
+    if collection.message:
+        print(collection.message)
+    if not collection.capability.supported:
+        print(f"xctrace unavailable: {collection.capability.reason}", file=sys.stderr)
+        return 3
+    return 0
 
 
 def _cmd_parse_llama_cpp(args: argparse.Namespace) -> int:
@@ -2380,6 +2527,119 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit accelerator name; otherwise left unset",
     )
     native_mtp_collect_parser.set_defaults(func=_cmd_native_mtp_collect)
+
+    instruments_parser = subparsers.add_parser(
+        "instruments",
+        help=(
+            "Apple Instruments (xctrace) capability report, dry-run plan, "
+            "Metal trace recording, and trace import"
+        ),
+    )
+    instruments_subparsers = instruments_parser.add_subparsers(
+        dest="instruments_command", required=True
+    )
+
+    instruments_capability_parser = instruments_subparsers.add_parser(
+        "capability",
+        help=(
+            "Report whether xctrace can record the requested template here "
+            "(exit 0 if supported, 3 if not, 1 on error)"
+        ),
+    )
+    instruments_capability_parser.add_argument(
+        "--template",
+        default=METAL_SYSTEM_TRACE_TEMPLATE,
+        help="Instruments template to check for (default: %(default)s)",
+    )
+    instruments_capability_parser.add_argument(
+        "--output",
+        default=None,
+        help="Write the capability report JSON to this path instead of stdout",
+    )
+    instruments_capability_parser.set_defaults(func=_cmd_instruments_capability)
+
+    instruments_plan_parser = instruments_subparsers.add_parser(
+        "plan",
+        help=(
+            "Dry run: validate the recording, print the exact argv and "
+            "output paths, and execute nothing (exit 0 if ready, 3 if a "
+            "prerequisite is unmet)"
+        ),
+    )
+    instruments_plan_parser.add_argument("--output-trace", required=True)
+    instruments_plan_parser.add_argument("--output-dir", required=True)
+    instruments_plan_parser.add_argument(
+        "--template", default=METAL_SYSTEM_TRACE_TEMPLATE
+    )
+    instruments_plan_parser.add_argument(
+        "--time-limit",
+        default="60s",
+        help="xctrace --time-limit value, e.g. 30s or 2m (default: %(default)s)",
+    )
+    instruments_plan_parser.add_argument(
+        "target_command",
+        nargs=argparse.REMAINDER,
+        help="-- followed by the program to profile and its arguments",
+    )
+    instruments_plan_parser.set_defaults(func=_cmd_instruments_plan)
+
+    instruments_record_parser = instruments_subparsers.add_parser(
+        "record",
+        help=(
+            "Record a Metal trace of a locally supplied command, then "
+            "export and parse it into canonical evidence"
+        ),
+    )
+    instruments_record_parser.add_argument(
+        "--output-trace",
+        required=True,
+        help="Path ending in .trace. Refused if anything already exists there",
+    )
+    instruments_record_parser.add_argument("--output-dir", required=True)
+    instruments_record_parser.add_argument(
+        "--template", default=METAL_SYSTEM_TRACE_TEMPLATE
+    )
+    instruments_record_parser.add_argument("--time-limit", default="60s")
+    instruments_record_parser.add_argument(
+        "--table-schema",
+        default=DEFAULT_TABLE_SCHEMA,
+        help="Trace table to export after recording (default: %(default)s)",
+    )
+    instruments_record_parser.add_argument(
+        "--no-export",
+        action="store_true",
+        help="Record only; do not export or parse any table",
+    )
+    instruments_record_parser.add_argument(
+        "target_command",
+        nargs=argparse.REMAINDER,
+        help="-- followed by the program to profile and its arguments",
+    )
+    instruments_record_parser.set_defaults(func=_cmd_instruments_record)
+
+    instruments_import_parser = instruments_subparsers.add_parser(
+        "import",
+        help=(
+            "Export and parse an existing .trace bundle into canonical "
+            "Instruments evidence"
+        ),
+    )
+    instruments_import_parser.add_argument(
+        "--trace", required=True, help="Existing .trace bundle to read"
+    )
+    instruments_import_parser.add_argument("--output-dir", required=True)
+    instruments_import_parser.add_argument(
+        "--template", default=METAL_SYSTEM_TRACE_TEMPLATE
+    )
+    instruments_import_parser.add_argument(
+        "--table-schema", default=DEFAULT_TABLE_SCHEMA
+    )
+    instruments_import_parser.add_argument(
+        "--no-export",
+        action="store_true",
+        help="Read the table of contents only; export no table",
+    )
+    instruments_import_parser.set_defaults(func=_cmd_instruments_import)
 
     parse_parser = subparsers.add_parser(
         "parse-llama-cpp",
