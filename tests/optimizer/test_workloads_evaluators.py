@@ -188,9 +188,36 @@ def test_terminate_candidate_process_falls_back_when_killpg_is_not_permitted(
         evaluators.os, "kill", lambda pid, signal: killed.append((pid, signal))
     )
 
-    evaluators._terminate_candidate_process(object(), process_group_id=40)
+    warning = evaluators._terminate_candidate_process(object(), process_group_id=40)
 
     assert killed == [(41, evaluators.signal.SIGKILL), (42, evaluators.signal.SIGKILL)]
+    assert warning == evaluators._PROCESS_TERMINATION_PERMISSION_WARNING
+
+
+def test_evaluate_code_completion_reports_process_cleanup_permission_denial(
+    monkeypatch,
+):
+    def raise_timeout(*args, **kwargs):
+        raise evaluators._CandidateTimeoutError(
+            evaluators._PROCESS_TERMINATION_PERMISSION_WARNING
+        )
+
+    monkeypatch.setattr(evaluators, "_run_candidate", raise_timeout)
+
+    outcome = evaluate_code_completion(
+        CodeCompletionSpec(
+            function_stub="def f() -> None:\n    pass\n",
+            test_code="",
+            entry_point="f",
+        ),
+        "def f() -> None:\n    pass\n",
+        timeout_seconds=0.5,
+    )
+
+    assert outcome.notes == (
+        "candidate completion timed out after 0.5s; "
+        f"{evaluators._PROCESS_TERMINATION_PERMISSION_WARNING}"
+    )
 
 
 @pytest.mark.skipif(
