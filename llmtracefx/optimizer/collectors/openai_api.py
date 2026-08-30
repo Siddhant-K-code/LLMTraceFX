@@ -210,10 +210,20 @@ _CREDENTIAL_QUERY_TERMS = frozenset(
         "authorization",
         "bearer",
         "credential",
+        "jwt",
         "key",
+        "passphrase",
         "passwd",
         "password",
+        "pwd",
         "secret",
+        # A session identifier authenticates the caller for as long as it
+        # lives, so it belongs here and not among the qualifiers, where it
+        # only ever described a neighbouring noun. As a term it also makes
+        # ``sessionid`` a credential, which a cover built from two
+        # qualifiers could never report.
+        "session",
+        "sid",
         "sig",
         "signature",
         "token",
@@ -242,12 +252,21 @@ _CREDENTIAL_QUERY_QUALIFIERS = frozenset(
         "sas",
         "secondary",
         "service",
-        "session",
         "shared",
         "subscription",
         "user",
         "x",
     }
+)
+
+#: The longest word either table spells. A cover step never has to look
+#: further ahead than this, and bounding the lookahead is what keeps the
+#: search linear in the length of the component. Unbounded, every reachable
+#: offset rescans every remaining substring, so a key made of a few
+#: thousand repeated qualifier characters costs seconds of work before the
+#: endpoint it belongs to is even rejected.
+_MAX_CREDENTIAL_WORD = max(
+    len(word) for word in _CREDENTIAL_QUERY_TERMS | _CREDENTIAL_QUERY_QUALIFIERS
 )
 
 #: Split on separators, on camel-case boundaries and between letters and
@@ -910,13 +929,18 @@ def _covers_a_credential(component: str) -> bool:
     ``reached`` maps each offset a cover can reach to whether some cover
     reaching it has used a credential noun, so a cover built only from
     qualifiers, such as ``appid``, does not count.
+
+    The lookahead stops at the longest word either table spells. No cover
+    step can use a longer word, so nothing is missed, and it is what keeps
+    the cost linear rather than quadratic in the length of the component.
     """
     reached: dict[int, bool] = {0: False}
     for start in range(len(component)):
         if start not in reached:
             continue
         seen_term = reached[start]
-        for end in range(start + 1, len(component) + 1):
+        limit = min(len(component), start + _MAX_CREDENTIAL_WORD)
+        for end in range(start + 1, limit + 1):
             word = component[start:end]
             is_term = word in _CREDENTIAL_QUERY_TERMS
             if not is_term and word not in _CREDENTIAL_QUERY_QUALIFIERS:

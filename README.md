@@ -1399,6 +1399,23 @@ and are never mixed into a single unlabelled number.
   count either. Splitting a component once into two parts was not enough,
   because `xapikey` is three words and the substring search it replaced had
   caught it.
+- The credential vocabulary covers session material, not just words spelled
+  `key` or `token`. `session` used to be only a qualifier, so `sessionid` was
+  covered by two qualifiers, named no credential outright and was accepted. A
+  session identifier authenticates the caller for as long as it lives, and
+  `sid`, `jwt`, `pwd` and `passphrase` name one just as plainly, so all of
+  them are credential nouns now. The cover rule keeps that from spreading:
+  `sidebar` and `sidecar` are still accepted, because `ebar` and `car` are not
+  words this recognizes.
+- The cover search looks ahead no further than the longest word either table
+  spells. Without that bound every reachable offset rescanned every remaining
+  substring, so a query key made of a few thousand repeated qualifier
+  characters cost seconds of work before the endpoint it belonged to was even
+  rejected: an 8,003 character key took over seventeen seconds, and the cost
+  quadrupled with each doubling. No cover step can use a word longer than the
+  longest one there is, so nothing is missed, and the bound is derived from
+  the tables rather than written down, which keeps a longer noun added later
+  reachable.
 - A provider cannot end a run with no evidence at all by sending JSON that
   `json` refuses past its own limits. An integer literal over the
   interpreter's digit cap raises a plain `ValueError` and deep nesting raises

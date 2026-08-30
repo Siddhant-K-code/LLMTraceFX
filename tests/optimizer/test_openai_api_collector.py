@@ -25,6 +25,9 @@ from urllib.parse import quote
 import pytest
 
 from llmtracefx.optimizer.collectors.openai_api import (
+    _CREDENTIAL_QUERY_QUALIFIERS,
+    _CREDENTIAL_QUERY_TERMS,
+    _MAX_CREDENTIAL_WORD,
     _MAX_EXACT_TOKEN_COUNT,
     _MAX_PERSISTED_HEADER_CHARS,
     _REDACTED,
@@ -51,6 +54,7 @@ from llmtracefx.optimizer.collectors.openai_api import (
     _Redactor,
     _response_socket,
     _safe_endpoint_for_message,
+    _validate_endpoint,
     artifact_set_is_complete,
     assert_credential_not_embedded,
     build_request_plan,
@@ -4914,3 +4918,105 @@ def test_a_null_completion_rate_always_records_why(tmp_path: Path) -> None:
     assert stats.generation_window_ms is None
     assert stats.provider_completion_tokens_per_second is None
     assert stats.provider_completion_tokens_per_second_unavailable_reason is not None
+
+
+# --------------------------------------------------------------------------
+# Nineteenth review pass
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "sessionid",
+        "session",
+        "sid",
+        "jwt",
+        "passphrase",
+        "pwd",
+        "sessionId",
+        "x-session-id",
+        "SESSIONID",
+        "session_ids",
+        "refreshsession",
+    ],
+)
+def test_session_family_query_keys_are_refused(key: str) -> None:
+    """Authentication material that is not spelled ``key`` or ``token``.
+
+    ``session`` was only a qualifier, so ``sessionid`` was covered by two
+    qualifiers and named no credential. A session identifier authenticates
+    the caller for as long as it lives, and the value under such a key is
+    hashed into the configuration identity if the endpoint is accepted.
+    """
+    assert _names_a_credential(key) is True
+    with pytest.raises(OpenAIStreamCollectorError) as excinfo:
+        _validate_endpoint(f"https://api.example.com/v1/chat?{key}=whatever")
+    assert "looks like a credential" in str(excinfo.value)
+    # The refusal still names nothing the caller supplied.
+    assert key not in str(excinfo.value)
+    assert "whatever" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "keyword",
+        "monkey",
+        "design",
+        "assignment",
+        "signal",
+        "insignia",
+        "sidebar",
+        "sidecar",
+        "consider",
+        "region",
+        "api-version",
+        "stream",
+        "residency",
+    ],
+)
+def test_ordinary_query_keys_stay_accepted(key: str) -> None:
+    """The wider credential vocabulary must not start refusing real names.
+
+    A refusal here is an outage the operator cannot diagnose, because the
+    diagnostic deliberately echoes nothing. These are the names an
+    unanchored substring search rejected, plus the ones the new ``sid``
+    and ``session`` nouns could plausibly have caught.
+    """
+    assert _names_a_credential(key) is False
+    _validate_endpoint(f"https://api.example.com/v1/chat?{key}=value")
+
+
+def test_query_key_cover_is_linear_in_the_key_length() -> None:
+    """A long query key must not cost seconds of work before it is judged.
+
+    Every reachable offset used to rescan every remaining substring, so a
+    key of repeated qualifier characters was quadratic with slicing on top:
+    an 8,003 character key took over seventeen seconds, and the cost
+    quadrupled with each doubling. Bounding the lookahead at the longest
+    word either table spells makes it linear.
+
+    The budget is deliberately loose. The point is the difference between
+    milliseconds and minutes, not a precise figure that would make this
+    test flaky on a loaded machine.
+    """
+    key = "x" * 64_000 + "key"
+    start = time.monotonic()
+    assert _names_a_credential(key) is True
+    elapsed = time.monotonic() - start
+    assert elapsed < 5.0, f"cover took {elapsed:.1f}s"
+
+
+def test_query_key_cover_lookahead_bound_admits_the_longest_word() -> None:
+    """The bound must not be so tight that it drops a real word.
+
+    ``_MAX_CREDENTIAL_WORD`` is derived from the tables rather than
+    written down, so a longer noun added later stays reachable.
+    """
+    longest = max(
+        _CREDENTIAL_QUERY_TERMS | _CREDENTIAL_QUERY_QUALIFIERS,
+        key=len,
+    )
+    assert _MAX_CREDENTIAL_WORD == len(longest)
+    assert _names_a_credential(longest + "key") is True
