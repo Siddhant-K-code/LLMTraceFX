@@ -26,7 +26,7 @@ from llmtracefx.optimizer.collectors.openai_api import (
     TransportConnectionError,
     artifact_set_is_complete,
 )
-from llmtracefx.optimizer.workloads import api_verify
+from llmtracefx.optimizer.workloads import api_verify, evaluators
 from llmtracefx.optimizer.workloads.api_profiles import (
     API_PROFILES,
     OPENROUTER_PROFILE,
@@ -39,6 +39,7 @@ from llmtracefx.optimizer.workloads.api_verify import (
     APIBinding,
     APIVerifyError,
     execute_api_row,
+    plan_api_row,
     plan_selected_api_rows,
     render_plan_document,
     run_artifacts_are_complete,
@@ -52,6 +53,7 @@ from llmtracefx.optimizer.workloads.catalog import (
 from llmtracefx.optimizer.workloads.matrix import (
     DECODE_MODE_AUTOREGRESSIVE,
     DECODE_MODE_NATIVE_MTP,
+    MatrixEntry,
     MatrixManifest,
     generate_matrix,
     write_matrix,
@@ -1475,3 +1477,103 @@ def test_a_corrupt_run_marker_forces_a_rerun(tmp_path):
     second = run_one(tmp_path, transport=transport, manifest_bundle=bundle)
     assert transport.requests
     assert second.verification.status is RowStatus.COMPLETED
+
+
+def test_a_manifest_that_mislabels_a_code_workload_cannot_bypass_the_refusal(
+    tmp_path, monkeypatch
+):
+    """The catalog is the authority, because the evaluator dispatches on it.
+
+    A matrix manifest is a file on disk. One that declares a
+    code-completion row as ``structured_json`` passes a check that trusts
+    the manifest, then resolves the real workload from the catalog and is
+    graded by executing the answer. The manifest must not be able to talk
+    the pipeline into running a remote endpoint's code.
+    """
+
+    def forbidden(spec, response_text):
+        raise AssertionError("the code evaluator must never run for an API row")
+
+    monkeypatch.setattr(evaluators, "evaluate_code_completion", forbidden)
+
+    manifest, manifest_dir, matrix_path = build_manifest(
+        tmp_path, workloads=(CODE_COMPLETION_PALINDROME,)
+    )
+    doctored = dict(autoregressive_entry(manifest).to_dict())
+    doctored["category"] = "structured_json"
+
+    result = execute_api_row(
+        MatrixEntry.from_dict(doctored),
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=tmp_path / "results",
+        binding=make_binding(),
+        resume=True,
+        transport_factory=lambda: FakeTransport(
+            FakeResponse(answer_stream("def is_palindrome(s): return True"))
+        ),
+        environ=ENVIRON,
+    )
+
+    assert result.verification.status is RowStatus.UNSUPPORTED
+    assert "executing the model's answer" in (result.verification.reason or "")
+
+
+def test_a_mislabelled_code_workload_is_also_blocked_in_the_plan(tmp_path):
+    manifest, manifest_dir, matrix_path = build_manifest(
+        tmp_path, workloads=(CODE_COMPLETION_PALINDROME,)
+    )
+    doctored = dict(autoregressive_entry(manifest).to_dict())
+    doctored["category"] = "structured_json"
+
+    plan = plan_api_row(
+        MatrixEntry.from_dict(doctored),
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=tmp_path / "results",
+        binding=make_binding(),
+        environ=ENVIRON,
+    )
+
+    assert plan.unsupported is True
+    assert plan.request_plan is None
+
+
+@pytest.mark.parametrize(
+    "rewritten_name",
+    ["../escaped.json", "/etc/hostname", "collection/record.json"],
+)
+def test_a_marker_naming_another_file_is_rejected(tmp_path, rewritten_name):
+    """The marker's names are not authority over what this process opens.
+
+    Redirecting an entry at a file nobody edited would otherwise let a
+    tampered run verify clean, which is worse than having no marker.
+    """
+    result = run_one(
+        tmp_path, transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    )
+    run_dir = Path(result.verification.collection_dir or "").parent
+    marker_path = run_dir / RUN_MANIFEST_NAME
+
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["artifacts"][1]["name"] = rewritten_name
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+    assert not run_artifacts_are_complete(run_dir)
+
+
+def test_a_marker_that_omits_an_artifact_is_rejected(tmp_path):
+    """Dropping an entry must not silently narrow what is sealed."""
+    result = run_one(
+        tmp_path, transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    )
+    run_dir = Path(result.verification.collection_dir or "").parent
+    marker_path = run_dir / RUN_MANIFEST_NAME
+
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["artifacts"] = [
+        entry for entry in marker["artifacts"] if entry["name"] != "final_record.json"
+    ]
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+    assert not run_artifacts_are_complete(run_dir)

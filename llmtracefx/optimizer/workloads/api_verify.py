@@ -116,7 +116,7 @@ from ..schema import ExperimentRecord, OutcomeInfo, SchemaValidationError, utc_n
 from .catalog import workload_by_id
 from .evaluators import evaluate_workload
 from .matrix import DECODE_MODE_NATIVE_MTP, MatrixEntry, MatrixManifest
-from .schema import WorkloadCategory, WorkloadSchemaError
+from .schema import Workload, WorkloadCategory, WorkloadSchemaError
 from .verify import (
     BACKEND_OPENAI_API,
     VERIFICATION_SCHEMA_VERSION,
@@ -147,6 +147,15 @@ _DONE_SENTINEL = "[DONE]"
 RUN_MANIFEST_NAME = "run.json"
 RUN_MANIFEST_SCHEMA_VERSION = "1"
 
+#: Exactly what the run-level marker seals, as relative names under the run
+#: directory. Fixed here rather than taken from the marker, because the
+#: marker is a file and its contents are not authority over which paths
+#: this process will open.
+_SEALED_COLLECTION_MARKER = f"collection/{ARTIFACT_MANIFEST_NAME}"
+_SEALED_ARTIFACT_NAMES = frozenset(
+    {_SEALED_COLLECTION_MARKER, "final_record.json", "verification.json"}
+)
+
 
 def _run_marker_payload(
     *,
@@ -163,7 +172,10 @@ def _run_marker_payload(
     carrying the graded outcome, and the summary resume actually reads,
     could both be edited and would still be trusted. This marker closes
     that by hashing all three together, including the collector's own
-    marker, so tampering with any file in the run is detected.
+    marker. It is tamper evidence rather than tamper proofing: an
+    unsigned marker can itself be rewritten, but a partial write or an
+    edit made without regenerating it both stop resume from trusting the
+    directory.
     """
     return {
         "schema_version": RUN_MANIFEST_SCHEMA_VERSION,
@@ -171,10 +183,7 @@ def _run_marker_payload(
         "artifacts": [
             {"name": name, "sha256": sha256_bytes(path.read_bytes())}
             for name, path in (
-                (
-                    "collection/" + ARTIFACT_MANIFEST_NAME,
-                    collection_dir / ARTIFACT_MANIFEST_NAME,
-                ),
+                (_SEALED_COLLECTION_MARKER, collection_dir / ARTIFACT_MANIFEST_NAME),
                 ("final_record.json", final_record_path),
                 ("verification.json", verification_path),
             )
@@ -188,6 +197,11 @@ def run_artifacts_are_complete(run_dir: Path) -> bool:
     The marker is removed before the run's files are written and written
     last, so any interruption leaves a directory this rejects rather than
     one that reads as trustworthy.
+
+    Tamper evidence, not tamper proofing: nothing here is signed, so
+    anyone able to edit the artifacts can rewrite the marker too. What it
+    catches is the partial write, the crash between files, and the edit
+    made without regenerating the marker.
     """
     try:
         marker = json.loads((run_dir / RUN_MANIFEST_NAME).read_text(encoding="utf-8"))
@@ -200,12 +214,30 @@ def run_artifacts_are_complete(run_dir: Path) -> bool:
     artifacts = marker.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts:
         return False
+
+    sealed: dict[str, str] = {}
     for entry in artifacts:
         if not isinstance(entry, dict):
             return False
         name, digest = entry.get("name"), entry.get("sha256")
         if not isinstance(name, str) or not isinstance(digest, str):
             return False
+        # The name comes back out of a file, so it is never joined onto the
+        # run directory as given. An absolute path, or one containing "..",
+        # would otherwise send this check off to hash some unrelated file,
+        # and a marker that verifies against a file nobody touched is worse
+        # than no marker at all.
+        if name not in _SEALED_ARTIFACT_NAMES:
+            return False
+        sealed[name] = digest
+
+    # Every expected artifact must be named exactly once. A marker that
+    # simply omitted an entry would otherwise vouch for a file it never
+    # covered.
+    if set(sealed) != _SEALED_ARTIFACT_NAMES:
+        return False
+
+    for name, digest in sealed.items():
         try:
             raw = (run_dir / name).read_bytes()
         except OSError:
@@ -257,11 +289,28 @@ _UNSUPPORTED_EXECUTING_EVALUATOR_REASON = (
 )
 
 
+def _executes_the_answer(workload: Workload) -> bool:
+    """True when grading this workload runs the model's answer as a program.
+
+    Asked of the catalog workload rather than of the matrix row, because
+    the catalog is what ``evaluate_workload`` dispatches on. A manifest is
+    a file on disk, and one that labels a code-completion row as
+    ``structured_json`` would otherwise satisfy a check that trusted the
+    row and then be graded by executing the answer anyway. The row's own
+    category is still checked first, but only as a cheap short circuit;
+    the authority is here.
+    """
+    return workload.category.value in _EXECUTING_EVALUATOR_CATEGORIES
+
+
 def _unsupported_reason(entry: MatrixEntry) -> str | None:
     """Why this row cannot be run through an API, or ``None`` if it can.
 
     Checked before anything is planned, sent or graded, so an unsupported
-    row never reaches a transport or an evaluator.
+    row never reaches a transport or an evaluator. This looks only at the
+    row, so it cannot be the last word on a workload's evaluator: see
+    ``_executes_the_answer``, which is re-checked against the catalog once
+    the workload has been resolved.
     """
     if entry.decode_mode == DECODE_MODE_NATIVE_MTP:
         return _UNSUPPORTED_NATIVE_MTP_REASON
@@ -721,6 +770,24 @@ def plan_api_row(
     except KeyError:
         blockers.append(f"unknown workload_id in catalog: {entry.workload_id!r}")
     else:
+        # Same authority as the execution path: the catalog decides which
+        # evaluator runs, so a manifest that mislabels a code workload
+        # cannot present it here as runnable either.
+        if _executes_the_answer(workload):
+            return APIRowPlan(
+                entry=entry,
+                unsupported=True,
+                unsupported_reason=_UNSUPPORTED_EXECUTING_EVALUATOR_REASON,
+                ready=False,
+                blockers=(),
+                prompt_path=prompt_path,
+                collection_dir=collection_dir,
+                final_record_path=run_dir / "final_record.json",
+                verification_path=run_dir / "verification.json",
+                request_plan=None,
+                binding_hash=None,
+                credential_env_var_present=credential_present,
+            )
         workload_version = workload.version
         if workload.version != entry.workload_version:
             workload_version = None
@@ -1026,6 +1093,16 @@ def execute_api_row(
             f"workload '{entry.workload_id}' version drift: matrix pinned "
             f"v{entry.workload_version}, catalog has v{workload.version}; "
             "regenerate the matrix",
+            verified_hash=verified_hash,
+        )
+
+    # The catalog decides which evaluator runs, so the catalog decides
+    # whether this row is safe to run at all. Checking only the manifest's
+    # category left a mislabelled row executing a remote answer.
+    if _executes_the_answer(workload):
+        return _finish(
+            RowStatus.UNSUPPORTED,
+            _UNSUPPORTED_EXECUTING_EVALUATOR_REASON,
             verified_hash=verified_hash,
         )
 
