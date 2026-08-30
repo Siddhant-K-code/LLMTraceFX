@@ -760,6 +760,15 @@ class ExperimentRecord:
             raise SchemaValidationError(
                 f"Invalid JSON for ExperimentRecord: {exc}"
             ) from exc
+        # Valid JSON is not necessarily an object. Without this, a payload
+        # of ``[]`` or ``null`` reaches ``from_dict`` and raises
+        # ``AttributeError``, which no caller expects from a parser whose
+        # documented failure mode is ``SchemaValidationError``. Mirrors
+        # the check ``MatrixManifest.from_json`` already performs.
+        if not isinstance(data, dict):
+            raise SchemaValidationError(
+                f"ExperimentRecord JSON must be an object, got {type(data).__name__}"
+            )
         return cls.from_dict(data)
 
     def write_json(self, path: str | Path) -> None:

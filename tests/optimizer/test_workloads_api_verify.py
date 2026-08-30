@@ -1782,30 +1782,6 @@ def test_a_marker_renamed_to_another_run_is_rejected(tmp_path):
 # --- Corrupt, non-UTF-8 artifacts -------------------------------------------
 
 
-@pytest.mark.parametrize("victim", [RUN_MANIFEST_NAME, "verification.json"])
-def test_a_non_utf8_artifact_reruns_instead_of_crashing(tmp_path, victim):
-    """A corrupted file is untrusted evidence, not an unhandled exception.
-
-    ``UnicodeDecodeError`` is neither an ``OSError`` nor a
-    ``JSONDecodeError``, so a file that is not valid UTF-8 escaped every
-    handler and took the whole run down with it.
-    """
-    bundle = build_manifest(tmp_path)
-    first = run_one(
-        tmp_path,
-        transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER))),
-        manifest_bundle=bundle,
-    )
-    run_dir = Path(first.verification.collection_dir or "").parent
-    (run_dir / victim).write_bytes(b"\xff\xfe\x00 not valid utf-8 at all")
-
-    transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
-    second = run_one(tmp_path, transport=transport, manifest_bundle=bundle)
-
-    assert transport.requests, "a corrupt artifact must rerun"
-    assert second.verification.status is RowStatus.COMPLETED
-
-
 def _reseal(run_dir: Path) -> None:
     """Rewrite the marker so it matches whatever is on disk now."""
     marker_path = run_dir / RUN_MANIFEST_NAME
@@ -1815,13 +1791,38 @@ def _reseal(run_dir: Path) -> None:
     marker_path.write_text(json.dumps(marker), encoding="utf-8")
 
 
-def test_a_non_utf8_final_record_behind_a_valid_marker_reruns(tmp_path):
-    """Reaching the record read at all requires the marker to agree.
+# --- Malformed but syntactically valid artifacts -------------------------------
 
-    Corrupting the record alone breaks the marker, so resume stops
-    earlier and the decode never happens. Reselaing puts the run back
-    into the one state where the record is actually parsed, which is the
-    state an attacker who rewrites the marker would leave behind.
+#: Payloads that are valid JSON, or valid nothing, but are not the object
+#: every one of these readers assumes. ``json.loads`` returns a list, a
+#: scalar or ``None`` without complaint, and the field access that follows
+#: raises ``AttributeError`` or ``TypeError`` -- neither of which is a
+#: parse error any caller was catching.
+_MALFORMED_ROOTS = {
+    "empty list": b"[]",
+    "populated list": b'["run_id"]',
+    "null": b"null",
+    "integer": b"5",
+    "string": b'"not an object"',
+    "bare true": b"true",
+    "invalid utf-8": b"\xff\xfe\x00 not utf-8",
+    "truncated json": b'{"run_id": ',
+}
+
+
+@pytest.mark.parametrize("payload_label", sorted(_MALFORMED_ROOTS))
+@pytest.mark.parametrize(
+    "victim", [RUN_MANIFEST_NAME, "verification.json", "final_record.json"]
+)
+def test_a_malformed_artifact_reruns_instead_of_crashing(
+    tmp_path, victim, payload_label
+):
+    """Unreadable evidence is untrusted evidence, never an exception.
+
+    Corrupt is not only "not JSON": ``[]`` parses fine and then fails on
+    the first field access, which is a different exception type from the
+    one the handlers were written for. Every reader on the resume path
+    has to survive all of it and simply decline to trust the row.
     """
     bundle = build_manifest(tmp_path)
     first = run_one(
@@ -1830,15 +1831,50 @@ def test_a_non_utf8_final_record_behind_a_valid_marker_reruns(tmp_path):
         manifest_bundle=bundle,
     )
     run_dir = Path(first.verification.collection_dir or "").parent
-    (run_dir / "final_record.json").write_bytes(b"\xff\xfe\x00 not valid utf-8")
+    (run_dir / victim).write_bytes(_MALFORMED_ROOTS[payload_label])
+
+    transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    second = run_one(tmp_path, transport=transport, manifest_bundle=bundle)
+
+    assert transport.requests, f"{victim} / {payload_label} must rerun"
+    assert second.verification.status is RowStatus.COMPLETED
+
+
+@pytest.mark.parametrize("payload_label", sorted(_MALFORMED_ROOTS))
+def test_a_malformed_final_record_behind_a_valid_marker_reruns(tmp_path, payload_label):
+    """Reaching the record parse at all requires the marker to agree.
+
+    Corrupting the record alone breaks the marker, so resume stops
+    earlier. Resealing puts the run into the one state where the record
+    is actually parsed, which is what an attacker rewriting the marker
+    would leave behind, and is the only way to exercise that reader.
+    """
+    bundle = build_manifest(tmp_path)
+    first = run_one(
+        tmp_path,
+        transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER))),
+        manifest_bundle=bundle,
+    )
+    run_dir = Path(first.verification.collection_dir or "").parent
+    (run_dir / "final_record.json").write_bytes(_MALFORMED_ROOTS[payload_label])
     _reseal(run_dir)
 
-    # The marker now agrees with the corrupt file, so resume gets as far
-    # as parsing it.
     assert run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)
 
     transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
     second = run_one(tmp_path, transport=transport, manifest_bundle=bundle)
 
-    assert transport.requests, "an unparsable record must rerun"
+    assert transport.requests, f"an unparsable record ({payload_label}) must rerun"
     assert second.verification.status is RowStatus.COMPLETED
+
+
+@pytest.mark.parametrize("payload_label", sorted(_MALFORMED_ROOTS))
+def test_a_malformed_run_marker_is_rejected_not_raised(tmp_path, payload_label):
+    """The marker reader is the one gate that must never raise."""
+    result = run_one(
+        tmp_path, transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    )
+    run_dir = Path(result.verification.collection_dir or "").parent
+    (run_dir / RUN_MANIFEST_NAME).write_bytes(_MALFORMED_ROOTS[payload_label])
+
+    assert not run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)

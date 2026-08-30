@@ -311,6 +311,16 @@ class RowVerification:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RowVerification:
+        # ``json.loads`` happily returns a list, a scalar or ``None`` for
+        # perfectly valid JSON, and every field access below then raises
+        # ``AttributeError`` or ``TypeError``. Neither is a
+        # ``VerifyError``, so a ``verification.json`` containing ``[]``
+        # escaped every handler and crashed the run instead of being
+        # treated as the unreadable evidence it is.
+        if not isinstance(data, dict):
+            raise VerifyError(
+                f"verification.json must be a JSON object, got {type(data).__name__}"
+            )
         try:
             return cls(
                 schema_version=str(
