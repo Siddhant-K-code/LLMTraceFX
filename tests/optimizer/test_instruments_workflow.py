@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import shutil
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 import pytest
 from _instruments_fakes import (
@@ -1372,3 +1374,71 @@ def test_a_successful_import_leaves_no_staging_directory_behind(tmp_path):
     out = tmp_path / "artifacts"
     import_trace(runner=exporting_runner(), trace_path=trace, output_dir=out)
     assert not (out / STAGING_DIR_NAME).exists()
+
+
+def test_a_failed_export_after_a_good_recording_replaces_stale_evidence(tmp_path):
+    """`record` writes its metadata before exporting.
+
+    An export failure used to propagate out of record_trace, leaving
+    this run's capability report and record metadata sitting beside a
+    previous run's evidence and GPU metrics. --output-trace and
+    --output-dir are independent flags, so a fixed artifacts directory
+    with a per-run trace name is the natural invocation and the trace
+    collision check does not catch it.
+    """
+    out = tmp_path / "artifacts"
+
+    first = tmp_path / "run1.trace"
+    record_trace(
+        runner=exporting_runner(),
+        launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=first),
+        command=("/bin/infer",),
+        output_trace=first,
+        output_dir=out,
+    )
+    stale = json.loads((out / "instruments_evidence.json").read_text("utf-8"))
+    assert stale["trace_bundle_name"] == "run1.trace"
+    assert stale["metrics"]
+
+    second = tmp_path / "run2.trace"
+    collection = record_trace(
+        runner=exporting_runner(**{"toc": fail((), returncode=1)}),
+        launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=second),
+        command=("/bin/infer",),
+        output_trace=second,
+        output_dir=out,
+    )
+
+    assert collection.succeeded is True
+    fresh = json.loads((out / "instruments_evidence.json").read_text("utf-8"))
+    assert fresh["trace_bundle_name"] is None
+    assert fresh["metrics"] == {}
+    assert "could not be exported" in fresh["notes"]
+    record_meta = json.loads((out / "xctrace_record.json").read_text("utf-8"))
+    assert record_meta["trace_name"] == "run2.trace"
+
+
+def test_evidence_is_promoted_last_so_a_tear_leaves_it_stale(tmp_path):
+    """Promotion order matters if the loop is ever interrupted."""
+    from llmtracefx.optimizer.instruments.workflow import STAGING_DIR_NAME
+
+    trace = tmp_path / "run.trace"
+    trace.mkdir()
+    out = tmp_path / "artifacts"
+    out.mkdir()
+    (out / STAGING_DIR_NAME).mkdir()
+    staging = out / STAGING_DIR_NAME
+    for name in ("trace_toc.xml", "instruments_evidence.json", "trace_table.xml"):
+        (staging / name).write_text(name, encoding="utf-8")
+
+    promoted: list[str] = []
+    real_replace = os.replace
+
+    def recording_replace(src, dst):
+        promoted.append(Path(dst).name)
+        real_replace(src, dst)
+
+    with mock.patch.object(workflow_module.os, "replace", recording_replace):
+        workflow_module._promote_staged(staging, out)
+
+    assert promoted[-1] == "instruments_evidence.json"

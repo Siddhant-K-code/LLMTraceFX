@@ -420,7 +420,9 @@ def _run_record_reserved(
                 # would clean it up.
                 if process.group_alive():
                     survivors_stopped = True
-                    _stop_process_group(process, grace_seconds=plan.stop_grace_seconds)
+                    _, survivors_cleared_ok = _stop_process_group(
+                        process, grace_seconds=plan.stop_grace_seconds
+                    )
 
     ended_at = utc_now_iso()
     duration = time.perf_counter() - start

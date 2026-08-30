@@ -310,14 +310,33 @@ def _record_reserved(
             message=result.message,
         )
 
-    collection = import_trace(
-        runner=runner,
-        capability=capability,
-        trace_path=result.trace_path,
-        output_dir=output_dir,
-        template=template,
-        table_schema=table_schema,
-    )
+    try:
+        collection = import_trace(
+            runner=runner,
+            capability=capability,
+            trace_path=result.trace_path,
+            output_dir=output_dir,
+            template=template,
+            table_schema=table_schema,
+        )
+    except InstrumentsExportError as exc:
+        # The recording succeeded, so this run has already written its
+        # capability report and record metadata into output_dir. Letting
+        # the export failure propagate would leave those beside a
+        # previous run's evidence and GPU metrics, which is exactly the
+        # mixing the staging directory prevents on the export side.
+        # Writing this run's evidence replaces them.
+        reason = f"the trace was recorded but could not be exported: {exc}"
+        evidence = failed_recording_evidence(
+            capability, template=template, reason=reason
+        )
+        _write_evidence(output_dir, evidence)
+        return TraceCollection(
+            capability=capability,
+            record=result,
+            evidence=evidence,
+            message=reason,
+        )
     return TraceCollection(
         capability=capability,
         record=result,
@@ -357,7 +376,14 @@ def _promote_staged(staging: Path, output_dir: Path) -> None:
     strictly better than the alternative, because the promoted files all
     belong to this run, whereas exporting in place mixed two runs.
     """
-    for staged in sorted(staging.iterdir()):
+    for staged in sorted(
+        staging.iterdir(),
+        # instruments_evidence.json is the artifact a reader trusts, so
+        # it is promoted last. If a tear ever did happen mid-loop, the
+        # evidence left behind would be the stale one, rather than a new
+        # one pointing at a table that had not landed yet.
+        key=lambda path: (path.name == "instruments_evidence.json", path.name),
+    ):
         if staged.is_dir():
             raise InstrumentsExportError(
                 f"unexpected directory in the export staging set: " f"{staged.name}"

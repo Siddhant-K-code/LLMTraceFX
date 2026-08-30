@@ -408,6 +408,7 @@ def test_keyboard_interrupt_while_waiting_still_stops_the_recording(tmp_path):
 #: own process group exactly as xctrace does, and exits on SIGINT while
 #: leaving that program running. No shell is involved.
 FAKE_XCTRACE_SOURCE = """\
+import os
 import signal
 import subprocess
 import sys
@@ -415,11 +416,22 @@ import time
 
 argv = sys.argv[1:]
 target = argv[argv.index("--") + 1 :]
-subprocess.Popen([sys.executable, *target])
 
 # Exit cleanly on SIGINT, leaving the launched program behind. This is
-# the exact shape that used to end teardown early.
+# the exact shape that used to end teardown early. Installed before the
+# child is started so no signal can arrive while it is still launching.
 signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+
+subprocess.Popen([sys.executable, *target])
+
+# Do not start the clock until the child has confirmed it is running and
+# has its own signal handlers installed. Without this the test could
+# tear the group down before the child existed, and then find nothing to
+# clean up, which would pass for the wrong reason.
+ready = target[0] + ".ready"
+while not os.path.exists(ready):
+    time.sleep(0.01)
+
 time.sleep(600)
 """
 
@@ -435,6 +447,13 @@ signal.signal(signal.SIGINT, signal.SIG_IGN)
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write(str(os.getpid()))
+
+# Announce readiness only after the handlers are installed, so the
+# recording cannot be torn down while this process would still die to a
+# signal it is supposed to be ignoring.
+with open(sys.argv[0] + ".ready", "w", encoding="utf-8") as handle:
+    handle.write("ready")
+
 time.sleep(600)
 """
 
@@ -449,7 +468,7 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _await_pid_exit(pid: int, timeout_seconds: float = 20.0) -> bool:
+def _await_pid_exit(pid: int, timeout_seconds: float = 60.0) -> bool:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if not _pid_alive(pid):
@@ -458,7 +477,7 @@ def _await_pid_exit(pid: int, timeout_seconds: float = 20.0) -> bool:
     return not _pid_alive(pid)
 
 
-def _await_file(path: Path, timeout_seconds: float = 20.0) -> bool:
+def _await_file(path: Path, timeout_seconds: float = 60.0) -> bool:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if path.exists() and path.read_text(encoding="utf-8").strip():
@@ -490,8 +509,12 @@ def test_descendant_is_killed_when_the_leader_exits_on_sigint(tmp_path):
         xctrace_path=str(fake_xctrace),
         target=LaunchTarget(argv=(str(target), str(pid_file))),
         time_limit="1s",
-        grace_seconds=1.0,
-        stop_grace_seconds=3.0,
+        # Generous, because this test races real processes against wall
+        # clock grace periods and a loaded CI runner can be slow to
+        # schedule them. Correctness does not depend on these being
+        # tight; only how long a genuine failure takes to surface does.
+        grace_seconds=2.0,
+        stop_grace_seconds=4.0,
     )
 
     child_pid: int | None = None
@@ -809,3 +832,38 @@ def test_a_held_reservation_is_not_reacquired(tmp_path):
             reserved_trace=resolved,
         )
     assert result.status is RecordStatus.COMPLETED
+
+
+def test_survivor_cleanup_failure_is_reported_on_a_completed_run(tmp_path):
+    """The leader-exit branch had the same false claim as the timeout one.
+
+    This is the more dangerous of the two, because it fires on a run
+    whose status is COMPLETED, where a reader trusts the message.
+    """
+    trace = tmp_path / "run.trace"
+    artifacts = tmp_path / "artifacts"
+    process = FakeProcess(returncode=0, group_dies_on=None)
+    launcher = FakeLauncher(process, creates_trace=trace)
+
+    result = run_record(make_plan(trace), launcher=launcher, artifacts_dir=artifacts)
+
+    assert result.status is RecordStatus.COMPLETED
+    assert process.signals == [signal.SIGINT, signal.SIGTERM, signal.SIGKILL]
+    assert process.group_alive() is True
+    assert "could NOT be stopped" in result.message
+    persisted = json.loads(
+        (artifacts / "xctrace_record.json").read_text(encoding="utf-8")
+    )
+    assert "could NOT be stopped" in persisted["message"]
+
+
+def test_survivor_cleanup_success_is_reported_as_success(tmp_path):
+    trace = tmp_path / "run.trace"
+    process = FakeProcess(returncode=0, group_dies_on=signal.SIGTERM)
+    result = run_record(
+        make_plan(trace),
+        launcher=FakeLauncher(process, creates_trace=trace),
+        artifacts_dir=tmp_path / "artifacts",
+    )
+    assert "that process group was stopped" in result.message
+    assert "could NOT" not in result.message

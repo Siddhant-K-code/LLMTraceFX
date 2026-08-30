@@ -561,3 +561,32 @@ def test_the_secret_bearing_companions_are_still_caught():
     for flag in ("--keystore-password", "--private-key", "--jwt-secret"):
         plan = make_plan(target=LaunchTarget(argv=("bench", flag, SENTINEL)))
         assert SENTINEL not in " ".join(plan.to_redacted_argv()), flag
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "--auth",
+        "--basic-auth",
+        "--proxy-auth",
+        "--client-auth",
+        "--digest-auth",
+        "--http-auth",
+    ],
+)
+def test_auth_compounds_are_redacted_not_only_the_bare_spelling(flag):
+    """`--basic-auth user:password` carries the credential inline.
+
+    Only the exact name `auth` used to match, so every compound spelling
+    passed through verbatim into the persisted argv.
+    """
+    plan = make_plan(target=LaunchTarget(argv=("curl", flag, f"alice:{SENTINEL}")))
+    assert SENTINEL not in " ".join(plan.to_redacted_argv())
+
+
+@pytest.mark.parametrize(
+    "flag", ["--auth-path", "--auth-url", "--auth-file", "--auth-name"]
+)
+def test_auth_locations_are_still_readable(flag):
+    plan = make_plan(target=LaunchTarget(argv=("bench", flag, "/etc/auth.conf")))
+    assert plan.to_redacted_argv()[-1] == "/etc/auth.conf"

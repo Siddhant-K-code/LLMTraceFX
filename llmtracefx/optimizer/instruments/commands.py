@@ -80,6 +80,7 @@ _CREDENTIAL_SEGMENTS: frozenset[str] = frozenset(
         "apikey",
         "bearer",
         "authorization",
+        "auth",
         "jwt",
         "totp",
         "otp",
@@ -153,12 +154,34 @@ _TOKEN_QUANTITY_SEGMENTS: frozenset[str] = frozenset(
     }
 )
 
-#: Trailing segments that make a name refer to a *location* rather than
-#: to a secret. ``--private-key-path /etc/k.pem`` names a file; the path
-#: is not the credential, and redacting it would lose reproducibility
-#: for no privacy gain.
-_LOCATION_SUFFIXES: frozenset[str] = frozenset(
-    {"path", "file", "dir", "directory", "url", "uri", "endpoint", "name"}
+#: Trailing segments that make a name refer to something other than a
+#: secret: where one lives, or how one is configured.
+#: ``--private-key-path /etc/k.pem`` names a file and ``--auth-mode
+#: none`` names a setting. Neither is the credential, and redacting them
+#: would lose reproducibility for no privacy gain.
+_NON_SECRET_SUFFIXES: frozenset[str] = frozenset(
+    {
+        # locations
+        "path",
+        "file",
+        "dir",
+        "directory",
+        "url",
+        "uri",
+        "endpoint",
+        "name",
+        # configuration descriptors
+        "mode",
+        "type",
+        "kind",
+        "format",
+        "scheme",
+        "method",
+        "version",
+        "timeout",
+        "enabled",
+        "required",
+    }
 )
 
 REDACTED = "<redacted>"
@@ -187,16 +210,17 @@ def _is_credential_name(name: str) -> bool:
     ``--max-tokens`` (a benign quantity), so the two are separated
     rather than redacting both and corrupting the second.
 
-    Conversely a name ending in a location suffix refers to where a
-    secret lives, not to the secret: ``--private-key-path`` is a
-    filename worth keeping for reproducibility.
+    Conversely a name ending in a location or configuration suffix
+    refers to where a secret lives or how it is used, not to the secret:
+    ``--private-key-path`` is a filename and ``--auth-mode`` is a
+    setting, both worth keeping for reproducibility.
     """
     normalized = _normalize_option_name(name)
     if not normalized:
         return False
     segments = normalized.split("_")
     tail = segments[-1]
-    if len(segments) > 1 and tail in _LOCATION_SUFFIXES:
+    if len(segments) > 1 and tail in _NON_SECRET_SUFFIXES:
         return False
 
     segment_set = set(segments)
