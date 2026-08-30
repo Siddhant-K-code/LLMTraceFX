@@ -184,7 +184,7 @@ _EVENT_KIND_DONE = "done"
 
 _MAX_ERROR_BODY_BYTES = 64 * 1024
 _MAX_STREAM_BODY_BYTES = 64 * 1024 * 1024
-_MAX_RESPONSE_CONTENT_CHARACTERS = 16 * 1024 * 1024
+_MAX_RESPONSE_CONTENT_CHARACTERS = _MAX_VERIFIED_ARTIFACT_BYTES // 16
 _MAX_CONTENT_DELTA_TIMINGS = 100_000
 _MAX_PERSISTED_MESSAGE_CHARS = 600
 _MAX_PERSISTED_HEADER_CHARS = 128
@@ -4042,7 +4042,7 @@ def _publish_artifacts(
 def _read_bounded_regular_file(path: Path, limit: int) -> bytes | None:
     if path.is_symlink():
         return None
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
     except OSError:
@@ -4071,7 +4071,7 @@ def _read_bounded_regular_file(path: Path, limit: int) -> bytes | None:
 def _hash_bounded_regular_file(path: Path, limit: int) -> str | None:
     if path.is_symlink():
         return None
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
     except OSError:

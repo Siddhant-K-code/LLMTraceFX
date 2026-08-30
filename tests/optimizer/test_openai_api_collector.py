@@ -31,6 +31,8 @@ from llmtracefx.optimizer.collectors.openai_api import (
     _MAX_CREDENTIAL_WORD,
     _MAX_EXACT_TOKEN_COUNT,
     _MAX_PERSISTED_HEADER_CHARS,
+    _MAX_RESPONSE_CONTENT_CHARACTERS,
+    _MAX_VERIFIED_ARTIFACT_BYTES,
     _MAX_WHITESPACE_RUN,
     _REDACTED,
     ARTIFACT_MANIFEST_NAME,
@@ -1995,6 +1997,19 @@ def test_a_symlinked_manifest_is_not_trusted(tmp_path: Path) -> None:
     marker_path.symlink_to(target)
 
     assert artifact_set_is_complete(config.output_dir) is False
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO requires POSIX")
+def test_a_fifo_manifest_is_rejected_without_blocking(tmp_path: Path) -> None:
+    output_dir = tmp_path / "artifacts"
+    output_dir.mkdir()
+    os.mkfifo(output_dir / ARTIFACT_MANIFEST_NAME)
+
+    started = time.monotonic()
+    complete = artifact_set_is_complete(output_dir)
+
+    assert complete is False
+    assert time.monotonic() - started < 0.5
 
 
 def test_precreated_legacy_temp_symlink_cannot_overwrite_another_file(
@@ -5860,6 +5875,18 @@ def test_stream_body_bytes_are_bounded(
     assert result.evidence.failure.category == FAILURE_STREAM_DECODE
     assert "bounded response size" in result.evidence.failure.message
     assert_failure_artifacts(config, FAILURE_STREAM_DECODE)
+
+
+def test_redaction_expansion_stays_within_artifact_verifier_limit() -> None:
+    worst_case_bytes_per_character = max(
+        len(_REDACTED.encode("utf-8")),
+        4,
+    )
+
+    assert (
+        _MAX_RESPONSE_CONTENT_CHARACTERS * worst_case_bytes_per_character
+        <= _MAX_VERIFIED_ARTIFACT_BYTES
+    )
 
 
 @pytest.mark.parametrize(
