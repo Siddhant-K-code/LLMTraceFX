@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-import llmtracefx.optimizer.workloads.verify as verify_module
 from llmtracefx.optimizer.collectors.mlx import MLXMemorySnapshot
 from llmtracefx.optimizer.schema import ExperimentRecord
 from llmtracefx.optimizer.workloads.catalog import (
@@ -355,7 +354,9 @@ def test_local_prompt_must_be_a_bounded_regular_file(tmp_path, monkeypatch, corr
         payload["prompt_path"] = "\0"
         entry = MatrixEntry.from_dict(payload)
     elif corruption == "oversized":
-        monkeypatch.setattr(verify_module, "MAX_EVIDENCE_ARTIFACT_BYTES", 8)
+        monkeypatch.setattr(
+            "llmtracefx.optimizer.workloads.verify.MAX_EVIDENCE_ARTIFACT_BYTES", 8
+        )
     else:
         target_path = tmp_path / "prompt-target.txt"
         target_path.write_text(
@@ -537,12 +538,12 @@ def test_evaluator_error_produces_inconclusive_status(tmp_path, monkeypatch):
     )
     runtime = FakeMLXRuntime(GOOD_RESPONSE)
 
-    import llmtracefx.optimizer.workloads.verify as verify_module
-
     def _boom(workload, response_text):
         raise OSError("evaluator subprocess could not start")
 
-    monkeypatch.setattr(verify_module, "evaluate_workload", _boom)
+    monkeypatch.setattr(
+        "llmtracefx.optimizer.workloads.verify.evaluate_workload", _boom
+    )
 
     result = execute_row(
         entry,

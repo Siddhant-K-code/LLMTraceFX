@@ -7,9 +7,6 @@ from pathlib import Path
 
 import pytest
 
-import llmtracefx.optimizer.schema as schema_module
-import llmtracefx.optimizer.workloads.matrix as matrix_module
-import llmtracefx.optimizer.workloads.verify as verify_module
 from llmtracefx.optimizer.schema import (
     CommandInfo,
     ExperimentRecord,
@@ -369,25 +366,22 @@ def test_matrix_manifest_wraps_exponent_overflow_in_prompt_integer() -> None:
 
 
 @pytest.mark.parametrize(
-    ("reader", "error_type", "limit_owner", "limit_name"),
+    ("reader", "error_type", "limit_target"),
     [
         (
             RowVerification.read_json,
             VerifyError,
-            verify_module,
-            "MAX_METADATA_ARTIFACT_BYTES",
+            "llmtracefx.optimizer.workloads.verify.MAX_METADATA_ARTIFACT_BYTES",
         ),
         (
             MatrixManifest.read_json,
             MatrixSchemaError,
-            matrix_module,
-            "MAX_EVIDENCE_ARTIFACT_BYTES",
+            "llmtracefx.optimizer.workloads.matrix.MAX_EVIDENCE_ARTIFACT_BYTES",
         ),
         (
             ExperimentRecord.read_json,
             SchemaValidationError,
-            schema_module,
-            "MAX_EVIDENCE_ARTIFACT_BYTES",
+            "llmtracefx.optimizer.schema.MAX_EVIDENCE_ARTIFACT_BYTES",
         ),
     ],
 )
@@ -396,15 +390,14 @@ def test_artifact_readers_reject_invalid_utf8_oversize_and_symlinks(
     monkeypatch: pytest.MonkeyPatch,
     reader: object,
     error_type: type[ValueError],
-    limit_owner: object,
-    limit_name: str,
+    limit_target: str,
 ) -> None:
     path = tmp_path / "artifact.json"
     path.write_bytes(b"\xff")
     with pytest.raises(error_type, match="valid UTF-8"):
         reader(path)  # type: ignore[operator]
 
-    monkeypatch.setattr(limit_owner, limit_name, 16)
+    monkeypatch.setattr(limit_target, 16)
     path.write_bytes(b"x" * 17)
     with pytest.raises(error_type, match="size limit"):
         reader(path)  # type: ignore[operator]
