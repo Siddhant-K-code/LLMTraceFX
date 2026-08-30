@@ -122,6 +122,27 @@ def invoke(argv: list[str]) -> int:
     return int(args.func(args))
 
 
+def invoke_captured(argv: list[str], *, known: bool = False) -> tuple[int, str, str]:
+    """Run a handler obtained directly from either public parser API."""
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code = 0
+    try:
+        with (
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            parser = cli.build_parser()
+            if known:
+                args, remaining = parser.parse_known_args(argv)
+                assert remaining == []
+            else:
+                args = parser.parse_args(argv)
+            code = int(args.func(args))
+    except SystemExit as exit_error:
+        code = int(exit_error.code or 0)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
 # --- Dry run -----------------------------------------------------------------
 
 
@@ -521,7 +542,8 @@ def test_a_plain_http_endpoint_error_does_not_echo_the_path(
     assert exit_code == 1
     captured = capsys.readouterr()
     assert "super-secret-path" not in captured.err
-    assert "example.test" in captured.err
+    assert "example.test" not in captured.err
+    assert "must use https for non-local hosts" in captured.err
 
 
 def test_dry_run_still_performs_no_network_request_when_a_key_is_configured(
@@ -1573,6 +1595,9 @@ def test_the_scrub_scope_is_still_undone_after_the_command_runs(
         (f"--bearer{_SENTINEL}", "--bearer[REDACTED]"),
         (f"--password{_SENTINEL}", "--password[REDACTED]"),
         (f"-key{_SENTINEL}", "-key[REDACTED]"),
+        (f"-p{_SENTINEL}", "-p[REDACTED]"),
+        ("--api-key-sk_live_example", "--api-key[REDACTED]"),
+        ("--api-key_SECRET", "--api-key[REDACTED]"),
         (f"--api-key{_SENTINEL}=tail", "--api-key[REDACTED]"),
     ],
 )
@@ -1621,6 +1646,9 @@ def test_a_glued_credential_flag_in_a_recorded_command_is_redacted(
         "--n-keep",
         "--no-secret",
         "--verbose",
+        "--authentication-method",
+        "--authorization-policy",
+        "--tokenizer-model",
     ],
 )
 def test_an_option_that_only_looks_glued_is_left_intact(
@@ -1737,3 +1765,103 @@ def test_parse_known_args_also_reads_a_one_shot_iterator_once(
 
     assert args.model_id == "glm-5.3"
     assert leftover == ["--not-a-flag"]
+
+
+# ---------------------------------------------------------------------------
+# Final consolidated regressions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("entrypoint", ["main", "parse-args", "parse-known"])
+def test_dry_run_write_errors_scrub_the_output_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+) -> None:
+    monkeypatch.setenv("ZAI_API_KEY", API_KEY)
+    canary = "output-CANARY-secret-path"
+    argv = base_argv(tmp_path) + ["--dry-run"]
+    argv[argv.index("--output-dir") + 1] = canary
+
+    def fail_write(path: Path, _content: str) -> None:
+        raise OSError(f"cannot write {path}")
+
+    monkeypatch.setattr(cli, "atomic_write_text", fail_write)
+    if entrypoint == "main":
+        code, out, err = run_main(argv)
+    else:
+        code, out, err = invoke_captured(argv, known=entrypoint == "parse-known")
+
+    assert code == 1
+    assert canary not in out + err
+    assert "[REDACTED]" in err
+
+
+@pytest.mark.parametrize("entrypoint", ["main", "parse-args", "parse-known"])
+@pytest.mark.parametrize("dry_run", [False, True], ids=["real", "dry-run"])
+def test_handler_errors_scrub_values_for_every_parser_entrypoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+    dry_run: bool,
+) -> None:
+    monkeypatch.setenv("ZAI_API_KEY", API_KEY)
+    canary = "caller-model-CANARY-that-must-not-echo"
+    argv = base_argv(tmp_path)
+    argv[argv.index("--model-id") + 1] = canary
+    if dry_run:
+        argv.append("--dry-run")
+
+        def fail_write(_path: Path, _content: str) -> None:
+            raise OSError(f"write failed for {canary}")
+
+        monkeypatch.setattr(cli, "atomic_write_text", fail_write)
+    else:
+
+        def fail_collection(*_args: Any, **_kwargs: Any) -> Any:
+            raise OSError(f"provider rejected {canary}")
+
+        monkeypatch.setattr(cli, "collect_openai_stream", fail_collection)
+
+    if entrypoint == "main":
+        code, out, err = run_main(argv)
+    else:
+        code, out, err = invoke_captured(argv, known=entrypoint == "parse-known")
+
+    assert code == 1
+    assert canary not in out + err
+    assert "[REDACTED]" in err
+
+
+@pytest.mark.parametrize("entrypoint", ["main", "parse-args", "parse-known"])
+def test_returned_failures_scrub_values_for_every_parser_entrypoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+) -> None:
+    monkeypatch.setenv("ZAI_API_KEY", API_KEY)
+    canary = "caller-model-CANARY-that-must-not-echo"
+    provider_error = sse(
+        {
+            "error": {
+                "code": "model_not_found",
+                "message": f"model {canary} was not found",
+            }
+        }
+    )
+    monkeypatch.setattr(
+        cli,
+        "UrllibStreamingTransport",
+        lambda: FakeTransport([provider_error]),
+    )
+    argv = base_argv(tmp_path)
+    argv[argv.index("--model-id") + 1] = canary
+
+    if entrypoint == "main":
+        code, out, err = run_main(argv)
+    else:
+        code, out, err = invoke_captured(argv, known=entrypoint == "parse-known")
+
+    assert code == 1
+    assert canary not in out + err
+    assert "[REDACTED]" in err

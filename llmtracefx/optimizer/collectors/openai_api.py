@@ -59,16 +59,19 @@ import json
 import math
 import os
 import re
+import socket
+import ssl
+import threading
 import time
 import unicodedata
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from functools import cache
+from functools import cache, partial
 from pathlib import Path
 from statistics import median
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from urllib.parse import (
     SplitResult,
     parse_qsl,
@@ -168,6 +171,8 @@ _FINISH_UNRECOGNIZED = "unrecognized"
 _EVENT_KIND_CONTENT = "content"
 _EVENT_KIND_REASONING = "reasoning"
 _EVENT_KIND_METADATA = "metadata"
+_EVENT_KIND_ERROR = "error"
+_EVENT_KIND_DONE = "done"
 
 _MAX_ERROR_BODY_BYTES = 64 * 1024
 _MAX_PERSISTED_MESSAGE_CHARS = 600
@@ -382,6 +387,325 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def _remaining_deadline_seconds(deadline: float, clock: Callable[[], float]) -> float:
+    remaining = deadline - clock()
+    if remaining <= 0:
+        raise TimeoutError("request exceeded the whole-response timeout")
+    return remaining
+
+
+class _DeadlineWatchdog:
+    """Close registered sockets when the absolute request deadline expires."""
+
+    def __init__(self, deadline: float, clock: Callable[[], float]) -> None:
+        self._expired = threading.Event()
+        self._lock = threading.Lock()
+        self._sockets: set[socket.socket] = set()
+        self._timer = threading.Timer(max(0.0, deadline - clock()), self._expire)
+        self._timer.daemon = True
+        self._timer.start()
+
+    @property
+    def expired(self) -> bool:
+        return self._expired.is_set()
+
+    def register(self, sock: socket.socket) -> None:
+        with self._lock:
+            if self._expired.is_set():
+                sock.close()
+                raise TimeoutError("request exceeded the whole-response timeout")
+            self._sockets.add(sock)
+
+    def discard(self, sock: socket.socket) -> None:
+        with self._lock:
+            self._sockets.discard(sock)
+
+    def cancel(self) -> None:
+        self._timer.cancel()
+        with self._lock:
+            self._sockets.clear()
+
+    def _expire(self) -> None:
+        self._expired.set()
+        with self._lock:
+            sockets = tuple(self._sockets)
+        for sock in sockets:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            sock.close()
+
+
+def _resolve_with_deadline(
+    host: str,
+    port: int,
+    *,
+    deadline: float,
+    clock: Callable[[], float],
+) -> list[tuple[Any, ...]]:
+    """Resolve a host without letting DNS consume the request deadline."""
+    completed = threading.Event()
+    addresses: list[tuple[Any, ...]] = []
+    failures: list[OSError] = []
+
+    def resolve() -> None:
+        try:
+            addresses.extend(socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM))
+        except OSError as exc:
+            failures.append(exc)
+        finally:
+            completed.set()
+
+    thread = threading.Thread(target=resolve, daemon=True)
+    thread.start()
+    if not completed.wait(_remaining_deadline_seconds(deadline, clock)):
+        raise TimeoutError("DNS resolution exceeded the whole-response timeout")
+    if failures:
+        raise failures[0]
+    return addresses
+
+
+def _create_connection_with_deadline(
+    address: tuple[str, int],
+    _timeout: object | None = None,
+    source_address: tuple[str, int] | None = None,
+    *,
+    deadline: float,
+    clock: Callable[[], float],
+    watchdog: _DeadlineWatchdog,
+) -> socket.socket:
+    """Resolve and try each address against one monotonic deadline."""
+    host, port = address
+    last_error: OSError | None = None
+    for family, socktype, proto, _canonname, sockaddr in _resolve_with_deadline(
+        host, port, deadline=deadline, clock=clock
+    ):
+        sock = socket.socket(family, socktype, proto)
+        try:
+            watchdog.register(sock)
+            sock.settimeout(_remaining_deadline_seconds(deadline, clock))
+            if source_address is not None:
+                sock.bind(source_address)
+            sock.connect(sockaddr)
+            return sock
+        except OSError as exc:
+            last_error = exc
+            watchdog.discard(sock)
+            sock.close()
+            if watchdog.expired:
+                raise TimeoutError(
+                    "connection exceeded the whole-response timeout"
+                ) from exc
+    if last_error is not None:
+        raise last_error
+    raise OSError("getaddrinfo returned no addresses")
+
+
+class _DeadlineReader:
+    """Tighten the socket before every header or body file read."""
+
+    def __init__(
+        self,
+        wrapped: Any,
+        sock: Any,
+        *,
+        deadline: float,
+        clock: Callable[[], float],
+    ) -> None:
+        self._wrapped = wrapped
+        self._sock = sock
+        self._deadline = deadline
+        self._clock = clock
+
+    def _tighten(self) -> None:
+        self._sock.settimeout(_remaining_deadline_seconds(self._deadline, self._clock))
+
+    def read(self, *args: Any, **kwargs: Any) -> Any:
+        self._tighten()
+        return self._wrapped.read(*args, **kwargs)
+
+    def read1(self, *args: Any, **kwargs: Any) -> Any:
+        self._tighten()
+        return self._wrapped.read1(*args, **kwargs)
+
+    def readinto(self, *args: Any, **kwargs: Any) -> Any:
+        self._tighten()
+        return self._wrapped.readinto(*args, **kwargs)
+
+    def readline(self, *args: Any, **kwargs: Any) -> Any:
+        self._tighten()
+        return self._wrapped.readline(*args, **kwargs)
+
+    def close(self) -> None:
+        self._wrapped.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._wrapped, name)
+
+
+class _DeadlineHTTPResponse(http.client.HTTPResponse):
+    """HTTPResponse whose file reads all draw on one deadline."""
+
+    def __init__(
+        self,
+        sock: Any,
+        *args: Any,
+        deadline: float,
+        clock: Callable[[], float],
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(sock, *args, **kwargs)
+        if self.fp is not None:
+            self.fp = cast(
+                Any,
+                _DeadlineReader(
+                    self.fp,
+                    sock,
+                    deadline=deadline,
+                    clock=clock,
+                ),
+            )
+
+
+class _DeadlineConnectionMixin:
+    """Apply one monotonic deadline across connect, upload, and headers."""
+
+    _deadline: float
+    _clock: Callable[[], float]
+    timeout: Any
+    sock: Any
+
+    def _tighten_deadline(self) -> None:
+        remaining = _remaining_deadline_seconds(self._deadline, self._clock)
+        self.timeout = remaining
+        if self.sock is not None:
+            self.sock.settimeout(remaining)
+
+
+class _DeadlineHTTPConnection(_DeadlineConnectionMixin, http.client.HTTPConnection):
+    def __init__(
+        self,
+        *args: Any,
+        deadline: float,
+        clock: Callable[[], float],
+        watchdog: _DeadlineWatchdog,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._deadline = deadline
+        self._clock = clock
+        self._watchdog = watchdog
+        self._create_connection = cast(
+            Any,
+            partial(
+                _create_connection_with_deadline,
+                deadline=deadline,
+                clock=clock,
+                watchdog=watchdog,
+            ),
+        )
+        self.response_class = cast(
+            Any,
+            partial(_DeadlineHTTPResponse, deadline=deadline, clock=clock),
+        )
+
+    def connect(self) -> None:
+        self._tighten_deadline()
+        super().connect()
+
+    def send(self, data: Any) -> None:
+        self._tighten_deadline()
+        super().send(data)
+
+    def getresponse(self) -> http.client.HTTPResponse:
+        self._tighten_deadline()
+        return super().getresponse()
+
+
+class _DeadlineHTTPSConnection(_DeadlineConnectionMixin, http.client.HTTPSConnection):
+    def __init__(
+        self,
+        *args: Any,
+        deadline: float,
+        clock: Callable[[], float],
+        watchdog: _DeadlineWatchdog,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._deadline = deadline
+        self._clock = clock
+        self._watchdog = watchdog
+        self._create_connection = cast(
+            Any,
+            partial(
+                _create_connection_with_deadline,
+                deadline=deadline,
+                clock=clock,
+                watchdog=watchdog,
+            ),
+        )
+        self.response_class = cast(
+            Any,
+            partial(_DeadlineHTTPResponse, deadline=deadline, clock=clock),
+        )
+
+    def connect(self) -> None:
+        self._tighten_deadline()
+        super().connect()
+        if self.sock is not None:
+            self._watchdog.register(self.sock)
+
+    def send(self, data: Any) -> None:
+        self._tighten_deadline()
+        super().send(data)
+
+    def getresponse(self) -> http.client.HTTPResponse:
+        self._tighten_deadline()
+        return super().getresponse()
+
+
+class _DeadlineHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(
+        self,
+        deadline: float,
+        clock: Callable[[], float],
+        watchdog: _DeadlineWatchdog,
+    ) -> None:
+        super().__init__()
+        self._connection = partial(
+            _DeadlineHTTPConnection,
+            deadline=deadline,
+            clock=clock,
+            watchdog=watchdog,
+        )
+
+    def http_open(self, request: urllib.request.Request) -> Any:
+        return self.do_open(self._connection, request)
+
+
+class _DeadlineHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(
+        self,
+        deadline: float,
+        clock: Callable[[], float],
+        watchdog: _DeadlineWatchdog,
+    ) -> None:
+        context = ssl.create_default_context()
+        context.set_alpn_protocols(["http/1.1"])
+        super().__init__(context=context)
+        self._connection_context = context
+        self._connection = partial(
+            _DeadlineHTTPSConnection,
+            deadline=deadline,
+            clock=clock,
+            watchdog=watchdog,
+        )
+
+    def https_open(self, request: urllib.request.Request) -> Any:
+        return self.do_open(self._connection, request, context=self._connection_context)
+
+
 #: How far to walk a response's wrapper chain looking for its socket. A
 #: success is an ``HTTPResponse`` one level above the buffered socket
 #: reader; a non-2xx response is an ``HTTPError`` wrapping that response,
@@ -425,6 +749,7 @@ class _UrllibResponse:
         *,
         deadline: float | None = None,
         clock: Callable[[], float] = time.monotonic,
+        watchdog: _DeadlineWatchdog | None = None,
     ) -> None:
         self._raw = raw
         self._status_code = status_code
@@ -432,6 +757,7 @@ class _UrllibResponse:
         self._bytes_read = 0
         self._deadline = deadline
         self._clock = clock
+        self._watchdog = watchdog
 
     def _tighten_socket_timeout(self) -> float | None:
         """Shrink the socket timeout to what is left of the whole budget.
@@ -523,7 +849,11 @@ class _UrllibResponse:
             raise TransportConnectionError(f"stream ended after {detail}")
 
     def close(self) -> None:
-        self._raw.close()
+        try:
+            self._raw.close()
+        finally:
+            if self._watchdog is not None:
+                self._watchdog.cancel()
 
 
 class UrllibStreamingTransport:
@@ -539,16 +869,37 @@ class UrllibStreamingTransport:
         # is attempted so connect, TLS and every read draw on the same
         # budget rather than each getting a fresh one.
         deadline = time.monotonic() + float(request.timeout_seconds)
-        opener = urllib.request.build_opener(_NoRedirectHandler)
-        urllib_request = urllib.request.Request(
-            request.url,
-            data=request.body,
-            headers=dict(request.headers),
-            method=request.method,
-        )
+        watchdog = _DeadlineWatchdog(deadline, time.monotonic)
         try:
+            parts = _try_urlsplit(request.url)
+            handlers: list[Any] = [
+                _DeadlineHTTPHandler(deadline, time.monotonic, watchdog),
+                _DeadlineHTTPSHandler(deadline, time.monotonic, watchdog),
+                _NoRedirectHandler(),
+            ]
+            if (
+                parts is not None
+                and parts.scheme.lower() == "http"
+                and (parts.hostname or "").lower() in _LOCAL_HOSTS
+            ):
+                # A loopback URL routed through an environment proxy is no
+                # longer local, and its Authorization header would cross that
+                # hop in clear text.
+                handlers.insert(0, urllib.request.ProxyHandler({}))
+            opener = urllib.request.build_opener(*handlers)
+            urllib_request = urllib.request.Request(
+                request.url,
+                data=request.body,
+                headers=dict(request.headers),
+                method=request.method,
+            )
             raw = opener.open(urllib_request, timeout=request.timeout_seconds)
         except urllib.error.HTTPError as exc:
+            if watchdog.expired:
+                watchdog.cancel()
+                raise TransportTimeout(
+                    "request exceeded the whole-response timeout"
+                ) from exc
             # A non-2xx response is still a response: keep it so the error
             # body and status can be recorded as evidence.
             return _UrllibResponse(
@@ -556,15 +907,25 @@ class UrllibStreamingTransport:
                 int(exc.code),
                 _normalize_headers(exc.headers),
                 deadline=deadline,
+                watchdog=watchdog,
             )
         except urllib.error.URLError as exc:
             reason = exc.reason
-            if isinstance(reason, TimeoutError):
+            expired = watchdog.expired
+            watchdog.cancel()
+            if expired or isinstance(reason, TimeoutError):
                 raise TransportTimeout(f"request timed out: {reason}") from exc
             raise TransportConnectionError(f"request failed: {reason}") from exc
         except TimeoutError as exc:
+            watchdog.cancel()
             raise TransportTimeout(f"request timed out: {exc}") from exc
         except http.client.HTTPException as exc:
+            expired = watchdog.expired
+            watchdog.cancel()
+            if expired:
+                raise TransportTimeout(
+                    "request exceeded the whole-response timeout"
+                ) from exc
             # ``getresponse`` raises these (``BadStatusLine``, ``LineTooLong``)
             # for a garbled status line, and they bypass the ``URLError``
             # wrapping that ``urllib`` applies to ``OSError``.
@@ -572,6 +933,7 @@ class UrllibStreamingTransport:
                 f"request failed: {type(exc).__name__}"
             ) from exc
         except (ValueError, UnicodeEncodeError) as exc:
+            watchdog.cancel()
             # ``http.client.putheader`` reports an unencodable header by
             # embedding the whole value in the message. Never let that text
             # reach a traceback: the credential is one of those values.
@@ -581,9 +943,19 @@ class UrllibStreamingTransport:
                 f"request could not be encoded: {type(exc).__name__}"
             ) from None
         except OSError as exc:
+            expired = watchdog.expired
+            watchdog.cancel()
+            if expired:
+                raise TransportTimeout(
+                    "request exceeded the whole-response timeout"
+                ) from exc
             raise TransportConnectionError(f"request failed: {exc}") from exc
         return _UrllibResponse(
-            raw, int(raw.status), _normalize_headers(raw.headers), deadline=deadline
+            raw,
+            int(raw.status),
+            _normalize_headers(raw.headers),
+            deadline=deadline,
+            watchdog=watchdog,
         )
 
 
@@ -1067,30 +1439,18 @@ def _safe_endpoint_for_message(endpoint: str) -> str:
         segments = [segment for segment in parts.path.split("/") if segment]
         rendered += "/" + "/".join(_REDACTED for _ in segments) if segments else "/"
     if parts.query:
-        pairs = _try_parse_qsl(parts.query)
-        if pairs is None:
-            rendered += "?" + _REDACTED
-        else:
-            # A key whose name looks like a credential is replaced along with
-            # the values, so no message built from this rendering can echo
-            # it. Every other key is kept: the shape of the query is what
-            # makes a misconfiguration diagnosable.
-            keys = sorted(
-                {_REDACTED if _names_a_credential(key) else key for key, _ in pairs}
-            )
-            rendered += "?" + "&".join(f"{key}={_REDACTED}" for key in keys)
+        rendered += "?" + _REDACTED
     return rendered
 
 
 def _validate_endpoint(endpoint: str) -> None:
     if not endpoint:
         raise OpenAIStreamCollectorError("endpoint must be non-empty")
-    safe = _safe_endpoint_for_message(endpoint)
     parts = parse_endpoint(endpoint)
     if parts.scheme not in ("http", "https"):
-        raise OpenAIStreamCollectorError(f"endpoint must use http or https, got {safe}")
+        raise OpenAIStreamCollectorError("endpoint must use http or https")
     if not parts.hostname:
-        raise OpenAIStreamCollectorError(f"endpoint must include a host: {safe}")
+        raise OpenAIStreamCollectorError("endpoint must include a host")
     if parts.username is not None or parts.password is not None:
         raise OpenAIStreamCollectorError(
             "endpoint must not embed credentials; pass the API key through the "
@@ -1101,11 +1461,13 @@ def _validate_endpoint(endpoint: str) -> None:
     if parts.scheme == "http" and parts.hostname not in _LOCAL_HOSTS:
         raise OpenAIStreamCollectorError(
             "endpoint must use https for non-local hosts so the Authorization "
-            f"header is not sent in clear text, got {safe}"
+            "header is not sent in clear text"
         )
     pairs = _try_parse_qsl(parts.query)
     if pairs is None:
-        raise OpenAIStreamCollectorError(f"endpoint query could not be parsed: {safe}")
+        raise OpenAIStreamCollectorError(
+            "endpoint query could not be parsed; check its percent-encoding"
+        )
     for key, _value in pairs:
         if _names_a_credential(key):
             raise OpenAIStreamCollectorError(
@@ -1163,6 +1525,7 @@ class _CredentialVariant:
 
     forms: tuple[tuple[str, ...], ...]
     runs: tuple[bool, ...]
+    decoded_prefix_widths: tuple[int, ...]
     head: re.Pattern[str]
     #: The most characters a match beginning at one position can consume.
     #: Every element contributes its longest spelling, and a whitespace run
@@ -1265,7 +1628,7 @@ class _Redactor:
         forms = [character, encoded, encoded.replace("%", "%25")]
         short = _SHORT_ESCAPES.get(character)
         if short is not None:
-            forms.append(short)
+            forms.extend((short, json.dumps(short)[1:-1]))
         if codepoint < 0x100:
             forms.append(f"\\x{codepoint:02X}")
             # The octal escape a C, Java or Python source renderer emits.
@@ -1304,7 +1667,9 @@ class _Redactor:
         return tuple(dict.fromkeys(forms))
 
     @classmethod
-    def _elements_with_forms(cls, fragment: str) -> list[tuple[tuple[str, ...], bool]]:
+    def _elements_with_forms(
+        cls, fragment: str
+    ) -> list[tuple[tuple[str, ...], bool, int]]:
         """Split a fragment into elements, each as the spellings it accepts.
 
         One element per character, except that a run of whitespace becomes
@@ -1320,16 +1685,25 @@ class _Redactor:
         be added to the matcher without also being known to the repair, or
         the other way around.
         """
-        elements: list[tuple[tuple[str, ...], bool]] = []
+        elements: list[tuple[tuple[str, ...], bool, int]] = []
         stripped = fragment.strip()
         index = 0
         while index < len(stripped):
             if stripped[index].isspace():
+                start = index
                 while index < len(stripped) and stripped[index].isspace():
                     index += 1
-                elements.append((cls._whitespace_forms(), True))
+                run = stripped[start:index]
+                forms = list(cls._whitespace_forms())
+                for character in dict.fromkeys(run):
+                    forms.extend(
+                        form
+                        for form in cls._character_forms(character)
+                        if len(form) > 1
+                    )
+                elements.append((tuple(dict.fromkeys(forms)), True, len(run)))
                 continue
-            elements.append((cls._character_forms(stripped[index]), False))
+            elements.append((cls._character_forms(stripped[index]), False, 1))
             index += 1
         return elements
 
@@ -1373,8 +1747,11 @@ class _Redactor:
         elements = cls._elements_with_forms(spelling)
         if not elements:
             return None
-        forms = tuple(element for element, _ in elements)
-        runs = tuple(run for _, run in elements)
+        forms = tuple(element for element, _, _ in elements)
+        runs = tuple(run for _, run, _ in elements)
+        decoded_prefix_widths = [0]
+        for _, _, width in elements:
+            decoded_prefix_widths.append(decoded_prefix_widths[-1] + width)
         whitespace_bound = max(_MAX_WHITESPACE_RUN, _longest_whitespace_run(spelling))
         span = 0
         for index, element in enumerate(forms):
@@ -1383,6 +1760,7 @@ class _Redactor:
         return _CredentialVariant(
             forms=forms,
             runs=runs,
+            decoded_prefix_widths=tuple(decoded_prefix_widths),
             head=re.compile(
                 "(?=" + "|".join(re.escape(form) for form in forms[0]) + ")",
                 re.IGNORECASE,
@@ -1555,7 +1933,9 @@ class _Redactor:
                     break
                 positions = {start}
                 for index in range(len(variant.forms)):
-                    if index >= _MIN_ENCODED_CREDENTIAL_CHARS and any(
+                    if variant.decoded_prefix_widths[
+                        index
+                    ] >= _MIN_ENCODED_CREDENTIAL_CHARS and any(
                         self._is_truncated_tail(variant, index, text[position:])
                         for position in positions
                         if position < ending
@@ -1567,7 +1947,8 @@ class _Redactor:
                         break
                     if (
                         ending in positions
-                        and index + 1 >= _MIN_ENCODED_CREDENTIAL_CHARS
+                        and variant.decoded_prefix_widths[index + 1]
+                        >= _MIN_ENCODED_CREDENTIAL_CHARS
                     ):
                         best = start
                         break
@@ -1646,6 +2027,7 @@ class RequestPlan:
     endpoint_origin: str
     endpoint_path: str
     endpoint_query_keys: tuple[str, ...]
+    """One redaction marker per query pair. Raw query keys are never persisted."""
     model_id: str
     model_revision: str | None
     credential_env_var: str
@@ -1656,6 +2038,7 @@ class RequestPlan:
     provider_extensions: dict[str, Any]
     finish_reasons: dict[str, list[str]]
     request_timeout_seconds: float
+    retained_event_limit: int
     command: tuple[str, ...]
     config_hash: str
     workload_hash: str
@@ -1680,6 +2063,7 @@ class RequestPlan:
                 key: list(value) for key, value in sorted(self.finish_reasons.items())
             },
             "request_timeout_seconds": self.request_timeout_seconds,
+            "retained_event_limit": self.retained_event_limit,
             "command": list(self.command),
             "config_hash": self.config_hash,
             "workload_hash": self.workload_hash,
@@ -1797,7 +2181,7 @@ def _endpoint_for_command(endpoint: str) -> str:
     pairs = _try_parse_qsl(parts.query)
     if pairs is None:
         return _safe_endpoint_for_message(endpoint)
-    query = "&".join(f"{key}={_REDACTED}" for key, _ in pairs)
+    query = _REDACTED
     return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
@@ -1894,7 +2278,7 @@ def build_request_plan(
         endpoint_origin=f"{parts.scheme}://{parts.netloc}",
         endpoint_path=parts.path,
         endpoint_query_keys=tuple(
-            sorted(key for key, _ in parse_qsl(parts.query, keep_blank_values=True))
+            _REDACTED for _key, _value in parse_qsl(parts.query, keep_blank_values=True)
         ),
         model_id=config.model_id,
         model_revision=config.model_revision,
@@ -1906,6 +2290,7 @@ def build_request_plan(
         provider_extensions=config.extensions.to_request_fields(),
         finish_reasons=config.finish_reasons.identity(),
         request_timeout_seconds=float(config.request_timeout_seconds),
+        retained_event_limit=config.retained_event_limit,
         command=_sanitized_command(config, env_var_display=env_var_display),
         config_hash=_config_identity_hash(config),
         workload_hash=sha256_text(config.prompt),
@@ -2034,6 +2419,8 @@ class StreamTimeline:
     completed_offset_ms: float | None = None
     events: tuple[StreamEventTiming, ...] = ()
     total_event_count: int = 0
+    retained_event_count: int = 0
+    dropped_event_count: int = 0
     events_truncated: bool = False
     retained_event_limit: int = DEFAULT_RETAINED_EVENT_LIMIT
 
@@ -2048,6 +2435,8 @@ class StreamTimeline:
             "completed_offset_ms": self.completed_offset_ms,
             "events": [event.to_dict() for event in self.events],
             "total_event_count": self.total_event_count,
+            "retained_event_count": self.retained_event_count,
+            "dropped_event_count": self.dropped_event_count,
             "events_truncated": self.events_truncated,
             "retained_event_limit": self.retained_event_limit,
         }
@@ -2302,6 +2691,7 @@ class _StreamAccumulator:
         self.finish_reason_code: str | None = None
         self.first_generated_token_at: float | None = None
         self.last_generated_token_at: float | None = None
+        self.reasoning_observed_from_first_generated_event = False
         self.usage: ProviderUsage = ProviderUsage()
         self.terminated_with_done = False
         self.incomplete_event_discarded = False
@@ -2324,9 +2714,7 @@ class _StreamAccumulator:
         abandoned. The transport timeout is a per-socket-operation timeout,
         so it only fires when the connection goes quiet; a server that emits
         a keepalive comment before each socket timeout expires resets it
-        forever, and the run neither completes nor fails. That also bounds
-        the memory a stream can consume, since every event appends a timing
-        row.
+        forever, and the run neither completes nor fails.
         """
         decoder = SSEDecoder()
         observed_at: float | None = None
@@ -2352,12 +2740,20 @@ class _StreamAccumulator:
                     )
                 for event in decoder.feed(chunk):
                     failure = self._handle_event(event, observed_at, redact=redact)
-                    if failure is not None or self.terminated_with_done:
+                    if failure is not None:
+                        self._record_event(
+                            _EVENT_KIND_ERROR, len(event.data), observed_at
+                        )
+                        return failure
+                    if self.terminated_with_done:
                         return failure
             final_at = self._clock() if observed_at is None else observed_at
             for event in decoder.close():
                 failure = self._handle_event(event, final_at, redact=redact)
-                if failure is not None or self.terminated_with_done:
+                if failure is not None:
+                    self._record_event(_EVENT_KIND_ERROR, len(event.data), final_at)
+                    return failure
+                if self.terminated_with_done:
                     return failure
         except SSEDecodeError as exc:
             return APIFailure(category=FAILURE_STREAM_DECODE, message=redact(str(exc)))
@@ -2401,6 +2797,7 @@ class _StreamAccumulator:
             )
 
         if data == "[DONE]":
+            self._record_event(_EVENT_KIND_DONE, len(data), now)
             self.terminated_with_done = True
             return None
         if not data:
@@ -2547,6 +2944,7 @@ class _StreamAccumulator:
                 self.first_content_token_at = now
             if self.first_generated_token_at is None:
                 self.first_generated_token_at = now
+                self.reasoning_observed_from_first_generated_event = bool(reasoning)
             self.content_arrival_times.append(now)
             self.last_content_at = now
             self.last_generated_token_at = now
@@ -2561,6 +2959,7 @@ class _StreamAccumulator:
         if reasoning:
             if self.first_generated_token_at is None:
                 self.first_generated_token_at = now
+                self.reasoning_observed_from_first_generated_event = True
             self.last_generated_token_at = now
             self.reasoning_delta_count += 1
             self.reasoning_characters += len(reasoning)
@@ -2707,75 +3106,59 @@ class _StreamAccumulator:
                 completion_tokens is not None
                 and reasoning_tokens is not None
                 and completion_tokens >= reasoning_tokens
+                and not (reasoning_tokens == 0 and self.reasoning_delta_count > 0)
             ):
                 visible_token_rate = (
                     completion_tokens - reasoning_tokens
                 ) / window_seconds
-        if generation_seconds is not None:
-            completion_tokens = self.usage.completion_tokens
-            reasoning_tokens = self.usage.reasoning_tokens
-            if (
-                reasoning_tokens is not None
-                and reasoning_tokens > 0
-                and self.reasoning_delta_count == 0
-            ):
-                # The provider counted reasoning tokens but streamed no
-                # reasoning delta, so the generation window collapses onto
-                # the visible answer while the numerator still carries
-                # tokens produced before it. There is no window here that
-                # spans the numerator, so no honest rate exists.
-                rate_unavailable = (
-                    "provider reported reasoning tokens but streamed no "
-                    "reasoning delta, so the period those tokens were "
-                    "generated in was never observed and any rate over the "
-                    "visible window would overstate throughput"
-                )
-            elif not (
-                reasoning_ruled_out
-                or reasoning_tokens == 0
-                or self.reasoning_delta_count > 0
-            ):
-                # The provider accounted for reasoning in neither of the two
-                # ways it can: no reasoning delta on the wire and no
-                # reasoning token count in usage. Silence is not evidence of
-                # absence here, because a provider that defaults to thinking
-                # produces exactly this shape, and treating the absent count
-                # as zero is the inference this collector refuses to make
-                # everywhere else. Ruling it out takes either an explicit
-                # ``thinking.type=disabled`` on the request, an explicit zero
-                # reasoning token count, or an observed reasoning delta.
-                rate_unavailable = (
-                    "the provider reported neither reasoning deltas nor a "
-                    "reasoning token count, and thinking was not explicitly "
-                    "disabled, so a hidden reasoning phase cannot be ruled "
-                    "out and the observed window may not span every counted "
-                    "token"
-                )
-            elif completion_tokens is not None:
-                token_rate = completion_tokens / generation_seconds
-            else:
-                # The window is fine and reasoning is accounted for, but the
-                # provider sent no completion token count to divide by it.
-                # The rate is null for a reason that has nothing to do with
-                # this client's measurement, and saying so is what keeps it
-                # from reading as a window we failed to observe.
-                rate_unavailable = (
-                    "the provider reported no completion token count, so "
-                    "there is no number to divide the measured generation "
-                    "window by"
-                )
-        elif self.usage.completion_tokens is not None:
-            # There is a completion count but no window with any width to
-            # divide it by: every generated token arrived inside one network
-            # chunk, or only one arrived. The rate is null either way, and
-            # without this it was null with nothing recorded to say why,
-            # which reads as an absent metric rather than an unmeasurable
-            # one.
+        completion_tokens = self.usage.completion_tokens
+        reasoning_tokens = self.usage.reasoning_tokens
+        reasoning_window_observed = self.reasoning_observed_from_first_generated_event
+        late_reasoning_observed = (
+            self.reasoning_delta_count > 0 and not reasoning_window_observed
+        )
+        if completion_tokens is None:
             rate_unavailable = (
-                "the generated tokens did not arrive far enough apart to "
-                "measure a window, so no period exists to divide the "
-                "provider's completion token count by"
+                "the provider reported no completion token count, so there is no "
+                "provider token count to divide by the observed generation window"
             )
+        elif reasoning_tokens is not None and reasoning_tokens > completion_tokens:
+            rate_unavailable = (
+                "the provider reported more reasoning tokens than completion "
+                "tokens, so its token accounting is internally inconsistent"
+            )
+        elif late_reasoning_observed:
+            rate_unavailable = (
+                "reasoning was observed after visible content had already begun, "
+                "so request settings or a zero reasoning count cannot prove that "
+                "the observed window spans every counted token"
+            )
+        elif (
+            reasoning_tokens is not None
+            and reasoning_tokens > 0
+            and not reasoning_window_observed
+        ):
+            rate_unavailable = (
+                "the provider reported reasoning tokens, but reasoning generation "
+                "was not observed from the first generated event, so the observed "
+                "window may not span every counted token"
+            )
+        elif not (
+            reasoning_ruled_out or reasoning_tokens == 0 or reasoning_window_observed
+        ):
+            rate_unavailable = (
+                "the provider reported neither a zero reasoning token count nor "
+                "reasoning from the first generated event, and thinking was not "
+                "explicitly disabled, so a hidden reasoning phase cannot be ruled "
+                "out and the observed window may not span every counted token"
+            )
+        elif generation_seconds is None:
+            rate_unavailable = (
+                "fewer than two distinct generated event arrivals were observed, "
+                "so no non-zero generation window is available"
+            )
+        else:
+            token_rate = completion_tokens / generation_seconds
 
         return StreamStatistics(
             content_delta_count=self.content_delta_count,
@@ -2798,6 +3181,8 @@ class _StreamAccumulator:
         )
 
     def timeline(self, completed_at: float) -> StreamTimeline:
+        retained_event_count = len(self.events)
+        dropped_event_count = self.total_event_count - retained_event_count
         return StreamTimeline(
             response_headers_offset_ms=self.offset_ms(self.response_headers_at),
             first_body_chunk_offset_ms=self.offset_ms(self.first_body_chunk_at),
@@ -2806,7 +3191,9 @@ class _StreamAccumulator:
             completed_offset_ms=self.offset_ms(completed_at),
             events=tuple(self.events),
             total_event_count=self.total_event_count,
-            events_truncated=self.total_event_count > len(self.events),
+            retained_event_count=retained_event_count,
+            dropped_event_count=dropped_event_count,
+            events_truncated=dropped_event_count > 0,
             retained_event_limit=self._retained_event_limit,
         )
 

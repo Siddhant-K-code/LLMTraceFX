@@ -1035,14 +1035,18 @@ and are never mixed into a single unlabelled number.
   `provider_completion_tokens_per_second` is left `null` in that case and
   `provider_completion_tokens_per_second_unavailable_reason` records why,
   rather than publishing a number that is wrong in a flattering direction.
-  A zero or absent reasoning count is unaffected, and so is a stream that
-  actually carries reasoning deltas.
+  The rate remains available only when thinking was explicitly disabled, the
+  provider reported zero reasoning tokens without contradicting itself, or
+  reasoning was observed from the first generated event. A late reasoning
+  delta does not validate an earlier window and overrides disabled or
+  zero-count assurances.
 - **A visible-token rate is published only when it can be.**
   `provider_visible_completion_tokens_per_second` divides
   `completion_tokens` minus the provider-reported reasoning tokens by
   `content_window_ms`. When the provider does not report a reasoning token
-  count the field is `null`, because a missing count is not zero and
-  treating it as zero would inflate the rate.
+  count the field is `null`, because a missing count is not zero. It is also
+  `null` when a reported zero contradicts a streamed reasoning delta, because
+  that leaves no trustworthy visible-token numerator.
 - **The token rate is an estimate, not a measurement.** Its window starts
   at the first generated delta, so that delta's own generation time is
   outside it, and when the delta count is far below `completion_tokens` the
@@ -1108,8 +1112,7 @@ and are never mixed into a single unlabelled number.
   server that emits a keepalive comment before each one expires resets it
   forever and the run neither completes nor fails. The stream is checked
   against a monotonic deadline as well, and a response that outlives its
-  budget is abandoned as a `timeout` failure. That also bounds the memory a
-  single collection can consume, since every event appends a timing row.
+  budget is abandoned as a `timeout` failure.
 - **Silence about reasoning suppresses the provider completion rate.** Not
   asking for reasoning is not the same as reasoning being off. Omitting
   `reasoning_effort` leaves the provider free to apply its own default, and
@@ -1118,23 +1121,17 @@ and are never mixed into a single unlabelled number.
   reasoning delta nor a reasoning token count has said nothing either way,
   and dividing completion tokens that may include reasoning by a window
   that opens at the first visible character would overstate throughput.
-  Three things rule it out: `--thinking disabled` on the request, an
-  explicit reasoning token count of zero, or an observed reasoning delta.
-  Any of them and the rate is published; otherwise it is left unavailable
-  with the reason recorded.
-- **The request timeout bounds each read as well as the whole response.**
-  The timeout handed to the transport bounds one blocking socket
-  operation, so a read starting just inside the budget could block for
-  another full timeout and overshoot the advertised total by close to two
-  times. The socket timeout is lowered to the remaining budget before each
-  read, so the per-operation bound and the whole-response bound are the
-  same deadline. The socket is found by walking the response's wrapper
-  chain rather than by naming one depth, because a non-2xx response is an
-  `HTTPError` wrapping the response and its socket therefore sits one level
-  deeper than on the success path. Naming a single depth would silently
-  skip the tightening on exactly the responses a provider is most likely to
-  stall on. This is measured against a real local socket that sends a chunk
-  inside the budget and then stops sending without closing.
+  Three things provide enough evidence: `--thinking disabled` on the request,
+  an explicit reasoning token count of zero, or reasoning observed from the
+  first generated event. Otherwise the rate is left unavailable with the
+  reason recorded.
+- **The request timeout bounds the whole response.** DNS resolution,
+  address attempts, connection setup, TLS, request upload, response headers
+  and every body read draw from one monotonic deadline. A watchdog closes
+  the live socket at that deadline, so byte-dripped status lines, headers or
+  chunk framing cannot reset an idle timeout forever. The socket is also
+  found through both success and `HTTPError` wrapper shapes before each body
+  read, and its timeout is reduced to the remaining budget.
 - **The per-event timeline is capped by explicit configuration.** One
   timing row per SSE event with no limit lets a chatty provider decide how
   large the artifact gets, and serialization amplifies it again. The bound
@@ -1142,14 +1139,13 @@ and are never mixed into a single unlabelled number.
   default, settable with `--retained-event-limit` and validated as a
   positive integer, so a run cannot silently discard its whole timeline.
   Past the bound the rows stop accumulating and the timeline records
-  `events_truncated`, the true `total_event_count` and the
-  `retained_event_limit` that produced it. The counters and the first and
-  last offsets that every derived metric reads stay exact, so the cap costs
-  per-event detail and not a published number. A row is four fixed-width
-  fields and never any generated text, so the row count is the only thing
-  the timeline's size depends on. The bound is part of the config identity
-  hash: two runs that kept different amounts of evidence are not the same
-  configuration, and a later comparison must not average them together.
+  `events_truncated`, exact total, retained and dropped counts, and the
+  `retained_event_limit` that produced them. Error frames and `[DONE]`
+  participate in the same accounting. Content, reasoning and metadata
+  counters and the first and last offsets used by derived metrics stay
+  exact. The bound is recorded in the request plan and config identity hash:
+  two runs that kept different amounts of evidence are not the same
+  configuration.
 - **Asking for reasoning and hearing nothing back suppresses the rate too.**
   When the request enabled thinking or set `reasoning_effort` and the
   provider returns neither reasoning deltas nor a reasoning token count,
@@ -1229,12 +1225,12 @@ and are never mixed into a single unlabelled number.
   decoding the candidate rather than enumerating encodings of the key. Very
   short values are compared literally only, so the refusal does not fire on
   coincidence.
-- Endpoint query *values* are stripped from every persisted form of the
-  command, including `record.json`, and from `HTTPRequest.__repr__`, so a
-  private deployment name in a query string does not reach an artifact, a log
-  line or a traceback. The stripping is applied wherever the endpoint appears
-  in the reconstructed command, so `--endpoint=<url>` is covered as fully as
-  the separate `--endpoint <url>` form.
+- Endpoint query keys and values are stripped from every persisted form of
+  the command, including `record.json`, and from `HTTPRequest.__repr__`.
+  `endpoint_query_keys` records one redaction marker per query pair, while
+  the config hash still distinguishes the original keys and values. This
+  contains opaque key-shaped names even when no configured credential is
+  available to match them.
 - A malformed endpoint is reported as a sanitized error rather than an
   escaping `ValueError`. `urlsplit` raises on an unclosed IPv6 bracket and
   `SplitResult.port` raises on a port that is not an integer in range, both
@@ -1247,7 +1243,9 @@ and are never mixed into a single unlabelled number.
   header value.
 - Prompt and system prompt are hashed, never copied into artifacts.
 - Redirects are refused, so the credential is never replayed to a host you
-  did not name. Plain `http` is rejected except for loopback hosts.
+  did not name. Plain `http` is rejected except for loopback hosts, and
+  loopback HTTP disables environment proxies so the Authorization header
+  cannot be routed off-host in clear text.
 - Reasoning content is counted, never stored: `api_evidence.json` records
   `reasoning_delta_count`, `reasoning_characters` and
   `reasoning_text_persisted: false`, and `response.txt` holds the final
@@ -1309,7 +1307,11 @@ and are never mixed into a single unlabelled number.
   `\"`; Python adds `\'`. These are shorter spellings of the same leak the
   numeric escapes carry, and `json.loads` recovers the key from them
   exactly, so they are matched and their truncation is repaired alongside
-  the numeric forms.
+  the numeric forms. Raw, once-escaped and twice-escaped forms are covered.
+  A non-ASCII whitespace character keeps its own percent and JSON spellings,
+  such as `%C2%A0` and `\u00A0`, rather than being reduced to ASCII space
+  forms. The truncation floor counts decoded credential characters, including
+  every character in a collapsed whitespace run.
 - Whole-value re-encodings count as spellings too. Percent-encoding and
   backslash escapes keep the credential's own characters, so a matcher that
   walks characters sees them. Base64, base64url, hex and octal do not: they
@@ -1364,19 +1366,13 @@ and are never mixed into a single unlabelled number.
   checked too, since a credential there is written into the filesystem as a
   pathname, where no downstream redactor can reach it.
 - A credential flag that swallowed its value is redacted in a recorded
-  external command. `--api-key SECRET` and `--api-key=SECRET` are two
-  tokens and one token split on `=`, and both were already handled;
-  `--api-keySECRET` is a single token that nothing later splits, so it was
-  written into `record.command.argv` in full. Only a token that starts with
-  a credential flag this program defines is split, the shortest such flag
-  wins so the least of the value is left showing in the flag name, and the
-  whole tail is redacted including any `=` inside it, since a base64
-  credential ends in `=`. A tail beginning with `-` or shorter than a
-  credential is left alone: those are `--api-key-file`, `--keyfile` and
-  `--tokenizer`, and rewriting them would corrupt a recorded command that
-  holds no secret. Single-letter flags are deliberately not treated as
-  credential flags in either the separate or the glued form, because `-k`
-  and `-p` mean unrelated things to common tools.
+  external command. Separate, equals, dropped-space long and attached `-k`
+  or `-p` forms are covered, including values beginning with `-` or `_`.
+  Glued prefixes come from an explicit credential-option vocabulary and the
+  tail must also have credential evidence, such as a case boundary, digit or
+  known key prefix. This keeps `--authentication-method`,
+  `--authorization-policy`, `--tokenizer-model` and `--api-key-file`
+  reproducible instead of corrupting legitimate command literals.
 - The refusal to accept a credential-shaped query parameter does not repeat
   the parameter name. The name is caller-controlled and is exactly where a
   key ends up when someone puts it in the URL, so quoting it back into a
@@ -1497,13 +1493,16 @@ and are never mixed into a single unlabelled number.
   `parse_args` and `parse_known_args` are both public and both reachable on
   their own, and `parse_args` reports unrecognized arguments itself after the
   inner call has returned, so each installs the scope and a nested parse
-  inherits the enclosing one instead of narrowing it.
+  inherits the enclosing one instead of narrowing it. Parsed handlers run
+  inside the same scope, including normal returns, `SystemExit` and errors.
+  Returned collection failures and dry-run write errors use the same scrub,
+  and dry-run output is printed only after its plan was written successfully.
 - `--dry-run` applies the same refusal a real run does. If the configured
   environment variable holds a value that appears in the endpoint or the
   command, the pre-flight check fails instead of printing a plan that a real
   run would reject, and the rendered plan is scrubbed as a second line of
-  defence. Validation errors never echo the endpoint back: the message shows
-  the scheme and host, with path segments and query values replaced.
+  defence. Endpoint rejection is generic and never repeats its netloc, path,
+  query key or query value.
 
 #### Failure evidence
 

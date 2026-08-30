@@ -12,6 +12,7 @@ import json
 import socket
 import threading
 import time
+import urllib.request
 from collections.abc import Iterator
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -762,7 +763,9 @@ def test_a_response_without_a_deadline_is_unchanged() -> None:
     sock = _FakeSocket()
     response = _UrllibResponse(_FakeRaw([b"a"], sock), 200, {})
 
-    assert list(response.iter_bytes()) == [b"a"]
+    chunks = list(response.iter_bytes())
+
+    assert chunks == [b"a"]
     assert sock.timeouts == []
 
 
@@ -857,3 +860,277 @@ def test_a_stalled_stream_stops_at_the_budget_not_at_twice_it(
     assert elapsed >= budget * 0.9
     # Without the per-read tightening this lands near budget * 1.7.
     assert elapsed < budget * 1.35, f"stalled stream ran for {elapsed:.2f}s"
+
+
+class DelayedRequestAndHeadersServer:
+    """Delay request-body draining, then delay response headers."""
+
+    def __init__(self, phase_delay: float) -> None:
+        self._phase_delay = phase_delay
+        self._stop = threading.Event()
+        self.request_body_read_started = threading.Event()
+        self._sock = socket.socket()
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(1)
+        self.port = int(self._sock.getsockname()[1])
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        try:
+            conn, _ = self._sock.accept()
+        except OSError:
+            return
+        with conn:
+            conn.settimeout(5.0)
+            received = b""
+            try:
+                while b"\r\n\r\n" not in received:
+                    part = conn.recv(65536)
+                    if not part:
+                        return
+                    received += part
+                head, _, body = received.partition(b"\r\n\r\n")
+                declared = 0
+                for line in head.split(b"\r\n"):
+                    if line.lower().startswith(b"content-length:"):
+                        declared = int(line.split(b":", 1)[1])
+                        break
+                if self._stop.wait(self._phase_delay):
+                    return
+                self.request_body_read_started.set()
+                while len(body) < declared:
+                    part = conn.recv(65536)
+                    if not part:
+                        return
+                    body += part
+                if self._stop.wait(self._phase_delay):
+                    return
+                payload = b"data: [DONE]\n\n"
+                conn.sendall(
+                    b"HTTP/1.1 200 OK\r\n"
+                    + b"Content-Type: text/event-stream\r\n"
+                    + b"Content-Length: %d\r\n\r\n" % len(payload)
+                    + payload
+                )
+            except OSError:
+                return
+
+    def close(self) -> None:
+        self._stop.set()
+        self._sock.close()
+        self._thread.join(timeout=5.0)
+
+
+class SlowDripStatusServer:
+    """Drip an unterminated status line while the absolute budget expires."""
+
+    def __init__(self, byte_interval: float) -> None:
+        self._byte_interval = byte_interval
+        self._stop = threading.Event()
+        self._sock = socket.socket()
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(1)
+        self.port = int(self._sock.getsockname()[1])
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        try:
+            conn, _ = self._sock.accept()
+        except OSError:
+            return
+        with conn:
+            conn.settimeout(5.0)
+            try:
+                RawSocketServer._drain_request(conn)
+                for byte in b"HTTP/1.1 200 OK\r\n":
+                    if self._stop.wait(self._byte_interval):
+                        return
+                    conn.sendall(bytes((byte,)))
+                self._stop.wait(5.0)
+            except OSError:
+                return
+
+    def close(self) -> None:
+        self._stop.set()
+        self._sock.close()
+        self._thread.join(timeout=5.0)
+
+
+class SlowDripChunkSizeServer:
+    """Send response headers, then drip a never-complete chunk-size line."""
+
+    def __init__(self, byte_interval: float) -> None:
+        self._byte_interval = byte_interval
+        self._stop = threading.Event()
+        self._sock = socket.socket()
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(1)
+        self.port = int(self._sock.getsockname()[1])
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        try:
+            conn, _ = self._sock.accept()
+        except OSError:
+            return
+        with conn:
+            conn.settimeout(5.0)
+            try:
+                RawSocketServer._drain_request(conn)
+                conn.sendall(
+                    b"HTTP/1.1 200 OK\r\n"
+                    + b"Content-Type: text/event-stream\r\n"
+                    + b"Transfer-Encoding: chunked\r\n\r\n"
+                )
+                for byte in b"1;slow-extension-never-ends":
+                    if self._stop.wait(self._byte_interval):
+                        return
+                    conn.sendall(bytes((byte,)))
+                self._stop.wait(5.0)
+            except OSError:
+                return
+
+    def close(self) -> None:
+        self._stop.set()
+        self._sock.close()
+        self._thread.join(timeout=5.0)
+
+
+def test_connect_upload_and_headers_share_one_deadline() -> None:
+    budget = 1.2
+    server = DelayedRequestAndHeadersServer(phase_delay=0.65)
+    started = time.monotonic()
+    try:
+        with pytest.raises(TransportTimeout):
+            UrllibStreamingTransport().open_stream(
+                HTTPRequest(
+                    url=f"http://127.0.0.1:{server.port}/v1/chat/completions",
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                    body=b"x" * (8 * 1024 * 1024),
+                    timeout_seconds=budget,
+                )
+            )
+    finally:
+        server.close()
+    elapsed = time.monotonic() - started
+
+    assert server.request_body_read_started.is_set()
+    assert elapsed >= budget * 0.75
+    assert elapsed < budget + 0.4
+
+
+def test_slow_drip_status_bytes_cannot_reset_the_deadline() -> None:
+    budget = 0.2
+    server = SlowDripStatusServer(byte_interval=0.04)
+    started = time.monotonic()
+    try:
+        with pytest.raises(TransportTimeout):
+            UrllibStreamingTransport().open_stream(
+                HTTPRequest(
+                    url=f"http://127.0.0.1:{server.port}/v1/chat/completions",
+                    method="POST",
+                    headers={"Content-Type": "application/json"},
+                    body=b"{}",
+                    timeout_seconds=budget,
+                )
+            )
+    finally:
+        server.close()
+    elapsed = time.monotonic() - started
+
+    assert elapsed >= budget * 0.75
+    assert elapsed < budget + 0.3
+
+
+def test_slow_drip_chunk_framing_cannot_reset_the_deadline() -> None:
+    budget = 0.2
+    server = SlowDripChunkSizeServer(byte_interval=0.04)
+    response = None
+    started = time.monotonic()
+    try:
+        response = UrllibStreamingTransport().open_stream(
+            HTTPRequest(
+                url=f"http://127.0.0.1:{server.port}/v1/chat/completions",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+                body=b"{}",
+                timeout_seconds=budget,
+            )
+        )
+        with pytest.raises(TransportTimeout):
+            list(response.iter_bytes())
+    finally:
+        if response is not None:
+            response.close()
+        server.close()
+    elapsed = time.monotonic() - started
+
+    assert elapsed >= budget * 0.75
+    assert elapsed < budget + 0.3
+
+
+def test_dns_resolution_cannot_outlive_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_getaddrinfo = socket.getaddrinfo
+
+    def slow_resolution(*args: Any, **kwargs: Any) -> Any:
+        time.sleep(0.3)
+        return original_getaddrinfo(*args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", slow_resolution)
+    started = time.monotonic()
+
+    with pytest.raises(TransportTimeout):
+        UrllibStreamingTransport().open_stream(
+            HTTPRequest(
+                url="http://localhost:9/v1/chat/completions",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+                body=b"{}",
+                timeout_seconds=0.08,
+            )
+        )
+
+    assert time.monotonic() - started < 0.25
+
+
+def test_loopback_http_explicitly_disables_environment_proxies(
+    tmp_path: Path,
+    server: ThreadingHTTPServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_build_opener = urllib.request.build_opener
+    installed_handlers: list[Any] = []
+
+    def capture_handlers(*handlers: Any) -> Any:
+        installed_handlers.extend(handlers)
+        return original_build_opener(*handlers)
+
+    monkeypatch.setenv("http_proxy", "http://proxy.invalid:8080")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:8080")
+    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.setattr(urllib.request, "build_opener", capture_handlers)
+
+    result = collect_openai_stream(
+        make_config(tmp_path, endpoint_for(server)),
+        transport=UrllibStreamingTransport(),
+        environ=ENVIRON,
+    )
+
+    assert result.record.outcome.success is True
+    proxy_handlers = [
+        handler
+        for handler in installed_handlers
+        if isinstance(handler, urllib.request.ProxyHandler)
+    ]
+    assert len(proxy_handlers) == 1
+    assert proxy_handlers[0].proxies == {}

@@ -28,13 +28,13 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict
 from itertools import combinations
 from pathlib import Path
-from typing import NoReturn, TypeVar, overload
+from typing import NoReturn, Protocol, TypeVar, cast, overload
 
 from .collectors._shared import atomic_write_text
 from .collectors.mlx import (
@@ -370,12 +370,15 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
         # scrubbed rather than trusting every field to have been sanitized
         # individually.
         text = redact_text_for_dry_run(text, credential.strip() or None)
-        print(text)
         try:
             atomic_write_text(config.output_dir / "request_plan.json", text + "\n")
         except OSError as exc:
-            print(f"Failed to write request plan: {exc}", file=sys.stderr)
+            print(
+                f"Failed to write request plan: {_api_detail(args, exc)}",
+                file=sys.stderr,
+            )
             return 1
+        print(text)
         return 0
 
     try:
@@ -386,8 +389,8 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
         )
         return 1
 
-    print(f"API experiment record written to {config.output_dir / 'record.json'}")
     if result.record.outcome.success:
+        print(f"API experiment record written to {config.output_dir / 'record.json'}")
         return 0
     failure = result.evidence.failure
     detail = (
@@ -395,7 +398,7 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
         if failure is None
         else f"{failure.category}: {failure.message}"
     )
-    print(f"API collection failed: {detail}", file=sys.stderr)
+    print(f"API collection failed: {_scrub_argv_values(detail)}", file=sys.stderr)
     return 1
 
 
@@ -1339,13 +1342,6 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
 
 _MIN_SCRUBBED_ARGUMENT_CHARS = 4
 
-#: How long a tail glued onto a credential flag must be before it is treated
-#: as a swallowed value rather than the rest of a longer option name. Set to
-#: the shortest credential worth carrying in an environment variable, so
-#: ``--tokenizer`` and ``--keyfile`` stay intact while ``--api-keySECRET``
-#: does not.
-_MIN_GLUED_CREDENTIAL_CHARS = 8
-
 _CREDENTIAL_ARGUMENT_STEMS = frozenset(
     {
         "apikey",
@@ -1370,6 +1366,39 @@ _CREDENTIAL_ARGUMENT_STEMS = frozenset(
         "secretkey",
         "token",
     }
+)
+
+_GLUED_CREDENTIAL_FLAGS = tuple(
+    sorted(
+        {
+            "--access-key",
+            "--access-token",
+            "--api-key",
+            "--api-secret",
+            "--api-token",
+            "--api_key",
+            "--apikey",
+            "--auth",
+            "--auth-token",
+            "--authorization",
+            "--bearer",
+            "--bearer-token",
+            "--client-secret",
+            "--credential",
+            "--key",
+            "--passwd",
+            "--password",
+            "--pwd",
+            "--secret",
+            "--secret-key",
+            "--token",
+            "-key",
+            "-k",
+            "-p",
+        },
+        key=len,
+        reverse=True,
+    )
 )
 
 #: Scrub state for one parse, held per context rather than in module
@@ -1439,35 +1468,30 @@ def _glued_credential_prefix(token: str) -> str:
     Nothing later in the pipeline splits it, so without this the value is
     written into ``record.command.argv`` in full.
 
-    Only a token that *starts* with a credential flag this program
-    recognises is split, and the whole tail is redacted, including any
-    ``=`` inside it: a base64 credential ends in ``=`` and splitting there
-    first would leave most of it in place.
-
-    Two shapes are deliberately left alone, because both are far more
-    likely to be a different option than a swallowed value. A tail that
-    begins with ``-`` is the rest of a longer flag name, which is what
-    ``--api-key-file`` is. A tail shorter than a credential is the rest of
-    a longer word, which is what ``--keyfile`` and ``--tokenizer`` are;
-    redacting those would corrupt a recorded command that holds no secret,
-    and a recorded command has to stay a faithful reconstruction.
-
-    The shortest recognised flag wins, so the least possible amount of the
-    value is left showing. Several stems are prefixes of each other, and
-    ``--api-keySECRET`` also starts with the flag ``--api-keys`` when the
-    value happens to begin with an ``s``; taking the longer reading would
-    publish that first character in the flag name.
+    Prefixes are explicit rather than inferred from every credential-like
+    word. That keeps legitimate options such as ``--authentication-method``,
+    ``--authorization-policy`` and ``--tokenizer-model`` reproducible.
+    Because a delimiter is missing, the tail must also have credential
+    evidence: a case boundary, a digit, a credential prefix, or a
+    non-option alphabet character. Leading ``-`` and ``_`` are retained as
+    evidence because both belong to common credential alphabets.
     """
-    if not token.startswith("-"):
-        return ""
-    for split in range(2, len(token)):
-        tail = token[split:]
+    for prefix in _GLUED_CREDENTIAL_FLAGS:
+        if not token.startswith(prefix) or len(token) == len(prefix):
+            continue
+        tail = token[len(prefix) :]
+        body = tail.lstrip("-_")
+        lowered = body.lower()
+        if len(body) < 6:
+            continue
         if (
-            len(tail) >= _MIN_GLUED_CREDENTIAL_CHARS
-            and not tail.startswith("-")
-            and _is_credential_flag(token[:split])
+            any(character.isupper() or character.isdigit() for character in body)
+            or any(character in "+/=" for character in body)
+            or lowered.startswith(
+                ("sk-", "sk_", "ghp_", "github_pat_", "xoxb-", "xoxp-", "eyj")
+            )
         ):
-            return token[:split]
+            return prefix
     return ""
 
 
@@ -1642,6 +1666,10 @@ def _argument_scrub_scope(
 _N = TypeVar("_N")
 
 
+class _ParsedCommand(Protocol):
+    func: Callable[[argparse.Namespace], int]
+
+
 class SecureArgumentParser(argparse.ArgumentParser):
     """An ``ArgumentParser`` whose diagnostics never repeat a value.
 
@@ -1675,8 +1703,14 @@ class SecureArgumentParser(argparse.ArgumentParser):
         # so the scope has to cover this call too or that one diagnostic
         # echoes the leftover tokens verbatim.
         argv = _materialize_argv(args)
+        handler_argv = tuple(sys.argv[1:] if argv is None else argv)
         with _argument_scrub_scope(self, argv):
-            return super().parse_args(argv, namespace)
+            parsed = super().parse_args(argv, namespace)
+            handler = getattr(parsed, "func", None)
+            if callable(handler):
+                command = cast(_ParsedCommand, parsed)
+                command.func = _scoped_command_handler(self, handler_argv, handler)
+            return parsed
 
     @overload
     def parse_known_args(
@@ -1699,11 +1733,31 @@ class SecureArgumentParser(argparse.ArgumentParser):
         namespace: _N | None = None,
     ) -> tuple[_N | argparse.Namespace, list[str]]:
         argv = _materialize_argv(args)
+        handler_argv = tuple(sys.argv[1:] if argv is None else argv)
         with _argument_scrub_scope(self, argv):
-            return super().parse_known_args(argv, namespace)
+            parsed, remaining = super().parse_known_args(argv, namespace)
+            handler = getattr(parsed, "func", None)
+            if callable(handler):
+                command = cast(_ParsedCommand, parsed)
+                command.func = _scoped_command_handler(self, handler_argv, handler)
+            return parsed, remaining
 
     def error(self, message: str) -> NoReturn:
         super().error(_scrub_argv_values(message))
+
+
+def _scoped_command_handler(
+    parser: argparse.ArgumentParser,
+    raw_argv: tuple[str, ...],
+    handler: Callable[[argparse.Namespace], int],
+) -> Callable[[argparse.Namespace], int]:
+    """Keep caller-value scrubbing installed while a parsed handler runs."""
+
+    def run(args: argparse.Namespace) -> int:
+        with _argument_scrub_scope(parser, raw_argv):
+            return handler(args)
+
+    return run
 
 
 def _reject_credential_arguments(raw_argv: Sequence[str]) -> None:

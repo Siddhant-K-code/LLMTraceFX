@@ -597,7 +597,14 @@ def test_time_to_first_token_ignores_empty_and_reasoning_only_chunks(
 
     timeline = result.evidence.timeline
     kinds = [event.kind for event in timeline.events]
-    assert kinds == ["metadata", "reasoning", "content", "content", "metadata"]
+    assert kinds == [
+        "metadata",
+        "reasoning",
+        "content",
+        "content",
+        "metadata",
+        "done",
+    ]
 
     first_content = next(event for event in timeline.events if event.kind == "content")
     assert timeline.first_content_token_offset_ms == first_content.offset_ms
@@ -1747,7 +1754,7 @@ def test_raw_query_values_are_never_persisted_in_the_plan(tmp_path: Path) -> Non
     rendered = plan.to_json()
 
     assert "super-secret-deployment" not in rendered
-    assert plan.endpoint_query_keys == ("deployment",)
+    assert plan.endpoint_query_keys == (_REDACTED,)
     assert "[REDACTED]" in " ".join(plan.command)
 
 
@@ -1866,7 +1873,8 @@ def test_the_persisted_command_never_carries_raw_query_values(
     assert "private-value" not in json.dumps(result.record.to_dict())
     for path in sorted(config.output_dir.iterdir()):
         assert "private-value" not in path.read_text(encoding="utf-8"), path.name
-    assert "deployment" in " ".join(result.record.command.argv)
+    assert "deployment" not in " ".join(result.record.command.argv)
+    assert "?[REDACTED]" in " ".join(result.record.command.argv)
 
 
 @pytest.mark.parametrize(
@@ -2121,7 +2129,8 @@ def test_the_request_repr_does_not_expose_endpoint_query_values(
 
     rendered = repr(transport.requests[0])
     assert "private-value" not in rendered
-    assert "deployment" in rendered
+    assert "deployment" not in rendered
+    assert "?[REDACTED]" in rendered
     assert API_KEY not in rendered
     assert transport.requests[0].url == endpoint
 
@@ -3557,7 +3566,7 @@ def test_hidden_reasoning_leaves_the_provider_token_rate_unavailable(
     assert statistics.provider_completion_tokens_per_second is None
     reason = statistics.provider_completion_tokens_per_second_unavailable_reason
     assert reason is not None
-    assert "never observed" in reason
+    assert "not observed from the first generated event" in reason
     # The visible rate stays available: it subtracts the reasoning tokens
     # from its numerator, so the window it uses does match what it counts.
     assert statistics.provider_visible_completion_tokens_per_second is not None
@@ -4316,9 +4325,11 @@ def test_the_retained_event_timeline_is_bounded(tmp_path: Path) -> None:
 
     timeline = result.evidence.timeline
     assert len(timeline.events) == limit
-    # One role chunk, every metadata chunk, one content chunk and the final
-    # usage chunk. ``[DONE]`` is a sentinel, not an event.
-    assert timeline.total_event_count == chatty + 3
+    # One role chunk, every metadata chunk, one content chunk, the final
+    # usage chunk and the dispatched ``[DONE]`` sentinel.
+    assert timeline.total_event_count == chatty + 4
+    assert timeline.retained_event_count == limit
+    assert timeline.dropped_event_count == timeline.total_event_count - limit
     assert timeline.events_truncated is True
     assert timeline.retained_event_limit == limit
     assert timeline.completed_offset_ms is not None
@@ -5249,3 +5260,209 @@ def test_absent_provider_usage_explains_the_null_completion_rate(
     reason = stats.provider_completion_tokens_per_second_unavailable_reason
     assert reason is not None
     assert "no completion token count" in reason
+
+
+# ---------------------------------------------------------------------------
+# Final consolidated regressions
+# ---------------------------------------------------------------------------
+
+
+_SHORT_ESCAPE_FORMS = {'"': '\\"', "\\": "\\\\", "/": "\\/", "'": "\\'"}
+_SHORT_ESCAPE_CREDENTIALS = (
+    "secret12/abc123def456",
+    "secret12\\abc123def456",
+    'secret12"abc123def456',
+    "secret12'abc123def456",
+)
+
+
+def _short_escape_once(value: str) -> str:
+    return "".join(_SHORT_ESCAPE_FORMS.get(character, character) for character in value)
+
+
+def _short_escape_spelling(value: str, depth: int) -> str:
+    if depth == 0:
+        return value
+    single = _short_escape_once(value)
+    if depth == 1:
+        return single
+    assert depth == 2
+    return json.dumps(single)[1:-1]
+
+
+@pytest.mark.parametrize("credential", _SHORT_ESCAPE_CREDENTIALS)
+@pytest.mark.parametrize("depth", [0, 1, 2], ids=["raw", "single", "double"])
+def test_every_short_escape_depth_is_redacted(credential: str, depth: int) -> None:
+    spelling = _short_escape_spelling(credential, depth)
+
+    assert _Redactor(credential).text(spelling) == _REDACTED
+    assert _contains_credential(f"prefix:{spelling}:suffix", credential)
+
+
+@pytest.mark.parametrize("credential", _SHORT_ESCAPE_CREDENTIALS)
+@pytest.mark.parametrize("depth", [0, 1, 2], ids=["raw", "single", "double"])
+def test_every_short_escape_depth_repairs_every_cut(
+    credential: str, depth: int
+) -> None:
+    spelling = _short_escape_spelling(credential, depth)
+    redact = _Redactor(credential)
+
+    for cut in range(len(spelling) + 1):
+        persisted = redact(redact.boundary(f"error {spelling[:cut]}"))
+        for length in range(_MIN_LEAKED_PREFIX_CHARS, len(credential) + 1):
+            assert credential[:length] not in persisted, (
+                credential,
+                depth,
+                cut,
+            )
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "secret\\u00A0tail-0123456789",
+        "secret%C2%A0tail-0123456789",
+        "secret%25C2%25A0tail-0123456789",
+    ],
+)
+def test_non_ascii_credential_whitespace_keeps_its_own_encodings(
+    spelling: str,
+) -> None:
+    credential = "secret\u00a0tail-0123456789"
+
+    assert _Redactor(credential).text(spelling) == _REDACTED
+    assert _contains_credential(spelling, credential)
+
+
+def test_truncation_floor_counts_decoded_whitespace_characters() -> None:
+    credential = "ab" + " " * 6 + "tail-0123456789"
+    encoded_prefix = "ab" + "%20" * 6
+
+    persisted = _Redactor(credential).boundary(f"error {encoded_prefix}")
+
+    assert persisted == "error [REDACTED]"
+
+
+def test_opaque_query_keys_never_reach_a_request_plan(tmp_path: Path) -> None:
+    opaque_key = "sk-live-opaque-CANARY"
+    first_endpoint = f"{ENDPOINT}?{opaque_key}=value"
+    second_endpoint = f"{ENDPOINT}?another-opaque=value"
+    first = build_request_plan(
+        make_config(
+            tmp_path,
+            endpoint=first_endpoint,
+            command_argv=(
+                "llmtracefx-optimizer",
+                "collect-api",
+                "--endpoint",
+                first_endpoint,
+            ),
+        ),
+        environ={},
+    )
+    second = build_request_plan(
+        make_config(tmp_path, endpoint=second_endpoint),
+        environ={},
+    )
+
+    serialized = first.to_json()
+    assert opaque_key not in serialized
+    assert first.endpoint_query_keys == (_REDACTED,)
+    assert "?[REDACTED]" in " ".join(first.command)
+    assert first.config_hash != second.config_hash
+    assert first.retained_event_limit == DEFAULT_RETAINED_EVENT_LIMIT
+
+
+@pytest.mark.parametrize(
+    ("extensions", "reasoning_tokens"),
+    [
+        (ProviderExtensions(), None),
+        (ProviderExtensions(), 1),
+        (ProviderExtensions(thinking_type="disabled"), None),
+        (ProviderExtensions(), 0),
+    ],
+    ids=["missing-count", "positive-count", "disabled-request", "zero-count"],
+)
+def test_reasoning_after_content_invalidates_completion_rates(
+    tmp_path: Path,
+    extensions: ProviderExtensions,
+    reasoning_tokens: int | None,
+) -> None:
+    usage: dict[str, Any] = {
+        "prompt_tokens": 2,
+        "completion_tokens": 3,
+        "total_tokens": 5,
+    }
+    if reasoning_tokens is not None:
+        usage["completion_tokens_details"] = {"reasoning_tokens": reasoning_tokens}
+    stream = [
+        sse({"choices": [{"index": 0, "delta": {"content": "visible first"}}]}),
+        sse(
+            {"choices": [{"index": 0, "delta": {"reasoning_content": "late thought"}}]}
+        ),
+        sse({"choices": [{"index": 0, "delta": {"content": "visible last"}}]}),
+        sse(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": ""},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": usage,
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(
+        make_config(tmp_path, extensions=extensions),
+        stream,
+    )
+
+    statistics = result.evidence.statistics
+    assert statistics.provider_completion_tokens_per_second is None
+    assert "reasoning was observed after visible content" in (
+        statistics.provider_completion_tokens_per_second_unavailable_reason or ""
+    )
+    if reasoning_tokens == 0:
+        assert statistics.provider_visible_completion_tokens_per_second is None
+
+
+def test_error_and_done_frames_participate_in_event_accounting(
+    tmp_path: Path,
+) -> None:
+    success, _ = run(
+        make_config(tmp_path / "success", retained_event_limit=1),
+        [
+            sse(
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "complete"},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                }
+            ),
+            b"data: [DONE]\n\n",
+        ],
+    )
+    failed, _ = run(
+        make_config(tmp_path / "failure"),
+        [sse({"error": {"code": "failed", "message": "provider failed"}})],
+    )
+
+    success_timeline = success.evidence.timeline
+    assert success_timeline.total_event_count == 2
+    assert success_timeline.retained_event_count == 1
+    assert success_timeline.dropped_event_count == 1
+    assert success_timeline.events_truncated is True
+    assert [event.kind for event in success_timeline.events] == ["content"]
+    failure_timeline = failed.evidence.timeline
+    assert failure_timeline.total_event_count == 1
+    assert failure_timeline.retained_event_count == 1
+    assert failure_timeline.dropped_event_count == 0
+    assert [event.kind for event in failure_timeline.events] == ["error"]
