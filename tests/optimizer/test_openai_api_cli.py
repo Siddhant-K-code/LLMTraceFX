@@ -1649,6 +1649,10 @@ def test_a_glued_credential_flag_in_a_recorded_command_is_redacted(
         "--authentication-method",
         "--authorization-policy",
         "--tokenizer-model",
+        "--api-key-file=/keys/key.txt",
+        "--authentication-method=oauth",
+        "--authorization-policy=deny",
+        "--tokenizer-model=model.json",
     ],
 )
 def test_an_option_that_only_looks_glued_is_left_intact(

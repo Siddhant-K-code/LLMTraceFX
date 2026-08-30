@@ -1476,10 +1476,11 @@ def _glued_credential_prefix(token: str) -> str:
     non-option alphabet character. Leading ``-`` and ``_`` are retained as
     evidence because both belong to common credential alphabets.
     """
+    option_name = token.split("=", 1)[0]
     for prefix in _GLUED_CREDENTIAL_FLAGS:
-        if not token.startswith(prefix) or len(token) == len(prefix):
+        if not option_name.startswith(prefix) or len(option_name) == len(prefix):
             continue
-        tail = token[len(prefix) :]
+        tail = option_name[len(prefix) :]
         body = tail.lstrip("-_")
         lowered = body.lower()
         if len(body) < 6:

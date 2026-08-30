@@ -1129,7 +1129,9 @@ and are never mixed into a single unlabelled number.
   address attempts, connection setup, TLS, request upload, response headers
   and every body read draw from one monotonic deadline. A watchdog closes
   the live socket at that deadline, so byte-dripped status lines, headers or
-  chunk framing cannot reset an idle timeout forever. The socket is also
+  chunk framing cannot reset an idle timeout forever. EOF and read errors
+  are checked against the deadline before they can become a successful
+  terminal stream. The socket is also
   found through both success and `HTTPError` wrapper shapes before each body
   read, and its timeout is reduced to the remaining budget.
 - **The per-event timeline is capped by explicit configuration.** One
@@ -1372,7 +1374,8 @@ and are never mixed into a single unlabelled number.
   tail must also have credential evidence, such as a case boundary, digit or
   known key prefix. This keeps `--authentication-method`,
   `--authorization-policy`, `--tokenizer-model` and `--api-key-file`
-  reproducible instead of corrupting legitimate command literals.
+  reproducible instead of corrupting legitimate command literals, including
+  their `--option=value` forms.
 - The refusal to accept a credential-shaped query parameter does not repeat
   the parameter name. The name is caller-controlled and is exactly where a
   key ends up when someone puts it in the URL, so quoting it back into a
@@ -1400,16 +1403,10 @@ and are never mixed into a single unlabelled number.
   outright, so all four are credential nouns. The cover rule keeps that from
   spreading: `sidebar` and `sidecar` are still accepted, because `ebar` and
   `car` are not words this recognizes.
-- `session` is a qualifier and not a noun, which is a deliberate choice
-  against a stricter one. Parameter names are tokenized on separators, so
-  `session_timeout` presents `session` as a whole component, and a noun there
-  refuses an ordinary timeout setting with a diagnostic that by design names
-  nothing the caller supplied. Availability wins that trade, because the cost
-  of the false negative is bounded: `sessionid` is accepted, but every query
-  value is redacted unconditionally before it reaches any artifact, and the
-  preflight check refuses the request credential inside an endpoint under any
-  key name whatsoever. What a missed name can persist is a hash of a
-  secondary value, never cleartext.
+- The credential vocabulary also covers session and authorization-code
+  material. `sessionid`, `session_id`, `authcode` and `authorizationcode` are
+  credential compounds, while bare `session` and `code` remain ordinary
+  parameter names.
 - A complete cover cannot see a credential glued to a word the tables do not
   know, so `openaiapikey`, `myapikey` and `zaiapikey` were accepted. A
   component is also refused when a contiguous run of two recognized words,
@@ -1462,6 +1459,10 @@ and are never mixed into a single unlabelled number.
   `RecursionError`, neither of which is a `JSONDecodeError`, so both used to
   escape as an unhandled crash rather than a failure record. Both are now
   stream decode failures with the usual canonical artifacts.
+- A JSON string containing an unpaired surrogate is also a stream decode
+  failure. Python accepts that escape during `json.loads`, but it cannot be
+  encoded as UTF-8 for `response.txt`; rejecting it while handling the event
+  prevents a partial artifact set during publication.
 - A provider token count above the largest integer a float represents exactly
   is recorded as malformed and dropped. Smaller but still enormous counts
   parsed fine and then raised `OverflowError` in the rate arithmetic; beyond
@@ -1474,6 +1475,10 @@ and are never mixed into a single unlabelled number.
   network chunk has no window with any width to divide by, and that case left
   the rate null with nothing said about it, which reads as a metric the
   provider never sent rather than one that could not be measured.
+- Provider usage that implies zero visible tokens while non-empty visible
+  content was streamed is internally inconsistent. Completion and visible
+  rates remain null with an explicit reason rather than becoming valid-looking
+  zeroes.
 - No parse diagnostic repeats a value the caller supplied, in any
   rendering. argparse formats several of its messages with `%r`, so a value
   containing a newline, a tab, a zero-width space or a backslash reaches

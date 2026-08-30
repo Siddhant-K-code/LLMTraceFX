@@ -241,6 +241,7 @@ _CREDENTIAL_QUERY_QUALIFIERS = frozenset(
         "app",
         "application",
         "client",
+        "code",
         "id",
         "master",
         "ocp",
@@ -447,12 +448,12 @@ def _resolve_with_deadline(
     """Resolve a host without letting DNS consume the request deadline."""
     completed = threading.Event()
     addresses: list[tuple[Any, ...]] = []
-    failures: list[OSError] = []
+    failures: list[OSError | UnicodeError] = []
 
     def resolve() -> None:
         try:
             addresses.extend(socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM))
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             failures.append(exc)
         finally:
             completed.set()
@@ -786,6 +787,18 @@ class _UrllibResponse:
             setter(remaining)
         return remaining
 
+    def _deadline_expired(self) -> bool:
+        return (self._watchdog is not None and self._watchdog.expired) or (
+            self._deadline is not None and self._clock() >= self._deadline
+        )
+
+    @staticmethod
+    def _deadline_failure() -> TransportTimeout:
+        return TransportTimeout(
+            "request timed out: the response did not finish within the "
+            "configured request timeout"
+        )
+
     @property
     def status_code(self) -> int:
         return self._status_code
@@ -826,6 +839,8 @@ class _UrllibResponse:
             except TimeoutError as exc:
                 raise TransportTimeout(f"stream read timed out: {exc}") from exc
             except http.client.HTTPException as exc:
+                if self._deadline_expired():
+                    raise self._deadline_failure() from exc
                 # ``HTTPException`` is not an ``OSError``. ``IncompleteRead``
                 # in particular is the expected shape when a proxy or load
                 # balancer hangs up mid-chunk on a long-lived SSE stream, and
@@ -834,7 +849,11 @@ class _UrllibResponse:
                     f"stream read failed: {type(exc).__name__}"
                 ) from exc
             except OSError as exc:
+                if self._deadline_expired():
+                    raise self._deadline_failure() from exc
                 raise TransportConnectionError(f"stream read failed: {exc}") from exc
+            if self._deadline_expired():
+                raise self._deadline_failure()
             if not chunk:
                 break
             self._bytes_read += len(chunk)
@@ -932,7 +951,7 @@ class UrllibStreamingTransport:
             raise TransportConnectionError(
                 f"request failed: {type(exc).__name__}"
             ) from exc
-        except (ValueError, UnicodeEncodeError) as exc:
+        except ValueError as exc:
             watchdog.cancel()
             # ``http.client.putheader`` reports an unencodable header by
             # embedding the whole value in the message. Never let that text
@@ -1278,14 +1297,29 @@ def _names_a_credential(key: str) -> bool:
     case change, so a component also counts when recognized words cover it
     end to end and at least one of them names a credential outright.
     """
+    components: list[str] = []
     for raw in _QUERY_KEY_COMPONENT.findall(key):
         component = raw.lower()
         # One trailing plural, so ``keys`` is read as ``key``.
         if component not in _CREDENTIAL_QUERY_TERMS and component.endswith("s"):
             component = component[:-1]
-        if _covers_a_credential(component) or _spans_a_credential_phrase(component):
+        components.append(component)
+        if (
+            component
+            in {
+                "authcode",
+                "authorizationcode",
+                "refreshsession",
+                "sessionid",
+            }
+            or _covers_a_credential(component)
+            or _spans_a_credential_phrase(component)
+        ):
             return True
-    return False
+    return any(
+        component == "session" and following == "id"
+        for component, following in zip(components, components[1:], strict=False)
+    )
 
 
 def _spans_a_credential_phrase(component: str) -> bool:
@@ -2928,6 +2962,17 @@ class _StreamAccumulator:
                     "collector only records text completions"
                 ),
             )
+        if content is not None:
+            try:
+                content.encode("utf-8")
+            except UnicodeEncodeError:
+                return APIFailure(
+                    category=FAILURE_STREAM_DECODE,
+                    message=(
+                        "stream chunk 'delta.content' contains an invalid "
+                        "Unicode scalar value"
+                    ),
+                )
         reasoning = _reasoning_delta(delta)
         if reasoning is not None and not isinstance(reasoning, str):
             return APIFailure(
@@ -3096,23 +3141,33 @@ class _StreamAccumulator:
         token_rate = None
         visible_token_rate = None
         rate_unavailable: str | None = None
+        completion_tokens = self.usage.completion_tokens
+        reasoning_tokens = self.usage.reasoning_tokens
+        visible_usage_inconsistent = (
+            self.content_delta_count > 0
+            and completion_tokens is not None
+            and (
+                completion_tokens == 0
+                or (
+                    reasoning_tokens is not None
+                    and completion_tokens == reasoning_tokens
+                )
+            )
+        )
         if window_seconds is not None:
             # ``n`` arrivals bound ``n - 1`` intervals, so the delta rate is
             # measured over the gaps it actually observed.
             delta_rate = (len(self.content_arrival_times) - 1) / window_seconds
-            completion_tokens = self.usage.completion_tokens
-            reasoning_tokens = self.usage.reasoning_tokens
             if (
                 completion_tokens is not None
                 and reasoning_tokens is not None
                 and completion_tokens >= reasoning_tokens
+                and not visible_usage_inconsistent
                 and not (reasoning_tokens == 0 and self.reasoning_delta_count > 0)
             ):
                 visible_token_rate = (
                     completion_tokens - reasoning_tokens
                 ) / window_seconds
-        completion_tokens = self.usage.completion_tokens
-        reasoning_tokens = self.usage.reasoning_tokens
         reasoning_window_observed = self.reasoning_observed_from_first_generated_event
         late_reasoning_observed = (
             self.reasoning_delta_count > 0 and not reasoning_window_observed
@@ -3126,6 +3181,12 @@ class _StreamAccumulator:
             rate_unavailable = (
                 "the provider reported more reasoning tokens than completion "
                 "tokens, so its token accounting is internally inconsistent"
+            )
+        elif visible_usage_inconsistent:
+            rate_unavailable = (
+                "the provider usage implies zero visible completion tokens despite "
+                "non-empty streamed content, so its token accounting is internally "
+                "inconsistent"
             )
         elif late_reasoning_observed:
             rate_unavailable = (
@@ -3699,7 +3760,7 @@ def collect_openai_stream(
     if failure is None:
         failure = _terminal_condition_failure(accumulator, response_text)
 
-    provider_request_id = accumulator.provider_request_id or header_request_id
+    provider_request_id = header_request_id or accumulator.provider_request_id
 
     evidence = APIEvidence(
         schema_version=API_EVIDENCE_SCHEMA_VERSION,

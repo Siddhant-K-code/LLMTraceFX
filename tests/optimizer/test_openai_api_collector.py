@@ -4941,6 +4941,7 @@ def test_a_null_completion_rate_always_records_why(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "key",
     [
+        "sessionid",
         "sid",
         "jwt",
         "passphrase",
@@ -4981,6 +4982,7 @@ def test_session_family_query_keys_are_refused(key: str) -> None:
         "api-version",
         "stream",
         "residency",
+        "session",
     ],
 )
 def test_ordinary_query_keys_stay_accepted(key: str) -> None:
@@ -5466,3 +5468,76 @@ def test_error_and_done_frames_participate_in_event_accounting(
     assert failure_timeline.retained_event_count == 1
     assert failure_timeline.dropped_event_count == 0
     assert [event.kind for event in failure_timeline.events] == ["error"]
+
+
+def test_lone_json_surrogate_becomes_stream_decode_evidence(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    stream = [
+        b'data: {"choices": [{"index": 0, "delta": ' + b'{"content": "\\ud800"}}]}\n\n'
+    ]
+
+    result, _ = run(config, stream)
+
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.category == FAILURE_STREAM_DECODE
+    assert result.response_text == ""
+    assert_failure_artifacts(config, FAILURE_STREAM_DECODE)
+
+
+@pytest.mark.parametrize("count", [0, 3])
+def test_visible_content_rejects_usage_with_zero_visible_tokens(
+    tmp_path: Path, count: int
+) -> None:
+    usage = {
+        "prompt_tokens": 2,
+        "completion_tokens": count,
+        "total_tokens": count + 2,
+        "completion_tokens_details": {"reasoning_tokens": count},
+    }
+    result, _ = run(
+        make_config(
+            tmp_path,
+            extensions=ProviderExtensions(thinking_type="disabled"),
+        ),
+        glm_stream(content_parts=("one", "two"), reasoning_parts=(), usage=usage),
+    )
+
+    statistics = result.evidence.statistics
+    assert statistics.provider_completion_tokens_per_second is None
+    assert statistics.provider_visible_completion_tokens_per_second is None
+    assert "zero visible completion tokens" in (
+        statistics.provider_completion_tokens_per_second_unavailable_reason or ""
+    )
+
+
+def test_header_request_id_wins_when_the_body_also_has_one(
+    tmp_path: Path,
+) -> None:
+    body = {
+        "request_id": "req-from-body",
+        "error": {"message": "bad", "code": "failed"},
+    }
+    response = FakeResponse(
+        [json.dumps(body).encode()],
+        status_code=400,
+        headers={"x-request-id": "req-from-header"},
+    )
+
+    result, _ = run(make_config(tmp_path), response)
+
+    assert result.evidence.provider_request_id == "req-from-header"
+
+
+@pytest.mark.parametrize("key", ["authcode", "authorizationcode"])
+def test_authorization_code_query_compounds_are_refused(key: str) -> None:
+    assert _names_a_credential(key) is True
+    with pytest.raises(OpenAIStreamCollectorError) as excinfo:
+        _validate_endpoint(f"https://api.example.com/v1/chat?{key}=value")
+    assert key not in str(excinfo.value)
+
+
+def test_bare_code_remains_an_ordinary_query_key() -> None:
+    assert _names_a_credential("code") is False
+    _validate_endpoint("https://api.example.com/v1/chat?code=value")

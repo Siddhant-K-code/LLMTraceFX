@@ -1002,6 +1002,44 @@ class SlowDripChunkSizeServer:
         self._thread.join(timeout=5.0)
 
 
+class TerminalThenStallServer:
+    """Send a terminal finish reason, then keep the response open."""
+
+    def __init__(self) -> None:
+        self._stop = threading.Event()
+        self._sock = socket.socket()
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(1)
+        self.port = int(self._sock.getsockname()[1])
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        try:
+            conn, _ = self._sock.accept()
+        except OSError:
+            return
+        with conn:
+            conn.settimeout(5.0)
+            try:
+                RawSocketServer._drain_request(conn)
+                conn.sendall(
+                    b"HTTP/1.1 200 OK\r\n"
+                    + b"Content-Type: text/event-stream\r\n\r\n"
+                    + b'data: {"choices": [{"index": 0, "delta": '
+                    + b'{"content": "done"}, "finish_reason": "stop"}]}\n\n'
+                )
+                self._stop.wait(5.0)
+            except OSError:
+                return
+
+    def close(self) -> None:
+        self._stop.set()
+        self._sock.close()
+        self._thread.join(timeout=5.0)
+
+
 def test_connect_upload_and_headers_share_one_deadline() -> None:
     budget = 1.2
     server = DelayedRequestAndHeadersServer(phase_delay=0.65)
@@ -1134,3 +1172,52 @@ def test_loopback_http_explicitly_disables_environment_proxies(
     ]
     assert len(proxy_handlers) == 1
     assert proxy_handlers[0].proxies == {}
+
+
+def test_deadline_eof_cannot_turn_a_terminal_stall_into_success(
+    tmp_path: Path,
+) -> None:
+    budget = 0.25
+    server = TerminalThenStallServer()
+    try:
+        config = replace(
+            make_config(
+                tmp_path, f"http://127.0.0.1:{server.port}/v1/chat/completions"
+            ),
+            request_timeout_seconds=budget,
+        )
+
+        result = collect_openai_stream(
+            config, transport=UrllibStreamingTransport(), environ=ENVIRON
+        )
+    finally:
+        server.close()
+
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.category == FAILURE_TIMEOUT
+    assert result.record.outcome.success is False
+
+
+def test_dns_unicode_errors_are_sanitized_transport_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def invalid_idna(*_args: Any, **_kwargs: Any) -> Any:
+        raise UnicodeEncodeError("idna", "x" * 64, 0, 64, "label too long")
+
+    monkeypatch.setattr(socket, "getaddrinfo", invalid_idna)
+
+    with pytest.raises(TransportConnectionError, match="could not be encoded"):
+        UrllibStreamingTransport().open_stream(
+            HTTPRequest(
+                url="http://invalid.example/v1/chat/completions",
+                method="POST",
+                headers={"Content-Type": "application/json"},
+                body=b"{}",
+                timeout_seconds=1.0,
+            )
+        )
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
