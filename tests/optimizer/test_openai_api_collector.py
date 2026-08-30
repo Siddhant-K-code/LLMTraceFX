@@ -1852,6 +1852,20 @@ def test_an_identical_query_keeps_a_stable_config_hash(tmp_path: Path) -> None:
     assert first.config_hash == second.config_hash
 
 
+def test_distinct_invalid_utf8_query_bytes_have_distinct_identities(
+    tmp_path: Path,
+) -> None:
+    first = build_request_plan(
+        make_config(tmp_path, endpoint=f"{ENDPOINT}?version=%FF")
+    )
+    second = build_request_plan(
+        make_config(tmp_path, endpoint=f"{ENDPOINT}?version=%FE")
+    )
+
+    assert first.config_hash != second.config_hash
+    assert first.endpoint_query_keys == second.endpoint_query_keys == (_REDACTED,)
+
+
 def test_raw_query_values_are_never_persisted_in_the_plan(tmp_path: Path) -> None:
     config = make_config(
         tmp_path,
@@ -1901,6 +1915,42 @@ def test_an_artifact_replaced_independently_fails_the_completeness_check(
     assert artifact_set_is_complete(config.output_dir) is True
 
     (config.output_dir / "response.txt").write_text("tampered", encoding="utf-8")
+
+    assert artifact_set_is_complete(config.output_dir) is False
+
+
+def test_an_incomplete_manifest_is_not_a_complete_artifact_set(
+    tmp_path: Path,
+) -> None:
+    config = make_config(tmp_path)
+    run(config, glm_stream())
+    marker_path = config.output_dir / ARTIFACT_MANIFEST_NAME
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["artifacts"] = marker["artifacts"][:1]
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+    assert artifact_set_is_complete(config.output_dir) is False
+
+
+def test_an_unsafe_manifest_path_is_rejected(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    run(config, glm_stream())
+    marker_path = config.output_dir / ARTIFACT_MANIFEST_NAME
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker["artifacts"][0]["name"] = "../record.json"
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+    assert artifact_set_is_complete(config.output_dir) is False
+
+
+def test_a_symlinked_artifact_is_not_trusted(tmp_path: Path) -> None:
+    config = make_config(tmp_path)
+    run(config, glm_stream())
+    response_path = config.output_dir / "response.txt"
+    target = tmp_path / "outside.txt"
+    target.write_bytes(response_path.read_bytes())
+    response_path.unlink()
+    response_path.symlink_to(target)
 
     assert artifact_set_is_complete(config.output_dir) is False
 

@@ -1869,3 +1869,45 @@ def test_returned_failures_scrub_values_for_every_parser_entrypoint(
     assert code == 1
     assert canary not in out + err
     assert "[REDACTED]" in err
+
+
+def test_mixed_case_glued_credential_flag_is_redacted(
+    tmp_path: Path,
+) -> None:
+    stdout_file = tmp_path / "llama.txt"
+    stdout_file.write_text("llama_perf_context_print: eval time = 1.0 ms\n")
+
+    code, out, err = run_main(
+        [
+            "parse-llama-cpp",
+            "--run-id",
+            "r1",
+            "--model-id",
+            "local.gguf",
+            "--stdout-file",
+            str(stdout_file),
+            "--",
+            "llama-server",
+            "--API-KEYSecret123",
+        ]
+    )
+
+    assert code == 0
+    assert err == ""
+    assert "Secret123" not in out
+    assert json.loads(out)["command"]["argv"] == [
+        "llama-server",
+        "--API-KEY[REDACTED]",
+    ]
+
+
+@pytest.mark.parametrize("value", ["a", "xy", "123"])
+def test_short_bare_unrecognized_arguments_are_scrubbed(
+    tmp_path: Path, value: str
+) -> None:
+    code, out, err = run_main(base_argv(tmp_path) + [value])
+
+    assert code == 2
+    assert out == ""
+    assert f"unrecognized arguments: {value}" not in err
+    assert "unrecognized arguments: [REDACTED]" in err

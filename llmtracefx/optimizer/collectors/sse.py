@@ -111,9 +111,12 @@ class SSEDecoder:
 
         yield from self._drain_complete_lines()
         if self._buffer:
-            # A line with no terminator: the stream stopped mid-line.
+            # EOF terminates the final line. A trailing comment or unknown
+            # field is therefore complete and harmless; a final data line is
+            # consumed but remains undispatched without the required blank
+            # line, and is marked incomplete below.
+            self._consume_line(self._buffer)
             self._buffer = ""
-            self.incomplete_event_discarded = True
         if self._data_lines:
             self.incomplete_event_discarded = True
             self._data_lines = []

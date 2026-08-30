@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -1477,8 +1478,11 @@ def _glued_credential_prefix(token: str) -> str:
     evidence because both belong to common credential alphabets.
     """
     option_name = token.split("=", 1)[0]
+    folded_name = option_name.casefold()
     for prefix in _GLUED_CREDENTIAL_FLAGS:
-        if not option_name.startswith(prefix) or len(option_name) == len(prefix):
+        if not folded_name.startswith(prefix.casefold()) or len(option_name) == len(
+            prefix
+        ):
             continue
         tail = option_name[len(prefix) :]
         body = tail.lstrip("-_")
@@ -1492,7 +1496,7 @@ def _glued_credential_prefix(token: str) -> str:
                 ("sk-", "sk_", "ghp_", "github_pat_", "xoxb-", "xoxp-", "eyj")
             )
         ):
-            return prefix
+            return option_name[: len(prefix)]
     return ""
 
 
@@ -1583,6 +1587,20 @@ def _value_renderings(value: str) -> tuple[str, ...]:
     return (value, quoted[1:-1])
 
 
+def _scrub_short_bare_tokens(message: str, values: Sequence[str]) -> str:
+    """Replace short values only when they occupy a whole diagnostic token."""
+    scrubbed = message
+    for value in values:
+        if not value or len(value) >= _MIN_SCRUBBED_ARGUMENT_CHARS:
+            continue
+        scrubbed = re.sub(
+            rf"(?<![A-Za-z0-9_]){re.escape(value)}(?![A-Za-z0-9_])",
+            "[REDACTED]",
+            scrubbed,
+        )
+    return scrubbed
+
+
 def _scrub_argv_values(message: str) -> str:
     """Replace every caller-supplied value in ``message``.
 
@@ -1602,7 +1620,7 @@ def _scrub_argv_values(message: str) -> str:
         reverse=True,
     )
     protected = {
-        f"\x00{index}\x00": literal
+        f"\x00PROTECTED{index}VALUE\x00": literal
         for index, literal in enumerate(literals)
         if not any(literal in rendering for rendering in renderings)
     }
@@ -1611,6 +1629,7 @@ def _scrub_argv_values(message: str) -> str:
         scrubbed = scrubbed.replace(literal, placeholder)
     for rendering in renderings:
         scrubbed = scrubbed.replace(rendering, "[REDACTED]")
+    scrubbed = _scrub_short_bare_tokens(scrubbed, values)
     for placeholder, literal in protected.items():
         scrubbed = scrubbed.replace(placeholder, literal)
     return scrubbed
