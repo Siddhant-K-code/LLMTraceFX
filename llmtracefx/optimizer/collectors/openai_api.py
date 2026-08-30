@@ -199,9 +199,60 @@ _PROVIDER_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 #: convention rejects the shapes keys actually take, ``sk-...`` and
 #: ``sk_live_...``, before any of them can reach a diagnostic or an artifact.
 _ENV_VAR_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
-_SECRETISH_QUERY_KEY = re.compile(
-    r"(?i)(key|token|secret|password|passwd|credential|signature|sig|auth)"
+#: Nouns that name a credential outright. Matched as whole components of a
+#: parameter name, never as a bare substring: ``sig`` inside ``design`` and
+#: ``key`` inside ``monkey`` are not credentials, and refusing those names
+#: blocks legitimate endpoints while the deliberately scrubbed diagnostic
+#: gives the operator no way to tell which parameter was at fault.
+_CREDENTIAL_QUERY_TERMS = frozenset(
+    {
+        "auth",
+        "authorization",
+        "bearer",
+        "credential",
+        "key",
+        "passwd",
+        "password",
+        "secret",
+        "sig",
+        "signature",
+        "token",
+    }
 )
+
+#: Words that qualify a credential noun rather than naming one. They matter
+#: only for glued compounds such as ``apikey``, where no separator and no
+#: case change marks the boundary the tokenizer would otherwise split on.
+_CREDENTIAL_QUERY_QUALIFIERS = frozenset(
+    {
+        "access",
+        "account",
+        "admin",
+        "api",
+        "app",
+        "application",
+        "client",
+        "id",
+        "master",
+        "ocp",
+        "primary",
+        "private",
+        "public",
+        "refresh",
+        "sas",
+        "secondary",
+        "service",
+        "session",
+        "shared",
+        "subscription",
+        "user",
+        "x",
+    }
+)
+
+#: Split on separators, on camel-case boundaries and between letters and
+#: digits, so ``x-api-key``, ``apiKey`` and ``key2`` all yield ``key``.
+_QUERY_KEY_COMPONENT = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|[0-9]+")
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
 #: Response headers safe to persist verbatim: rate-limit accounting only.
@@ -825,6 +876,35 @@ def _try_urlsplit(endpoint: str) -> SplitResult | None:
         return None
 
 
+def _names_a_credential(key: str) -> bool:
+    """True when a query parameter name reads as a credential.
+
+    The name is tokenized first and each component is judged whole. An
+    unanchored substring search rejects ``design``, ``assignment``,
+    ``monkey`` and ``insignia``, which are ordinary parameter names, and
+    the caller cannot learn why because the diagnostic deliberately echoes
+    nothing. A glued compound such as ``apikey`` carries no separator and
+    no case change, so a component is also split once into two parts: it
+    counts when both parts are recognized and at least one of them names a
+    credential outright. That catches ``apikey`` and ``secretkey`` while
+    leaving ``keyword`` and ``monkey`` alone.
+    """
+    for raw in _QUERY_KEY_COMPONENT.findall(key):
+        component = raw.lower()
+        # One trailing plural, so ``keys`` is read as ``key``.
+        if component not in _CREDENTIAL_QUERY_TERMS and component.endswith("s"):
+            component = component[:-1]
+        if component in _CREDENTIAL_QUERY_TERMS:
+            return True
+        for cut in range(1, len(component)):
+            head, tail = component[:cut], component[cut:]
+            known = _CREDENTIAL_QUERY_TERMS | _CREDENTIAL_QUERY_QUALIFIERS
+            if head in known and tail in known:
+                if head in _CREDENTIAL_QUERY_TERMS or tail in _CREDENTIAL_QUERY_TERMS:
+                    return True
+    return False
+
+
 def _try_parse_qsl(query: str) -> list[tuple[str, str]] | None:
     try:
         return parse_qsl(query, keep_blank_values=True)
@@ -917,7 +997,7 @@ def _safe_endpoint_for_message(endpoint: str) -> str:
             # makes a misconfiguration diagnosable.
             keys = sorted(
                 {
-                    _REDACTED if _SECRETISH_QUERY_KEY.search(key) else key
+                    _REDACTED if _names_a_credential(key) else key
                     for key, _ in pairs
                 }
             )
@@ -950,7 +1030,7 @@ def _validate_endpoint(endpoint: str) -> None:
     if pairs is None:
         raise OpenAIStreamCollectorError(f"endpoint query could not be parsed: {safe}")
     for key, _value in pairs:
-        if _SECRETISH_QUERY_KEY.search(key):
+        if _names_a_credential(key):
             raise OpenAIStreamCollectorError(
                 # The parameter name is not echoed. A name that looks like a
                 # credential is exactly the name most likely to *carry* one,
@@ -1000,6 +1080,11 @@ class _CredentialVariant:
     forms: tuple[tuple[str, ...], ...]
     runs: tuple[bool, ...]
     head: re.Pattern[str]
+    #: The most characters a match beginning at one position can consume.
+    #: Every element contributes its longest spelling, and a whitespace run
+    #: contributes that spelling repeated up to the run cap, so this is a
+    #: true upper bound rather than an estimate.
+    span: int
 
 
 def _transport_spellings(body: str) -> list[str]:
@@ -1177,13 +1262,19 @@ class _Redactor:
         if not elements:
             return None
         forms = tuple(element for element, _ in elements)
+        runs = tuple(run for _, run in elements)
+        span = 0
+        for index, element in enumerate(forms):
+            longest = max(len(form) for form in element)
+            span += _MAX_WHITESPACE_RUN * max(longest, 1) if runs[index] else longest
         return _CredentialVariant(
             forms=forms,
-            runs=tuple(run for _, run in elements),
+            runs=runs,
             head=re.compile(
                 "(?=" + "|".join(re.escape(form) for form in forms[0]) + ")",
                 re.IGNORECASE,
             ),
+            span=span,
         )
 
     def __init__(self, credential: str | None) -> None:
@@ -1330,11 +1421,21 @@ class _Redactor:
         remainder that is one element cut short. Both require enough whole
         elements to have matched first, so a couple of coincidental
         characters at the end of a body cannot blank it.
+
+        Only a suffix window is searched. Truncation removes the tail, so
+        both ways of winning end at the last character of the text, and a
+        match consumes at most ``variant.span`` characters. A start further
+        back than that cannot reach the end and so cannot win. Scanning the
+        whole body instead would be quadratic: provider-controlled text can
+        put a candidate start every few characters, and each walk reads to
+        the end. That is reachable from the network, since this runs after
+        the read loop where the request deadline no longer applies.
         """
         ending = len(text)
         best: int | None = None
         for variant in self._variants:
-            for found in variant.head.finditer(text):
+            window = max(0, ending - variant.span)
+            for found in variant.head.finditer(text, window):
                 start = found.start()
                 if best is not None and start >= best:
                     break

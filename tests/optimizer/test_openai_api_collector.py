@@ -20,11 +20,13 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pytest
 
 from llmtracefx.optimizer.collectors.openai_api import (
     _MAX_PERSISTED_HEADER_CHARS,
+    _REDACTED,
     ARTIFACT_MANIFEST_NAME,
     DEFAULT_RETAINED_EVENT_LIMIT,
     FAILURE_CONNECTION,
@@ -42,6 +44,7 @@ from llmtracefx.optimizer.collectors.openai_api import (
     TransportConnectionError,
     TransportTimeout,
     _contains_credential,
+    _names_a_credential,
     _Redactor,
     _response_socket,
     _safe_endpoint_for_message,
@@ -4571,3 +4574,164 @@ def test_a_bad_retained_event_limit_is_refused(tmp_path: Path, limit: Any) -> No
         replace(make_config(tmp_path), retained_event_limit=limit)
 
     assert "retained_event_limit must be a positive integer" in str(raised.value)
+
+
+# ---------------------------------------------------------------------------
+# Sixteenth review pass: bounded truncation repair, component-wise query keys
+# ---------------------------------------------------------------------------
+
+
+_ADVERSARIAL_CREDENTIAL = "sk-live-ABCdef0123456789abcdef"
+
+
+def _near_miss_filler(size: int) -> str:
+    """A body that starts a credential match every few characters.
+
+    Each unit is the credential with its last character replaced, so the
+    prefilter fires on every unit and every one of those candidate starts
+    then has to be walked and rejected.
+    """
+    unit = _ADVERSARIAL_CREDENTIAL[:-1] + "!"
+    return unit * (size // len(unit))
+
+
+@pytest.mark.parametrize("size", [65_536, 262_144])
+def test_truncation_repair_is_not_quadratic_in_the_body(size: int) -> None:
+    """Provider-controlled text must not be able to burn unbounded CPU.
+
+    ``boundary`` runs after the read loop, so the request deadline is no
+    longer counting. Walking every candidate start to the end of the body
+    was quadratic: 256 KiB of near misses took roughly six seconds, and
+    the cost quadrupled with each doubling.
+    """
+    redact = _Redactor(_ADVERSARIAL_CREDENTIAL)
+    body = _near_miss_filler(size)
+
+    started = time.perf_counter()
+    result = redact.boundary(body)
+    elapsed = time.perf_counter() - started
+
+    assert result == body
+    assert elapsed < 1.0
+
+
+def test_truncation_repair_still_fires_at_the_end_of_a_long_body() -> None:
+    """The suffix window must not be a hole.
+
+    Only a bounded window at the end is searched now, on the reasoning
+    that truncation removes the tail so any cut credential must run to the
+    last character. A window that is too small, or measured from the wrong
+    end, would silently stop repairing exactly the case this exists for.
+    """
+    redact = _Redactor(_ADVERSARIAL_CREDENTIAL)
+    truncated = _ADVERSARIAL_CREDENTIAL[:-4]
+
+    for size in (0, 1024, 65_536, 262_144):
+        body = "the model said something " * (size // 25) + "error " + truncated
+
+        cleaned = redact.boundary(body)
+
+        assert truncated not in cleaned, size
+        assert _ADVERSARIAL_CREDENTIAL[:12] not in cleaned, size
+        assert cleaned.endswith(_REDACTED), size
+
+
+def test_truncation_repair_fires_at_the_end_of_an_adversarial_body() -> None:
+    """Many rejected candidate starts must not hide the real one.
+
+    The filler here begins a credential match every few characters and is
+    itself a prefix of the credential, so this asserts on the tail rather
+    than on absence: the cut credential at the end is what has to go.
+    """
+    redact = _Redactor(_ADVERSARIAL_CREDENTIAL)
+    truncated = _ADVERSARIAL_CREDENTIAL[:-4]
+
+    for size in (1024, 262_144):
+        body = _near_miss_filler(size) + " error " + truncated
+
+        cleaned = redact.boundary(body)
+
+        assert cleaned.endswith(_REDACTED), size
+        assert not cleaned.endswith(truncated), size
+
+
+def test_percent_encoded_truncation_still_repairs_after_a_long_body() -> None:
+    """The window is measured per spelling, and encodings are longer."""
+    credential = "secret/key-value-01234567"
+    redact = _Redactor(credential)
+    encoded = quote(credential, safe="")
+
+    for cut in range(len(encoded) // 2, len(encoded)):
+        body = _near_miss_filler(4096) + " boom " + encoded[:cut]
+
+        cleaned = redact.boundary(body)
+
+        assert encoded[:cut] not in cleaned, cut
+        assert cleaned.endswith(_REDACTED), cut
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "design",
+        "assignment",
+        "assignments",
+        "designer",
+        "monkey",
+        "insignia",
+        "signal",
+        "keyword",
+        "api-version",
+        "deployment",
+        "stream",
+    ],
+)
+def test_ordinary_query_parameter_names_are_accepted(key: str) -> None:
+    """A substring search refused these, and the diagnostic says nothing.
+
+    The rejection message deliberately echoes no part of the URL, so an
+    operator whose legitimate parameter is refused has no way to learn
+    which one it was. False positives are therefore expensive.
+    """
+    assert _names_a_credential(key) is False
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "api_key",
+        "apiKey",
+        "apikey",
+        "x-api-key",
+        "access_token",
+        "accessToken",
+        "secretkey",
+        "authtoken",
+        "sessiontoken",
+        "subscription-key",
+        "sig",
+        "signature",
+        "keys",
+        "token",
+        "Authorization",
+        "client_secret",
+    ],
+)
+def test_credential_shaped_query_parameter_names_are_refused(key: str) -> None:
+    assert _names_a_credential(key) is True
+
+
+def test_a_credential_shaped_query_key_is_still_refused_end_to_end(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(OpenAIStreamCollectorError) as excinfo:
+        make_config(tmp_path, endpoint=f"{ENDPOINT}?apiKey=CANARY")
+
+    assert "CANARY" not in str(excinfo.value)
+    assert "apiKey" not in str(excinfo.value)
+
+
+def test_an_ordinary_query_key_is_accepted_end_to_end(tmp_path: Path) -> None:
+    config = make_config(tmp_path, endpoint=f"{ENDPOINT}?api-version=2024-02-01")
+
+    assert config.endpoint.endswith("api-version=2024-02-01")

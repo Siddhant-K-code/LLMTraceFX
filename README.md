@@ -1336,6 +1336,17 @@ and are never mixed into a single unlabelled number.
   produces real misses: a credential containing a literal `%25` would never
   match. Carrying the set of reachable positions forward one element at a
   time is exact and stays linear in the length of the text.
+- Repairing a credential cut short by truncation searches only a bounded
+  window at the end of the text. Truncation removes the tail, so a cut
+  credential runs to the last character, and a match consumes a bounded
+  number of characters; a candidate starting further back than that cannot
+  reach the end and so cannot be the one. Searching the whole body was
+  linear in candidate starts and linear again in the walk from each, and
+  provider text can put a candidate start every few characters: 256 KiB of
+  near misses took about six seconds, quadrupling with each doubling. That
+  is reachable from the network and it runs after the read loop, where the
+  request deadline no longer applies, so it was a way to spend unbounded
+  CPU on a response that had already failed.
 - The pre-flight check that refuses to persist a credential uses that same
   matcher, not a plain substring test. The two controls guard the same
   threat from opposite ends, so a difference between them is a gap: a
@@ -1372,6 +1383,17 @@ and are never mixed into a single unlabelled number.
   message that reaches stderr and a failure record would republish the
   thing the refusal exists to prevent. The diagnostic names no part of the
   endpoint at all.
+- Because that diagnostic says nothing, a false positive is expensive: the
+  operator is refused and cannot tell which parameter caused it. The name is
+  therefore tokenized on separators, on case changes and between letters and
+  digits, and each component is judged whole. A bare substring search refused
+  `design`, `assignment`, `monkey`, `insignia`, `signal` and `keyword`, all
+  ordinary parameter names, on the strength of `sig` or `key` buried inside
+  them. A glued compound carries no separator and no case change, so a
+  component is also split once into two parts and counts when both are
+  recognized and at least one names a credential outright. That keeps
+  `apikey`, `secretkey`, `authtoken` and `sessiontoken` refused while letting
+  `keyword` and `monkey` through.
 - No parse diagnostic repeats a value the caller supplied, in any
   rendering. argparse formats several of its messages with `%r`, so a value
   containing a newline, a tab, a zero-width space or a backslash reaches
