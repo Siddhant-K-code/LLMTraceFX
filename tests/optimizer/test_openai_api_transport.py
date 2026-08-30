@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 from collections.abc import Iterator
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,7 @@ import pytest
 from llmtracefx.optimizer.collectors.openai_api import (
     FAILURE_CONNECTION,
     FAILURE_HTTP_STATUS,
+    FAILURE_TIMEOUT,
     APICollectionConfig,
     HTTPRequest,
     TransportConnectionError,
@@ -761,3 +764,96 @@ def test_a_response_without_a_deadline_is_unchanged() -> None:
 
     assert list(response.iter_bytes()) == [b"a"]
     assert sock.timeouts == []
+
+
+class StallingServer:
+    """Sends headers and one chunk, then stops sending without closing.
+
+    This is the shape the whole-response deadline exists for: the provider
+    stays reachable and the connection stays open, so nothing errors out.
+    Only the clock ends the run, and how long that takes is exactly what
+    the per-read budget decides.
+    """
+
+    def __init__(self, first_chunk_after: float) -> None:
+        self._first_chunk_after = first_chunk_after
+        self._sock = socket.socket()
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(1)
+        self.port = int(self._sock.getsockname()[1])
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        try:
+            conn, _ = self._sock.accept()
+        except OSError:
+            return
+        with conn:
+            conn.settimeout(10.0)
+            try:
+                RawSocketServer._drain_request(conn)
+                # No Content-Length, so the client reads until the peer
+                # closes and cannot decide the body is complete on its own.
+                conn.sendall(
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: text/event-stream\r\n"
+                    b"\r\n"
+                    b'data: {"id": "stall", "choices": [{"index": 0, '
+                    b'"delta": {"role": "assistant"}}]}\n\n'
+                )
+                # One real chunk lands inside the budget, so the failing
+                # read is the one that starts with only part of the budget
+                # left rather than the first read of the stream.
+                self._stop.wait(self._first_chunk_after)
+                conn.sendall(
+                    b'data: {"choices": [{"index": 0, '
+                    b'"delta": {"content": "Hi"}}]}\n\n'
+                )
+                self._stop.wait(30.0)
+            except OSError:
+                return
+
+    def close(self) -> None:
+        self._stop.set()
+        self._sock.close()
+        self._thread.join(timeout=10)
+
+
+def test_a_stalled_stream_stops_at_the_budget_not_at_twice_it(
+    tmp_path: Path,
+) -> None:
+    """A real socket must honour the whole-response budget, not per read.
+
+    The last chunk arrives at 70 percent of the budget, so a per-read
+    timeout would let the following read block for another full timeout and
+    finish at about 1.7 times the configured bound. The assertion is
+    deliberately loose: it only has to separate one budget from nearly two.
+    """
+    budget = 2.0
+    server = StallingServer(first_chunk_after=budget * 0.7)
+    try:
+        config = replace(
+            make_config(
+                tmp_path, f"http://127.0.0.1:{server.port}/v1/chat/completions"
+            ),
+            request_timeout_seconds=budget,
+        )
+
+        started = time.monotonic()
+        result = collect_openai_stream(
+            config, transport=UrllibStreamingTransport(), environ=ENVIRON
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        server.close()
+
+    assert result.record.outcome.success is False
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.category == FAILURE_TIMEOUT
+    # It really did wait for the budget rather than giving up early.
+    assert elapsed >= budget * 0.9
+    # Without the per-read tightening this lands near budget * 1.7.
+    assert elapsed < budget * 1.35, f"stalled stream ran for {elapsed:.2f}s"

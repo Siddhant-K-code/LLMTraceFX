@@ -1559,3 +1559,129 @@ def test_the_scrub_scope_is_still_undone_after_the_command_runs(
     assert code == 0
     assert "[REDACTED]" not in out
     assert "sk-first-invocation-value" not in out + err
+
+
+# --- Fifteenth review pass ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "token,expected",
+    [
+        (f"--api-key{_SENTINEL}", "--api-key[REDACTED]"),
+        (f"--apikey{_SENTINEL}", "--apikey[REDACTED]"),
+        (f"--token{_SENTINEL}", "--token[REDACTED]"),
+        (f"--bearer{_SENTINEL}", "--bearer[REDACTED]"),
+        (f"--password{_SENTINEL}", "--password[REDACTED]"),
+        (f"-key{_SENTINEL}", "-key[REDACTED]"),
+        (f"--api-key{_SENTINEL}=tail", "--api-key[REDACTED]"),
+    ],
+)
+def test_a_glued_credential_flag_in_a_recorded_command_is_redacted(
+    tmp_path: Path, token: str, expected: str
+) -> None:
+    """A dropped space is the most common way a key ends up in a command.
+
+    ``--api-keySECRET`` is a single token, so splitting on whitespace or on
+    ``=`` finds nothing to redact and the whole thing is written into the
+    record verbatim. The recorded command is the artifact people paste into
+    issues, which is exactly the wrong place for a working key.
+    """
+    stdout_file = tmp_path / "llama.txt"
+    stdout_file.write_text("llama_perf_context_print: eval time = 1.0 ms\n")
+
+    code, out, _ = run_main(
+        [
+            "parse-llama-cpp",
+            "--run-id",
+            "r1",
+            "--model-id",
+            "local.gguf",
+            "--stdout-file",
+            str(stdout_file),
+            "--",
+            "llama-server",
+            token,
+        ]
+    )
+
+    assert code == 0
+    assert _SENTINEL not in out
+    assert json.loads(out)["command"]["argv"] == ["llama-server", expected]
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "--api-key-file",
+        "--tokenizer",
+        "--keyfile",
+        "--authors",
+        "--secrets",
+        "--token-limit",
+        "--n-keep",
+        "--no-secret",
+        "--verbose",
+    ],
+)
+def test_an_option_that_only_looks_glued_is_left_intact(
+    tmp_path: Path, token: str
+) -> None:
+    """Redacting a real option name corrupts the record it is protecting.
+
+    ``--tokenizer`` starts with a credential stem and is an ordinary
+    option, so a prefix match with no length floor would rewrite it into
+    ``--token[REDACTED]`` and destroy the reproduction the record exists
+    to provide.
+    """
+    stdout_file = tmp_path / "llama.txt"
+    stdout_file.write_text("llama_perf_context_print: eval time = 1.0 ms\n")
+
+    code, out, _ = run_main(
+        [
+            "parse-llama-cpp",
+            "--run-id",
+            "r1",
+            "--model-id",
+            "local.gguf",
+            "--stdout-file",
+            str(stdout_file),
+            "--",
+            "llama-server",
+            token,
+        ]
+    )
+
+    assert code == 0
+    assert json.loads(out)["command"]["argv"] == ["llama-server", token]
+
+
+def test_the_retained_event_limit_is_reconstructed_and_validated(
+    tmp_path: Path,
+) -> None:
+    """The bound shapes the evidence, so it belongs in the reproduction.
+
+    A run that kept a different number of event rows produced different
+    artifacts, so leaving the bound out of the recorded command would make
+    two different runs look identical.
+    """
+    argv = base_argv(tmp_path) + ["--retained-event-limit", "7", "--dry-run"]
+    code, out, err = run_main(argv)
+
+    assert code == 0, err
+    plan = json.loads(out)
+    assert "--retained-event-limit" in plan["plan"]["command"]
+    index = plan["plan"]["command"].index("--retained-event-limit")
+    assert plan["plan"]["command"][index + 1] == "7"
+
+
+@pytest.mark.parametrize("limit", ["0", "-1"])
+def test_a_non_positive_retained_event_limit_is_refused(
+    tmp_path: Path, limit: str
+) -> None:
+    """A bound of zero or less would silently discard the whole timeline."""
+    code, _, err = run_main(
+        base_argv(tmp_path) + ["--retained-event-limit", limit, "--dry-run"]
+    )
+
+    assert code == 1
+    assert "retained_event_limit must be a positive integer" in err

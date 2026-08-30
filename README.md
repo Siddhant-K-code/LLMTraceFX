@@ -950,6 +950,13 @@ provider did not actually apply. Per Z.ai's published documentation
 | `--clear-thinking` | `thinking.clear_thinking` | `true`, `false` | Provider default is `true`. It controls whether `reasoning_content` from *previous* turns is cleared. It does not change whether the current turn thinks. |
 | `--provider-request-id` | `request_id` | any string | Optional caller-supplied ID. Leave unset to let the provider generate one. |
 
+Two flags shape the collection rather than the request:
+
+| Flag | Default | Notes |
+| --- | --- | --- |
+| `--request-timeout` | `120.0` | Whole-response budget in seconds, covering connect, TLS and every read. No retries are performed. |
+| `--retained-event-limit` | `20000` | How many per-event timing rows the timeline keeps. Counters, rates and the inter-token distribution stay exact past the bound; only the individual rows stop. Part of the config identity hash. |
+
 #### Artifacts
 
 ```
@@ -1121,13 +1128,28 @@ and are never mixed into a single unlabelled number.
   another full timeout and overshoot the advertised total by close to two
   times. The socket timeout is lowered to the remaining budget before each
   read, so the per-operation bound and the whole-response bound are the
-  same deadline.
-- **The per-event timeline is capped.** One timing row per SSE event with
-  no limit lets a chatty provider grow it without bound, and serialization
-  amplifies it again. Past a documented cap the rows stop accumulating and
-  the timeline records `events_truncated` with the true total. The
-  counters and the first and last offsets that every derived metric reads
-  stay exact, so the cap costs per-event detail and not a published number.
+  same deadline. The socket is found by walking the response's wrapper
+  chain rather than by naming one depth, because a non-2xx response is an
+  `HTTPError` wrapping the response and its socket therefore sits one level
+  deeper than on the success path. Naming a single depth would silently
+  skip the tightening on exactly the responses a provider is most likely to
+  stall on. This is measured against a real local socket that sends a chunk
+  inside the budget and then stops sending without closing.
+- **The per-event timeline is capped by explicit configuration.** One
+  timing row per SSE event with no limit lets a chatty provider decide how
+  large the artifact gets, and serialization amplifies it again. The bound
+  is a typed field on the collection configuration with a documented
+  default, settable with `--retained-event-limit` and validated as a
+  positive integer, so a run cannot silently discard its whole timeline.
+  Past the bound the rows stop accumulating and the timeline records
+  `events_truncated`, the true `total_event_count` and the
+  `retained_event_limit` that produced it. The counters and the first and
+  last offsets that every derived metric reads stay exact, so the cap costs
+  per-event detail and not a published number. A row is four fixed-width
+  fields and never any generated text, so the row count is the only thing
+  the timeline's size depends on. The bound is part of the config identity
+  hash: two runs that kept different amounts of evidence are not the same
+  configuration, and a later comparison must not average them together.
 - **Asking for reasoning and hearing nothing back suppresses the rate too.**
   When the request enabled thinking or set `reasoning_effort` and the
   provider returns neither reasoning deltas nor a reasoning token count,
@@ -1288,6 +1310,32 @@ and are never mixed into a single unlabelled number.
   numeric escapes carry, and `json.loads` recovers the key from them
   exactly, so they are matched and their truncation is repaired alongside
   the numeric forms.
+- Whole-value re-encodings count as spellings too. Percent-encoding and
+  backslash escapes keep the credential's own characters, so a matcher that
+  walks characters sees them. Base64, base64url, hex and octal do not: they
+  share no character with the key, and a logging proxy or a request echo
+  that returns one of them defeats a character-wise matcher completely
+  while staying trivially reversible for anyone reading the artifact. The
+  three byte alignments of base64 are each derived, so a key embedded in a
+  longer encoded blob is still found, minus the leading and trailing
+  characters whose bits are shared with the surrounding bytes. Unicode
+  normalization is included for the same reason: an intermediary that
+  normalizes an accented key returns a different sequence of codepoints
+  that renders identically. These extra spellings apply only above a
+  minimum credential length, because a short value's encodings collide with
+  ordinary text and a redactor that fires on noise destroys the evidence it
+  is guarding.
+- Matching is a deterministic walk over positions, not a backtracking
+  search. Several spellings of the same character are prefixes of each
+  other: a literal backslash is a prefix of `\\`, of `\x5C`, of `\u005C` and
+  of the octal `\134`, and `%` is a prefix of `%25`. Expressing that as a
+  regex alternation and repeating it is the classic exponential
+  backtracking shape, and provider text is untrusted, so a key made of
+  backslashes would be a denial of service against the redactor itself.
+  Committing to the longest spelling instead is not a fix, because it
+  produces real misses: a credential containing a literal `%25` would never
+  match. Carrying the set of reachable positions forward one element at a
+  time is exact and stays linear in the length of the text.
 - The pre-flight check that refuses to persist a credential uses that same
   matcher, not a plain substring test. The two controls guard the same
   threat from opposite ends, so a difference between them is a gap: a
@@ -1304,6 +1352,26 @@ and are never mixed into a single unlabelled number.
   by the redactor and waved through by the check. The output directory is
   checked too, since a credential there is written into the filesystem as a
   pathname, where no downstream redactor can reach it.
+- A credential flag that swallowed its value is redacted in a recorded
+  external command. `--api-key SECRET` and `--api-key=SECRET` are two
+  tokens and one token split on `=`, and both were already handled;
+  `--api-keySECRET` is a single token that nothing later splits, so it was
+  written into `record.command.argv` in full. Only a token that starts with
+  a credential flag this program defines is split, the shortest such flag
+  wins so the least of the value is left showing in the flag name, and the
+  whole tail is redacted including any `=` inside it, since a base64
+  credential ends in `=`. A tail beginning with `-` or shorter than a
+  credential is left alone: those are `--api-key-file`, `--keyfile` and
+  `--tokenizer`, and rewriting them would corrupt a recorded command that
+  holds no secret. Single-letter flags are deliberately not treated as
+  credential flags in either the separate or the glued form, because `-k`
+  and `-p` mean unrelated things to common tools.
+- The refusal to accept a credential-shaped query parameter does not repeat
+  the parameter name. The name is caller-controlled and is exactly where a
+  key ends up when someone puts it in the URL, so quoting it back into a
+  message that reaches stderr and a failure record would republish the
+  thing the refusal exists to prevent. The diagnostic names no part of the
+  endpoint at all.
 - No parse diagnostic repeats a value the caller supplied, in any
   rendering. argparse formats several of its messages with `%r`, so a value
   containing a newline, a tab, a zero-width space or a backslash reaches

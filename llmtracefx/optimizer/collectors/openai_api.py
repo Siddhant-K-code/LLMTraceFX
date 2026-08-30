@@ -53,16 +53,19 @@ to exactly one request.
 
 from __future__ import annotations
 
+import base64
 import http.client
 import json
 import math
 import os
 import re
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import cache
 from pathlib import Path
 from statistics import median
 from typing import Any, Protocol
@@ -186,7 +189,7 @@ _SHORT_ESCAPES = {'"': '\\"', "\\": "\\\\", "/": "\\/", "'": "\\'"}
 # and the timeline says so; the counters and the first/last offsets every
 # derived metric actually reads stay exact, so capping costs per-event
 # detail and not a single published number.
-_MAX_RETAINED_EVENT_ROWS = 20_000
+DEFAULT_RETAINED_EVENT_LIMIT = 20_000
 
 _PROVIDER_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 #: An exported credential variable name. Deliberately narrower than POSIX,
@@ -309,6 +312,36 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
+#: How far to walk a response's wrapper chain looking for its socket. A
+#: success is an ``HTTPResponse`` one level above the buffered socket
+#: reader; a non-2xx response is an ``HTTPError`` wrapping that response,
+#: so it sits one level further out again.
+_MAX_RESPONSE_WRAPPER_DEPTH = 4
+
+
+def _response_socket(raw: object) -> object | None:
+    """The socket underneath a response, whichever wrapper shape it has.
+
+    ``urlopen`` returns an ``HTTPResponse`` for a success and raises an
+    ``HTTPError`` wrapping one for every other status, so the socket sits
+    at a different depth depending on the status. Naming one depth would
+    silently do nothing on the other, which is how an error body can keep
+    the original per-read timeout while the caller believes the whole
+    response is bounded. Walking the chain covers both shapes without
+    naming either class, and returns ``None`` rather than raising when the
+    object is a stub with no socket at all.
+    """
+    node: object | None = raw
+    for _ in range(_MAX_RESPONSE_WRAPPER_DEPTH):
+        if node is None:
+            return None
+        sock: object | None = getattr(getattr(node, "raw", None), "_sock", None)
+        if sock is not None:
+            return sock
+        node = getattr(node, "fp", None)
+    return None
+
+
 class _UrllibResponse:
     """Adapter over ``http.client.HTTPResponse`` (or an ``HTTPError``)."""
 
@@ -341,18 +374,17 @@ class _UrllibResponse:
         deadline. Returns the remaining seconds, or ``None`` when no
         deadline is configured.
 
-        The socket is reached through the documented ``fp`` chain and the
-        adjustment is skipped when it is not reachable, which is what a
-        stubbed response in a test looks like. Skipping it costs the tighter
-        bound, not correctness: the accumulator still fails the run once the
+        The socket is reached through ``_response_socket``, which covers
+        both the success and the error wrapper shape, and the adjustment is
+        skipped when no socket is reachable, which is what a stubbed
+        response in a test looks like. Skipping it costs the tighter bound,
+        not correctness: the accumulator still fails the run once the
         deadline passes.
         """
         if self._deadline is None:
             return None
         remaining = self._deadline - self._clock()
-        sock = getattr(
-            getattr(getattr(self._raw, "fp", None), "raw", None), "_sock", None
-        )
+        sock = _response_socket(self._raw)
         setter = getattr(sock, "settimeout", None)
         if callable(setter) and remaining > 0:
             setter(remaining)
@@ -682,6 +714,16 @@ class APICollectionConfig:
     """Provider-side model build, when the provider exposes one. Hosted
     APIs generally do not, in which case this stays ``None`` rather than
     being guessed from the model ID."""
+    retained_event_limit: int = DEFAULT_RETAINED_EVENT_LIMIT
+    """How many per-event timing rows the timeline keeps.
+
+    A stream has no declared length, so an unbounded timeline makes the
+    artifact size a function of provider behaviour. Past this many events
+    the rows stop being retained while the counters keep counting, so the
+    totals, the rates and the inter-token distribution stay exact and the
+    record says plainly that the per-event rows were cut. Each row is four
+    fixed-width fields and never any generated text, so this bound is the
+    only thing the timeline's size depends on."""
 
     def __post_init__(self) -> None:
         if not self.run_id:
@@ -695,6 +737,15 @@ class APICollectionConfig:
             raise OpenAIStreamCollectorError("model_id must be non-empty")
         if not self.prompt:
             raise OpenAIStreamCollectorError("prompt must be non-empty")
+        if (
+            not isinstance(self.retained_event_limit, int)
+            or isinstance(self.retained_event_limit, bool)
+            or self.retained_event_limit < 1
+        ):
+            raise OpenAIStreamCollectorError(
+                "retained_event_limit must be a positive integer, got "
+                f"{self.retained_event_limit!r}"
+            )
         if self.system_prompt is not None and not self.system_prompt:
             raise OpenAIStreamCollectorError(
                 "system_prompt must be non-empty when provided"
@@ -847,7 +898,16 @@ def _safe_endpoint_for_message(endpoint: str) -> str:
         if pairs is None:
             rendered += "?" + _REDACTED
         else:
-            keys = sorted({key for key, _ in pairs})
+            # A key whose name looks like a credential is replaced along with
+            # the values, so no message built from this rendering can echo
+            # it. Every other key is kept: the shape of the query is what
+            # makes a misconfiguration diagnosable.
+            keys = sorted(
+                {
+                    _REDACTED if _SECRETISH_QUERY_KEY.search(key) else key
+                    for key, _ in pairs
+                }
+            )
             rendered += "?" + "&".join(f"{key}={_REDACTED}" for key in keys)
     return rendered
 
@@ -879,12 +939,87 @@ def _validate_endpoint(endpoint: str) -> None:
     for key, _value in pairs:
         if _SECRETISH_QUERY_KEY.search(key):
             raise OpenAIStreamCollectorError(
-                f"endpoint query parameter {key!r} looks like a credential; "
-                "credentials must come from the environment variable instead"
+                # The parameter name is not echoed. A name that looks like a
+                # credential is exactly the name most likely to *carry* one,
+                # and this diagnostic reaches stderr and a failure record.
+                # Nothing the caller supplied appears here: not the name, the
+                # host, the path or any other part of the query.
+                "the endpoint query string names a parameter that looks like "
+                "a credential; credentials must come from the environment "
+                "variable named by --api-key-env instead"
             )
 
 
 # --- Redaction ---------------------------------------------------------------
+
+
+#: A whitespace run is matched up to this many characters. Bounded so a
+#: pathological run of separators cannot make matching walk indefinitely.
+_MAX_WHITESPACE_RUN = 64
+
+#: One whitespace character: the step a whitespace run repeats.
+_WHITESPACE_STEP = re.compile(r"\s")
+
+
+@cache
+def _form_pattern(form: str) -> re.Pattern[str]:
+    """One credential spelling, compiled once and shared by every matcher.
+
+    Spellings repeat heavily: every ``a`` in a key yields the same tuple of
+    forms, and every whole-value spelling of the credential re-uses them.
+    Caching keeps building a redactor cheap even though it now prepares one
+    matcher per spelling rather than one pattern per credential.
+    """
+    return re.compile(re.escape(form), re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class _CredentialVariant:
+    """One spelling of the credential, prepared for bounded matching.
+
+    ``forms`` holds the accepted spellings of each element in order and
+    ``runs`` marks the elements that are whitespace runs rather than single
+    characters. ``head`` is a zero-width prefilter over the first element's
+    spellings: it yields the only positions a match can begin at, so a scan
+    stays linear in the length of the text being scrubbed.
+    """
+
+    forms: tuple[tuple[str, ...], ...]
+    runs: tuple[bool, ...]
+    head: re.Pattern[str]
+
+
+def _transport_spellings(body: str) -> list[str]:
+    """Whole-value re-encodings of the credential into another alphabet.
+
+    ``_character_forms`` covers the spellings that keep the credential's own
+    characters: percent-encoding, backslash escapes, case and whitespace
+    variance. A value re-encoded into a different alphabet keeps none of
+    those characters, so it needs a spelling of its own. Base64 and hex are
+    covered because each is one mechanical decode from the key and each is
+    what an intermediary reaches for when an opaque value has to be carried
+    somewhere byte-safe.
+
+    Base64 is generated at all three byte alignments, because the credential
+    may sit inside a larger encoded blob rather than at its start. The
+    characters whose bits depend on bytes outside the credential are
+    dropped, so what remains is fixed by the credential alone; at most one
+    leading and one trailing character of an embedded encoding is left
+    outside the redacted span.
+    """
+    raw = body.encode("utf-8")
+    spellings = [raw.hex()]
+    for encode in (base64.b64encode, base64.urlsafe_b64encode):
+        for offset in range(3):
+            encoded = encode(b"\0" * offset + raw).decode("ascii").rstrip("=")
+            if (offset + len(raw)) % 3:
+                # The final character encodes trailing bits padded with
+                # zeros, which a longer message would fill differently.
+                encoded = encoded[:-1]
+            trimmed = encoded[(0, 2, 3)[offset] :]
+            if len(trimmed) >= _MIN_ENCODED_CREDENTIAL_CHARS:
+                spellings.append(trimmed)
+    return spellings
 
 
 class _Redactor:
@@ -933,6 +1068,11 @@ class _Redactor:
             forms.append(short)
         if codepoint < 0x100:
             forms.append(f"\\x{codepoint:02X}")
+            # The octal escape a C, Java or Python source renderer emits.
+            # Both the zero-padded and the minimal spelling are accepted,
+            # because either decodes back to the same character.
+            forms.append(f"\\{codepoint:03o}")
+            forms.append(f"\\{codepoint:o}")
         if codepoint <= 0xFFFF:
             forms.append(f"\\u{codepoint:04X}")
         else:
@@ -946,181 +1086,220 @@ class _Redactor:
         return tuple(dict.fromkeys(forms))
 
     @classmethod
-    def _character_element(cls, character: str) -> str:
-        """One character, in every spelling ``_character_forms`` lists.
-
-        A provider that echoes the credential back through a URL builder
-        returns ``sk-slash%2Fcredential`` for ``sk-slash/credential``. That
-        is the credential: anyone reading the artifact can decode it in one
-        step. Matching each character as ``(?:c|%XX|%25XX|\\xXX|\\uXXXX)``
-        catches the encoded form wherever it appears, including the partial
-        encoding a real quoting function produces when it encodes only the
-        characters it considers unsafe. ``re.IGNORECASE`` on the compiled
-        pattern covers ``%2f`` as well as ``%2F``, and ``\\u0073`` as well
-        as ``\\U0073``. Double encoding is included because a value passed
-        through two layers of quoting is still one mechanical decode away
-        from the key, and the expansion stops there so the pattern stays
-        bounded.
-
-        Built from ``_character_forms`` rather than from a second list, so
-        a spelling can never be added to the matcher without also being
-        known to the truncation repair, or the other way around.
-        """
-        return (
-            "(?:"
-            + "|".join(re.escape(form) for form in cls._character_forms(character))
-            + ")"
-        )
-
-    @classmethod
     def _whitespace_forms(cls) -> tuple[str, ...]:
         """Every spelling of a single whitespace character.
 
         The literal one-character spellings are dropped: they cannot be cut
-        short, and ``\\s`` already covers them in the run pattern. What
-        remains is the multi-character renderings, which truncation *can*
-        cut through, leaving ``%2``, ``%25`` or ``\\u00`` where a space
-        belonged. ``+`` is the form encoding of a space and is included as
-        a whole spelling.
+        short, and the run step already accepts any one whitespace
+        character. What remains is the multi-character renderings, which
+        truncation *can* cut through, leaving ``%2``, ``%25`` or ``\\u00``
+        where a space belonged. ``+`` is the form encoding of a space and
+        is included as a whole spelling.
         """
         forms: list[str] = ["+", "\\t", "\\n", "\\v", "\\f", "\\r"]
         for character in cls._WHITESPACE_CHARACTERS:
             forms.extend(
-                form for form in _Redactor._character_forms(character) if len(form) > 1
+                form for form in cls._character_forms(character) if len(form) > 1
             )
         return tuple(dict.fromkeys(forms))
 
     @classmethod
-    def _whitespace_element(cls) -> str:
-        return (
-            "(?:\\s|"
-            + "|".join(re.escape(form) for form in cls._whitespace_forms())
-            + "){1,64}"
-        )
+    def _elements_with_forms(cls, fragment: str) -> list[tuple[tuple[str, ...], bool]]:
+        """Split a fragment into elements, each as the spellings it accepts.
 
-    @classmethod
-    def _elements_with_forms(
-        cls, fragment: str
-    ) -> list[tuple[str, tuple[str, ...] | None]]:
-        """``_elements`` paired with the raw spellings behind each element.
+        One element per character, except that a run of whitespace becomes
+        a single run element flagged ``True``. Surrounding whitespace is
+        dropped: a credential read from a file or an environment value may
+        carry it, it is not part of the secret, and keeping it would make
+        the matcher demand whitespace the provider never echoed. A fragment
+        with no non-whitespace character is not a credential and yields no
+        elements at all, so it cannot become a matcher that hits every
+        space in every artifact.
 
-        Whitespace runs carry the multi-character spellings of one
-        whitespace character. A cut inside a literal space exposes nothing,
-        but a cut inside ``%2520`` or ``\\u0020`` leaves the run unmatchable
-        and every credential character *before* it surviving, so the
-        truncation repair needs to know those spellings too.
+        The truncation repair reads the same table, so a spelling can never
+        be added to the matcher without also being known to the repair, or
+        the other way around.
         """
-        elements: list[tuple[str, tuple[str, ...] | None]] = []
+        elements: list[tuple[tuple[str, ...], bool]] = []
         stripped = fragment.strip()
         index = 0
         while index < len(stripped):
             if stripped[index].isspace():
                 while index < len(stripped) and stripped[index].isspace():
                     index += 1
-                elements.append((cls._whitespace_element(), cls._whitespace_forms()))
+                elements.append((cls._whitespace_forms(), True))
                 continue
-            character = stripped[index]
-            elements.append(
-                (cls._character_element(character), cls._character_forms(character))
-            )
+            elements.append((cls._character_forms(stripped[index]), False))
             index += 1
         return elements
 
     @classmethod
-    def _elements(cls, fragment: str) -> list[str]:
-        """Split a fragment into per-character (or per-whitespace-run) parts.
+    def _spellings(cls, credential: str) -> tuple[str, ...]:
+        """Every whole-value rendering of the credential worth matching.
 
-        Surrounding whitespace is dropped: a credential read from a file or
-        an environment value may carry it, it is not part of the secret,
-        and keeping it would make the pattern demand whitespace the
-        provider never echoed. A fragment with no non-whitespace character
-        is not a credential and yields no elements at all, so it cannot
-        compile into a pattern that matches every space in every artifact.
+        Unicode normalization is included because a normalizing
+        intermediary can rewrite an accented key into a different sequence
+        of codepoints that renders identically to anyone reading the
+        artifact and decodes back to the key. The re-encodings come from
+        ``_transport_spellings``. Each is prepared as its own matcher, so
+        the per-character spellings, the truncation repair and the
+        preflight check all apply to them unchanged.
         """
-        return [element for element, _ in cls._elements_with_forms(fragment)]
+        spellings = [credential]
+        for form in ("NFC", "NFD"):
+            normalized = unicodedata.normalize(form, credential)
+            if normalized != credential:
+                spellings.append(normalized)
+        body = credential.strip()
+        if len(body) >= _MIN_ENCODED_CREDENTIAL_CHARS:
+            # Short values are left to the literal spellings. An encoding of
+            # two or three characters collides with ordinary text, and a
+            # redaction that fires on noise destroys the artifact it guards.
+            spellings.extend(_transport_spellings(body))
+        return tuple(dict.fromkeys(spellings))
 
     @classmethod
-    def _flexible(cls, fragment: str) -> re.Pattern[str] | None:
-        """Compile a fragment so encoding, whitespace and case cannot hide it.
-
-        A provider that echoes the credential back with tabs for spaces,
-        with the case folded, or percent-encoded, is echoing the
-        credential. Keeping every sink on this one construction means no
-        sink has to alter what it persists to stay safe.
-        """
-        elements = cls._elements(fragment)
+    def _variant(cls, spelling: str) -> _CredentialVariant | None:
+        elements = cls._elements_with_forms(spelling)
         if not elements:
             return None
-        return re.compile("".join(elements), re.IGNORECASE)
+        forms = tuple(element for element, _ in elements)
+        return _CredentialVariant(
+            forms=forms,
+            runs=tuple(run for _, run in elements),
+            head=re.compile(
+                "(?=" + "|".join(re.escape(form) for form in forms[0]) + ")",
+                re.IGNORECASE,
+            ),
+        )
 
     def __init__(self, credential: str | None) -> None:
         self._credential = credential or None
-        table = self._elements_with_forms(self._credential) if self._credential else []
-        self._parts = [element for element, _ in table]
-        self._forms = [forms for _, forms in table]
-        self._pattern = (
-            re.compile("".join(self._parts), re.IGNORECASE) if self._parts else None
-        )
-        # ``boundary`` compares against a tail that truncation cut, so it
-        # cannot use the whole-credential pattern. It uses the same
-        # construction over each shorter prefix instead, so the two
-        # matchers guarding the same threat have equal strength.
-        #
-        # Those per-prefix patterns are built only when the head of the
-        # credential is actually present. Any prefix long enough to match
-        # begins with that head, so its absence rules every prefix out, and
-        # the common case where nothing leaked pays for one small search
-        # rather than one compile per prefix length.
-        self._tail_head = (
-            re.compile(
-                "(?=" + "".join(self._parts[:_MIN_ENCODED_CREDENTIAL_CHARS]) + ")",
-                re.IGNORECASE,
-            )
-            if len(self._parts) > _MIN_ENCODED_CREDENTIAL_CHARS
-            else None
-        )
-        self._tail_patterns: tuple[re.Pattern[str], ...] | None = None
+        variants: list[_CredentialVariant] = []
+        if self._credential:
+            for spelling in self._spellings(self._credential):
+                variant = self._variant(spelling)
+                if variant is not None:
+                    variants.append(variant)
+        self._variants = tuple(variants)
 
-    def _element_patterns(self) -> tuple[re.Pattern[str], ...]:
-        """One compiled matcher per credential element, built on demand.
+    @staticmethod
+    def _advance(
+        variant: _CredentialVariant, index: int, text: str, positions: set[int]
+    ) -> set[int]:
+        """Every position reachable by matching one more element.
 
-        Walking these forward from a candidate start is linear in the
-        credential length. Compiling one anchored pattern per prefix length
-        instead would be quadratic in the credential length, which is
-        measurable for a long key and buys nothing.
+        Carrying a *set* of positions rather than one cursor is what keeps
+        matching both exact and bounded. Spellings of the same character
+        can have different lengths where one is a prefix of another: a
+        literal backslash is a prefix of the escaped ``\\\\``, and a literal
+        ``%`` is a prefix of the double-encoded ``%25``. A backtracking
+        matcher explores every combination of those choices and takes
+        exponential time to *fail*, so provider-controlled text could stall
+        redaction while the request timeout is not running. Advancing all
+        choices together visits each element once and still finds a match
+        whenever one exists, so neither exactness nor termination is
+        traded away.
         """
-        if self._tail_patterns is None:
-            self._tail_patterns = tuple(
-                re.compile(part, re.IGNORECASE) for part in self._parts
-            )
-        return self._tail_patterns
+        forms = variant.forms[index]
+        reached: set[int] = set()
+        if not variant.runs[index]:
+            for position in positions:
+                for form in forms:
+                    found = _form_pattern(form).match(text, position)
+                    if found is not None:
+                        reached.add(found.end())
+            return reached
+        frontier = positions
+        for _ in range(_MAX_WHITESPACE_RUN):
+            step: set[int] = set()
+            for position in frontier:
+                single = _WHITESPACE_STEP.match(text, position)
+                if single is not None:
+                    step.add(single.end())
+                for form in forms:
+                    found = _form_pattern(form).match(text, position)
+                    if found is not None:
+                        step.add(found.end())
+            step -= reached
+            if not step:
+                break
+            reached |= step
+            frontier = step
+        return reached
 
-    def _is_truncated_tail(self, index: int, remainder: str) -> bool:
+    @classmethod
+    def _match_end(
+        cls, variant: _CredentialVariant, text: str, start: int
+    ) -> int | None:
+        """The furthest end of a whole match beginning at ``start``."""
+        positions = {start}
+        for index in range(len(variant.forms)):
+            positions = cls._advance(variant, index, text, positions)
+            if not positions:
+                return None
+        return max(positions)
+
+    @staticmethod
+    def _is_truncated_tail(
+        variant: _CredentialVariant, index: int, remainder: str
+    ) -> bool:
         """True when ``remainder`` is element ``index`` cut short.
 
-        Truncation can land inside a percent escape, leaving ``%``, ``%2``
-        or ``%25`` where ``%2F`` belonged. The element matcher rejects a
-        partial escape, so without this repair the scrub stops at the cut
-        and every credential character before it survives. Only the encoded
-        spellings can be cut this way, since a literal character is one
-        character long and a non-empty remainder can never be shorter.
+        Truncation can land inside a percent escape or a backslash escape,
+        leaving ``%``, ``%2`` or ``\\u00`` where a whole spelling belonged.
+        The element matcher rejects a partial escape, so without this
+        repair the scrub stops at the cut and every credential character
+        before it survives. Only the multi-character spellings can be cut
+        this way, since a literal character is one character long and a
+        non-empty remainder can never be shorter.
         """
-        if not remainder or index >= len(self._forms):
-            return False
-        forms = self._forms[index]
-        if forms is None:
+        if not remainder or index >= len(variant.forms):
             return False
         lowered = remainder.lower()
         return any(
             len(remainder) < len(form) and form.lower().startswith(lowered)
-            for form in forms
+            for form in variant.forms[index]
         )
+
+    def _redact_variant(self, variant: _CredentialVariant, text: str) -> str:
+        """Replace every non-overlapping match of one spelling."""
+        pieces: list[str] = []
+        cursor = 0
+        for found in variant.head.finditer(text):
+            start = found.start()
+            if start < cursor:
+                continue
+            ending = self._match_end(variant, text, start)
+            if ending is None:
+                continue
+            pieces.append(text[cursor:start])
+            pieces.append(_REDACTED)
+            cursor = ending
+        if not pieces:
+            return text
+        pieces.append(text[cursor:])
+        return "".join(pieces)
 
     def _scrub(self, text: str) -> str:
         cleaned = text
-        if self._pattern is not None:
-            cleaned = self._pattern.sub(_REDACTED, cleaned)
+        for variant in self._variants:
+            cleaned = self._redact_variant(variant, cleaned)
         return self._BEARER.sub(rf"\1 {_REDACTED}", cleaned)
+
+    def search(self, text: str) -> bool:
+        """True when any spelling of the credential occurs in ``text``.
+
+        The preflight that decides whether a provider-controlled value may
+        be persisted at all asks this, so it is answered by the matcher
+        that would have to scrub the value rather than by a second,
+        weaker comparison.
+        """
+        return any(
+            self._match_end(variant, text, found.start()) is not None
+            for variant in self._variants
+            for found in variant.head.finditer(text)
+        )
 
     def __call__(self, text: str, *, limit: int = _MAX_PERSISTED_MESSAGE_CHARS) -> str:
         # Normalize before scrubbing as well as after. Whitespace collapse
@@ -1129,6 +1308,42 @@ class _Redactor:
         if len(cleaned) > limit:
             cleaned = cleaned[: limit - 3] + "..."
         return cleaned
+
+    def _truncated_start(self, text: str) -> int | None:
+        """Where a credential cut short by truncation begins, if it is there.
+
+        Every candidate start is walked element by element. A candidate
+        wins either by consuming the text exactly, or by ending in a
+        remainder that is one element cut short. Both require enough whole
+        elements to have matched first, so a couple of coincidental
+        characters at the end of a body cannot blank it.
+        """
+        ending = len(text)
+        best: int | None = None
+        for variant in self._variants:
+            for found in variant.head.finditer(text):
+                start = found.start()
+                if best is not None and start >= best:
+                    break
+                positions = {start}
+                for index in range(len(variant.forms)):
+                    if index >= _MIN_ENCODED_CREDENTIAL_CHARS and any(
+                        self._is_truncated_tail(variant, index, text[position:])
+                        for position in positions
+                        if position < ending
+                    ):
+                        best = start
+                        break
+                    positions = self._advance(variant, index, text, positions)
+                    if not positions:
+                        break
+                    if (
+                        ending in positions
+                        and index + 1 >= _MIN_ENCODED_CREDENTIAL_CHARS
+                    ):
+                        best = start
+                        break
+        return best
 
     def boundary(self, text: str) -> str:
         """Scrub a string that truncation may have cut through.
@@ -1140,35 +1355,10 @@ class _Redactor:
         KiB body can leak all but the last character of a key.
         """
         cleaned = text.rstrip("\ufffd")
-        if self._tail_head is None:
+        start = self._truncated_start(cleaned)
+        if start is None:
             return cleaned
-        # Every prefix long enough to match starts with the credential's
-        # head, so the only candidate starts are the positions the head
-        # occupies. ``finditer`` yields them in order and every accepted
-        # match ends at the end of the string, so the first start that
-        # succeeds is also the longest prefix.
-        ending = len(cleaned)
-        patterns = self._element_patterns()
-        for found in self._tail_head.finditer(cleaned):
-            start = found.start()
-            cursor = start
-            for index, pattern in enumerate(patterns):
-                match = pattern.match(cleaned, cursor)
-                if match is None:
-                    # The cut may sit inside this element's percent escape.
-                    # ``index`` whole elements matched before it, so the
-                    # same length rule the exact path uses applies here.
-                    if index >= _MIN_ENCODED_CREDENTIAL_CHARS and (
-                        self._is_truncated_tail(index, cleaned[cursor:ending])
-                    ):
-                        return cleaned[:start] + _REDACTED
-                    break
-                cursor = match.end()
-                if cursor >= ending:
-                    if cursor == ending and index + 1 >= _MIN_ENCODED_CREDENTIAL_CHARS:
-                        return cleaned[:start] + _REDACTED
-                    break
-        return cleaned
+        return cleaned[:start] + _REDACTED
 
     def text(self, value: str) -> str:
         """Scrub generated text, preserving whitespace, newlines and length.
@@ -1349,6 +1539,10 @@ def _config_identity_hash(config: APICollectionConfig) -> str:
             # identity is for.
             "finish_reasons": config.finish_reasons.identity(),
             "request_timeout_seconds": config.request_timeout_seconds,
+            # Two runs that kept different numbers of event rows did not
+            # produce the same evidence, even though they issued the same
+            # request, so they are not the same collector configuration.
+            "retained_event_limit": config.retained_event_limit,
             "system_prompt_sha256": (
                 None
                 if config.system_prompt is None
@@ -1604,6 +1798,7 @@ class StreamTimeline:
     events: tuple[StreamEventTiming, ...] = ()
     total_event_count: int = 0
     events_truncated: bool = False
+    retained_event_limit: int = DEFAULT_RETAINED_EVENT_LIMIT
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1617,7 +1812,7 @@ class StreamTimeline:
             "events": [event.to_dict() for event in self.events],
             "total_event_count": self.total_event_count,
             "events_truncated": self.events_truncated,
-            "retained_event_limit": _MAX_RETAINED_EVENT_ROWS,
+            "retained_event_limit": self.retained_event_limit,
         }
 
 
@@ -1841,9 +2036,11 @@ class _StreamAccumulator:
         started: float,
         redactor: _Redactor,
         finish_reasons: FinishReasonVocabulary | None = None,
+        retained_event_limit: int = DEFAULT_RETAINED_EVENT_LIMIT,
     ) -> None:
         self._clock = clock
         self._started = started
+        self._retained_event_limit = retained_event_limit
         self.finish_reasons = finish_reasons or FinishReasonVocabulary()
         self.response_headers_at: float | None = None
         self.first_body_chunk_at: float | None = None
@@ -2150,7 +2347,9 @@ class _StreamAccumulator:
         offset = self.offset_ms(moment)
         index = self.total_event_count
         self.total_event_count += 1
-        if index >= _MAX_RETAINED_EVENT_ROWS:
+        if index >= self._retained_event_limit:
+            # The counters above already ran, so dropping the row costs the
+            # per-event detail and nothing else.
             return
         self.events.append(
             StreamEventTiming(
@@ -2342,6 +2541,7 @@ class _StreamAccumulator:
             events=tuple(self.events),
             total_event_count=self.total_event_count,
             events_truncated=self.total_event_count > len(self.events),
+            retained_event_limit=self._retained_event_limit,
         )
 
 
@@ -2545,17 +2745,15 @@ def _contains_credential(value: str, credential: str) -> bool:
     """
     if credential in value:
         return True
-    pattern = _Redactor._flexible(credential)
-    if pattern is None:
-        return False
-    if pattern.search(value):
+    matcher = _Redactor(credential)
+    if matcher.search(value):
         return True
     if len(credential.strip()) < _MIN_ENCODED_CREDENTIAL_CHARS:
         return False
     # ``_percent_decodings`` yields the value itself first, so this covers
     # the direct search as well as the ``+``-for-space and multi-round
-    # decodings that a per-character pattern cannot express.
-    return any(pattern.search(decoded) for decoded in _percent_decodings(value))
+    # decodings that a per-character matcher cannot express.
+    return any(matcher.search(decoded) for decoded in _percent_decodings(value))
 
 
 def _assert_credential_not_embedded(
@@ -2802,6 +3000,7 @@ def collect_openai_stream(
         started=started,
         redactor=redact,
         finish_reasons=config.finish_reasons,
+        retained_event_limit=config.retained_event_limit,
     )
     failure: APIFailure | None = None
     rate_limit_headers: dict[str, str] = {}

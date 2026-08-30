@@ -50,6 +50,7 @@ from .collectors.native_mtp import (
     collect_native_mtp,
 )
 from .collectors.openai_api import (
+    DEFAULT_RETAINED_EVENT_LIMIT,
     GLM_REASONING_EFFORT_LEVELS,
     THINKING_TYPES,
     APICollectionConfig,
@@ -258,6 +259,8 @@ def _collect_api_argv(args: argparse.Namespace) -> tuple[str, ...]:
         args.api_key_env,
         "--request-timeout",
         str(args.request_timeout),
+        "--retained-event-limit",
+        str(args.retained_event_limit),
     ]
     for flag, value in (
         ("--model-revision", args.model_revision),
@@ -299,6 +302,7 @@ def _api_collection_config(args: argparse.Namespace) -> APICollectionConfig:
         top_p=args.top_p,
         seed=args.seed,
         request_timeout_seconds=args.request_timeout,
+        retained_event_limit=args.retained_event_limit,
         extensions=ProviderExtensions(
             reasoning_effort=args.reasoning_effort,
             thinking_type=args.thinking,
@@ -1335,6 +1339,13 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
 
 _MIN_SCRUBBED_ARGUMENT_CHARS = 4
 
+#: How long a tail glued onto a credential flag must be before it is treated
+#: as a swallowed value rather than the rest of a longer option name. Set to
+#: the shortest credential worth carrying in an environment variable, so
+#: ``--tokenizer`` and ``--keyfile`` stay intact while ``--api-keySECRET``
+#: does not.
+_MIN_GLUED_CREDENTIAL_CHARS = 8
+
 _CREDENTIAL_ARGUMENT_STEMS = frozenset(
     {
         "apikey",
@@ -1400,7 +1411,8 @@ def _redact_credential_flag_values(argv: Sequence[str]) -> tuple[str, ...]:
             redacted.append("[REDACTED]")
             continue
         if not _is_credential_flag(token):
-            redacted.append(token)
+            glued = _glued_credential_prefix(token)
+            redacted.append(f"{glued}[REDACTED]" if glued else token)
             continue
         name, separator, _ = token.partition("=")
         if separator:
@@ -1417,6 +1429,46 @@ def _redact_credential_flag_values(argv: Sequence[str]) -> tuple[str, ...]:
         skip_next = following is not None and not _is_credential_flag(following)
         redacted.append(token)
     return tuple(redacted)
+
+
+def _glued_credential_prefix(token: str) -> str:
+    """The credential flag ``token`` begins with, when it swallowed a value.
+
+    Dropping the space is an ordinary typing slip and an ordinary shell
+    habit, so ``--api-keySECRET`` reaches a recorded command as one token.
+    Nothing later in the pipeline splits it, so without this the value is
+    written into ``record.command.argv`` in full.
+
+    Only a token that *starts* with a credential flag this program
+    recognises is split, and the whole tail is redacted, including any
+    ``=`` inside it: a base64 credential ends in ``=`` and splitting there
+    first would leave most of it in place.
+
+    Two shapes are deliberately left alone, because both are far more
+    likely to be a different option than a swallowed value. A tail that
+    begins with ``-`` is the rest of a longer flag name, which is what
+    ``--api-key-file`` is. A tail shorter than a credential is the rest of
+    a longer word, which is what ``--keyfile`` and ``--tokenizer`` are;
+    redacting those would corrupt a recorded command that holds no secret,
+    and a recorded command has to stay a faithful reconstruction.
+
+    The shortest recognised flag wins, so the least possible amount of the
+    value is left showing. Several stems are prefixes of each other, and
+    ``--api-keySECRET`` also starts with the flag ``--api-keys`` when the
+    value happens to begin with an ``s``; taking the longer reading would
+    publish that first character in the flag name.
+    """
+    if not token.startswith("-"):
+        return ""
+    for split in range(2, len(token)):
+        tail = token[split:]
+        if (
+            len(tail) >= _MIN_GLUED_CREDENTIAL_CHARS
+            and not tail.startswith("-")
+            and _is_credential_flag(token[:split])
+        ):
+            return token[:split]
+    return ""
 
 
 def _is_credential_flag(token: str) -> bool:
@@ -1831,6 +1883,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=120.0,
         help="Per-request timeout in seconds; no retries are performed",
+    )
+    collect_api_parser.add_argument(
+        "--retained-event-limit",
+        type=int,
+        default=DEFAULT_RETAINED_EVENT_LIMIT,
+        help=(
+            "How many per-event timing rows to keep in the timeline. The "
+            "counters, the rates and the inter-token distribution stay exact "
+            "past this bound; only the individual rows stop being retained, "
+            "and the record says so."
+        ),
     )
     collect_api_parser.add_argument(
         "--reasoning-effort",

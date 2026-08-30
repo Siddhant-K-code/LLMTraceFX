@@ -11,9 +11,13 @@ documentation:
 
 from __future__ import annotations
 
+import base64
 import codecs
 import json
+import time
+import unicodedata
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +25,8 @@ import pytest
 
 from llmtracefx.optimizer.collectors.openai_api import (
     _MAX_PERSISTED_HEADER_CHARS,
-    _MAX_RETAINED_EVENT_ROWS,
     ARTIFACT_MANIFEST_NAME,
+    DEFAULT_RETAINED_EVENT_LIMIT,
     FAILURE_CONNECTION,
     FAILURE_HTTP_STATUS,
     FAILURE_MISSING_CONTENT,
@@ -39,6 +43,7 @@ from llmtracefx.optimizer.collectors.openai_api import (
     TransportTimeout,
     _contains_credential,
     _Redactor,
+    _response_socket,
     _safe_endpoint_for_message,
     artifact_set_is_complete,
     assert_credential_not_embedded,
@@ -4263,8 +4268,9 @@ def test_the_retained_event_timeline_is_bounded(tmp_path: Path) -> None:
     The counters and the offsets every derived metric reads stay exact; only
     the per-event rows stop accumulating, and the timeline records that.
     """
-    config = make_config(tmp_path)
-    chatty = _MAX_RETAINED_EVENT_ROWS + 250
+    limit = 12
+    config = replace(make_config(tmp_path), retained_event_limit=limit)
+    chatty = limit + 250
     stream: list[bytes] = [
         sse({"id": "c", "choices": [{"index": 0, "delta": {"role": "assistant"}}]})
     ]
@@ -4297,7 +4303,271 @@ def test_the_retained_event_timeline_is_bounded(tmp_path: Path) -> None:
     result, _ = run(config, stream)
 
     timeline = result.evidence.timeline
-    assert len(timeline.events) == _MAX_RETAINED_EVENT_ROWS
-    assert timeline.total_event_count > _MAX_RETAINED_EVENT_ROWS
+    assert len(timeline.events) == limit
+    # One role chunk, every metadata chunk, one content chunk and the final
+    # usage chunk. ``[DONE]`` is a sentinel, not an event.
+    assert timeline.total_event_count == chatty + 3
     assert timeline.events_truncated is True
+    assert timeline.retained_event_limit == limit
     assert timeline.completed_offset_ms is not None
+    # The rows stop, the accounting does not: the answer and the provider
+    # usage are unaffected by having dropped per-event detail.
+    assert result.response_text == "a"
+    assert result.evidence.usage is not None
+    assert result.evidence.usage.completion_tokens == 1
+    # The bound is part of what produced this evidence, so it is part of the
+    # configuration identity and part of the persisted timeline.
+    payload = json.loads(
+        (config.output_dir / "api_evidence.json").read_text(encoding="utf-8")
+    )
+    assert payload["timeline"]["retained_event_limit"] == limit
+    assert payload["timeline"]["events_truncated"] is True
+    assert (
+        len(payload["timeline"]["events"]) == limit
+    ), "the artifact must be bounded, not only the in-memory timeline"
+    assert DEFAULT_RETAINED_EVENT_LIMIT > limit
+
+
+# --- Fifteenth review pass ---------------------------------------------------
+
+
+def _octal(value: str) -> str:
+    return "".join(f"\\{ord(char):o}" for char in value)
+
+
+def _hexed(value: str) -> str:
+    return value.encode("utf-8").hex()
+
+
+def _b64(value: str) -> str:
+    return base64.b64encode(value.encode("utf-8")).decode("ascii")
+
+
+def _b64url(value: str) -> str:
+    return base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii")
+
+
+# Whole-value re-encodings. Unlike the percent and backslash spellings these
+# do not keep the credential's own characters, so a literal or character-wise
+# matcher sees nothing at all and the value is persisted verbatim.
+_TRANSPORT_SPELLINGS = (
+    ("octal escaped", _octal),
+    ("hex encoded", _hexed),
+    ("base64", _b64),
+    ("base64url", _b64url),
+    ("base64 embedded", lambda value: f"trace-{_b64(value)}-end"),
+    ("base64 offset by one", lambda value: _b64("x" + value)),
+    ("base64 offset by two", lambda value: _b64("xy" + value)),
+    ("hex uppercase", lambda value: _hexed(value).upper()),
+)
+
+
+@pytest.mark.parametrize("label,transform", _TRANSPORT_SPELLINGS)
+def test_transport_encodings_are_matched_and_redacted(
+    label: str, transform: Any
+) -> None:
+    """A re-encoded credential is still the credential.
+
+    Anything that logs or echoes a request can hand back the key
+    base64 encoded, hex encoded or escaped, and none of those share a
+    single character with the original. Matching only the literal spelling
+    means the pre-flight passes and the value lands in an artifact intact
+    and trivially reversible.
+    """
+    echo = transform(_SPELLING_CREDENTIAL)
+    assert _SPELLING_CREDENTIAL not in echo, label
+
+    assert _contains_credential(echo, _SPELLING_CREDENTIAL), label
+    scrubbed = _Redactor(_SPELLING_CREDENTIAL).text(echo)
+    assert scrubbed != echo, label
+    assert _b64(_SPELLING_CREDENTIAL) not in scrubbed, label
+    assert _hexed(_SPELLING_CREDENTIAL) not in scrubbed.lower(), label
+
+
+def test_unicode_normalisation_forms_are_matched() -> None:
+    """The same key in NFC and NFD is byte-different and character-equal.
+
+    A provider that normalises what it echoes returns a string that no
+    literal comparison matches, while a human reading the artifact sees the
+    key.
+    """
+    credential = "clé-Sécrète-9182"
+    composed = unicodedata.normalize("NFC", credential)
+    decomposed = unicodedata.normalize("NFD", credential)
+    assert composed != decomposed
+
+    for spelling in (composed, decomposed):
+        assert _contains_credential(f"echo={spelling}", composed)
+        assert _Redactor(composed).text(f"echo={spelling}") == "echo=[REDACTED]"
+        assert _contains_credential(f"echo={spelling}", decomposed)
+
+
+def test_ordinary_text_is_not_matched_as_a_transport_encoding() -> None:
+    """Decoding every candidate must not turn into matching everything."""
+    credential = "sk-Live/Key Value-8712"
+    for value in (
+        "deadbeefdeadbeefdeadbeef",
+        "aGVsbG8gd29ybGQgdGhpcyBpcyBmaW5l",
+        "Explain a stack in one sentence.",
+        "chatcmpl-abc123",
+        "https://api.z.ai/api/paas/v4/chat/completions",
+    ):
+        assert not _contains_credential(value, credential), value
+        assert _Redactor(credential).text(value) == value, value
+
+
+def test_a_short_credential_does_not_enable_encoded_matching() -> None:
+    """Encoded matching on a tiny value would collide with normal text.
+
+    The encoded spellings of a three character key appear inside ordinary
+    identifiers, so they stay off below the documented minimum rather than
+    producing a redactor that eats the artifact.
+    """
+    assert _Redactor("abc").text("YWJj and 616263") == "YWJj and 616263"
+    assert _Redactor("abc").text("literal abc here") == "literal [REDACTED] here"
+
+
+@pytest.mark.parametrize("label,transform", _TRANSPORT_SPELLINGS)
+def test_transport_encodings_survive_boundary_truncation(
+    label: str, transform: Any
+) -> None:
+    """A cut inside a re-encoded credential must not leak the rest.
+
+    Truncation is how these values reach an artifact in practice: a
+    provider message is clipped to a length budget, and the clip lands
+    mid-token.
+    """
+    encoded = transform(_SPELLING_CREDENTIAL)
+    redactor = _Redactor(_SPELLING_CREDENTIAL)
+    # From half the encoding onward the surviving prefix decodes to well
+    # over the documented minimum number of credential characters, which is
+    # the point at which the repair is required to fire. Shorter prefixes
+    # are deliberately left alone; that floor is asserted separately.
+    for cut in range(len(encoded) // 2, len(encoded)):
+        text = f"provider said {encoded[:cut]}"
+        repaired = redactor.text(redactor.boundary(text))
+        assert encoded[:cut] not in repaired, f"{label} cut={cut}: {repaired}"
+
+
+@pytest.mark.parametrize("label,transform", _TRANSPORT_SPELLINGS)
+def test_a_tiny_encoded_fragment_is_deliberately_left_alone(
+    label: str, transform: Any
+) -> None:
+    """The repair has a floor, and it is a choice rather than an oversight.
+
+    A handful of characters is ambiguous with ordinary text, so blanking on
+    that evidence would let any provider message ending in a plausible byte
+    erase the artifact. The floor costs a few leading characters of a
+    truncated key and buys a redactor that does not eat real evidence.
+    """
+    encoded = transform(_SPELLING_CREDENTIAL)
+    redactor = _Redactor(_SPELLING_CREDENTIAL)
+    text = f"provider said {encoded[:4]}"
+
+    assert redactor.boundary(text) == text, label
+
+
+def test_backslash_spellings_do_not_take_exponential_time() -> None:
+    """The matcher must be a walk, not a backtracking search.
+
+    Every backslash has several spellings that are prefixes of each other,
+    which is the exact shape that makes a regex alternation backtrack
+    exponentially. A credential of backslashes is therefore a denial of
+    service against anything that redacts untrusted provider text.
+    """
+    redactor = _Redactor("\\" * 40)
+    text = "provider said " + ("\\" * 40) + " end"
+
+    started = time.perf_counter()
+    redactor.text(text)
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 2.0, f"redaction took {elapsed:.2f}s"
+
+
+def test_the_socket_is_found_under_an_error_response_too() -> None:
+    """A non-2xx body must be bounded by the same deadline as a success.
+
+    ``urlopen`` raises an ``HTTPError`` wrapping the response, so the
+    socket sits one wrapper deeper than on the success path. Naming a
+    single depth silently skips the tightening on exactly the responses a
+    provider is most likely to stall on.
+    """
+
+    class _Sock:
+        def __init__(self) -> None:
+            self.timeouts: list[float] = []
+
+        def settimeout(self, value: float) -> None:
+            self.timeouts.append(value)
+
+    sock = _Sock()
+    raw = type("_Raw", (), {"_sock": sock})()
+    inner = type("_Inner", (), {"raw": raw})()
+    success_shape = type("_Response", (), {"raw": raw})()
+    error_shape = type("_HTTPError", (), {"fp": inner})()
+
+    assert _response_socket(success_shape) is sock
+    assert _response_socket(error_shape) is sock
+    assert _response_socket(object()) is None
+    assert _response_socket(None) is None
+
+
+def test_a_credential_like_query_key_is_refused_without_being_echoed() -> None:
+    """The refusal must not become the leak it is preventing.
+
+    The key of a query parameter is caller controlled and is exactly where
+    a credential ends up when someone puts it in the URL, so quoting it
+    back into a message or a traceback republishes it.
+    """
+    canary = "CANARY-SECRET-VALUE-91827"
+    endpoint = f"https://api.z.ai/api/paas/v4/chat/completions?api_key_{canary}=1"
+
+    with pytest.raises(OpenAIStreamCollectorError) as raised:
+        APICollectionConfig(
+            run_id="r",
+            provider="zai",
+            endpoint=endpoint,
+            model_id="glm-5.3",
+            prompt="hi",
+            output_dir=Path("/tmp/does-not-matter"),
+            command_argv=("llmtracefx-optimizer",),
+            credential_env_var="ZAI_API_KEY",
+        )
+
+    message = str(raised.value)
+    assert canary not in message
+    assert "query" in message.lower()
+    assert _safe_endpoint_for_message(endpoint).find(canary) == -1
+
+
+def test_the_retained_event_limit_changes_the_config_hash(tmp_path: Path) -> None:
+    """Two runs that kept different evidence are not the same configuration.
+
+    The config hash is what later analysis groups by. A run whose timeline
+    was cut at ten rows and one that kept every row produced materially
+    different artifacts, so collapsing them into one identity would let a
+    comparison average incomparable evidence.
+    """
+    baseline = make_config(tmp_path)
+    narrowed = replace(baseline, retained_event_limit=10)
+
+    assert build_request_plan(baseline).config_hash != (
+        build_request_plan(narrowed).config_hash
+    )
+    # The bound changes the identity without changing the request itself.
+    assert build_request_plan(baseline).request_parameters == (
+        build_request_plan(narrowed).request_parameters
+    )
+    assert build_request_plan(baseline).workload_hash == (
+        build_request_plan(narrowed).workload_hash
+    )
+
+
+@pytest.mark.parametrize("limit", [0, -1, 1.5, True, "20"])
+def test_a_bad_retained_event_limit_is_refused(tmp_path: Path, limit: Any) -> None:
+    """A bound that is not a positive integer silently breaks the timeline."""
+    with pytest.raises(OpenAIStreamCollectorError) as raised:
+        replace(make_config(tmp_path), retained_event_limit=limit)
+
+    assert "retained_event_limit must be a positive integer" in str(raised.value)
