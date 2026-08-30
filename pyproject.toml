@@ -34,11 +34,25 @@ dependencies = [
     "pandas>=2.1.3",
     "numpy>=1.25.2",
     "python-multipart>=0.0.6",
-    "modal>=0.57.0",
     "streamlit>=1.28.0",
 ]
 
 [project.optional-dependencies]
+# Modal is an optional extra, not a runtime dependency. Nothing in the
+# library imports it at module scope: `llmtracefx.api.serve` guards its
+# import, and the deployment planner (`llmtracefx.deploy`) is pure Python
+# so `llmtracefx-deploy plan` and the whole test suite run with Modal
+# absent. Only the `modal run`/`modal deploy` entrypoints need it.
+#
+# The floor is 1.0.5 because that is the version whose API surface the
+# GLM entrypoint was written against: `@modal.web_server`,
+# `@modal.concurrent`, and the `max_containers`/`min_containers`/
+# `scaledown_window` parameters. The newer `@app.server()` decorator does
+# not exist at this floor and is deliberately not used.
+modal = [
+    "modal>=1.0.5",
+]
+
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
@@ -78,6 +92,7 @@ llmtracefx = "llmtracefx.main:main"
 llmtracefx-serve = "llmtracefx.api.serve:main"
 llmtracefx-dashboard = "llmtracefx.realtime_dashboard:main"
 llmtracefx-optimizer = "llmtracefx.optimizer.cli:main"
+llmtracefx-deploy = "llmtracefx.deploy.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -136,10 +151,21 @@ module = [
     "pandas.*",
     "numpy.*",
     "modal.*",
+    "huggingface_hub.*",
     "uvicorn.*",
     "streamlit.*",
 ]
 ignore_missing_imports = true
+
+# The Modal entrypoint is decorated by an optional dependency. When the
+# `modal` extra is not installed the decorators resolve to Any, which
+# `disallow_untyped_decorators` reports on every decorated function. That
+# check cannot say anything useful about a module whose decorators come
+# from a package the type checker was not given, and the rest of the
+# strict settings still apply here.
+[[tool.mypy.overrides]]
+module = ["llmtracefx.deploy.modal_glm_app"]
+disallow_untyped_decorators = false
 
 # Pytest configuration
 [tool.pytest.ini_options]

@@ -1,6 +1,6 @@
 # LLMTraceFX Makefile
 
-.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal
+.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan test-deploy
 
 help:  ## Show this help message
 	@echo "LLMTraceFX - GPU-level LLM inference profiler"
@@ -74,14 +74,33 @@ generate-traces:  ## Generate various example trace files
 	@echo "✅ Generated example trace files in llmtracefx/test_traces/"
 
 # Modal deployment
+install-modal:  ## Install the optional Modal SDK extra
+	uv sync --extra modal
+
 deploy-modal:  ## Deploy to Modal
-	uv run modal deploy llmtracefx/modal_app.py
+	uv run --extra modal modal deploy llmtracefx/modal_app.py
 
 serve-modal:  ## Serve on Modal
-	uv run modal serve llmtracefx/modal_app.py::run_server
+	uv run --extra modal modal serve llmtracefx/modal_app.py::run_server
 
 test-modal:  ## Test Modal functions
-	uv run modal run llmtracefx/modal_app.py
+	uv run --extra modal modal run llmtracefx/modal_app.py
+
+# GLM-5.3-Flash self-hosting harness. `glm-recipe`, `glm-budget` and
+# `glm-plan` are offline: they need no Modal account and cannot spend.
+# See SELF_HOST_GLM_RUNBOOK.md for the full sequence.
+glm-recipe:  ## Print the pinned GLM-5.3-Flash facts and their sources
+	uv run llmtracefx-deploy recipe
+
+CREDIT ?= 30
+glm-budget:  ## Recommend a session spending cap (make glm-budget CREDIT=30)
+	uv run llmtracefx-deploy budget --credit-usd $(CREDIT)
+
+glm-plan:  ## Adjudicate a deployment plan (make glm-plan ARGS="--max-usd 10 ...")
+	uv run llmtracefx-deploy plan $(ARGS)
+
+test-deploy:  ## Run the offline deployment harness tests
+	uv run pytest tests/deploy
 
 # Documentation
 docs:  ## Build documentation
