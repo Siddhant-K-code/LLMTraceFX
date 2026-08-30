@@ -1655,6 +1655,8 @@ def test_a_glued_credential_flag_in_a_recorded_command_is_redacted(
         "--tokenizer-model=model.json",
         "--password-file",
         "--password-env",
+        "--access-token-lifetime=3600",
+        "--password-policy",
     ],
 )
 def test_an_option_that_only_looks_glued_is_left_intact(

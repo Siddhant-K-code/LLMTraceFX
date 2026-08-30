@@ -5776,3 +5776,9 @@ def test_bare_code_remains_an_ordinary_query_key() -> None:
 def test_bare_session_terms_remain_ordinary_query_keys(key: str) -> None:
     assert _names_a_credential(key) is False
     _validate_endpoint(f"https://api.example.com/v1/chat?{key}=value")
+
+
+@pytest.mark.parametrize("key", ["sessionidletimeout", "refreshsessiontimeout"])
+def test_session_words_inside_ordinary_settings_are_not_credentials(key: str) -> None:
+    assert _names_a_credential(key) is False
+    _validate_endpoint(f"https://api.example.com/v1/chat?{key}=value")

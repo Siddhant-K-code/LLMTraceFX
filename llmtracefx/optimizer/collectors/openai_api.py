@@ -63,6 +63,7 @@ import queue
 import re
 import socket
 import ssl
+import stat
 import threading
 import time
 import unicodedata
@@ -115,6 +116,7 @@ _CANONICAL_ARTIFACT_NAMES = frozenset(
     {"record.json", "response.txt", "api_evidence.json", "environment.json"}
 )
 _MAX_VERIFIED_ARTIFACT_BYTES = 64 * 1024 * 1024
+_MAX_ARTIFACT_MANIFEST_BYTES = 64 * 1024
 
 RUNTIME_NAME = "openai-compatible-api"
 """``RuntimeInfo.name`` for every record this collector writes."""
@@ -181,6 +183,9 @@ _EVENT_KIND_ERROR = "error"
 _EVENT_KIND_DONE = "done"
 
 _MAX_ERROR_BODY_BYTES = 64 * 1024
+_MAX_STREAM_BODY_BYTES = 64 * 1024 * 1024
+_MAX_RESPONSE_CONTENT_CHARACTERS = 16 * 1024 * 1024
+_MAX_CONTENT_DELTA_TIMINGS = 100_000
 _MAX_PERSISTED_MESSAGE_CHARS = 600
 _MAX_PERSISTED_HEADER_CHARS = 128
 _REDACTED = "[REDACTED]"
@@ -484,7 +489,12 @@ class _BoundedResolver:
             raise TimeoutError(
                 "DNS resolver remained busy past the whole-response timeout"
             ) from exc
-        if not task.completed.wait(_remaining_deadline_seconds(deadline, clock)):
+        try:
+            remaining = _remaining_deadline_seconds(deadline, clock)
+        except TimeoutError:
+            task.cancelled.set()
+            raise
+        if not task.completed.wait(remaining):
             task.cancelled.set()
             raise TimeoutError("DNS resolution exceeded the whole-response timeout")
         if task.failure is not None:
@@ -917,7 +927,14 @@ class _UrllibResponse:
         if not callable(reader):
             reader = self._raw.read
         while True:
-            remaining = self._tighten_socket_timeout()
+            try:
+                remaining = self._tighten_socket_timeout()
+            except OSError as exc:
+                if self._deadline_expired():
+                    raise self._deadline_failure() from exc
+                raise TransportConnectionError(
+                    "stream timeout adjustment failed"
+                ) from exc
             if remaining is not None and remaining <= 0:
                 raise TransportTimeout(
                     "request timed out: the response did not finish within "
@@ -1407,7 +1424,7 @@ def _names_a_credential(key: str) -> bool:
                 "refreshsession",
                 "sessionid",
             }
-            or any(compound in component for compound in embedded_compounds)
+            or any(component.endswith(compound) for compound in embedded_compounds)
             or _covers_a_credential(component)
             or _spans_a_credential_phrase(component)
         ):
@@ -3975,6 +3992,64 @@ def _publish_artifacts(
     atomic_write_text(marker_path, json.dumps(marker, indent=2, allow_nan=False) + "\n")
 
 
+def _read_bounded_regular_file(path: Path, limit: int) -> bytes | None:
+    if path.is_symlink():
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > limit:
+            return None
+        chunks: list[bytes] = []
+        read = 0
+        while True:
+            chunk = os.read(descriptor, min(64 * 1024, limit - read + 1))
+            if not chunk:
+                break
+            read += len(chunk)
+            if read > limit:
+                return None
+            chunks.append(chunk)
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+
+
+def _hash_bounded_regular_file(path: Path, limit: int) -> str | None:
+    if path.is_symlink():
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > limit:
+            return None
+        hasher = hashlib.sha256()
+        read = 0
+        while True:
+            chunk = os.read(descriptor, 64 * 1024)
+            if not chunk:
+                break
+            read += len(chunk)
+            if read > limit:
+                return None
+            hasher.update(chunk)
+        return f"sha256:{hasher.hexdigest()}"
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+
+
 def artifact_set_is_complete(output_dir: Path) -> bool:
     """True when ``output_dir`` holds a complete, self-consistent set.
 
@@ -3983,9 +4058,12 @@ def artifact_set_is_complete(output_dir: Path) -> bool:
     replaced independently of the set it belongs to.
     """
     marker_path = output_dir / ARTIFACT_MANIFEST_NAME
+    raw_marker = _read_bounded_regular_file(marker_path, _MAX_ARTIFACT_MANIFEST_BYTES)
+    if raw_marker is None:
+        return False
     try:
-        marker = json.loads(marker_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, RecursionError):
+        marker = json.loads(raw_marker.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return False
     if not isinstance(marker, dict):
         return False
@@ -4017,19 +4095,10 @@ def artifact_set_is_complete(output_dir: Path) -> bool:
             or name not in _CANONICAL_ARTIFACT_NAMES
         ):
             return False
-        path = output_dir / relative
-        try:
-            if path.is_symlink() or not path.is_file():
-                return False
-            if path.stat().st_size > _MAX_VERIFIED_ARTIFACT_BYTES:
-                return False
-            hasher = hashlib.sha256()
-            with path.open("rb") as artifact:
-                while chunk := artifact.read(64 * 1024):
-                    hasher.update(chunk)
-        except OSError:
-            return False
-        if f"sha256:{hasher.hexdigest()}" != digest:
+        computed = _hash_bounded_regular_file(
+            output_dir / relative, _MAX_VERIFIED_ARTIFACT_BYTES
+        )
+        if computed != digest:
             return False
     return True
 

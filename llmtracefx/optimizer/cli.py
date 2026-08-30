@@ -1523,6 +1523,7 @@ def _glued_credential_prefix(token: str) -> str:
             continue
         if (
             prefix in _UNAMBIGUOUS_GLUED_CREDENTIAL_FLAGS
+            and not tail.startswith(("-", "_"))
             and tail.lower() not in _SAFE_CREDENTIAL_OPTION_SUFFIXES
         ):
             return option_name[: len(prefix)]
