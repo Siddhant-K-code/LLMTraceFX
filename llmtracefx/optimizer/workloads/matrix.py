@@ -28,6 +28,7 @@ from .._artifact_io import (
     MAX_EVIDENCE_ARTIFACT_BYTES,
     ArtifactReadError,
     read_bounded_regular_text,
+    reject_non_finite_json_constant,
 )
 from ..collectors._shared import atomic_write_text
 from ..collectors.native_mtp import detect_native_mtp_capability
@@ -255,8 +256,8 @@ class MatrixManifest:
     @classmethod
     def from_json(cls, payload: str) -> MatrixManifest:
         try:
-            data = json.loads(payload)
-        except (json.JSONDecodeError, RecursionError) as exc:
+            data = json.loads(payload, parse_constant=reject_non_finite_json_constant)
+        except (ValueError, RecursionError) as exc:
             raise MatrixSchemaError(f"Invalid JSON for MatrixManifest: {exc}") from exc
         if not isinstance(data, dict):
             raise MatrixSchemaError("MatrixManifest JSON must be an object")

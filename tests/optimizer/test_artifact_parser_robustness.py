@@ -146,6 +146,19 @@ def test_experiment_record_wraps_truncation_and_recursion(
         ExperimentRecord.from_json(payload)
 
 
+def test_experiment_record_wraps_overflowing_numbers() -> None:
+    payload = _record_payload()
+    payload["timing"] = {
+        "total": {
+            "value": 10**4_000,
+            "provenance": "measured_wall_clock",
+            "unit": "ms",
+        }
+    }
+    with pytest.raises(SchemaValidationError, match="finite number"):
+        ExperimentRecord.from_dict(payload)
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
@@ -164,6 +177,23 @@ def test_matrix_manifest_wraps_truncation_and_recursion(
 def test_matrix_manifest_rejects_non_object_roots(root: object) -> None:
     with pytest.raises(MatrixSchemaError, match="JSON must be an object"):
         MatrixManifest.from_json(json.dumps(root))
+
+
+def test_all_json_parsers_wrap_oversized_integer_errors(tmp_path: Path) -> None:
+    huge_integer = "9" * 5_000
+    verification_path = tmp_path / "verification.json"
+    verification_path.write_text(f'{{"total_ms": {huge_integer}}}', encoding="utf-8")
+    with pytest.raises(VerifyError):
+        RowVerification.read_json(verification_path)
+    with pytest.raises(MatrixSchemaError):
+        MatrixManifest.from_json(f'{{"value": {huge_integer}}}')
+    with pytest.raises(SchemaValidationError):
+        ExperimentRecord.from_json(f'{{"value": {huge_integer}}}')
+
+
+def test_row_verification_wraps_overflowing_numbers() -> None:
+    with pytest.raises(VerifyError, match="finite number"):
+        RowVerification.from_dict(_verification_payload(total_ms=10**4_000))
 
 
 def test_matrix_manifest_rejects_malformed_nested_entry_and_prompt() -> None:
@@ -274,3 +304,19 @@ def test_summary_excludes_invalid_grouping_identity_without_crashing(
     assert [group.key for group in summary.by_provider] == ["openrouter"]
     assert [group.key for group in summary.by_backend] == [BACKEND_OPENAI_API]
     assert summary.overall.completed == 1
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_summary_excludes_non_finite_numeric_evidence(
+    tmp_path: Path, value: float
+) -> None:
+    run_dir = tmp_path / "runs" / "non-finite"
+    run_dir.mkdir(parents=True)
+    (run_dir / "verification.json").write_text(
+        json.dumps(_verification_payload(total_ms=value)), encoding="utf-8"
+    )
+
+    summary = summarize_results(tmp_path)
+
+    assert summary.overall.total == 0
+    assert summary.overall.correct_cases_per_minute is None

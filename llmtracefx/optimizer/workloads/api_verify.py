@@ -94,6 +94,7 @@ from .._artifact_io import (
     ArtifactReadError,
     read_bounded_regular_bytes,
     read_bounded_regular_text,
+    reject_non_finite_json_constant,
 )
 from ..collectors._shared import (
     atomic_write_text,
@@ -229,8 +230,8 @@ def run_artifacts_are_complete(run_dir: Path, *, expected_run_id: str) -> bool:
         marker_text = read_bounded_regular_text(
             run_dir / RUN_MANIFEST_NAME, MAX_METADATA_ARTIFACT_BYTES
         )
-        marker = json.loads(marker_text)
-    except (OSError, ArtifactReadError, json.JSONDecodeError, RecursionError):
+        marker = json.loads(marker_text, parse_constant=reject_non_finite_json_constant)
+    except (OSError, ArtifactReadError, ValueError, RecursionError):
         return False
     if not isinstance(marker, dict):
         return False

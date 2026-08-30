@@ -145,7 +145,12 @@ def _optional_number(data: dict[str, Any], key: str) -> float | None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise VerifyError(f"verification.json field '{key}' must be a number or null")
-    return float(value)
+    try:
+        return float(value)
+    except OverflowError as exc:
+        raise VerifyError(
+            f"verification.json field '{key}' must be a finite number"
+        ) from exc
 
 
 class RowStatus(str, Enum):
@@ -412,7 +417,7 @@ class RowVerification:
         try:
             payload = read_bounded_regular_text(path, MAX_METADATA_ARTIFACT_BYTES)
             data = json.loads(payload)
-        except (ArtifactReadError, json.JSONDecodeError, RecursionError) as exc:
+        except (ArtifactReadError, ValueError, RecursionError) as exc:
             raise VerifyError(f"invalid verification.json: {exc}") from exc
         return cls.from_dict(data)
 

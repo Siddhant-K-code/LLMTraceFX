@@ -172,7 +172,12 @@ def _validate_float(value: Any, *, context: str, key: str) -> float:
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise SchemaValidationError(f"{context}.{key} must be a number, got {value!r}")
-    return float(value)
+    try:
+        return float(value)
+    except OverflowError as exc:
+        raise SchemaValidationError(
+            f"{context}.{key} must be a finite number, got an overflowing integer"
+        ) from exc
 
 
 def _coerce_optional_float(
@@ -1072,7 +1077,7 @@ class ExperimentRecord:
     def from_json(cls, payload: str) -> ExperimentRecord:
         try:
             data = json.loads(payload)
-        except (json.JSONDecodeError, RecursionError) as exc:
+        except (ValueError, RecursionError) as exc:
             raise SchemaValidationError(
                 f"Invalid JSON for ExperimentRecord: {exc}"
             ) from exc

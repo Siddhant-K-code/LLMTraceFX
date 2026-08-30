@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
+from typing import NoReturn
 
 MAX_METADATA_ARTIFACT_BYTES = 64 * 1024
 MAX_EVIDENCE_ARTIFACT_BYTES = 64 * 1024 * 1024
@@ -12,6 +13,11 @@ MAX_EVIDENCE_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 class ArtifactReadError(ValueError):
     """Raised when an artifact is not a bounded, regular UTF-8 file."""
+
+
+def reject_non_finite_json_constant(value: str) -> NoReturn:
+    """Reject Python's non-standard JSON NaN and infinity extensions."""
+    raise ValueError(f"non-finite JSON number {value}")
 
 
 def read_bounded_regular_bytes(path: str | Path, max_bytes: int) -> bytes:
