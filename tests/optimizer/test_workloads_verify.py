@@ -550,6 +550,122 @@ def test_resume_trusts_hash_matching_completed_artifact(tmp_path):
     assert result.final_record.outcome.success is True
 
 
+@pytest.mark.parametrize(
+    "corruption",
+    ["invalid-utf8", "truncated", "recursion", "oversized", "symlink"],
+)
+def test_resume_reruns_when_prior_verification_is_unreadable(
+    tmp_path, corruption, monkeypatch
+):
+    manifest, output_dir = build_manifest(tmp_path)
+    target = make_target_model(tmp_path)
+    entry = next(
+        e for e in manifest.entries if e.decode_mode == DECODE_MODE_AUTOREGRESSIVE
+    )
+    results_dir = tmp_path / "results"
+    binding = RunBinding(target_model_path=target)
+    execute_row(
+        entry,
+        manifest_dir=output_dir,
+        output_dir=results_dir,
+        model_id=manifest.model_id,
+        binding=binding,
+        resume=True,
+        runtime_factory=lambda: FakeMLXRuntime(GOOD_RESPONSE),
+    )
+    verification_path = results_dir / "runs" / entry.run_id / "verification.json"
+    if corruption == "invalid-utf8":
+        verification_path.write_bytes(b"\xff")
+    elif corruption == "truncated":
+        verification_path.write_text("{", encoding="utf-8")
+    elif corruption == "recursion":
+        verification_path.write_text(
+            "[" * 10_000 + "0" + "]" * 10_000, encoding="utf-8"
+        )
+    elif corruption == "oversized":
+        monkeypatch.setattr(
+            "llmtracefx.optimizer.workloads.verify.MAX_METADATA_ARTIFACT_BYTES", 16
+        )
+        verification_path.write_bytes(b"x" * 17)
+    else:
+        target_path = verification_path.with_name("verification-target.json")
+        target_path.write_text("{}", encoding="utf-8")
+        verification_path.unlink()
+        verification_path.symlink_to(target_path)
+
+    runtime = FakeMLXRuntime(GOOD_RESPONSE)
+    result = execute_row(
+        entry,
+        manifest_dir=output_dir,
+        output_dir=results_dir,
+        model_id=manifest.model_id,
+        binding=binding,
+        resume=True,
+        runtime_factory=lambda: runtime,
+    )
+
+    assert result.verification.status == RowStatus.COMPLETED
+    assert runtime.load_calls == [target]
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["invalid-utf8", "truncated", "recursion", "oversized", "symlink"],
+)
+def test_resume_reruns_when_final_record_is_unreadable(
+    tmp_path, corruption, monkeypatch
+):
+    manifest, output_dir = build_manifest(tmp_path)
+    target = make_target_model(tmp_path)
+    entry = next(
+        e for e in manifest.entries if e.decode_mode == DECODE_MODE_AUTOREGRESSIVE
+    )
+    results_dir = tmp_path / "results"
+    binding = RunBinding(target_model_path=target)
+    first = execute_row(
+        entry,
+        manifest_dir=output_dir,
+        output_dir=results_dir,
+        model_id=manifest.model_id,
+        binding=binding,
+        resume=True,
+        runtime_factory=lambda: FakeMLXRuntime(GOOD_RESPONSE),
+    )
+    final_record_path = Path(first.verification.final_record_path)
+    if corruption == "invalid-utf8":
+        final_record_path.write_bytes(b"\xff")
+    elif corruption == "truncated":
+        final_record_path.write_text("{", encoding="utf-8")
+    elif corruption == "recursion":
+        final_record_path.write_text(
+            "[" * 10_000 + "0" + "]" * 10_000, encoding="utf-8"
+        )
+    elif corruption == "oversized":
+        monkeypatch.setattr(
+            "llmtracefx.optimizer.schema.MAX_EVIDENCE_ARTIFACT_BYTES", 16
+        )
+        final_record_path.write_bytes(b"x" * 17)
+    else:
+        target_path = final_record_path.with_name("record-target.json")
+        target_path.write_text("{}", encoding="utf-8")
+        final_record_path.unlink()
+        final_record_path.symlink_to(target_path)
+
+    runtime = FakeMLXRuntime(GOOD_RESPONSE)
+    result = execute_row(
+        entry,
+        manifest_dir=output_dir,
+        output_dir=results_dir,
+        model_id=manifest.model_id,
+        binding=binding,
+        resume=True,
+        runtime_factory=lambda: runtime,
+    )
+
+    assert result.verification.status == RowStatus.COMPLETED
+    assert runtime.load_calls == [target]
+
+
 def test_resume_reruns_when_prompt_content_changes(tmp_path):
     """A stale hash-mismatched artifact must be re-run, not blindly trusted."""
     manifest, output_dir = build_manifest(tmp_path)

@@ -25,11 +25,25 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from ._artifact_io import (
+    MAX_EVIDENCE_ARTIFACT_BYTES,
+    ArtifactReadError,
+    read_bounded_regular_text,
+)
+
 SCHEMA_VERSION = "1"
 
 
 class SchemaValidationError(ValueError):
     """Raised when an ``ExperimentRecord`` (or a part of it) is invalid."""
+
+
+def _require_object(value: Any, *, context: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise SchemaValidationError(
+            f"{context} must be an object, got {type(value).__name__}"
+        )
+    return value
 
 
 def utc_now_iso() -> str:
@@ -90,9 +104,12 @@ class Measurement:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Measurement:
+        data = _require_object(data, context="Measurement")
         try:
             return cls(
-                value=float(data["value"]),
+                value=_validate_float(
+                    data["value"], context="Measurement", key="value"
+                ),
                 provenance=MetricProvenance(data["provenance"]),
                 unit=str(data.get("unit", "")),
             )
@@ -100,7 +117,7 @@ class Measurement:
             raise SchemaValidationError(
                 f"Measurement is missing required field: {exc}"
             ) from exc
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             raise SchemaValidationError(
                 f"Measurement has an invalid value: {exc}"
             ) from exc
@@ -232,6 +249,7 @@ class PlatformInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PlatformInfo:
+        data = _require_object(data, context="PlatformInfo")
         try:
             return cls(
                 os_name=data["os_name"],
@@ -272,6 +290,7 @@ class ModelInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ModelInfo:
+        data = _require_object(data, context="ModelInfo")
         try:
             return cls(
                 model_id=data["model_id"],
@@ -308,6 +327,7 @@ class RuntimeInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RuntimeInfo:
+        data = _require_object(data, context="RuntimeInfo")
         try:
             return cls(
                 name=data["name"],
@@ -339,6 +359,7 @@ class CommandInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CommandInfo:
+        data = _require_object(data, context="CommandInfo")
         if "argv" not in data:
             raise SchemaValidationError("CommandInfo is missing required field: 'argv'")
         argv = data["argv"]
@@ -380,6 +401,7 @@ class RepetitionInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RepetitionInfo:
+        data = _require_object(data, context="RepetitionInfo")
         return cls(
             warmup_repetitions=_coerce_required_int(
                 data, "warmup_repetitions", context="RepetitionInfo"
@@ -420,6 +442,7 @@ class TokenCounts:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TokenCounts:
+        data = _require_object(data, context="TokenCounts")
         provenance = data.get("provenance")
         if provenance is not None:
             try:
@@ -464,6 +487,7 @@ class TimingMetrics:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TimingMetrics:
+        data = _require_object(data, context="TimingMetrics")
         return cls(
             model_load=_measurement_from_optional(data.get("model_load")),
             tokenize=_measurement_from_optional(data.get("tokenize")),
@@ -512,6 +536,7 @@ class SpeculativeDecodingInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SpeculativeDecodingInfo:
+        data = _require_object(data, context="SpeculativeDecodingInfo")
         return cls(
             enabled=_coerce_bool_with_default(
                 data, "enabled", context="SpeculativeDecodingInfo", default=False
@@ -549,6 +574,7 @@ class MemoryMetrics:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MemoryMetrics:
+        data = _require_object(data, context="MemoryMetrics")
         return cls(
             active=_measurement_from_optional(data.get("active")),
             cache=_measurement_from_optional(data.get("cache")),
@@ -572,6 +598,7 @@ class PowerMetrics:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PowerMetrics:
+        data = _require_object(data, context="PowerMetrics")
         return cls(
             average_power=_measurement_from_optional(data.get("average_power")),
             energy=_measurement_from_optional(data.get("energy")),
@@ -728,6 +755,7 @@ class OutcomeInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> OutcomeInfo:
+        data = _require_object(data, context="OutcomeInfo")
         return cls(
             success=_coerce_bool_with_default(
                 data, "success", context="OutcomeInfo", default=True
@@ -752,6 +780,7 @@ class ErrorInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ErrorInfo:
+        data = _require_object(data, context="ErrorInfo")
         try:
             return cls(category=data["category"], message=data["message"])
         except KeyError as exc:
@@ -1001,6 +1030,7 @@ class ExperimentRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ExperimentRecord:
+        data = _require_object(data, context="ExperimentRecord")
         try:
             record = cls(
                 schema_version=str(data.get("schema_version", SCHEMA_VERSION)),
@@ -1042,7 +1072,7 @@ class ExperimentRecord:
     def from_json(cls, payload: str) -> ExperimentRecord:
         try:
             data = json.loads(payload)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, RecursionError) as exc:
             raise SchemaValidationError(
                 f"Invalid JSON for ExperimentRecord: {exc}"
             ) from exc
@@ -1068,4 +1098,10 @@ class ExperimentRecord:
 
     @classmethod
     def read_json(cls, path: str | Path) -> ExperimentRecord:
-        return cls.from_json(Path(path).read_text(encoding="utf-8"))
+        try:
+            payload = read_bounded_regular_text(path, MAX_EVIDENCE_ARTIFACT_BYTES)
+        except ArtifactReadError as exc:
+            raise SchemaValidationError(
+                f"Invalid ExperimentRecord file: {exc}"
+            ) from exc
+        return cls.from_json(payload)

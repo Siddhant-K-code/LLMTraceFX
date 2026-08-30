@@ -78,6 +78,10 @@ class MaterializedPrompt:
         prompt-integrity check the verification pipeline performs before
         executing any row.
         """
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"MaterializedPrompt must be an object, got {type(data).__name__}"
+            )
         try:
             return cls(
                 workload_id=data["workload_id"],
@@ -89,10 +93,8 @@ class MaterializedPrompt:
                 text="",
                 prompt_hash=data["prompt_hash"],
             )
-        except KeyError as exc:
-            raise ValueError(
-                f"MaterializedPrompt is missing required field: {exc}"
-            ) from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"invalid MaterializedPrompt: {exc}") from exc
 
 
 def _build_filler(remaining_chars: int) -> tuple[str, int]:

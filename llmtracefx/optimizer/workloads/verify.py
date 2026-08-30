@@ -71,6 +71,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from .._artifact_io import (
+    MAX_METADATA_ARTIFACT_BYTES,
+    ArtifactReadError,
+    read_bounded_regular_text,
+)
 from ..collectors._shared import atomic_write_text, config_hash, sha256_text
 from ..collectors.mlx import (
     MLXCollectionConfig,
@@ -106,6 +111,41 @@ BACKEND_OPENAI_API = "openai-api"
 
 class VerifyError(ValueError):
     """Raised for invalid verify-pipeline configuration (not row outcomes)."""
+
+
+def _required_identity(data: dict[str, Any], key: str) -> str:
+    try:
+        value = data[key]
+    except KeyError as exc:
+        raise VerifyError(
+            f"verification.json is missing required field: '{key}'"
+        ) from exc
+    if not isinstance(value, str) or not value:
+        raise VerifyError(f"verification.json field '{key}' must be a non-empty string")
+    return value
+
+
+def _optional_string(data: dict[str, Any], key: str) -> str | None:
+    value = data.get(key)
+    if value is not None and not isinstance(value, str):
+        raise VerifyError(f"verification.json field '{key}' must be a string or null")
+    return value
+
+
+def _optional_bool(data: dict[str, Any], key: str) -> bool | None:
+    value = data.get(key)
+    if value is not None and not isinstance(value, bool):
+        raise VerifyError(f"verification.json field '{key}' must be a boolean or null")
+    return value
+
+
+def _optional_number(data: dict[str, Any], key: str) -> float | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise VerifyError(f"verification.json field '{key}' must be a number or null")
+    return float(value)
 
 
 class RowStatus(str, Enum):
@@ -322,42 +362,59 @@ class RowVerification:
                 f"verification.json must be a JSON object, got {type(data).__name__}"
             )
         try:
+            resumed = data.get("resumed", False)
+            if not isinstance(resumed, bool):
+                raise VerifyError("verification.json field 'resumed' must be a boolean")
             return cls(
-                schema_version=str(
-                    data.get("schema_version", VERIFICATION_SCHEMA_VERSION)
+                schema_version=_required_identity(
+                    {
+                        "schema_version": data.get(
+                            "schema_version", VERIFICATION_SCHEMA_VERSION
+                        )
+                    },
+                    "schema_version",
                 ),
-                run_id=data["run_id"],
-                workload_id=data["workload_id"],
-                workload_version=data["workload_version"],
-                category=data["category"],
-                context_tier=data["context_tier"],
-                decode_mode=data["decode_mode"],
+                run_id=_required_identity(data, "run_id"),
+                workload_id=_required_identity(data, "workload_id"),
+                workload_version=_required_identity(data, "workload_version"),
+                category=_required_identity(data, "category"),
+                context_tier=_required_identity(data, "context_tier"),
+                decode_mode=_required_identity(data, "decode_mode"),
                 status=RowStatus(data["status"]),
-                reason=data.get("reason"),
-                recorded_prompt_hash=data.get("recorded_prompt_hash"),
-                verified_prompt_hash=data.get("verified_prompt_hash"),
-                run_binding_hash=data.get("run_binding_hash"),
-                resumed=bool(data.get("resumed", False)),
-                outcome_success=data.get("outcome_success"),
-                quality_score=data.get("quality_score"),
-                total_ms=data.get("total_ms"),
-                started_at=data["started_at"],
-                ended_at=data["ended_at"],
-                final_record_path=data.get("final_record_path"),
-                collection_dir=data.get("collection_dir"),
+                reason=_optional_string(data, "reason"),
+                recorded_prompt_hash=_optional_string(data, "recorded_prompt_hash"),
+                verified_prompt_hash=_optional_string(data, "verified_prompt_hash"),
+                run_binding_hash=_optional_string(data, "run_binding_hash"),
+                resumed=resumed,
+                outcome_success=_optional_bool(data, "outcome_success"),
+                quality_score=_optional_number(data, "quality_score"),
+                total_ms=_optional_number(data, "total_ms"),
+                started_at=_required_identity(data, "started_at"),
+                ended_at=_required_identity(data, "ended_at"),
+                final_record_path=_optional_string(data, "final_record_path"),
+                collection_dir=_optional_string(data, "collection_dir"),
                 # Additive v2 fields. A v1 artifact predates any backend
                 # other than local MLX, so its absence is not ambiguous.
-                backend=str(data.get("backend", BACKEND_MLX)),
-                provider=data.get("provider"),
-                api_model_id=data.get("api_model_id"),
-                artifacts_verified=data.get("artifacts_verified"),
+                backend=_required_identity(
+                    {"backend": data.get("backend", BACKEND_MLX)}, "backend"
+                ),
+                provider=_optional_string(data, "provider"),
+                api_model_id=_optional_string(data, "api_model_id"),
+                artifacts_verified=_optional_bool(data, "artifacts_verified"),
             )
-        except (KeyError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
+            if isinstance(exc, VerifyError):
+                raise
             raise VerifyError(f"invalid verification.json: {exc}") from exc
 
     @classmethod
     def read_json(cls, path: Path) -> RowVerification:
-        return cls.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        try:
+            payload = read_bounded_regular_text(path, MAX_METADATA_ARTIFACT_BYTES)
+            data = json.loads(payload)
+        except (ArtifactReadError, json.JSONDecodeError, RecursionError) as exc:
+            raise VerifyError(f"invalid verification.json: {exc}") from exc
+        return cls.from_dict(data)
 
 
 def _load_prior_verification(path: Path) -> RowVerification | None:
@@ -365,7 +422,7 @@ def _load_prior_verification(path: Path) -> RowVerification | None:
         return None
     try:
         return RowVerification.read_json(path)
-    except (OSError, json.JSONDecodeError, VerifyError):
+    except (OSError, VerifyError):
         # A corrupt/partial artifact from an interrupted previous run must
         # never be mistaken for a trustworthy completed result.
         return None

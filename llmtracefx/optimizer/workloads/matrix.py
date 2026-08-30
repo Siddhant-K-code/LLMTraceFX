@@ -24,6 +24,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .._artifact_io import (
+    MAX_EVIDENCE_ARTIFACT_BYTES,
+    ArtifactReadError,
+    read_bounded_regular_text,
+)
 from ..collectors._shared import atomic_write_text
 from ..collectors.native_mtp import detect_native_mtp_capability
 from .catalog import WORKLOADS
@@ -46,6 +51,32 @@ DEFAULT_MAX_TOKENS = 128
 
 class MatrixSchemaError(ValueError):
     """Raised when a persisted matrix manifest is malformed."""
+
+
+def _required_string(data: dict[str, Any], key: str, *, context: str) -> str:
+    try:
+        value = data[key]
+    except KeyError as exc:
+        raise MatrixSchemaError(
+            f"{context} is missing required field: '{key}'"
+        ) from exc
+    if not isinstance(value, str):
+        raise MatrixSchemaError(f"{context}.{key} must be a string")
+    return value
+
+
+def _optional_string(data: dict[str, Any], key: str, *, context: str) -> str | None:
+    value = data.get(key)
+    if value is not None and not isinstance(value, str):
+        raise MatrixSchemaError(f"{context}.{key} must be a string or null")
+    return value
+
+
+def _integer(data: dict[str, Any], key: str, *, context: str, default: int) -> int:
+    value = data.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise MatrixSchemaError(f"{context}.{key} must be an integer")
+    return value
 
 
 @dataclass(frozen=True)
@@ -89,6 +120,10 @@ class MatrixEntry:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MatrixEntry:
+        if not isinstance(data, dict):
+            raise MatrixSchemaError(
+                f"MatrixEntry must be an object, got {type(data).__name__}"
+            )
         try:
             command_argv = data["command_argv"]
             if isinstance(command_argv, (str, bytes)) or not isinstance(
@@ -98,27 +133,67 @@ class MatrixEntry:
                     f"MatrixEntry.command_argv must be a list of strings, "
                     f"got {command_argv!r}"
                 )
+            if not all(isinstance(item, str) and item for item in command_argv):
+                raise MatrixSchemaError(
+                    "MatrixEntry.command_argv must contain non-empty strings"
+                )
+            configured_depth = data.get("configured_depth")
+            if configured_depth is not None and (
+                isinstance(configured_depth, bool)
+                or not isinstance(configured_depth, int)
+            ):
+                raise MatrixSchemaError(
+                    "MatrixEntry.configured_depth must be an integer or null"
+                )
+            runnable = data["runnable"]
+            if not isinstance(runnable, bool):
+                raise MatrixSchemaError("MatrixEntry.runnable must be a boolean")
             return cls(
-                run_id=data["run_id"],
-                workload_id=data["workload_id"],
-                workload_version=data["workload_version"],
-                category=data["category"],
-                context_tier=data["context_tier"],
-                decode_mode=data["decode_mode"],
-                configured_depth=data.get("configured_depth"),
+                run_id=_required_string(data, "run_id", context="MatrixEntry"),
+                workload_id=_required_string(
+                    data, "workload_id", context="MatrixEntry"
+                ),
+                workload_version=_required_string(
+                    data, "workload_version", context="MatrixEntry"
+                ),
+                category=_required_string(data, "category", context="MatrixEntry"),
+                context_tier=_required_string(
+                    data, "context_tier", context="MatrixEntry"
+                ),
+                decode_mode=_required_string(
+                    data, "decode_mode", context="MatrixEntry"
+                ),
+                configured_depth=configured_depth,
                 prompt=MaterializedPrompt.from_dict(data["prompt"]),
-                prompt_path=data["prompt_path"],
-                runner_results_dir=data["runner_results_dir"],
-                collector_output_dir=data["collector_output_dir"],
-                runnable=bool(data["runnable"]),
-                unsupported_reason=data.get("unsupported_reason"),
+                prompt_path=_required_string(
+                    data, "prompt_path", context="MatrixEntry"
+                ),
+                runner_results_dir=_required_string(
+                    data, "runner_results_dir", context="MatrixEntry"
+                ),
+                collector_output_dir=_required_string(
+                    data, "collector_output_dir", context="MatrixEntry"
+                ),
+                runnable=runnable,
+                unsupported_reason=_optional_string(
+                    data, "unsupported_reason", context="MatrixEntry"
+                ),
                 command_argv=tuple(command_argv),
-                max_tokens=int(data.get("max_tokens", DEFAULT_MAX_TOKENS)),
+                max_tokens=_integer(
+                    data,
+                    "max_tokens",
+                    context="MatrixEntry",
+                    default=DEFAULT_MAX_TOKENS,
+                ),
             )
         except KeyError as exc:
             raise MatrixSchemaError(
                 f"MatrixEntry is missing required field: {exc}"
             ) from exc
+        except (TypeError, ValueError) as exc:
+            if isinstance(exc, MatrixSchemaError):
+                raise
+            raise MatrixSchemaError(f"invalid MatrixEntry: {exc}") from exc
 
 
 @dataclass(frozen=True)
@@ -145,15 +220,31 @@ class MatrixManifest:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MatrixManifest:
+        if not isinstance(data, dict):
+            raise MatrixSchemaError(
+                f"MatrixManifest must be an object, got {type(data).__name__}"
+            )
         try:
             entries_raw = data["entries"]
             if not isinstance(entries_raw, list):
                 raise MatrixSchemaError("MatrixManifest.entries must be a list")
             return cls(
-                schema_version=str(data.get("schema_version", MATRIX_SCHEMA_VERSION)),
-                model_id=data["model_id"],
-                model_family=data["model_family"],
-                output_dir=data["output_dir"],
+                schema_version=_required_string(
+                    {
+                        "schema_version": data.get(
+                            "schema_version", MATRIX_SCHEMA_VERSION
+                        )
+                    },
+                    "schema_version",
+                    context="MatrixManifest",
+                ),
+                model_id=_required_string(data, "model_id", context="MatrixManifest"),
+                model_family=_required_string(
+                    data, "model_family", context="MatrixManifest"
+                ),
+                output_dir=_required_string(
+                    data, "output_dir", context="MatrixManifest"
+                ),
                 entries=tuple(MatrixEntry.from_dict(entry) for entry in entries_raw),
             )
         except KeyError as exc:
@@ -165,7 +256,7 @@ class MatrixManifest:
     def from_json(cls, payload: str) -> MatrixManifest:
         try:
             data = json.loads(payload)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, RecursionError) as exc:
             raise MatrixSchemaError(f"Invalid JSON for MatrixManifest: {exc}") from exc
         if not isinstance(data, dict):
             raise MatrixSchemaError("MatrixManifest JSON must be an object")
@@ -173,7 +264,11 @@ class MatrixManifest:
 
     @classmethod
     def read_json(cls, path: str | Path) -> MatrixManifest:
-        return cls.from_json(Path(path).read_text(encoding="utf-8"))
+        try:
+            payload = read_bounded_regular_text(path, MAX_EVIDENCE_ARTIFACT_BYTES)
+        except ArtifactReadError as exc:
+            raise MatrixSchemaError(f"Invalid MatrixManifest file: {exc}") from exc
+        return cls.from_json(payload)
 
 
 def _collect_mlx_argv(

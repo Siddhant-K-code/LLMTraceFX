@@ -62,7 +62,7 @@ def _load_verifications(results_dir: Path) -> tuple[RowVerification, ...]:
     for verification_path in sorted(runs_dir.glob("*/verification.json")):
         try:
             verifications.append(RowVerification.read_json(verification_path))
-        except (OSError, json.JSONDecodeError, VerifyError):
+        except (OSError, VerifyError):
             # A corrupt/partial artifact must not silently skew aggregates;
             # it is simply excluded rather than crashing the whole summary.
             continue
