@@ -1724,3 +1724,21 @@ def test_a_bad_run_number_in_the_toc_does_not_mix_runs(tmp_path):
     evidence = json.loads((out / "instruments_evidence.json").read_text("utf-8"))
     assert evidence["metrics"] == {}
     assert evidence["trace_bundle_name"] == "run2.trace"
+
+
+def test_derived_artifacts_never_name_another_process(tmp_path):
+    """Only the raw export lists other processes, and it is documented.
+
+    Metal System Trace records every process on the system, so the raw
+    table names them. The artifacts a reader actually consumes must not:
+    they carry this run's pid and counts only.
+    """
+    trace = tmp_path / "run.trace"
+    trace.mkdir()
+    out = tmp_path / "artifacts"
+    import_trace(runner=exporting_runner(), trace_path=trace, output_dir=out)
+
+    for name in ("instruments_evidence.json", "trace_toc.json", "trace_toc.xml"):
+        assert "WindowServer" not in (out / name).read_text("utf-8"), name
+    # The raw export does, by nature. Pinned so the boundary is explicit.
+    assert "WindowServer" in (out / "trace_table.xml").read_text("utf-8")

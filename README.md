@@ -1897,7 +1897,10 @@ measurement.
   in it is sanitized: it contains the device name and UUID, the profiled
   command's arguments, and the names of every other process that used the GPU
   while it was recording. Treat a bundle like a memory dump. Do not attach one
-  to a public issue.
+  to a public issue. The same applies to `trace_table.xml`, the raw exported
+  GPU table, which lists every process that produced a GPU interval. The
+  derived artifacts do not: `instruments_evidence.json` and `trace_toc.json`
+  carry only your own process's pid and counts, never another process's name.
 - **One run per artifact directory.** The trace path and the output directory
   are both claimed with atomic `O_CREAT | O_EXCL` reservations held for the
   whole run, so two concurrent runs cannot interleave metadata or exports even
