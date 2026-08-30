@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import platform
+import shutil
+import tempfile
+from pathlib import Path
 
 import pytest
 from _instruments_fakes import (
@@ -15,8 +19,14 @@ from _instruments_fakes import (
     read_fixture,
 )
 
+from llmtracefx.optimizer import cli as cli_module
 from llmtracefx.optimizer.cli import main
-from llmtracefx.optimizer.instruments.capability import detect_xctrace_capability
+from llmtracefx.optimizer.instruments import workflow as workflow_module
+from llmtracefx.optimizer.instruments.capability import (
+    METAL_SYSTEM_TRACE_TEMPLATE,
+    XctraceCapability,
+    detect_xctrace_capability,
+)
 from llmtracefx.optimizer.instruments.evidence import (
     TraceEvidenceInputs,
     build_instruments_evidence,
@@ -64,6 +74,60 @@ def capability(runner: FakeCommandRunner):
         architecture="arm64",
         path_resolver=lambda: "/usr/bin/xctrace",
     )
+
+
+#: Host identity the workflow tests pin themselves to. Chosen because
+#: the Metal path only claims support on Apple Silicon, so this is the
+#: identity under which the interesting branches exist at all.
+PINNED_OS = "Darwin"
+PINNED_ARCHITECTURE = "arm64"
+PINNED_XCTRACE_PATH = "/usr/bin/xctrace"
+
+
+@pytest.fixture(autouse=True)
+def pinned_host_identity(monkeypatch):
+    """Pin the host identity that the workflow layer detects against.
+
+    ``plan_trace``/``record_trace``/``import_trace`` call
+    ``detect_xctrace_capability`` with no platform overrides, so it reads
+    the *real* host. That made these tests host-dependent in both
+    directions: on a Linux runner every one of them short-circuited to
+    ``unsupported_os`` before the injected fake was ever consulted, and
+    on a macOS runner they silently depended on whether Xcode happened
+    to be installed.
+
+    Only host identity and path discovery are overridden. The real
+    detector still runs, and still runs against whatever
+    ``FakeCommandRunner`` the individual test supplied, so the Command
+    Line Tools, license, template-missing and probe-failure branches are
+    all still genuinely exercised rather than stubbed out. A test that
+    wants to assert the platform gating itself passes its own
+    ``os_name``/``architecture``, which this wrapper preserves.
+    """
+    real_detector = workflow_module.detect_xctrace_capability
+
+    def pinned(*, runner, template=METAL_SYSTEM_TRACE_TEMPLATE, **overrides):
+        overrides.setdefault("os_name", PINNED_OS)
+        overrides.setdefault("architecture", PINNED_ARCHITECTURE)
+        overrides.setdefault("path_resolver", lambda: PINNED_XCTRACE_PATH)
+        return real_detector(runner=runner, template=template, **overrides)
+
+    monkeypatch.setattr(workflow_module, "detect_xctrace_capability", pinned)
+
+
+@pytest.fixture
+def cli_command_runner(monkeypatch):
+    """Give the CLI a fake xctrace instead of the real subprocess one.
+
+    The CLI constructs its own ``SubprocessCommandRunner``, so pinning
+    the host identity alone is not enough: on a machine without xctrace
+    the probe would still fail for real. Replacing the constructor keeps
+    the whole cli -> workflow -> capability -> export path under test
+    while making it independent of what is installed.
+    """
+    runner = exporting_runner()
+    monkeypatch.setattr(cli_module, "SubprocessCommandRunner", lambda: runner)
+    return runner
 
 
 # --- Dry-run plan -----------------------------------------------------
@@ -553,7 +617,9 @@ def test_cli_plan_requires_a_target_command(tmp_path, capsys):
     assert "no program to profile" in capsys.readouterr().err
 
 
-def test_cli_rejects_an_output_path_that_is_not_a_trace(tmp_path, capsys):
+def test_cli_rejects_an_output_path_that_is_not_a_trace(
+    tmp_path, capsys, cli_command_runner
+):
     code = run_cli(
         [
             "instruments",
@@ -572,7 +638,7 @@ def test_cli_rejects_an_output_path_that_is_not_a_trace(tmp_path, capsys):
     assert ".trace" in (combined.out + combined.err)
 
 
-def test_cli_import_of_a_missing_trace_exits_one(tmp_path, capsys):
+def test_cli_import_of_a_missing_trace_exits_one(tmp_path, capsys, cli_command_runner):
     code = run_cli(
         [
             "instruments",
@@ -723,3 +789,85 @@ def test_the_metrics_this_project_emits_survive_that_rule():
     )
     assert evidence.metrics
     base_record(instruments=evidence).validate()
+
+
+# --- Host independence of this test module ----------------------------
+#
+# These tests exist because every workflow test above once passed only
+# because the machine running them happened to be an Apple Silicon Mac
+# with Xcode installed. On the Linux CI runners the same tests failed,
+# since plan/record/import detect against the real host and correctly
+# short-circuit to unsupported_os there.
+
+
+def test_platform_gating_still_rejects_linux_when_linux_is_declared():
+    """The fixture pins identity; it does not disable the gate.
+
+    Run inside this module, so the autouse fixture is active. Supplying
+    an explicit non-Darwin identity must still produce ``unsupported_os``
+    through the very same call path the workflows use. If the fixture
+    had stubbed detection out, or the implementation had stopped gating,
+    this would come back supported.
+    """
+    report = workflow_module.detect_xctrace_capability(
+        runner=exporting_runner(), os_name="Linux"
+    )
+    assert report.capability is XctraceCapability.UNSUPPORTED_OS
+    assert report.supported is False
+
+
+def test_platform_gating_still_rejects_non_arm64_when_declared():
+    report = workflow_module.detect_xctrace_capability(
+        runner=exporting_runner(), architecture="x86_64"
+    )
+    assert report.capability is XctraceCapability.UNSUPPORTED_ARCHITECTURE
+
+
+def test_workflows_do_not_read_the_real_host(monkeypatch):
+    """Simulate the Linux CI runner and re-run a full workflow.
+
+    ``platform.system``/``platform.machine`` are forced to the values a
+    Linux runner reports, and ``shutil.which`` is made to deny xctrace.
+    The workflow still succeeds, because this module supplies the
+    platform identity explicitly rather than inheriting the host's.
+    """
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda command, *args, **kwargs: None,
+    )
+
+    trace = Path(tempfile.mkdtemp()) / "run.trace"
+    collection = record_trace(
+        runner=exporting_runner(),
+        launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=trace),
+        command=("/bin/infer",),
+        output_trace=trace,
+        output_dir=trace.parent / "artifacts",
+    )
+
+    assert collection.succeeded is True
+    assert collection.evidence.parsed_schemas == ("metal-gpu-intervals",)
+    assert collection.evidence.metrics["metal_gpu_interval_count"].value == 3.0
+
+
+def test_the_real_detector_would_have_failed_under_that_simulation(monkeypatch):
+    """Confirms the simulation above is a real one.
+
+    Without the pinned identity, the same simulated Linux process makes
+    the production detector report ``unsupported_os``. That is what
+    proves the previous test passes because identity is injected, and
+    not because the simulation was ineffective.
+    """
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+
+    report = detect_xctrace_capability(runner=exporting_runner())
+    assert report.capability is XctraceCapability.UNSUPPORTED_OS
+
+
+def test_cli_tests_do_not_depend_on_a_real_xctrace(cli_command_runner):
+    """The CLI builds its own runner, so it has to be replaced."""
+    assert cli_module.SubprocessCommandRunner() is cli_command_runner
