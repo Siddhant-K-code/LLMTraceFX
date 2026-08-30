@@ -67,19 +67,61 @@ _UNIT_SECONDS: dict[str, float] = {
 #: quoted string in a generated XPath predicate and inject a new one.
 _SCHEMA_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._-]*$")
 
-#: Environment variable names whose values are redacted from any argv
-#: this project stores or prints. Matched case-insensitively as
-#: substrings, so ``HF_TOKEN`` and ``OPENAI_API_KEY`` both match.
-_CREDENTIAL_NAME_MARKERS: tuple[str, ...] = (
-    "token",
-    "secret",
-    "password",
-    "passwd",
+#: Segments that mark a name as a credential on their own.
+_CREDENTIAL_SEGMENTS: frozenset[str] = frozenset(
+    {
+        "secret",
+        "secrets",
+        "password",
+        "passwd",
+        "passphrase",
+        "credential",
+        "credentials",
+        "apikey",
+        "bearer",
+        "auth",
+    }
+)
+
+#: Normalized phrases that mark a name as a credential.
+_CREDENTIAL_PHRASES: tuple[str, ...] = (
     "api_key",
-    "apikey",
     "access_key",
+    "secret_key",
     "private_key",
-    "credential",
+    "signing_key",
+    "encryption_key",
+    "auth_token",
+    "access_token",
+    "refresh_token",
+    "session_token",
+    "id_token",
+)
+
+#: Segments that mark a ``token`` name as a *quantity* rather than a
+#: credential. This matters more here than in most projects: an LLM
+#: inference command is full of ``--max-tokens``, ``--num-tokens`` and
+#: ``--token-count``, and redacting those would destroy the
+#: reproducibility the recorded argv exists to provide.
+_TOKEN_QUANTITY_SEGMENTS: frozenset[str] = frozenset(
+    {
+        "max",
+        "min",
+        "num",
+        "n",
+        "count",
+        "per",
+        "budget",
+        "new",
+        "input",
+        "output",
+        "context",
+        "prompt",
+        "generated",
+        "total",
+        "limit",
+        "size",
+    }
 )
 
 REDACTED = "<redacted>"
@@ -87,6 +129,42 @@ REDACTED = "<redacted>"
 
 class InstrumentsCommandError(ValueError):
     """Raised when a requested xctrace invocation would be unsafe."""
+
+
+def _normalize_option_name(name: str) -> str:
+    """Reduce an option or variable name to a comparable form.
+
+    ``--API-Key`` and ``api_key`` and ``HF_TOKEN`` all normalize into the
+    lowercase underscore form the tables above are written in, so case
+    and separator aliases do not need separate entries.
+    """
+    return name.lstrip("-").replace("-", "_").casefold()
+
+
+def _is_credential_name(name: str) -> bool:
+    """Whether a name's value should be treated as a secret.
+
+    Deliberately not a plain substring match. ``token`` appears in both
+    ``--hf-token`` (a secret) and ``--max-tokens`` (a benign quantity),
+    so the two are separated rather than redacting both and corrupting
+    the second.
+    """
+    normalized = _normalize_option_name(name)
+    if not normalized:
+        return False
+    segments = set(normalized.split("_"))
+
+    if segments & _CREDENTIAL_SEGMENTS:
+        return True
+    if any(phrase in normalized for phrase in _CREDENTIAL_PHRASES):
+        return True
+    if normalized in {"key", "token", "pat"}:
+        return True
+    if "token" in segments and not (segments & _TOKEN_QUANTITY_SEGMENTS):
+        # `hf_token`, `service_token`. Plural `tokens` is a count, and
+        # so is anything carrying a quantity qualifier.
+        return True
+    return False
 
 
 def validate_time_limit(value: str) -> str:
@@ -155,11 +233,6 @@ def table_xpath(schema_name: str, *, run_number: int = 1) -> str:
     schema = validate_schema_name(schema_name)
     run = validate_run_number(run_number)
     return f'/trace-toc/run[@number="{run}"]/data/table[@schema="{schema}"]'
-
-
-def _is_credential_name(name: str) -> bool:
-    folded = name.casefold()
-    return any(marker in folded for marker in _CREDENTIAL_NAME_MARKERS)
 
 
 @dataclass(frozen=True)
@@ -251,6 +324,12 @@ class RecordPlan:
     writes and finalizes the ``.trace`` bundle, and that step is not
     instant. The host timeout must therefore be strictly greater than
     ``time_limit`` or every recording would be torn down mid-save."""
+    stop_grace_seconds: float = 30.0
+    """Seconds allowed after each stop signal before escalating.
+
+    Applies per signal in the SIGINT, SIGTERM, SIGKILL sequence, and
+    also bounds how long the recorder waits for the whole process group
+    to empty after each one."""
 
     def __post_init__(self) -> None:
         if not self.xctrace_path:
@@ -274,6 +353,8 @@ class RecordPlan:
             raise InstrumentsCommandError("run_name must be non-empty when set")
         if self.grace_seconds <= 0:
             raise InstrumentsCommandError("grace_seconds must be > 0")
+        if self.stop_grace_seconds <= 0:
+            raise InstrumentsCommandError("stop_grace_seconds must be > 0")
         if self.environment and not isinstance(self.target, LaunchTarget):
             # xctrace help record: "Specifying environment variables or
             # stream redirection is only available when using launch
@@ -403,16 +484,44 @@ def build_version_argv(xctrace_path: str) -> tuple[str, ...]:
 
 
 def redact_argv(argv: Sequence[str]) -> tuple[str, ...]:
-    """Redact credential-looking ``NAME=VALUE`` tokens in an argv.
+    """Redact credential-bearing tokens anywhere in an argv.
 
-    Used for argv that did not come from a :class:`RecordPlan`, such as
-    a reconstructed CLI invocation.
+    Three shapes are recognized, because a secret reaches a command in
+    all three and redacting only the first leaves the other two in
+    plain text in every artifact this project writes:
+
+    ``NAME=value``
+        The environment style, with or without leading dashes.
+    ``--api-key=value``
+        A long option carrying its value after ``=``.
+    ``--api-key value``
+        A long option whose value is the *next* argv element. The next
+        element is always replaced, including when it starts with a
+        dash, since a credential can legitimately look like an option.
+
+    Not recognized, and documented rather than guessed at: a value
+    attached to a single-dash short option (``-ksk-live``). There is no
+    way to tell that from a cluster of short flags without knowing the
+    target program's own option grammar, and guessing would corrupt
+    legitimate arguments.
     """
     redacted: list[str] = []
+    redact_next = False
     for item in argv:
+        if redact_next:
+            redacted.append(REDACTED)
+            redact_next = False
+            continue
+
         name, separator, _ = item.partition("=")
         if separator and name and _is_credential_name(name):
             redacted.append(f"{name}={REDACTED}")
-        else:
+            continue
+
+        if item.startswith("-") and _is_credential_name(item):
             redacted.append(item)
+            redact_next = True
+            continue
+
+        redacted.append(item)
     return tuple(redacted)

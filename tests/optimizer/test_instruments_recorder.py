@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import signal
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
 from _instruments_fakes import COMMAND_LINE_TOOLS_STDERR, FakeLauncher, FakeProcess
 
 from llmtracefx.optimizer.instruments.commands import LaunchTarget, RecordPlan
-from llmtracefx.optimizer.instruments.process import InstrumentsProcessError
+from llmtracefx.optimizer.instruments.process import (
+    InstrumentsProcessError,
+    SubprocessProcessLauncher,
+)
 from llmtracefx.optimizer.instruments.recorder import (
     InstrumentsRecordError,
     RecordStatus,
@@ -28,6 +35,7 @@ def make_plan(trace: Path, **overrides) -> RecordPlan:
         "target": LaunchTarget(argv=("/bin/infer", "--tokens", "8")),
         "time_limit": "5s",
         "grace_seconds": 10.0,
+        "stop_grace_seconds": 0.25,
     }
     values.update(overrides)
     return RecordPlan(**values)
@@ -239,10 +247,15 @@ def test_timeout_stops_the_process_group_starting_with_sigint(tmp_path):
     assert len(process.signals) == 1
 
 
-def test_timeout_escalates_when_sigint_is_ignored(tmp_path):
+def test_timeout_escalates_when_the_group_survives_sigint(tmp_path):
+    """The leader exiting is not the stop condition.
+
+    xctrace can exit on SIGINT while the program it launched keeps
+    running in the same group. Escalation must continue until the group
+    is empty, not stop the moment the leader is reaped.
+    """
     trace = tmp_path / "run.trace"
-    # One timeout for the main wait, then one per ignored stop signal.
-    process = FakeProcess(returncode=0, timeout_waits=3)
+    process = FakeProcess(returncode=0, timeout_waits=1, group_dies_on=signal.SIGKILL)
     launcher = FakeLauncher(process)
 
     run_record(
@@ -250,6 +263,33 @@ def test_timeout_escalates_when_sigint_is_ignored(tmp_path):
     )
 
     assert process.signals == [signal.SIGINT, signal.SIGTERM, signal.SIGKILL]
+    assert process.group_alive() is False
+
+
+def test_teardown_stops_once_the_group_is_actually_empty(tmp_path):
+    trace = tmp_path / "run.trace"
+    process = FakeProcess(returncode=0, timeout_waits=1, group_dies_on=signal.SIGTERM)
+    launcher = FakeLauncher(process)
+
+    run_record(
+        make_plan(trace), launcher=launcher, artifacts_dir=tmp_path / "artifacts"
+    )
+
+    assert process.signals == [signal.SIGINT, signal.SIGTERM]
+
+
+def test_teardown_is_bounded_when_the_group_never_dies(tmp_path):
+    """A group that ignores everything must not hang the recorder."""
+    trace = tmp_path / "run.trace"
+    process = FakeProcess(returncode=0, timeout_waits=1, group_dies_on=None)
+    launcher = FakeLauncher(process)
+
+    result = run_record(
+        make_plan(trace), launcher=launcher, artifacts_dir=tmp_path / "artifacts"
+    )
+
+    assert process.signals == [signal.SIGINT, signal.SIGTERM, signal.SIGKILL]
+    assert result.status is RecordStatus.TIMED_OUT
 
 
 def test_timeout_uses_the_plan_deadline_not_the_time_limit(tmp_path):
@@ -291,7 +331,9 @@ def test_timeout_preserves_artifacts(tmp_path):
 def test_unsignalable_group_does_not_loop_forever(tmp_path):
     trace = tmp_path / "run.trace"
     process = FakeProcess(
-        timeout_waits=5, signal_error=InstrumentsProcessError("not permitted")
+        timeout_waits=5,
+        signal_error=InstrumentsProcessError("not permitted"),
+        group_dies_on=None,
     )
     launcher = FakeLauncher(process)
 
@@ -347,3 +389,253 @@ def test_keyboard_interrupt_while_waiting_still_stops_the_recording(tmp_path):
         )
 
     assert process.signals[0] == signal.SIGINT
+
+
+# --- Real process group teardown --------------------------------------
+#
+# The fakes above model the group, but the property that matters is a
+# real one: after run_record returns, nothing it started may still be
+# running. These use actual processes.
+
+
+#: A stand-in for xctrace: it accepts the same argv shape (a `record`
+#: subcommand, flags, then `-- program args`), starts the program in its
+#: own process group exactly as xctrace does, and exits on SIGINT while
+#: leaving that program running. No shell is involved.
+FAKE_XCTRACE_SOURCE = """\
+import signal
+import subprocess
+import sys
+import time
+
+argv = sys.argv[1:]
+target = argv[argv.index("--") + 1 :]
+subprocess.Popen([sys.executable, *target])
+
+# Exit cleanly on SIGINT, leaving the launched program behind. This is
+# the exact shape that used to end teardown early.
+signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+time.sleep(600)
+"""
+
+#: A profiled program that refuses SIGINT and SIGTERM, like a wedged
+#: inference process still holding the GPU.
+STUBBORN_TARGET_SOURCE = """\
+import os
+import signal
+import sys
+import time
+
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    handle.write(str(os.getpid()))
+time.sleep(600)
+"""
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _await_pid_exit(pid: int, timeout_seconds: float = 20.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return True
+        time.sleep(0.05)
+    return not _pid_alive(pid)
+
+
+def _await_file(path: Path, timeout_seconds: float = 20.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if path.exists() and path.read_text(encoding="utf-8").strip():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_descendant_is_killed_when_the_leader_exits_on_sigint(tmp_path):
+    """The regression: leader exits on SIGINT, descendant survives it.
+
+    Teardown used to return as soon as the leader was reaped, leaving
+    the program xctrace launched running in a detached session with
+    nothing left that knew how to reach it. Escalation now continues
+    until the process group is actually empty.
+    """
+    fake_xctrace = tmp_path / "fake_xctrace.py"
+    fake_xctrace.write_text(
+        f"#!{sys.executable}\n" + FAKE_XCTRACE_SOURCE, encoding="utf-8"
+    )
+    fake_xctrace.chmod(0o755)
+
+    target = tmp_path / "stubborn.py"
+    target.write_text(STUBBORN_TARGET_SOURCE, encoding="utf-8")
+    pid_file = tmp_path / "child.pid"
+
+    plan = make_plan(
+        tmp_path / "run.trace",
+        xctrace_path=str(fake_xctrace),
+        target=LaunchTarget(argv=(str(target), str(pid_file))),
+        time_limit="1s",
+        grace_seconds=1.0,
+        stop_grace_seconds=3.0,
+    )
+
+    child_pid: int | None = None
+    try:
+        result = run_record(
+            plan,
+            launcher=SubprocessProcessLauncher(),
+            artifacts_dir=tmp_path / "artifacts",
+        )
+
+        assert result.status is RecordStatus.TIMED_OUT
+        assert _await_file(pid_file), "the profiled program never started"
+        child_pid = int(pid_file.read_text(encoding="utf-8"))
+        assert _await_pid_exit(child_pid), (
+            f"the profiled program (pid {child_pid}) survived teardown; "
+            "the process group was not cleaned up"
+        )
+    finally:
+        if child_pid is not None and _pid_alive(child_pid):
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(child_pid, signal.SIGKILL)
+
+
+def test_pgid_is_captured_at_spawn_and_survives_leader_exit(tmp_path):
+    """`os.getpgid` stops working once the leader is reaped.
+
+    Capturing the group at spawn is what keeps the survivors reachable.
+    """
+    script = tmp_path / "quick.py"
+    script.write_text("import sys; sys.exit(0)\n", encoding="utf-8")
+
+    launcher = SubprocessProcessLauncher()
+    with (tmp_path / "o.txt").open("wb") as out, (tmp_path / "e.txt").open("wb") as err:
+        process = launcher.spawn(
+            (sys.executable, str(script)),
+            stdout=out,
+            stderr=err,
+            cwd=None,
+            env=None,
+        )
+        pgid = process.pgid
+        assert pgid == process.pid  # start_new_session makes them equal
+        process.wait(30.0)
+
+    # The leader is reaped, so a lazy lookup would now fail outright.
+    with pytest.raises(ProcessLookupError):
+        os.getpgid(process.pid)
+    # The captured group id is still usable, and reports the group empty.
+    assert process.pgid == pgid
+    assert process.group_alive() is False
+
+
+# --- Spawn failure metadata -------------------------------------------
+
+
+def test_spawn_failure_writes_metadata_like_every_other_failure(tmp_path):
+    """A failure to start is still a failure worth recording.
+
+    This path used to return before the metadata write, so the one
+    outcome with no exit status and no tool output was also the one with
+    no record of having happened.
+    """
+    trace = tmp_path / "run.trace"
+    artifacts = tmp_path / "artifacts"
+    launcher = FakeLauncher(
+        FakeProcess(), spawn_error=InstrumentsProcessError("no such file")
+    )
+
+    result = run_record(make_plan(trace), launcher=launcher, artifacts_dir=artifacts)
+
+    assert result.status is RecordStatus.FAILED
+    metadata_path = artifacts / "xctrace_record.json"
+    assert metadata_path.exists()
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["status"] == "failed"
+    assert "could not start xctrace" in metadata["message"]
+    assert metadata["returncode"] is None
+    assert metadata["trace_exists"] is False
+    assert (artifacts / "xctrace_record_stdout.txt").exists()
+    assert (artifacts / "xctrace_record_stderr.txt").exists()
+
+
+def test_spawn_failure_replaces_stale_metadata_from_a_previous_run(tmp_path):
+    """No mixing a previous run's metadata with this run's output.
+
+    The stdout and stderr files are truncated on every attempt, so a
+    surviving xctrace_record.json from an earlier success would have sat
+    next to empty logs describing a run that did not happen.
+    """
+    trace = tmp_path / "run.trace"
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir(parents=True)
+    stale = artifacts / "xctrace_record.json"
+    stale.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "status": "completed",
+                "message": "recorded an earlier run",
+                "returncode": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run_record(
+        make_plan(trace),
+        launcher=FakeLauncher(
+            FakeProcess(), spawn_error=InstrumentsProcessError("boom")
+        ),
+        artifacts_dir=artifacts,
+    )
+
+    metadata = json.loads(stale.read_text(encoding="utf-8"))
+    assert metadata["status"] == "failed"
+    assert "recorded an earlier run" not in metadata["message"]
+    assert metadata["returncode"] is None
+
+
+def test_survivors_are_stopped_even_when_xctrace_exits_normally(tmp_path):
+    """Adjacent to the timeout case, and just as leaky.
+
+    xctrace can fail early while the program it launched keeps running.
+    The leader exiting is not the timeout path, so nothing used to look
+    at the group at all on that route.
+    """
+    trace = tmp_path / "run.trace"
+    process = FakeProcess(returncode=1, group_dies_on=signal.SIGTERM)
+    launcher = FakeLauncher(process)
+
+    result = run_record(
+        make_plan(trace), launcher=launcher, artifacts_dir=tmp_path / "artifacts"
+    )
+
+    assert result.status is RecordStatus.FAILED
+    assert process.signals == [signal.SIGINT, signal.SIGTERM]
+    assert "that process group was stopped" in result.message
+
+
+def test_a_clean_exit_with_an_empty_group_signals_nothing(tmp_path):
+    trace = tmp_path / "run.trace"
+    process = FakeProcess(returncode=0)
+    process._group_alive = False
+    launcher = FakeLauncher(process, creates_trace=trace)
+
+    result = run_record(
+        make_plan(trace), launcher=launcher, artifacts_dir=tmp_path / "artifacts"
+    )
+
+    assert result.status is RecordStatus.COMPLETED
+    assert process.signals == []
+    assert "process group was stopped" not in result.message

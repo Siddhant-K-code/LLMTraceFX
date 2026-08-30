@@ -382,3 +382,90 @@ def test_output_trace_tilde_is_expanded_once(tmp_path, monkeypatch):
     assert "~" not in recorded
     assert recorded == str(plan.output_trace)
     assert Path(recorded).is_absolute()
+
+
+# --- Split and attached credential arguments --------------------------
+#
+# Redaction used to handle only NAME=value, so `--api-key sk-live` kept
+# the secret in every artifact this project writes.
+
+SENTINEL = "sk-live-DO-NOT-LEAK"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("bench", "--api-key", SENTINEL),
+        ("bench", "--api_key", SENTINEL),
+        ("bench", "--API-KEY", SENTINEL),
+        ("bench", f"--api-key={SENTINEL}"),
+        ("bench", f"API_KEY={SENTINEL}"),
+        ("bench", "--hf-token", SENTINEL),
+        ("bench", "--auth-token", SENTINEL),
+        ("bench", "--password", SENTINEL),
+        ("bench", "--secret", SENTINEL),
+        ("bench", "--private-key", SENTINEL),
+        ("bench", "--credential", SENTINEL),
+        ("bench", "--bearer", SENTINEL),
+        # A value that itself looks like an option must still go.
+        ("bench", "--api-key", f"-{SENTINEL}"),
+        ("bench", "--token", f"--{SENTINEL}"),
+    ],
+)
+def test_every_credential_shape_is_redacted(argv):
+    plan = make_plan(target=LaunchTarget(argv=argv))
+    assert SENTINEL not in " ".join(plan.to_redacted_argv())
+    # The real invocation is untouched, or the program would break.
+    assert SENTINEL in " ".join(plan.to_argv())
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ("bench", "--tokens", "128"),
+        ("bench", "--max-tokens", "512"),
+        ("bench", "--num-tokens", "64"),
+        ("bench", "--token-count", "9"),
+        ("bench", "--max_new_tokens", "32"),
+        ("bench", "--input-tokens", "10"),
+        ("bench", "--sort-key", "name"),
+        ("bench", "--cache-key", "abc"),
+        ("bench", "--temperature", "0.7"),
+        ("bench", "--keyword", "value"),
+    ],
+)
+def test_legitimate_options_are_not_corrupted(argv):
+    """Redaction must not eat ordinary inference parameters.
+
+    An LLM command is full of `--max-tokens` and `--num-tokens`. A naive
+    substring match on "token" would redact all of them and destroy the
+    reproducibility the recorded argv exists to provide.
+    """
+    plan = make_plan(target=LaunchTarget(argv=argv))
+    redacted = plan.to_redacted_argv()
+    assert REDACTED not in redacted
+    assert redacted[-len(argv) :] == argv
+
+
+def test_a_credential_flag_at_the_end_does_not_crash():
+    plan = make_plan(target=LaunchTarget(argv=("bench", "--api-key")))
+    assert plan.to_redacted_argv()[-1] == "--api-key"
+
+
+def test_only_the_value_immediately_after_the_flag_is_redacted():
+    plan = make_plan(
+        target=LaunchTarget(argv=("bench", "--api-key", SENTINEL, "--tokens", "128"))
+    )
+    redacted = plan.to_redacted_argv()
+    assert redacted[-4:] == ("--api-key", REDACTED, "--tokens", "128")
+
+
+def test_single_dash_attached_values_are_a_documented_limit():
+    """`-ksk-live` cannot be told from a cluster of short flags.
+
+    Guessing would corrupt legitimate arguments, so the boundary is
+    documented rather than papered over. This pins it so a future change
+    is a deliberate one.
+    """
+    plan = make_plan(target=LaunchTarget(argv=("bench", f"-k{SENTINEL}")))
+    assert SENTINEL in " ".join(plan.to_redacted_argv())

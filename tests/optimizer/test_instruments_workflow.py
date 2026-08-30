@@ -556,7 +556,9 @@ def test_native_provenance_without_a_parsed_schema_is_rejected():
             )
         },
     )
-    with pytest.raises(SchemaValidationError, match="parsed_schemas is"):
+    with pytest.raises(
+        SchemaValidationError, match="not in instruments.parsed_schemas"
+    ):
         base_record(instruments=evidence).validate()
 
 
@@ -579,6 +581,7 @@ def test_negative_instrument_metric_is_rejected():
     )
 
     evidence = InstrumentsEvidence(
+        available_schemas=("metal-gpu-intervals",),
         parsed_schemas=("metal-gpu-intervals",),
         metrics={
             "metal_gpu_interval_count": Measurement(
@@ -777,6 +780,7 @@ def test_schema_structurally_rejects_overclaiming_metric_names(name):
     )
 
     evidence = InstrumentsEvidence(
+        available_schemas=("metal-gpu-intervals",),
         parsed_schemas=("metal-gpu-intervals",),
         metrics={
             name: Measurement(
@@ -938,3 +942,217 @@ def test_pinning_survives_an_explicit_none_identity():
     )
     assert report.capability is XctraceCapability.SUPPORTED
     assert report.os_name == PINNED_OS
+
+
+# --- Collisions are resolved before anything is written ---------------
+
+
+def test_rerun_into_an_occupied_directory_touches_no_existing_byte(tmp_path):
+    """A refused rerun must not leave one run's trace beside another's
+    metadata.
+
+    record_trace used to write capability_report.json immediately, and
+    only then reach the trace collision check inside run_record. The
+    trace was correctly refused, but the metadata beside it had already
+    been replaced.
+    """
+    out = tmp_path / "artifacts"
+    out.mkdir()
+    trace = out / "run.trace"
+    trace.mkdir()
+
+    existing = {
+        out / "capability_report.json": b'{"from": "the first run"}',
+        out / "instruments_evidence.json": b'{"from": "the first run"}',
+        out / "xctrace_record.json": b'{"from": "the first run"}',
+        out / "trace_toc.xml": b"<trace-toc/>",
+    }
+    for path, payload in existing.items():
+        path.write_bytes(payload)
+    before = {path: path.read_bytes() for path in existing}
+
+    launcher = FakeLauncher(FakeProcess(returncode=0), creates_trace=trace)
+    collection = record_trace(
+        runner=exporting_runner(),
+        launcher=launcher,
+        command=("/bin/infer",),
+        output_trace=trace,
+        output_dir=out,
+    )
+
+    assert collection.succeeded is False
+    assert collection.wrote_artifacts is False
+    assert launcher.spawned == []
+    assert "never overwritten" in collection.message
+    for path, payload in before.items():
+        assert path.read_bytes() == payload, f"{path.name} was rewritten"
+
+
+def test_refused_rerun_creates_no_new_files(tmp_path):
+    out = tmp_path / "artifacts"
+    trace = tmp_path / "run.trace"
+    trace.mkdir()
+
+    record_trace(
+        runner=exporting_runner(),
+        launcher=FakeLauncher(FakeProcess(returncode=0)),
+        command=("/bin/infer",),
+        output_trace=trace,
+        output_dir=out,
+    )
+
+    assert not out.exists()
+
+
+def test_a_clean_run_still_writes_every_artifact(tmp_path):
+    """The ordering fix must not stop a normal run from writing."""
+    out = tmp_path / "artifacts"
+    trace = tmp_path / "run.trace"
+    collection = record_trace(
+        runner=exporting_runner(),
+        launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=trace),
+        command=("/bin/infer",),
+        output_trace=trace,
+        output_dir=out,
+    )
+
+    assert collection.succeeded is True
+    assert collection.wrote_artifacts is True
+    for name in (
+        "capability_report.json",
+        "instruments_evidence.json",
+        "xctrace_record.json",
+        "trace_toc.xml",
+        "trace_toc.json",
+    ):
+        assert (out / name).exists(), name
+
+
+# --- Metric allowlist -------------------------------------------------
+
+
+def _evidence(**overrides):
+    from llmtracefx.optimizer.schema import InstrumentsEvidence
+
+    values = {
+        "available_schemas": ("metal-gpu-intervals",),
+        "parsed_schemas": ("metal-gpu-intervals",),
+    }
+    values.update(overrides)
+    return InstrumentsEvidence(**values)
+
+
+def _native(value=1.0, unit="intervals"):
+    from llmtracefx.optimizer.schema import Measurement, MetricProvenance
+
+    return Measurement(
+        value=value, provenance=MetricProvenance.MEASURED_NATIVE, unit=unit
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "metal_power_watts",
+        "metal_energy_joules",
+        "metal_memory_footprint",
+        "gpu_temperature",
+        "metal_gpu_interval_count_v2",
+        "interval_count",
+        "anything_at_all",
+    ],
+)
+def test_metrics_outside_the_allowlist_are_rejected(name):
+    """A denylist only blocks what somebody enumerated.
+
+    `metal_power_watts` passed the substring denylist cleanly, because
+    the entry was `gpu_power`. An allowlist has no such gap.
+    """
+    evidence = _evidence(metrics={name: _native()})
+    with pytest.raises(SchemaValidationError, match="not a metric this project"):
+        base_record(instruments=evidence).validate()
+
+
+@pytest.mark.parametrize(
+    "name,wrong_unit",
+    [
+        ("metal_gpu_interval_count", "ms"),
+        ("metal_gpu_interval_duration_sum", "intervals"),
+        ("metal_gpu_interval_wall_span", "ns"),
+        ("metal_gpu_interval_count_all_processes", ""),
+    ],
+)
+def test_allowlisted_metrics_must_carry_their_declared_unit(name, wrong_unit):
+    evidence = _evidence(metrics={name: _native(unit=wrong_unit)})
+    with pytest.raises(SchemaValidationError, match="must be in"):
+        base_record(instruments=evidence).validate()
+
+
+@pytest.mark.parametrize(
+    "provenance_name", ["MEASURED_WALL_CLOCK", "DERIVED", "ESTIMATED"]
+)
+def test_allowlisted_metrics_must_carry_native_provenance(provenance_name):
+    from llmtracefx.optimizer.schema import Measurement, MetricProvenance
+
+    evidence = _evidence(
+        metrics={
+            "metal_gpu_interval_count": Measurement(
+                value=1.0,
+                provenance=getattr(MetricProvenance, provenance_name),
+                unit="intervals",
+            )
+        }
+    )
+    with pytest.raises(SchemaValidationError, match="must have provenance"):
+        base_record(instruments=evidence).validate()
+
+
+def test_a_metric_requires_its_own_source_table_to_have_been_parsed():
+    evidence = _evidence(
+        parsed_schemas=(), metrics={"metal_gpu_interval_count": _native()}
+    )
+    with pytest.raises(
+        SchemaValidationError, match="not in instruments.parsed_schemas"
+    ):
+        base_record(instruments=evidence).validate()
+
+
+def test_a_phantom_parsed_schema_cannot_unlock_a_metric():
+    """parsed_schemas must be a subset of what the trace advertised."""
+    evidence = _evidence(
+        available_schemas=("time-profile",),
+        parsed_schemas=("metal-gpu-intervals",),
+        metrics={"metal_gpu_interval_count": _native()},
+    )
+    with pytest.raises(SchemaValidationError, match="never advertised"):
+        base_record(instruments=evidence).validate()
+
+
+def test_parsing_cannot_be_claimed_when_the_trace_advertised_nothing():
+    evidence = _evidence(available_schemas=())
+    with pytest.raises(SchemaValidationError, match="advertised nothing"):
+        base_record(instruments=evidence).validate()
+
+
+def test_parsed_schemas_must_name_a_table_this_project_can_parse():
+    evidence = _evidence(
+        available_schemas=("os-signpost",), parsed_schemas=("os-signpost",)
+    )
+    with pytest.raises(SchemaValidationError, match="no parser for"):
+        base_record(instruments=evidence).validate()
+
+
+def test_the_four_real_metrics_pass_every_rule(tmp_path):
+    """The guard must not be so strict that a real run is rejected."""
+    trace = tmp_path / "run.trace"
+    collection = record_trace(
+        runner=exporting_runner(),
+        launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=trace),
+        command=("/bin/infer",),
+        output_trace=trace,
+        output_dir=tmp_path / "artifacts",
+    )
+    from llmtracefx.optimizer.schema import INSTRUMENT_METRIC_SPECS
+
+    assert set(collection.evidence.metrics) == set(INSTRUMENT_METRIC_SPECS)
+    base_record(instruments=collection.evidence).validate()

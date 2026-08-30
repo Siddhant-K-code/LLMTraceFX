@@ -53,6 +53,9 @@ RECORD_METADATA_SCHEMA_VERSION = "1"
 #: Seconds to wait after each stop signal before escalating.
 SIGNAL_ESCALATION_GRACE_SECONDS = 30.0
 
+#: How often to re-check whether the process group has emptied.
+GROUP_POLL_INTERVAL_SECONDS = 0.05
+
 #: Bytes of captured stderr read back purely to classify a failure.
 #: The text is never persisted into a record; only the resulting
 #: capability label is.
@@ -171,20 +174,47 @@ def _classify_failure_tail(stderr_path: Path) -> XctraceCapability | None:
     return classify_xctrace_failure(tail)
 
 
-def _stop_process_group(process: ManagedProcess) -> int | None:
-    """Signal the group, escalating until it exits."""
+def _wait_for_group_exit(process: ManagedProcess, deadline_seconds: float) -> bool:
+    """Poll until the process group is empty or the deadline passes."""
+    deadline = time.monotonic() + deadline_seconds
+    while True:
+        if not process.group_alive():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(GROUP_POLL_INTERVAL_SECONDS)
+
+
+def _stop_process_group(process: ManagedProcess, *, grace_seconds: float) -> int | None:
+    """Escalate signals until the whole group is gone.
+
+    The leader exiting is deliberately *not* the stop condition.
+    ``xctrace record --launch`` starts the profiled program itself, and
+    that program can outlive xctrace: it may ignore SIGINT, or simply be
+    slower to notice it. Returning as soon as the leader was reaped
+    would leave the target and any of its descendants running, holding
+    the pipes this recorder opened, with nothing left that knows how to
+    reach them.
+    """
+    returncode = process.returncode
     for signal_number in STOP_SIGNAL_ESCALATION:
         try:
             process.signal_group(signal_number)
         except InstrumentsProcessError:
             # Not permitted to signal the group. Escalation cannot help,
             # so stop trying rather than looping on the same refusal.
-            return process.returncode
+            return returncode
+
+        # Reap the leader if it has not been reaped yet, so its exit
+        # status is available, then wait on the group as a whole.
         try:
-            return process.wait(SIGNAL_ESCALATION_GRACE_SECONDS)
+            returncode = process.wait(grace_seconds)
         except subprocess.TimeoutExpired:
-            continue
-    return process.returncode
+            pass
+
+        if _wait_for_group_exit(process, grace_seconds):
+            return returncode
+    return returncode
 
 
 def run_record(
@@ -219,6 +249,8 @@ def run_record(
     status = RecordStatus.FAILED
     returncode: int | None = None
     message = ""
+    spawn_failed = False
+    survivors_stopped = False
 
     with (
         stdout_path.open("wb") as stdout_handle,
@@ -233,43 +265,55 @@ def run_record(
                 env=None,
             )
         except InstrumentsProcessError as exc:
-            return RecordResult(
-                status=RecordStatus.FAILED,
-                argv=redacted_argv,
-                trace_path=resolved_trace,
-                message=f"could not start xctrace: {exc}",
-                started_at=started_at,
-                ended_at=utc_now_iso(),
-                duration_seconds=time.perf_counter() - start,
-                stdout_path=stdout_path,
-                stderr_path=stderr_path,
-            )
-
-        try:
-            returncode = process.wait(plan.timeout_seconds)
-        except subprocess.TimeoutExpired:
-            status = RecordStatus.TIMED_OUT
-            returncode = _stop_process_group(process)
-            message = (
-                f"recording exceeded its {plan.timeout_seconds:g}s host "
-                f"deadline (--time-limit {plan.time_limit} plus "
-                f"{plan.grace_seconds:g}s finalization grace) and the "
-                "process group was stopped. Artifacts are preserved."
-            )
-        except BaseException:
-            # Anything other than a timeout (an unexpected error, or a
-            # KeyboardInterrupt while waiting) still propagates, but the
-            # recording must not be left running detached. It is in its
-            # own session, so nothing else would ever reap it.
-            _stop_process_group(process)
-            raise
+            # Falls through to the shared persistence below rather than
+            # returning here. Returning early skipped the metadata
+            # write, which both lost the record of this failure and let
+            # a previous run's xctrace_record.json survive next to this
+            # run's freshly truncated stdout and stderr.
+            spawn_failed = True
+            message = f"could not start xctrace: {exc}"
+        else:
+            try:
+                returncode = process.wait(plan.timeout_seconds)
+            except subprocess.TimeoutExpired:
+                status = RecordStatus.TIMED_OUT
+                returncode = _stop_process_group(
+                    process, grace_seconds=plan.stop_grace_seconds
+                )
+                message = (
+                    f"recording exceeded its {plan.timeout_seconds:g}s host "
+                    f"deadline (--time-limit {plan.time_limit} plus "
+                    f"{plan.grace_seconds:g}s finalization grace) and the "
+                    "process group was stopped. Artifacts are preserved."
+                )
+            except BaseException:
+                # Anything other than a timeout (an unexpected error, or
+                # a KeyboardInterrupt while waiting) still propagates,
+                # but the recording must not be left running detached.
+                # It is in its own session, so nothing else would ever
+                # reap it.
+                _stop_process_group(process, grace_seconds=plan.stop_grace_seconds)
+                raise
+            else:
+                # The leader exited on its own, which is not the same as
+                # the group being empty. xctrace can fail early while the
+                # program it launched keeps running, and that program is
+                # in a session this process started, so nothing else
+                # would clean it up.
+                if process.group_alive():
+                    survivors_stopped = True
+                    _stop_process_group(process, grace_seconds=plan.stop_grace_seconds)
 
     ended_at = utc_now_iso()
     duration = time.perf_counter() - start
     trace_exists = resolved_trace.exists()
     failure_capability: XctraceCapability | None = None
 
-    if status is not RecordStatus.TIMED_OUT:
+    if spawn_failed:
+        # Message already set. Nothing was executed, so there is no exit
+        # status to classify and no bundle to look for.
+        status = RecordStatus.FAILED
+    elif status is not RecordStatus.TIMED_OUT:
         if returncode == 0 and trace_exists:
             status = RecordStatus.COMPLETED
             message = f"recorded {resolved_trace.name}"
@@ -288,6 +332,12 @@ def run_record(
             message += f". See {stderr_path.name} for the tool's own output."
     elif returncode is not None and returncode != 0:
         failure_capability = _classify_failure_tail(stderr_path)
+
+    if survivors_stopped:
+        message += (
+            " xctrace exited while the program it launched was still "
+            "running; that process group was stopped."
+        )
 
     result = RecordResult(
         status=status,

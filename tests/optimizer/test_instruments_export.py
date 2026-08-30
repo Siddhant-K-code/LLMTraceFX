@@ -534,3 +534,19 @@ def test_processes_without_a_label_are_kept_apart_by_pid():
     assert len(summary.per_process) == 2
     assert {entry.pid for entry in summary.per_process} == {11, 22}
     assert summary.for_process(11).interval_count == 1
+
+
+def test_parsable_schema_lists_cannot_drift_apart():
+    """The parser's list and the schema's guard must stay in step.
+
+    If they diverge, either a real run stops validating or the guard
+    stops guarding.
+    """
+    from llmtracefx.optimizer.schema import (
+        INSTRUMENT_METRIC_SPECS,
+        INSTRUMENT_PARSABLE_SCHEMAS,
+    )
+
+    assert set(SUPPORTED_TABLE_SCHEMAS) == set(INSTRUMENT_PARSABLE_SCHEMAS)
+    sources = {source for source, _, _ in INSTRUMENT_METRIC_SPECS.values()}
+    assert sources <= set(SUPPORTED_TABLE_SCHEMAS)

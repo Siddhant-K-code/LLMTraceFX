@@ -7,15 +7,20 @@ export and evidence path can be exercised on any platform.
 
 from __future__ import annotations
 
+import signal
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 from typing import IO
 
 from llmtracefx.optimizer.instruments.process import (
+    STOP_SIGNAL_ESCALATION,
     CommandResult,
     InstrumentsProcessError,
 )
+
+#: Escalation order, used by FakeProcess to decide when a group dies.
+_SIGNAL_ORDER = list(STOP_SIGNAL_ESCALATION)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "instruments"
 
@@ -117,7 +122,13 @@ class FakeCommandRunner:
 
 
 class FakeProcess:
-    """A recording process whose exit behavior the test dictates."""
+    """A recording process whose exit behavior the test dictates.
+
+    Models the leader and its process group as two separate things,
+    because that distinction is the whole point of the teardown logic: a
+    leader can exit while the program it launched keeps running in the
+    same group.
+    """
 
     def __init__(
         self,
@@ -128,6 +139,7 @@ class FakeProcess:
         stdout_text: str = "",
         stderr_text: str = "",
         signal_error: Exception | None = None,
+        group_dies_on: int | None = signal.SIGINT,
     ) -> None:
         self._returncode: int | None = returncode
         self._final_returncode = returncode
@@ -136,11 +148,20 @@ class FakeProcess:
         self.stdout_text = stdout_text
         self.stderr_text = stderr_text
         self.signal_error = signal_error
+        #: Lowest-priority signal that actually empties the group. None
+        #: means nothing does, which exercises bounded escalation.
+        self.group_dies_on = group_dies_on
+        self._group_alive = True
         self.signals: list[int] = []
         self.wait_calls: list[float] = []
+        self.group_alive_calls = 0
 
     @property
     def pid(self) -> int:
+        return self._pid
+
+    @property
+    def pgid(self) -> int:
         return self._pid
 
     @property
@@ -160,6 +181,17 @@ class FakeProcess:
         self.signals.append(signal_number)
         if self.signal_error is not None:
             raise self.signal_error
+        # The leader always dies on the first signal; the group only
+        # empties once a signal it cannot ignore arrives.
+        self._returncode = self._final_returncode
+        if self.group_dies_on is not None and _SIGNAL_ORDER.index(
+            signal_number
+        ) >= _SIGNAL_ORDER.index(self.group_dies_on):
+            self._group_alive = False
+
+    def group_alive(self) -> bool:
+        self.group_alive_calls += 1
+        return self._group_alive
 
 
 class FakeLauncher:

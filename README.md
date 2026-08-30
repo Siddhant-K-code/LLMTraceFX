@@ -1797,12 +1797,13 @@ time, memory bandwidth, occupancy, GPU power, GPU energy or GPU memory
 footprint. Metal System Trace advertises tables whose names gesture at some
 of these, but deriving those numbers needs modelling assumptions this project
 has not validated against ground truth, so they stay absent rather than
-approximated. `ExperimentRecord.validate` enforces the rule structurally: a
-metric may carry `measured_native` provenance only when a table schema was
-genuinely parsed, and any metric name containing `utilization`, `occupancy`,
-`bandwidth`, `busy_percent`, `kernel_time`, `gpu_power`, `gpu_energy` or
-`gpu_memory` is rejected outright, so a fabricated hardware number cannot be
-persisted even by a caller that tries.
+approximated. `ExperimentRecord.validate` enforces this structurally, with an
+allowlist rather than a denylist: only the four metric names above may be
+persisted, each with exactly the unit and provenance it declares, each
+requiring the table it is derived from to appear in `parsed_schemas`, and
+`parsed_schemas` itself must be a subset of the schemas the trace actually
+advertised. A fabricated hardware number therefore cannot be persisted even by
+a caller that tries.
 
 Two further limits worth stating plainly:
 
@@ -1838,22 +1839,33 @@ measurement.
   so they cannot break out of the query.
 - **Bounded and cleaned up.** Each recording has a host deadline strictly
   greater than `--time-limit`, leaving room for xctrace to finalize the
-  bundle. The child runs in its own process group, and a timeout escalates
-  SIGINT then SIGTERM then SIGKILL across the whole group, because
-  `xctrace record --launch` starts the profiled program itself.
+  bundle. The child runs in its own process group, whose id is captured at
+  spawn so it stays reachable after xctrace itself exits, and teardown
+  escalates SIGINT then SIGTERM then SIGKILL until the group is actually
+  empty. The leader exiting is not treated as cleanup: `xctrace record
+  --launch` starts the profiled program itself, and that program can outlive
+  xctrace or ignore SIGINT.
 - **Failures are preserved,** not cleaned away: stdout, stderr, run metadata
-  and any partial bundle stay on disk.
+  and any partial bundle stay on disk. A trace path collision is resolved
+  before anything is written, so a refused rerun leaves an earlier run's
+  artifacts byte for byte intact rather than mixing the two.
 - **No prompt or completion capture.** `--target-stdin` and `--target-stdout`
   are never constructed, so the profiled program's own input and output never
   flow through xctrace into captured logs. `--all-processes` is never used,
   and attaching is offered by numeric pid only, since attaching by name
   resolves ambiguously.
-- **Credential redaction.** `--env` values and the profiled command's own
-  arguments whose names look like credentials (`token`, `secret`, `password`,
-  `api_key`, `access_key`, `private_key`, `credential`) are replaced with
-  `<redacted>` in every argv this project stores or prints, while the real
-  value still reaches the process. So `env HF_TOKEN=... python bench.py` is
-  persisted with the token masked.
+- **Credential redaction.** Secrets are redacted from every argv this project
+  stores or prints, in all three shapes they arrive in: `NAME=value`,
+  `--api-key=value`, and `--api-key value` (where the following argument is
+  replaced even if it starts with a dash). Name matching is case and separator
+  insensitive, so `--API_KEY` and `--api-key` are the same. It deliberately
+  distinguishes credentials from quantities: `--hf-token` is redacted,
+  `--max-tokens` and `--token-count` are not, because destroying ordinary
+  inference parameters would defeat the reproducibility the recorded argv
+  exists to provide. The real value still reaches the process. One documented
+  limit: a value attached to a single-dash short option (`-ksecret`) is not
+  detected, because it cannot be told apart from a cluster of short flags
+  without knowing the target program's own option grammar.
 - **Identity is not ingested.** A trace's table of contents contains the
   device's display name (routinely a person's name), its hardware UUID, and
   the target's full argument list. None of these are read. Only the launched

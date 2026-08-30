@@ -67,6 +67,18 @@ class ManagedProcess(Protocol):
     @property
     def returncode(self) -> int | None: ...
 
+    @property
+    def pgid(self) -> int:
+        """Process group id, captured at spawn.
+
+        Captured rather than looked up on demand: once the leader exits
+        and is reaped, ``os.getpgid(pid)`` fails, but the group can still
+        contain the program xctrace launched. Looking it up lazily would
+        therefore lose the ability to signal exactly the survivors that
+        matter most.
+        """
+        ...
+
     def wait(self, timeout_seconds: float) -> int:
         """Wait for exit. Raise ``subprocess.TimeoutExpired`` on timeout.
 
@@ -81,6 +93,14 @@ class ManagedProcess(Protocol):
 
         ``xctrace record --launch`` starts the target program itself, so
         signalling only the direct child can leave that target running.
+        """
+        ...
+
+    def group_alive(self) -> bool:
+        """Whether any process remains in the group.
+
+        The leader exiting is not the same as the group being empty. A
+        recording is only cleaned up when this returns ``False``.
         """
         ...
 
@@ -148,10 +168,24 @@ class _PopenManagedProcess:
 
     def __init__(self, popen: subprocess.Popen[bytes]) -> None:
         self._popen = popen
+        # The child was spawned with start_new_session=True, so it leads
+        # a new session and its process group id equals its pid. That is
+        # captured here, while the leader is certainly still alive,
+        # because os.getpgid stops working the moment it is reaped.
+        try:
+            self._pgid = os.getpgid(popen.pid)
+        except (ProcessLookupError, PermissionError):
+            # Already gone, or not visible. setsid guarantees pgid ==
+            # pid, so that remains the correct group to signal.
+            self._pgid = popen.pid
 
     @property
     def pid(self) -> int:
         return self._popen.pid
+
+    @property
+    def pgid(self) -> int:
+        return self._pgid
 
     @property
     def returncode(self) -> int | None:
@@ -161,22 +195,35 @@ class _PopenManagedProcess:
         return self._popen.wait(timeout=timeout_seconds)
 
     def signal_group(self, signal_number: int) -> None:
-        # The child was spawned with start_new_session=True, so it leads
-        # its own process group whose id equals its pid. Signalling the
-        # group reaches the program xctrace launched as well.
+        # Signals the group captured at spawn, which reaches the program
+        # xctrace launched even after xctrace itself has exited.
         #
         # ProcessLookupError means the group is already gone, which is
         # the desired end state, so it is not an error here. It is
         # caught specifically rather than as a bare except.
         try:
-            os.killpg(os.getpgid(self._popen.pid), signal_number)
+            os.killpg(self._pgid, signal_number)
         except ProcessLookupError:
             return
         except PermissionError as exc:
             raise InstrumentsProcessError(
-                f"not permitted to signal process group for pid "
-                f"{self._popen.pid}: {exc}"
+                f"not permitted to signal process group {self._pgid}: {exc}"
             ) from exc
+
+    def group_alive(self) -> bool:
+        """Whether the group still has members.
+
+        Signal 0 performs the permission and existence checks without
+        delivering anything. A PermissionError means the group exists
+        but is not ours, which still counts as alive.
+        """
+        try:
+            os.killpg(self._pgid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
 
 
 class SubprocessProcessLauncher:

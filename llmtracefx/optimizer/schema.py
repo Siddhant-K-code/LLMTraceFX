@@ -577,12 +577,43 @@ class PowerMetrics:
         )
 
 
+#: The complete set of Instruments metrics this project is willing to
+#: persist, with the exact table each must come from, its exact unit and
+#: its exact provenance. An allowlist rather than a denylist: a denylist
+#: only blocks the overclaims somebody thought to enumerate, and
+#: ``metal_power_watts`` sailed straight through one.
+INSTRUMENT_METRIC_SPECS: dict[str, tuple[str, str, MetricProvenance]] = {
+    "metal_gpu_interval_count": (
+        "metal-gpu-intervals",
+        "intervals",
+        MetricProvenance.MEASURED_NATIVE,
+    ),
+    "metal_gpu_interval_duration_sum": (
+        "metal-gpu-intervals",
+        "ms",
+        MetricProvenance.MEASURED_NATIVE,
+    ),
+    "metal_gpu_interval_wall_span": (
+        "metal-gpu-intervals",
+        "ms",
+        MetricProvenance.MEASURED_NATIVE,
+    ),
+    "metal_gpu_interval_count_all_processes": (
+        "metal-gpu-intervals",
+        "intervals",
+        MetricProvenance.MEASURED_NATIVE,
+    ),
+}
+
+#: Table schemas this project has a validated parser for. Anything in
+#: ``parsed_schemas`` must appear here, so a record cannot claim to have
+#: parsed a table no parser exists for.
+INSTRUMENT_PARSABLE_SCHEMAS: frozenset[str] = frozenset({"metal-gpu-intervals"})
+
 #: Substrings that must never appear in an ``InstrumentsEvidence``
-#: metric name. Instruments exposes tables whose names gesture at these
-#: quantities, but deriving them needs modelling assumptions this
-#: project has not validated, so the schema refuses to persist a metric
-#: that claims one. Enforced by ``ExperimentRecord.validate``, not only
-#: by convention.
+#: metric name. Redundant with the allowlist above and kept anyway,
+#: because it produces a much more specific error for the exact mistake
+#: it describes.
 FORBIDDEN_INSTRUMENT_METRIC_MARKERS: tuple[str, ...] = (
     "utilization",
     "occupancy",
@@ -834,14 +865,20 @@ class ExperimentRecord:
     def _validate_instruments(self) -> None:
         """Enforce that Instruments metrics cannot overclaim.
 
-        Two invariants, both aimed at the same failure mode (a plausible
+        The rules, all aimed at the same failure mode (a plausible
         looking GPU number that nothing actually measured):
 
-        1. A metric may only be labeled ``measured_native`` when at
-           least one table schema was genuinely parsed. Without a parsed
-           schema there is no exported table the value could have come
-           from, so the label would be a fabrication.
-        2. A schema cannot be simultaneously parsed and unsupported.
+        1. Every metric name must be in
+           :data:`INSTRUMENT_METRIC_SPECS`, with exactly the unit and
+           provenance that entry declares. An allowlist, because a
+           denylist only blocks the overclaims somebody remembered to
+           enumerate.
+        2. The table a metric is derived from must actually appear in
+           ``parsed_schemas``.
+        3. ``parsed_schemas`` must name tables this project has a parser
+           for, and must be a subset of the schemas the trace itself
+           advertised, so a phantom schema cannot unlock a metric.
+        4. A schema cannot be simultaneously parsed and unsupported.
         """
         evidence = self.instruments
         if evidence is None:
@@ -853,6 +890,29 @@ class ExperimentRecord:
             raise SchemaValidationError(
                 "instruments schemas cannot be both parsed and unsupported: "
                 + ", ".join(sorted(overlap))
+            )
+
+        unparsable = parsed - INSTRUMENT_PARSABLE_SCHEMAS
+        if unparsable:
+            raise SchemaValidationError(
+                "instruments.parsed_schemas names tables this project has "
+                "no parser for: " + ", ".join(sorted(unparsable))
+            )
+
+        advertised = set(evidence.available_schemas)
+        if advertised:
+            phantom = parsed - advertised
+            if phantom:
+                raise SchemaValidationError(
+                    "instruments.parsed_schemas is not a subset of "
+                    "instruments.available_schemas; the trace never "
+                    "advertised: " + ", ".join(sorted(phantom))
+                )
+        elif parsed:
+            raise SchemaValidationError(
+                "instruments.parsed_schemas is non-empty while "
+                "instruments.available_schemas is empty; a table cannot be "
+                "parsed from a trace that advertised nothing"
             )
 
         for name, measurement in sorted(evidence.metrics.items()):
@@ -871,19 +931,38 @@ class ExperimentRecord:
                         "are not recoverable from the exported tables "
                         "without unvalidated modelling assumptions."
                     )
+
+            spec = INSTRUMENT_METRIC_SPECS.get(name)
+            if spec is None:
+                raise SchemaValidationError(
+                    f"instruments.metrics.{name} is not a metric this "
+                    "project derives. Allowed: "
+                    + ", ".join(sorted(INSTRUMENT_METRIC_SPECS))
+                )
+            source_schema, expected_unit, expected_provenance = spec
+
+            if measurement.unit != expected_unit:
+                raise SchemaValidationError(
+                    f"instruments.metrics.{name} must be in "
+                    f"{expected_unit!r}, got {measurement.unit!r}"
+                )
+            if measurement.provenance is not expected_provenance:
+                raise SchemaValidationError(
+                    f"instruments.metrics.{name} must have provenance "
+                    f"'{expected_provenance.value}', got "
+                    f"'{measurement.provenance.value}'"
+                )
             if measurement.value < 0:
                 raise SchemaValidationError(
                     f"instruments.metrics.{name} must be >= 0, "
                     f"got {measurement.value}"
                 )
-            if (
-                measurement.provenance is MetricProvenance.MEASURED_NATIVE
-                and not parsed
-            ):
+            if source_schema not in parsed:
                 raise SchemaValidationError(
-                    f"instruments.metrics.{name} claims provenance "
-                    "'measured_native' but instruments.parsed_schemas is "
-                    "empty, so no exported table could have produced it"
+                    f"instruments.metrics.{name} is derived from "
+                    f"{source_schema!r}, which is not in "
+                    "instruments.parsed_schemas, so no exported table "
+                    "could have produced it"
                 )
 
     def to_dict(self) -> dict[str, Any]:

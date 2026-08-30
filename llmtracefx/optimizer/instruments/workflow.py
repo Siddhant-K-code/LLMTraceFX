@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from ..collectors._shared import atomic_write_text
-from ..schema import InstrumentsEvidence
+from ..schema import InstrumentsEvidence, utc_now_iso
 from .capability import (
     METAL_SYSTEM_TRACE_TEMPLATE,
     XctraceCapability,
@@ -181,6 +181,8 @@ class TraceCollection:
     toc: TraceTableOfContents | None = None
     table: ExportedTable | None = None
     message: str = ""
+    wrote_artifacts: bool = True
+    """False when the run was refused before touching the filesystem."""
 
     @property
     def succeeded(self) -> bool:
@@ -204,6 +206,33 @@ def record_trace(
     unsupported evidence artifact rather than attempting a recording
     that is known to fail.
     """
+    # The collision check runs before anything is written. Doing it
+    # inside run_record (after the capability report had already landed)
+    # meant a rerun into a directory that still held a trace refused the
+    # recording but had by then overwritten capability_report.json and
+    # instruments_evidence.json, leaving one run's trace beside another
+    # run's metadata.
+    try:
+        check_output_collision(output_trace)
+    except InstrumentsRecordError as exc:
+        capability = detect_xctrace_capability(runner=runner, template=template)
+        return TraceCollection(
+            capability=capability,
+            record=RecordResult(
+                status=RecordStatus.REFUSED,
+                argv=(),
+                trace_path=output_trace,
+                message=str(exc),
+                started_at=utc_now_iso(),
+                ended_at=utc_now_iso(),
+            ),
+            evidence=failed_recording_evidence(
+                capability, template=template, reason=str(exc)
+            ),
+            message=str(exc),
+            wrote_artifacts=False,
+        )
+
     output_dir.mkdir(parents=True, exist_ok=True)
     capability = detect_xctrace_capability(runner=runner, template=template)
     capability.write_json(output_dir / "capability_report.json")
