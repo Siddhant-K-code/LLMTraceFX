@@ -862,12 +862,39 @@ def _cmd_workloads_list_api_profiles(args: argparse.Namespace) -> int:
     return 0
 
 
+def _effective_api_key_env(args: argparse.Namespace) -> str | None:
+    """The credential variable this invocation will actually read.
+
+    ``--api-key-env`` may be left unset and supplied by the profile, so
+    reading the flag alone misses the name in the common case. Every
+    diagnostic in this command scrubs against the resolved name, because
+    scrubbing against ``None`` silently scrubs nothing.
+    """
+    if args.api_key_env:
+        return str(args.api_key_env)
+    try:
+        profile = _resolved_api_profile(args)
+    except APIProfileError:
+        return None
+    return profile.credential_env_var if profile is not None else None
+
+
 def _cmd_workloads_run_api(args: argparse.Namespace) -> int:
+    # Resolved once, up front, so that every failure path below scrubs
+    # against the same name the request would have used.
+    key_env = _effective_api_key_env(args)
+
     matrix_path = Path(args.matrix)
     try:
         manifest = MatrixManifest.read_json(matrix_path)
     except (OSError, MatrixSchemaError) as exc:
-        print(f"Failed to load matrix manifest: {exc}", file=sys.stderr)
+        # ``OSError`` embeds the path it failed on, and that path came from
+        # the caller, so it is scrubbed like any other caller-supplied text
+        # rather than trusted because a path is not usually a secret.
+        print(
+            f"Failed to load matrix manifest: {_scrubbed_detail(key_env, exc)}",
+            file=sys.stderr,
+        )
         return 1
 
     try:
@@ -885,7 +912,7 @@ def _cmd_workloads_run_api(args: argparse.Namespace) -> int:
         # It has to be caught here or it escapes as an unscrubbed traceback.
         print(
             f"Failed to configure API workload execution: "
-            f"{_scrubbed_detail(args.api_key_env, exc)}",
+            f"{_scrubbed_detail(key_env, exc)}",
             file=sys.stderr,
         )
         return 1
@@ -913,7 +940,10 @@ def _cmd_workloads_run_api(args: argparse.Namespace) -> int:
         try:
             atomic_write_text(output_dir / "api_request_plan.json", document + "\n")
         except OSError as exc:
-            print(f"Failed to write request plan: {exc}", file=sys.stderr)
+            print(
+                f"Failed to write request plan: {_scrubbed_detail(key_env, exc)}",
+                file=sys.stderr,
+            )
             return 1
 
         blocked = sum(1 for plan in plans if not plan.unsupported and not plan.ready)
@@ -1533,31 +1563,44 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
 
 _MIN_SCRUBBED_ARGUMENT_CHARS = 4
 
-_CREDENTIAL_ARGUMENT_STEMS = frozenset(
-    {
-        "apikey",
-        "apikeys",
-        "apisecret",
-        "apitoken",
-        "accesskey",
-        "accesstoken",
-        "auth",
-        "authorization",
-        "authtoken",
-        "bearer",
-        "bearertoken",
-        "clientsecret",
-        "credential",
-        "credentials",
-        "key",
-        "password",
-        "passwd",
-        "pwd",
-        "secret",
-        "secretkey",
-        "token",
-    }
-)
+#: Credential-shaped option stems, mapped to this program's own canonical
+#: spelling of each one.
+#:
+#: A mapping rather than a set because the refusal message names the flag,
+#: and naming it from the caller's own token means echoing a command-line
+#: argument that -- by the very definition of this check -- may be the
+#: credential. Splitting the token on ``=`` and printing the left half was
+#: believed to be safe, but that safety rested on reasoning about every
+#: shape an argument can take rather than on construction, and it left a
+#: tainted value flowing into a write to stderr.
+#:
+#: Resolving the stem to a value defined here instead means nothing derived
+#: from the command line reaches an output stream at all. The caller still
+#: gets an actionable flag name, just spelled the way this program spells
+#: it: someone who typed ``--API_KEY=...`` is told about ``--api-key``.
+_CREDENTIAL_ARGUMENT_STEMS: dict[str, str] = {
+    "apikey": "--api-key",
+    "apikeys": "--api-keys",
+    "apisecret": "--api-secret",
+    "apitoken": "--api-token",
+    "accesskey": "--access-key",
+    "accesstoken": "--access-token",
+    "auth": "--auth",
+    "authorization": "--authorization",
+    "authtoken": "--auth-token",
+    "bearer": "--bearer",
+    "bearertoken": "--bearer-token",
+    "clientsecret": "--client-secret",
+    "credential": "--credential",
+    "credentials": "--credentials",
+    "key": "--key",
+    "password": "--password",
+    "passwd": "--passwd",
+    "pwd": "--pwd",
+    "secret": "--secret",
+    "secretkey": "--secret-key",
+    "token": "--token",
+}
 
 _GLUED_CREDENTIAL_FLAGS = tuple(
     sorted(
@@ -2004,19 +2047,24 @@ def _reject_credential_arguments(raw_argv: Sequence[str]) -> None:
     such a run and would point the caller at a flag that does not exist on
     the subcommand they used. Those values are redacted where they are
     persisted instead.
+
+    The flag is named from ``_CREDENTIAL_ARGUMENT_STEMS`` rather than from
+    the caller's token, so no byte of the command line reaches stderr. The
+    token that matched is, by the definition of this check, the one most
+    likely to be holding a credential.
     """
     for token in raw_argv:
         if token == "--":
             return
         if not token.startswith("-"):
             continue
-        if _option_stem(token) not in _CREDENTIAL_ARGUMENT_STEMS:
+        canonical = _CREDENTIAL_ARGUMENT_STEMS.get(_option_stem(token))
+        if canonical is None:
             continue
-        name = token.split("=", 1)[0]
         print(
-            f"llmtracefx-optimizer: error: {name} is not a supported option "
-            "and a credential must never appear in a command line. Export "
-            "the credential to an environment variable and name that "
+            f"llmtracefx-optimizer: error: {canonical} is not a supported "
+            "option and a credential must never appear in a command line. "
+            "Export the credential to an environment variable and name that "
             "variable with --api-key-env.",
             file=sys.stderr,
         )

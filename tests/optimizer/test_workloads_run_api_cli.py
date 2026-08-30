@@ -8,6 +8,8 @@ OpenRouter nor Z.ai is ever contacted; both appear only as configuration.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -148,6 +150,27 @@ def invoke(argv: list[str]) -> int:
     parser = cli.build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))
+
+
+def run_main(argv: list[str]) -> tuple[int, str, str]:
+    """Drive ``cli.main`` the way a shell does, capturing both streams.
+
+    ``invoke`` reaches past ``main`` straight to the handler, which skips
+    the credential-flag refusal and the argv scrub that only ``main``
+    installs. Anything asserting that a value never surfaces has to go
+    through here, or it is testing a path no user takes.
+    """
+    stdout, stderr = io.StringIO(), io.StringIO()
+    code = 0
+    try:
+        with (
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            cli.main(argv)
+    except SystemExit as exit_error:
+        code = int(exit_error.code or 0)
+    return code, stdout.getvalue(), stderr.getvalue()
 
 
 # --- Profiles ----------------------------------------------------------------
@@ -723,3 +746,278 @@ def test_manifest_is_never_mutated_by_a_run(
     )
     assert matrix_path.read_text(encoding="utf-8") == before
     assert MatrixManifest.read_json(matrix_path).entries
+
+
+# --- Sentinel containment across both streams --------------------------------
+#
+# Every test below drives `cli.main`, not the parsed-args shortcut, so the
+# credential-flag refusal and the argv scrub that only `main` installs are
+# both in force. Each asserts on stdout *and* stderr, because a value that
+# is kept out of one and printed to the other has still been disclosed:
+# both end up in a terminal, a CI log and a screenshot alike.
+
+_SENTINEL = "sentinel-not-a-real-credential-4471"
+
+
+def _matrix_argv(tmp_path: Path, *extra: str) -> list[str]:
+    return [
+        "workloads",
+        "run-api",
+        "--matrix",
+        str(build_matrix(tmp_path)),
+        "--output-dir",
+        str(tmp_path / "results"),
+        *extra,
+    ]
+
+
+@pytest.mark.parametrize(
+    "slot",
+    ["--provider", "--model-id", "--endpoint", "--api-key-env", "--model-revision"],
+)
+def test_a_sentinel_in_any_caller_slot_reaches_neither_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slot: str
+) -> None:
+    """Any slot the caller fills may be holding the credential.
+
+    A key is pasted into whichever slot the caller reached for, not the
+    one the threat model expected, so each is checked rather than only
+    the obvious two.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", _SENTINEL)
+    argv = _matrix_argv(
+        tmp_path,
+        "--profile",
+        "openrouter",
+        "--model-id",
+        "z-ai/glm-5.3",
+        "--mode",
+        DECODE_MODE_AUTOREGRESSIVE,
+        "--dry-run",
+    )
+    argv += [slot, _SENTINEL]
+
+    _, out, err = run_main(argv)
+
+    assert _SENTINEL not in out
+    assert _SENTINEL not in err
+
+
+def test_the_credential_value_itself_reaches_neither_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The configured key is never echoed, even on the happy path."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", _SENTINEL)
+
+    _, out, err = run_main(
+        _matrix_argv(
+            tmp_path,
+            "--profile",
+            "openrouter",
+            "--model-id",
+            "z-ai/glm-5.3",
+            "--mode",
+            DECODE_MODE_AUTOREGRESSIVE,
+            "--dry-run",
+        )
+    )
+
+    assert _SENTINEL not in out
+    assert _SENTINEL not in err
+    # The plan still reports that the variable resolved, without its value.
+    assert json.loads(out)["credential_env_var_present"] is True
+
+
+@pytest.mark.parametrize(
+    ("flag", "canonical"),
+    [
+        ("--api-key", "--api-key"),
+        ("--token", "--token"),
+        ("--password", "--password"),
+        ("--secret", "--secret"),
+        ("--API_KEY", "--api-key"),
+        ("--Api_Key", "--api-key"),
+        ("--accesstoken", "--access-token"),
+    ],
+)
+def test_a_credential_flag_on_run_api_is_refused_without_echoing_anything(
+    tmp_path: Path, flag: str, canonical: str
+) -> None:
+    """`run-api` inherits the refusal, and answers with its own spelling.
+
+    A flag that happens to match how this program spells it is named
+    because that spelling is a program literal, not because the caller
+    typed it. A spelling the program did not define is caller text and
+    never appears.
+    """
+    code, out, err = run_main(
+        _matrix_argv(
+            tmp_path, "--profile", "openrouter", "--model-id", "m", flag, _SENTINEL
+        )
+    )
+
+    assert code == 2
+    assert _SENTINEL not in out + err
+    assert canonical in err
+    if flag != canonical:
+        assert flag not in out + err
+    assert "--api-key-env" in err
+
+
+def test_an_unparsable_value_is_not_quoted_back_by_argparse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """argparse echoes a rejected value verbatim unless it is scrubbed.
+
+    ``--request-timeout`` takes a float, so a credential landing there is
+    a type error, and the type error is formatted from the value.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", "unused-but-present")
+    code, out, err = run_main(
+        _matrix_argv(
+            tmp_path,
+            "--profile",
+            "openrouter",
+            "--model-id",
+            "z-ai/glm-5.3",
+            "--request-timeout",
+            _SENTINEL,
+        )
+    )
+
+    assert code == 2
+    assert _SENTINEL not in out + err
+
+
+def test_an_unknown_subcommand_argument_is_not_quoted_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "unused-but-present")
+    code, out, err = run_main(
+        _matrix_argv(
+            tmp_path,
+            "--profile",
+            "openrouter",
+            "--model-id",
+            "z-ai/glm-5.3",
+            f"--not-a-real-flag={_SENTINEL}",
+        )
+    )
+
+    assert code == 2
+    assert _SENTINEL not in out + err
+
+
+def test_a_provider_echoing_the_key_leaks_it_to_neither_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hostile or careless provider cannot launder the key back out."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", _SENTINEL)
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", FakeTransport)
+    FakeTransport.chunks = answer_stream(f"your key is {_SENTINEL}")
+
+    _, out, err = run_main(
+        _matrix_argv(
+            tmp_path,
+            "--profile",
+            "openrouter",
+            "--model-id",
+            "z-ai/glm-5.3",
+            "--mode",
+            DECODE_MODE_AUTOREGRESSIVE,
+        )
+    )
+
+    assert _SENTINEL not in out
+    assert _SENTINEL not in err
+    for path in sorted((tmp_path / "results").rglob("*")):
+        if path.is_file():
+            assert _SENTINEL not in path.read_text(encoding="utf-8", errors="replace")
+
+
+def test_a_sentinel_in_the_matrix_path_is_not_echoed_by_the_load_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``OSError`` embeds the path it failed on, and that path is caller text."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", _SENTINEL)
+
+    code, out, err = run_main(
+        [
+            "workloads",
+            "run-api",
+            "--matrix",
+            str(tmp_path / f"{_SENTINEL}.json"),
+            "--output-dir",
+            str(tmp_path / "results"),
+            "--profile",
+            "openrouter",
+            "--model-id",
+            "z-ai/glm-5.3",
+        ]
+    )
+
+    assert code == 1
+    assert "Failed to load matrix manifest" in err
+    assert _SENTINEL not in out + err
+
+
+def test_a_sentinel_in_the_output_dir_is_not_echoed_by_the_write_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The plan-write failure path scrubs the caller's --output-dir too."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", _SENTINEL)
+    blocked = tmp_path / f"{_SENTINEL}-dir"
+    # A regular file where the results directory must be, so the atomic
+    # write fails with an OSError naming the path.
+    blocked.write_text("not a directory", encoding="utf-8")
+
+    code, out, err = run_main(
+        [
+            "workloads",
+            "run-api",
+            "--matrix",
+            str(build_matrix(tmp_path)),
+            "--output-dir",
+            str(blocked),
+            "--profile",
+            "openrouter",
+            "--model-id",
+            "z-ai/glm-5.3",
+            "--mode",
+            DECODE_MODE_AUTOREGRESSIVE,
+            "--dry-run",
+        ]
+    )
+
+    assert code == 1
+    assert "Failed to write request plan" in err
+    assert _SENTINEL not in out + err
+
+
+def test_the_credential_is_scrubbed_even_when_the_env_name_came_from_a_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scrubbing against the raw flag misses the profile-supplied default.
+
+    ``--api-key-env`` is left unset here, so reading the flag alone yields
+    ``None`` and scrubs nothing. The resolved name is what matters.
+    """
+    monkeypatch.setenv("OPENROUTER_API_KEY", _SENTINEL)
+
+    code, out, err = run_main(
+        [
+            "workloads",
+            "run-api",
+            "--matrix",
+            str(tmp_path / f"{_SENTINEL}.json"),
+            "--output-dir",
+            str(tmp_path / "results"),
+            "--profile",
+            "openrouter",
+            "--model-id",
+            "z-ai/glm-5.3",
+        ]
+    )
+
+    assert code == 1
+    assert _SENTINEL not in out + err
