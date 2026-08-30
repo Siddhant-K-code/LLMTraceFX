@@ -832,6 +832,25 @@ def test_optimize_invalid_matrix_manifest_exits_1(tmp_path):
     assert exit_code == 1
 
 
+def test_optimize_non_utf8_matrix_manifest_exits_1(tmp_path, capsys):
+    matrix_path = tmp_path / "manifest.json"
+    matrix_path.write_bytes(b"\xff\xfe not utf-8")
+    policy_path = _write_policy(tmp_path, {"objective": "min_mean_total_latency_ms"})
+
+    exit_code = _run_optimize(
+        _base_argv(
+            matrix_path=matrix_path,
+            results_dir=tmp_path / "results",
+            policy_path=policy_path,
+            report_json=tmp_path / "report.json",
+            model_path=tmp_path,
+        )
+    )
+
+    assert exit_code == 1
+    assert "Failed to load matrix manifest" in capsys.readouterr().err
+
+
 def test_optimize_no_rows_selected_exits_1(tmp_path):
     matrix_path = _build_matrix(tmp_path, (STRUCTURED_JSON_PROFILE_EXTRACTION,))
     model_path = tmp_path / "model"

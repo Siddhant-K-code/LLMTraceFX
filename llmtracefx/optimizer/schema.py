@@ -25,11 +25,52 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from ._artifact_io import (
+    MAX_EVIDENCE_ARTIFACT_BYTES,
+    ArtifactReadError,
+    read_bounded_regular_text,
+    reject_non_finite_json_constant,
+)
+
 SCHEMA_VERSION = "1"
 
 
 class SchemaValidationError(ValueError):
     """Raised when an ``ExperimentRecord`` (or a part of it) is invalid."""
+
+
+def _require_object(value: Any, *, context: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise SchemaValidationError(
+            f"{context} must be an object, got {type(value).__name__}"
+        )
+    return value
+
+
+def _required_string(data: dict[str, Any], key: str, *, context: str) -> str:
+    if key not in data:
+        raise SchemaValidationError(f"{context} is missing required field: '{key}'")
+    value = data[key]
+    if not isinstance(value, str):
+        raise SchemaValidationError(f"{context}.{key} must be a string, got {value!r}")
+    return value
+
+
+def _optional_string(data: dict[str, Any], key: str, *, context: str) -> str | None:
+    value = data.get(key)
+    if value is not None and not isinstance(value, str):
+        raise SchemaValidationError(
+            f"{context}.{key} must be a string or null, got {value!r}"
+        )
+    return value
+
+
+def _string_with_default(
+    data: dict[str, Any], key: str, *, context: str, default: str
+) -> str:
+    if key not in data:
+        return default
+    return _required_string(data, key, context=context)
 
 
 def utc_now_iso() -> str:
@@ -90,17 +131,22 @@ class Measurement:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Measurement:
+        data = _require_object(data, context="Measurement")
         try:
             return cls(
-                value=float(data["value"]),
+                value=_validate_float(
+                    data["value"], context="Measurement", key="value"
+                ),
                 provenance=MetricProvenance(data["provenance"]),
-                unit=str(data.get("unit", "")),
+                unit=_string_with_default(
+                    data, "unit", context="Measurement", default=""
+                ),
             )
         except KeyError as exc:
             raise SchemaValidationError(
                 f"Measurement is missing required field: {exc}"
             ) from exc
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             raise SchemaValidationError(
                 f"Measurement has an invalid value: {exc}"
             ) from exc
@@ -155,7 +201,12 @@ def _validate_float(value: Any, *, context: str, key: str) -> float:
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise SchemaValidationError(f"{context}.{key} must be a number, got {value!r}")
-    return float(value)
+    try:
+        return float(value)
+    except OverflowError as exc:
+        raise SchemaValidationError(
+            f"{context}.{key} must be a finite number, got an overflowing integer"
+        ) from exc
 
 
 def _coerce_optional_float(
@@ -232,19 +283,24 @@ class PlatformInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PlatformInfo:
+        data = _require_object(data, context="PlatformInfo")
         try:
             return cls(
-                os_name=data["os_name"],
-                os_version=data["os_version"],
-                architecture=data["architecture"],
-                cpu_model=data.get("cpu_model"),
+                os_name=_required_string(data, "os_name", context="PlatformInfo"),
+                os_version=_required_string(data, "os_version", context="PlatformInfo"),
+                architecture=_required_string(
+                    data, "architecture", context="PlatformInfo"
+                ),
+                cpu_model=_optional_string(data, "cpu_model", context="PlatformInfo"),
                 cpu_cores=_coerce_optional_int(
                     data, "cpu_cores", context="PlatformInfo"
                 ),
                 total_memory_gb=_coerce_optional_float(
                     data, "total_memory_gb", context="PlatformInfo"
                 ),
-                accelerator=data.get("accelerator"),
+                accelerator=_optional_string(
+                    data, "accelerator", context="PlatformInfo"
+                ),
             )
         except KeyError as exc:
             raise SchemaValidationError(
@@ -272,13 +328,22 @@ class ModelInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ModelInfo:
+        data = _require_object(data, context="ModelInfo")
         try:
             return cls(
-                model_id=data["model_id"],
-                model_revision=data.get("model_revision"),
-                tokenizer_revision=data.get("tokenizer_revision"),
-                quantization=data.get("quantization"),
-                model_family=data.get("model_family"),
+                model_id=_required_string(data, "model_id", context="ModelInfo"),
+                model_revision=_optional_string(
+                    data, "model_revision", context="ModelInfo"
+                ),
+                tokenizer_revision=_optional_string(
+                    data, "tokenizer_revision", context="ModelInfo"
+                ),
+                quantization=_optional_string(
+                    data, "quantization", context="ModelInfo"
+                ),
+                model_family=_optional_string(
+                    data, "model_family", context="ModelInfo"
+                ),
             )
         except KeyError as exc:
             raise SchemaValidationError(
@@ -308,13 +373,16 @@ class RuntimeInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RuntimeInfo:
+        data = _require_object(data, context="RuntimeInfo")
         try:
             return cls(
-                name=data["name"],
-                version=data.get("version"),
-                backend=data.get("backend"),
-                git_revision=data.get("git_revision"),
-                provider=data.get("provider"),
+                name=_required_string(data, "name", context="RuntimeInfo"),
+                version=_optional_string(data, "version", context="RuntimeInfo"),
+                backend=_optional_string(data, "backend", context="RuntimeInfo"),
+                git_revision=_optional_string(
+                    data, "git_revision", context="RuntimeInfo"
+                ),
+                provider=_optional_string(data, "provider", context="RuntimeInfo"),
             )
         except KeyError as exc:
             raise SchemaValidationError(
@@ -339,6 +407,7 @@ class CommandInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CommandInfo:
+        data = _require_object(data, context="CommandInfo")
         if "argv" not in data:
             raise SchemaValidationError("CommandInfo is missing required field: 'argv'")
         argv = data["argv"]
@@ -360,8 +429,10 @@ class CommandInfo:
             )
         return cls(
             argv=argv_tuple,
-            config_hash=data.get("config_hash"),
-            workload_hash=data.get("workload_hash"),
+            config_hash=_optional_string(data, "config_hash", context="CommandInfo"),
+            workload_hash=_optional_string(
+                data, "workload_hash", context="CommandInfo"
+            ),
         )
 
 
@@ -380,6 +451,7 @@ class RepetitionInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RepetitionInfo:
+        data = _require_object(data, context="RepetitionInfo")
         return cls(
             warmup_repetitions=_coerce_required_int(
                 data, "warmup_repetitions", context="RepetitionInfo"
@@ -420,6 +492,7 @@ class TokenCounts:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TokenCounts:
+        data = _require_object(data, context="TokenCounts")
         provenance = data.get("provenance")
         if provenance is not None:
             try:
@@ -464,6 +537,7 @@ class TimingMetrics:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TimingMetrics:
+        data = _require_object(data, context="TimingMetrics")
         return cls(
             model_load=_measurement_from_optional(data.get("model_load")),
             tokenize=_measurement_from_optional(data.get("tokenize")),
@@ -512,11 +586,12 @@ class SpeculativeDecodingInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SpeculativeDecodingInfo:
+        data = _require_object(data, context="SpeculativeDecodingInfo")
         return cls(
             enabled=_coerce_bool_with_default(
                 data, "enabled", context="SpeculativeDecodingInfo", default=False
             ),
-            method=data.get("method"),
+            method=_optional_string(data, "method", context="SpeculativeDecodingInfo"),
             configured_depth=_coerce_optional_int(
                 data, "configured_depth", context="SpeculativeDecodingInfo"
             ),
@@ -549,6 +624,7 @@ class MemoryMetrics:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MemoryMetrics:
+        data = _require_object(data, context="MemoryMetrics")
         return cls(
             active=_measurement_from_optional(data.get("active")),
             cache=_measurement_from_optional(data.get("cache")),
@@ -572,6 +648,7 @@ class PowerMetrics:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PowerMetrics:
+        data = _require_object(data, context="PowerMetrics")
         return cls(
             average_power=_measurement_from_optional(data.get("average_power")),
             energy=_measurement_from_optional(data.get("energy")),
@@ -685,17 +762,30 @@ class InstrumentsEvidence:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> InstrumentsEvidence:
+        data = _require_object(data, context="InstrumentsEvidence")
         metrics_data = data.get("metrics", {})
         if not isinstance(metrics_data, dict):
             raise SchemaValidationError(
                 f"InstrumentsEvidence.metrics must be an object, got {metrics_data!r}"
             )
+        if not all(isinstance(name, str) for name in metrics_data):
+            raise SchemaValidationError(
+                "InstrumentsEvidence.metrics keys must be strings"
+            )
         return cls(
-            tool=str(data.get("tool", "xctrace")),
-            tool_version=data.get("tool_version"),
-            capability=data.get("capability"),
-            template=data.get("template"),
-            trace_bundle_name=data.get("trace_bundle_name"),
+            tool=_string_with_default(
+                data, "tool", context="InstrumentsEvidence", default="xctrace"
+            ),
+            tool_version=_optional_string(
+                data, "tool_version", context="InstrumentsEvidence"
+            ),
+            capability=_optional_string(
+                data, "capability", context="InstrumentsEvidence"
+            ),
+            template=_optional_string(data, "template", context="InstrumentsEvidence"),
+            trace_bundle_name=_optional_string(
+                data, "trace_bundle_name", context="InstrumentsEvidence"
+            ),
             available_schemas=_coerce_str_tuple(
                 data, "available_schemas", context="InstrumentsEvidence"
             ),
@@ -706,10 +796,10 @@ class InstrumentsEvidence:
                 data, "unsupported_schemas", context="InstrumentsEvidence"
             ),
             metrics={
-                str(name): Measurement.from_dict(value)
+                name: Measurement.from_dict(value)
                 for name, value in metrics_data.items()
             },
-            notes=data.get("notes"),
+            notes=_optional_string(data, "notes", context="InstrumentsEvidence"),
         )
 
 
@@ -728,6 +818,7 @@ class OutcomeInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> OutcomeInfo:
+        data = _require_object(data, context="OutcomeInfo")
         return cls(
             success=_coerce_bool_with_default(
                 data, "success", context="OutcomeInfo", default=True
@@ -735,8 +826,10 @@ class OutcomeInfo:
             quality_score=_coerce_optional_float(
                 data, "quality_score", context="OutcomeInfo"
             ),
-            quality_metric=data.get("quality_metric"),
-            notes=data.get("notes"),
+            quality_metric=_optional_string(
+                data, "quality_metric", context="OutcomeInfo"
+            ),
+            notes=_optional_string(data, "notes", context="OutcomeInfo"),
         )
 
 
@@ -752,8 +845,12 @@ class ErrorInfo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ErrorInfo:
+        data = _require_object(data, context="ErrorInfo")
         try:
-            return cls(category=data["category"], message=data["message"])
+            return cls(
+                category=_required_string(data, "category", context="ErrorInfo"),
+                message=_required_string(data, "message", context="ErrorInfo"),
+            )
         except KeyError as exc:
             raise SchemaValidationError(
                 f"ErrorInfo is missing required field: {exc}"
@@ -1000,13 +1097,23 @@ class ExperimentRecord:
         return json.dumps(self.to_dict(), indent=indent, sort_keys=False)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ExperimentRecord:
+    def from_dict(
+        cls, data: dict[str, Any], *, allow_non_finite: bool = False
+    ) -> ExperimentRecord:
+        data = _require_object(data, context="ExperimentRecord")
         try:
             record = cls(
-                schema_version=str(data.get("schema_version", SCHEMA_VERSION)),
-                run_id=data["run_id"],
-                started_at=data["started_at"],
-                ended_at=data.get("ended_at"),
+                schema_version=_string_with_default(
+                    data,
+                    "schema_version",
+                    context="ExperimentRecord",
+                    default=SCHEMA_VERSION,
+                ),
+                run_id=_required_string(data, "run_id", context="ExperimentRecord"),
+                started_at=_required_string(
+                    data, "started_at", context="ExperimentRecord"
+                ),
+                ended_at=_optional_string(data, "ended_at", context="ExperimentRecord"),
                 platform=PlatformInfo.from_dict(data["platform"]),
                 model=ModelInfo.from_dict(data["model"]),
                 runtime=RuntimeInfo.from_dict(data["runtime"]),
@@ -1036,13 +1143,27 @@ class ExperimentRecord:
                 f"ExperimentRecord is missing required field: {exc}"
             ) from exc
         record.validate()
+        if not allow_non_finite:
+            try:
+                json.dumps(record.to_dict(), allow_nan=False)
+            except ValueError as exc:
+                raise SchemaValidationError(
+                    "ExperimentRecord numeric fields must be finite"
+                ) from exc
         return record
 
     @classmethod
-    def from_json(cls, payload: str) -> ExperimentRecord:
+    def from_json(
+        cls, payload: str, *, allow_non_finite: bool = False
+    ) -> ExperimentRecord:
         try:
-            data = json.loads(payload)
-        except json.JSONDecodeError as exc:
+            data = json.loads(
+                payload,
+                parse_constant=(
+                    None if allow_non_finite else reject_non_finite_json_constant
+                ),
+            )
+        except (ValueError, RecursionError) as exc:
             raise SchemaValidationError(
                 f"Invalid JSON for ExperimentRecord: {exc}"
             ) from exc
@@ -1055,7 +1176,7 @@ class ExperimentRecord:
             raise SchemaValidationError(
                 f"ExperimentRecord JSON must be an object, got {type(data).__name__}"
             )
-        return cls.from_dict(data)
+        return cls.from_dict(data, allow_non_finite=allow_non_finite)
 
     def write_json(self, path: str | Path) -> None:
         """Atomically write this record as pretty JSON to ``path``."""
@@ -1067,5 +1188,13 @@ class ExperimentRecord:
         os.replace(tmp_path, target)
 
     @classmethod
-    def read_json(cls, path: str | Path) -> ExperimentRecord:
-        return cls.from_json(Path(path).read_text(encoding="utf-8"))
+    def read_json(
+        cls, path: str | Path, *, allow_non_finite: bool = False
+    ) -> ExperimentRecord:
+        try:
+            payload = read_bounded_regular_text(path, MAX_EVIDENCE_ARTIFACT_BYTES)
+        except ArtifactReadError as exc:
+            raise SchemaValidationError(
+                f"Invalid ExperimentRecord file: {exc}"
+            ) from exc
+        return cls.from_json(payload, allow_non_finite=allow_non_finite)

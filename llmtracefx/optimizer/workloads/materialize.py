@@ -39,6 +39,24 @@ from .schema import (
 APPROX_CHARS_PER_TOKEN = 4
 
 
+def _required_string(data: dict[str, Any], key: str) -> str:
+    if key not in data:
+        raise ValueError(f"missing required field: '{key}'")
+    value = data[key]
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string")
+    return value
+
+
+def _required_integer(data: dict[str, Any], key: str) -> int:
+    if key not in data:
+        raise ValueError(f"missing required field: '{key}'")
+    value = data[key]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{key} must be an integer")
+    return value
+
+
 @dataclass(frozen=True)
 class MaterializedPrompt:
     """The fully materialized prompt text plus its planning metadata."""
@@ -78,21 +96,25 @@ class MaterializedPrompt:
         prompt-integrity check the verification pipeline performs before
         executing any row.
         """
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"MaterializedPrompt must be an object, got {type(data).__name__}"
+            )
         try:
             return cls(
-                workload_id=data["workload_id"],
-                workload_version=data["workload_version"],
-                context_tier=ContextTier(data["context_tier"]),
-                target_context_tokens=int(data["target_context_tokens"]),
-                approx_chars_per_token=int(data["approx_chars_per_token"]),
-                filler_segments_used=int(data["filler_segments_used"]),
+                workload_id=_required_string(data, "workload_id"),
+                workload_version=_required_string(data, "workload_version"),
+                context_tier=ContextTier(_required_string(data, "context_tier")),
+                target_context_tokens=_required_integer(data, "target_context_tokens"),
+                approx_chars_per_token=_required_integer(
+                    data, "approx_chars_per_token"
+                ),
+                filler_segments_used=_required_integer(data, "filler_segments_used"),
                 text="",
-                prompt_hash=data["prompt_hash"],
+                prompt_hash=_required_string(data, "prompt_hash"),
             )
-        except KeyError as exc:
-            raise ValueError(
-                f"MaterializedPrompt is missing required field: {exc}"
-            ) from exc
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"invalid MaterializedPrompt: {exc}") from exc
 
 
 def _build_filler(remaining_chars: int) -> tuple[str, int]:

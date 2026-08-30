@@ -1420,6 +1420,23 @@ def test_a_completed_row_writes_a_run_level_marker(tmp_path):
     assert "verification.json" in sealed
 
 
+def test_an_unsafe_artifact_during_marker_creation_does_not_crash(
+    tmp_path, monkeypatch
+):
+    def refuse_marker(**_kwargs):
+        raise api_verify.ArtifactReadError("unsafe sealed artifact")
+
+    monkeypatch.setattr(api_verify, "_run_marker_payload", refuse_marker)
+
+    result = run_one(
+        tmp_path, transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    )
+    run_dir = Path(result.verification.collection_dir or "").parent
+
+    assert result.verification.status is RowStatus.COMPLETED
+    assert not (run_dir / RUN_MANIFEST_NAME).exists()
+
+
 @pytest.mark.parametrize("victim", ["final_record.json", "verification.json"])
 def test_editing_a_file_outside_the_collection_marker_forces_a_rerun(tmp_path, victim):
     """These two sit outside the collector's marker and were trusted blind."""
@@ -1713,6 +1730,50 @@ def test_a_credential_in_the_effective_row_path_is_refused(tmp_path):
 # --- Resume binds the row's identity ------------------------------------------
 
 
+@pytest.mark.parametrize("corruption", ["oversized", "symlink"])
+def test_api_prompt_must_be_a_bounded_regular_file(tmp_path, monkeypatch, corruption):
+    bundle = build_manifest(tmp_path)
+    manifest, manifest_dir, matrix_path = bundle
+    entry = autoregressive_entry(manifest)
+    prompt_path = Path(entry.prompt_path)
+    if corruption == "oversized":
+        monkeypatch.setattr(api_verify, "MAX_EVIDENCE_ARTIFACT_BYTES", 8)
+    else:
+        target_path = tmp_path / "prompt-target.txt"
+        target_path.write_text(
+            prompt_path.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        prompt_path.unlink()
+        prompt_path.symlink_to(target_path)
+    binding = make_binding()
+
+    plan = plan_api_row(
+        entry,
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=tmp_path / "results",
+        binding=binding,
+        environ=ENVIRON,
+    )
+    transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    result = execute_api_row(
+        entry,
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=tmp_path / "results",
+        binding=binding,
+        resume=True,
+        transport_factory=lambda: transport,
+        environ=ENVIRON,
+    )
+
+    assert not plan.ready
+    assert "prompt file unreadable" in plan.blockers[0]
+    assert result.verification.status is RowStatus.FAILED
+    assert "prompt file unreadable" in (result.verification.reason or "")
+    assert transport.requests == []
+
+
 def test_a_run_directory_copied_from_another_row_is_never_trusted(tmp_path):
     """Every hash checks out; the evidence still describes another row.
 
@@ -1868,6 +1929,31 @@ def test_a_malformed_final_record_behind_a_valid_marker_reruns(tmp_path, payload
     assert second.verification.status is RowStatus.COMPLETED
 
 
+def test_a_non_finite_final_record_behind_a_valid_marker_reruns(tmp_path):
+    bundle = build_manifest(tmp_path)
+    first = run_one(
+        tmp_path,
+        transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER))),
+        manifest_bundle=bundle,
+    )
+    run_dir = Path(first.verification.collection_dir or "").parent
+    record_path = run_dir / "final_record.json"
+    payload = json.loads(record_path.read_text(encoding="utf-8"))
+    payload["timing"]["total"]["value"] = "NON_FINITE"
+    record_path.write_text(
+        json.dumps(payload).replace('"NON_FINITE"', "1e400"), encoding="utf-8"
+    )
+    _reseal(run_dir)
+
+    assert run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)
+
+    transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    second = run_one(tmp_path, transport=transport, manifest_bundle=bundle)
+
+    assert transport.requests
+    assert second.verification.status is RowStatus.COMPLETED
+
+
 @pytest.mark.parametrize("payload_label", sorted(_MALFORMED_ROOTS))
 def test_a_malformed_run_marker_is_rejected_not_raised(tmp_path, payload_label):
     """The marker reader is the one gate that must never raise."""
@@ -1876,5 +1962,47 @@ def test_a_malformed_run_marker_is_rejected_not_raised(tmp_path, payload_label):
     )
     run_dir = Path(result.verification.collection_dir or "").parent
     (run_dir / RUN_MANIFEST_NAME).write_bytes(_MALFORMED_ROOTS[payload_label])
+
+    assert not run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)
+
+
+@pytest.mark.parametrize("corruption", ["recursion", "oversized", "symlink"])
+def test_an_unsafe_run_marker_is_rejected_not_raised(tmp_path, corruption, monkeypatch):
+    result = run_one(
+        tmp_path, transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    )
+    run_dir = Path(result.verification.collection_dir or "").parent
+    marker_path = run_dir / RUN_MANIFEST_NAME
+    if corruption == "recursion":
+        marker_path.write_text("[" * 10_000 + "0" + "]" * 10_000, encoding="utf-8")
+    elif corruption == "oversized":
+        monkeypatch.setattr(api_verify, "MAX_METADATA_ARTIFACT_BYTES", 16)
+        marker_path.write_bytes(b"x" * 17)
+    else:
+        target = marker_path.with_name("run-target.json")
+        target.write_bytes(marker_path.read_bytes())
+        marker_path.unlink()
+        marker_path.symlink_to(target)
+
+    assert not run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)
+
+
+@pytest.mark.parametrize("corruption", ["oversized", "symlink"])
+def test_an_unsafe_sealed_artifact_is_rejected_not_raised(
+    tmp_path, corruption, monkeypatch
+):
+    result = run_one(
+        tmp_path, transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    )
+    run_dir = Path(result.verification.collection_dir or "").parent
+    artifact_path = run_dir / "verification.json"
+    if corruption == "oversized":
+        monkeypatch.setitem(api_verify._SEALED_ARTIFACT_LIMITS, "verification.json", 16)
+        artifact_path.write_bytes(b"x" * 17)
+    else:
+        target = artifact_path.with_name("verification-target.json")
+        target.write_bytes(artifact_path.read_bytes())
+        artifact_path.unlink()
+        artifact_path.symlink_to(target)
 
     assert not run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)

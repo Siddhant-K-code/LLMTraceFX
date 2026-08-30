@@ -436,6 +436,25 @@ def test_workloads_run_cli_unknown_matrix_manifest_fails(tmp_path, capsys):
     assert "Failed to load matrix manifest" in capsys.readouterr().err
 
 
+def test_workloads_run_cli_non_utf8_matrix_manifest_fails_cleanly(tmp_path, capsys):
+    matrix_path = tmp_path / "manifest.json"
+    matrix_path.write_bytes(b"\xff\xfe not utf-8")
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        [
+            "workloads",
+            "run",
+            "--matrix",
+            str(matrix_path),
+            "--output-dir",
+            str(tmp_path / "results"),
+        ]
+    )
+
+    assert args.func(args) == 1
+    assert "Failed to load matrix manifest" in capsys.readouterr().err
+
+
 def test_workloads_summarize_cli_reports_pass_rate(tmp_path, monkeypatch):
     matrix_path = _build_small_matrix(tmp_path)
     model_path = tmp_path / "model"
