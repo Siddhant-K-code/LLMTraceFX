@@ -72,9 +72,11 @@ from pathlib import Path
 from typing import Any
 
 from .._artifact_io import (
+    MAX_EVIDENCE_ARTIFACT_BYTES,
     MAX_METADATA_ARTIFACT_BYTES,
     ArtifactReadError,
     read_bounded_regular_text,
+    unsafe_run_id_reason,
 )
 from ..collectors._shared import atomic_write_text, config_hash, sha256_text
 from ..collectors.mlx import (
@@ -487,8 +489,22 @@ def plan_row(
     binding: RunBinding | None,
 ) -> RowPlan:
     """Describe what running ``entry`` would do, without loading a model."""
-    run_dir = _run_dir(entry, output_dir=output_dir)
     prompt_path = _resolve_path(entry.prompt_path, base_dir=manifest_dir)
+    refusal = unsafe_run_id_reason(entry.run_id)
+    if refusal is not None:
+        placeholder = output_dir / "runs" / "__rejected__"
+        return RowPlan(
+            entry=entry,
+            unsupported=False,
+            unsupported_reason=None,
+            ready=False,
+            blockers=(f"unsafe artifact path: {refusal}",),
+            prompt_path=prompt_path,
+            collection_dir=placeholder,
+            final_record_path=placeholder,
+            verification_path=placeholder,
+        )
+    run_dir = _run_dir(entry, output_dir=output_dir)
 
     if entry.decode_mode == DECODE_MODE_NATIVE_MTP or not entry.runnable:
         reason = entry.unsupported_reason or (
@@ -511,10 +527,14 @@ def plan_row(
     if binding is None:
         blockers.append("no --model-path binding was provided")
 
-    if not prompt_path.exists():
-        blockers.append(f"prompt file missing: {prompt_path}")
+    try:
+        prompt_text = read_bounded_regular_text(
+            prompt_path, MAX_EVIDENCE_ARTIFACT_BYTES
+        )
+    except (OSError, ArtifactReadError) as exc:
+        blockers.append(f"prompt file unreadable: {exc}")
     else:
-        verified_hash = sha256_text(prompt_path.read_text(encoding="utf-8"))
+        verified_hash = sha256_text(prompt_text)
         if verified_hash != entry.prompt.prompt_hash:
             blockers.append(
                 "prompt hash mismatch: matrix metadata records "
@@ -613,6 +633,32 @@ def execute_row(
     therefore never imports or platform-checks) an MLX runtime.
     """
     started_at = utc_now_iso()
+    refusal = unsafe_run_id_reason(entry.run_id)
+    if refusal is not None:
+        verification = RowVerification(
+            schema_version=VERIFICATION_SCHEMA_VERSION,
+            run_id=entry.run_id,
+            workload_id=entry.workload_id,
+            workload_version=entry.workload_version,
+            category=entry.category,
+            context_tier=entry.context_tier,
+            decode_mode=entry.decode_mode,
+            status=RowStatus.FAILED,
+            reason=f"unsafe artifact path: {refusal}",
+            recorded_prompt_hash=entry.prompt.prompt_hash,
+            verified_prompt_hash=None,
+            run_binding_hash=None,
+            resumed=False,
+            outcome_success=None,
+            quality_score=None,
+            total_ms=None,
+            started_at=started_at,
+            ended_at=utc_now_iso(),
+            final_record_path=None,
+            collection_dir=None,
+        )
+        return RowResult(entry=entry, verification=verification, final_record=None)
+
     run_dir = _run_dir(entry, output_dir=output_dir)
     verification_path = run_dir / "verification.json"
     collection_dir = run_dir / "collection"
@@ -678,10 +724,12 @@ def execute_row(
 
     # 2. Verify the fully materialized prompt against the matrix metadata.
     prompt_path = _resolve_path(entry.prompt_path, base_dir=manifest_dir)
-    if not prompt_path.exists():
-        return _finish(RowStatus.FAILED, f"prompt file missing: {prompt_path}")
-
-    prompt_text = prompt_path.read_text(encoding="utf-8")
+    try:
+        prompt_text = read_bounded_regular_text(
+            prompt_path, MAX_EVIDENCE_ARTIFACT_BYTES
+        )
+    except (OSError, ArtifactReadError) as exc:
+        return _finish(RowStatus.FAILED, f"prompt file unreadable: {exc}")
     verified_hash = sha256_text(prompt_text)
     if verified_hash != entry.prompt.prompt_hash:
         return _finish(

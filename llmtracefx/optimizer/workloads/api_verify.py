@@ -82,7 +82,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
-import re
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -95,6 +94,7 @@ from .._artifact_io import (
     read_bounded_regular_bytes,
     read_bounded_regular_text,
     reject_non_finite_json_constant,
+    unsafe_run_id_reason,
 )
 from ..collectors._shared import (
     atomic_write_text,
@@ -631,46 +631,6 @@ class APIBinding:
 # --- Planning ----------------------------------------------------------------
 
 
-#: A run_id becomes a directory name, so it has to be one path component
-#: and nothing more. The generated ids are ``<workload>-<tier>-<mode>``
-#: with an optional ``-depth<n>``, so this is the shape they already have.
-_SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-
-
-def _unsafe_run_id_reason(run_id: str) -> str | None:
-    """Why ``run_id`` cannot be used as a directory name, or ``None``.
-
-    A run_id is read straight out of the matrix manifest, which is a file
-    on disk, and is then joined onto the output directory. An absolute
-    value replaces the output directory outright; ``..`` climbs out of it;
-    a separator plants artifacts somewhere nobody asked for. None of that
-    needs an attacker, either: a hand-edited manifest is enough to have a
-    run quietly write outside the directory the caller named.
-
-    The value is not echoed. It failed this check, which is exactly the
-    circumstance in which repeating it is a bad idea.
-    """
-    if not isinstance(run_id, str) or not run_id:
-        return "run_id is empty"
-    if run_id in (".", ".."):
-        return "run_id is a relative directory reference"
-    if os.path.isabs(run_id) or os.path.splitdrive(run_id)[0]:
-        return "run_id is an absolute path"
-    if "/" in run_id or "\\" in run_id or os.sep in run_id:
-        return "run_id contains a path separator"
-    if "\x00" in run_id:
-        return "run_id contains a null byte"
-    # ``fullmatch`` rather than ``match``: ``$`` also matches just
-    # before a trailing newline, so ``match`` would accept "row\\n" and
-    # create a directory whose name the refusal text says is impossible.
-    if not _SAFE_RUN_ID.fullmatch(run_id):
-        return (
-            "run_id is not a single safe path component matching "
-            "[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
-        )
-    return None
-
-
 def _run_dir(entry: MatrixEntry, *, output_dir: Path) -> Path:
     return output_dir / "runs" / entry.run_id
 
@@ -813,7 +773,7 @@ def plan_api_row(
     # what a real run would do rather than printing a plan for a row that
     # would then be rejected. The path is not echoed either way: it is
     # rejected precisely because of what it may contain.
-    refusal = _unsafe_run_id_reason(entry.run_id)
+    refusal = unsafe_run_id_reason(entry.run_id)
     if (
         refusal is None
         and credential
@@ -865,8 +825,10 @@ def plan_api_row(
         blockers.append(f"prompt file missing: {prompt_path}")
     else:
         try:
-            prompt_text = prompt_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
+            prompt_text = read_bounded_regular_text(
+                prompt_path, MAX_EVIDENCE_ARTIFACT_BYTES
+            )
+        except (OSError, ArtifactReadError) as exc:
             blockers.append(f"prompt file unreadable: {exc}")
         else:
             verified_hash = sha256_text(prompt_text)
@@ -1076,7 +1038,7 @@ def execute_api_row(
     # the rejection paths, so an unsafe id would have its refusal written
     # to the very place it should not reach. Nothing is written here for
     # the same reason: there is no directory this row may safely touch.
-    refusal = _unsafe_run_id_reason(entry.run_id)
+    refusal = unsafe_run_id_reason(entry.run_id)
     if refusal is None and credential is not None:
         candidate = _run_dir(entry, output_dir=output_dir)
         if _contains_credential(str(candidate), credential):
@@ -1225,8 +1187,10 @@ def execute_api_row(
         return _finish(RowStatus.FAILED, f"prompt file missing: {prompt_path}")
 
     try:
-        prompt_text = prompt_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
+        prompt_text = read_bounded_regular_text(
+            prompt_path, MAX_EVIDENCE_ARTIFACT_BYTES
+        )
+    except (OSError, ArtifactReadError) as exc:
         return _finish(RowStatus.FAILED, f"prompt file unreadable: {exc}")
 
     verified_hash = sha256_text(prompt_text)

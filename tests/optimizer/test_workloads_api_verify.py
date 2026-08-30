@@ -1713,6 +1713,50 @@ def test_a_credential_in_the_effective_row_path_is_refused(tmp_path):
 # --- Resume binds the row's identity ------------------------------------------
 
 
+@pytest.mark.parametrize("corruption", ["oversized", "symlink"])
+def test_api_prompt_must_be_a_bounded_regular_file(tmp_path, monkeypatch, corruption):
+    bundle = build_manifest(tmp_path)
+    manifest, manifest_dir, matrix_path = bundle
+    entry = autoregressive_entry(manifest)
+    prompt_path = Path(entry.prompt_path)
+    if corruption == "oversized":
+        monkeypatch.setattr(api_verify, "MAX_EVIDENCE_ARTIFACT_BYTES", 8)
+    else:
+        target_path = tmp_path / "prompt-target.txt"
+        target_path.write_text(
+            prompt_path.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        prompt_path.unlink()
+        prompt_path.symlink_to(target_path)
+    binding = make_binding()
+
+    plan = plan_api_row(
+        entry,
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=tmp_path / "results",
+        binding=binding,
+        environ=ENVIRON,
+    )
+    transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    result = execute_api_row(
+        entry,
+        manifest_dir=manifest_dir,
+        matrix_path=matrix_path,
+        output_dir=tmp_path / "results",
+        binding=binding,
+        resume=True,
+        transport_factory=lambda: transport,
+        environ=ENVIRON,
+    )
+
+    assert not plan.ready
+    assert "prompt file unreadable" in plan.blockers[0]
+    assert result.verification.status is RowStatus.FAILED
+    assert "prompt file unreadable" in (result.verification.reason or "")
+    assert transport.requests == []
+
+
 def test_a_run_directory_copied_from_another_row_is_never_trusted(tmp_path):
     """Every hash checks out; the evidence still describes another row.
 

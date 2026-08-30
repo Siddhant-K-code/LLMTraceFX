@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import llmtracefx.optimizer.workloads.verify as verify_module
 from llmtracefx.optimizer.collectors.mlx import MLXMemorySnapshot
 from llmtracefx.optimizer.schema import ExperimentRecord
 from llmtracefx.optimizer.workloads.catalog import (
@@ -16,6 +17,7 @@ from llmtracefx.optimizer.workloads.catalog import (
 from llmtracefx.optimizer.workloads.matrix import (
     DECODE_MODE_AUTOREGRESSIVE,
     DECODE_MODE_NATIVE_MTP,
+    MatrixEntry,
     MatrixManifest,
     generate_matrix,
     write_matrix,
@@ -27,6 +29,7 @@ from llmtracefx.optimizer.workloads.verify import (
     RunBinding,
     VerifyError,
     execute_row,
+    plan_row,
     plan_selected_rows,
     run_selected_rows,
     select_entries,
@@ -299,6 +302,87 @@ def test_native_mtp_rows_not_downgraded_even_with_draft_model_path(tmp_path):
 
 
 # --- Prompt hash verification -------------------------------------------------
+
+
+def test_local_run_id_cannot_escape_output_directory(tmp_path):
+    manifest, manifest_dir = build_manifest(tmp_path)
+    target = make_target_model(tmp_path)
+    original = next(
+        e for e in manifest.entries if e.decode_mode == DECODE_MODE_AUTOREGRESSIVE
+    )
+    payload = original.to_dict()
+    payload["run_id"] = "../escaped"
+    entry = MatrixEntry.from_dict(payload)
+    results_dir = tmp_path / "results"
+    binding = RunBinding(target_model_path=target)
+
+    plan = plan_row(
+        entry,
+        manifest_dir=manifest_dir,
+        output_dir=results_dir,
+        binding=binding,
+    )
+    runtime = FakeMLXRuntime()
+    result = execute_row(
+        entry,
+        manifest_dir=manifest_dir,
+        output_dir=results_dir,
+        model_id=manifest.model_id,
+        binding=binding,
+        resume=True,
+        runtime_factory=lambda: runtime,
+    )
+
+    assert not plan.ready
+    assert "unsafe artifact path" in plan.blockers[0]
+    assert result.verification.status is RowStatus.FAILED
+    assert "unsafe artifact path" in (result.verification.reason or "")
+    assert not results_dir.exists()
+    assert not (tmp_path / "escaped").exists()
+    assert runtime.load_calls == []
+
+
+@pytest.mark.parametrize("corruption", ["oversized", "symlink"])
+def test_local_prompt_must_be_a_bounded_regular_file(tmp_path, monkeypatch, corruption):
+    manifest, manifest_dir = build_manifest(tmp_path)
+    target = make_target_model(tmp_path)
+    entry = next(
+        e for e in manifest.entries if e.decode_mode == DECODE_MODE_AUTOREGRESSIVE
+    )
+    prompt_path = Path(entry.prompt_path)
+    if corruption == "oversized":
+        monkeypatch.setattr(verify_module, "MAX_EVIDENCE_ARTIFACT_BYTES", 8)
+    else:
+        target_path = tmp_path / "prompt-target.txt"
+        target_path.write_text(
+            prompt_path.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        prompt_path.unlink()
+        prompt_path.symlink_to(target_path)
+    binding = RunBinding(target_model_path=target)
+
+    plan = plan_row(
+        entry,
+        manifest_dir=manifest_dir,
+        output_dir=tmp_path / "results",
+        binding=binding,
+    )
+    runtime = FakeMLXRuntime()
+    result = execute_row(
+        entry,
+        manifest_dir=manifest_dir,
+        output_dir=tmp_path / "results",
+        model_id=manifest.model_id,
+        binding=binding,
+        resume=True,
+        runtime_factory=lambda: runtime,
+    )
+
+    assert not plan.ready
+    assert "prompt file unreadable" in plan.blockers[0]
+    assert result.verification.status is RowStatus.FAILED
+    assert "prompt file unreadable" in (result.verification.reason or "")
+    assert runtime.load_calls == []
 
 
 def test_prompt_hash_mismatch_fails_the_row_without_executing(tmp_path):

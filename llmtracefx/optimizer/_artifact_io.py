@@ -3,16 +3,38 @@
 from __future__ import annotations
 
 import os
+import re
 import stat
 from pathlib import Path
 from typing import NoReturn
 
 MAX_METADATA_ARTIFACT_BYTES = 64 * 1024
 MAX_EVIDENCE_ARTIFACT_BYTES = 64 * 1024 * 1024
+_SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class ArtifactReadError(ValueError):
     """Raised when an artifact is not a bounded, regular UTF-8 file."""
+
+
+def unsafe_run_id_reason(run_id: str) -> str | None:
+    """Return why a run ID is unsafe as a path component, if applicable."""
+    if not run_id:
+        return "run_id is empty"
+    if run_id in (".", ".."):
+        return "run_id is a relative directory reference"
+    if os.path.isabs(run_id) or os.path.splitdrive(run_id)[0]:
+        return "run_id is an absolute path"
+    if "/" in run_id or "\\" in run_id or os.sep in run_id:
+        return "run_id contains a path separator"
+    if "\x00" in run_id:
+        return "run_id contains a null byte"
+    if not _SAFE_RUN_ID.fullmatch(run_id):
+        return (
+            "run_id is not a single safe path component matching "
+            "[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
+        )
+    return None
 
 
 def reject_non_finite_json_constant(value: str) -> NoReturn:
