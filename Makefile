@@ -1,6 +1,6 @@
 # LLMTraceFX Makefile
 
-.PHONY: help install install-dev sync test lint format clean run-sample run-server deploy-modal
+.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal
 
 help:  ## Show this help message
 	@echo "LLMTraceFX - GPU-level LLM inference profiler"
@@ -29,15 +29,30 @@ lint:  ## Run linting
 	uv run ruff check llmtracefx/
 	uv run mypy llmtracefx/
 
-format:  ## Format code
-	uv run black llmtracefx/
-	uv run isort llmtracefx/
-	uv run ruff format llmtracefx/
+lint-changed:  ## Run the CI quality ratchet over files changed vs origin/main
+	./scripts/lint-changed.sh origin/main
 
-format-check:  ## Check formatting
-	uv run black --check llmtracefx/
-	uv run isort --check-only llmtracefx/
-	uv run ruff format --check llmtracefx/
+test-ratchet:  ## Test the ratchet's own file selection and failure handling
+	./scripts/test-lint-changed.sh
+
+# Formatting scope note: the CI ratchet checks every changed *.py file wherever
+# it lives, not just llmtracefx/. These targets match that scope so `make format`
+# and CI cannot disagree. Scoping them to llmtracefx/ used to hide two files at
+# the repo root, launch_dashboard.py and generate_trace.py, which fail both black
+# and isort: editing either one meant CI rejected formatting that `make format`
+# had refused to fix. black and isort apply their own default exclusions, so `.`
+# walks exactly the 84 tracked Python files and no virtualenv or build output.
+#
+# `lint` below stays on llmtracefx/ deliberately. mypy is configured strictly
+# enough that ordinary untyped test functions fail it, so the ratchet scopes mypy
+# the same way.
+format:  ## Format code (repository wide, matching the CI ratchet scope)
+	uv run black .
+	uv run isort .
+
+format-check:  ## Check formatting (repository wide, matching the CI ratchet scope)
+	uv run black --check .
+	uv run isort --check-only .
 
 # Running
 run-sample:  ## Run analysis on sample trace
