@@ -53,7 +53,10 @@ def read_bounded_regular_bytes(path: str | Path, max_bytes: int) -> bytes:
         raise ArtifactReadError(f"{artifact_path} must not be a symlink")
 
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    descriptor = os.open(artifact_path, flags)
+    try:
+        descriptor = os.open(artifact_path, flags)
+    except (ValueError, UnicodeError) as exc:
+        raise ArtifactReadError(f"{artifact_path!s} is not a valid file path") from exc
 
     try:
         metadata = os.fstat(descriptor)

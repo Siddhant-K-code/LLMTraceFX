@@ -342,7 +342,7 @@ def test_local_run_id_cannot_escape_output_directory(tmp_path):
     assert runtime.load_calls == []
 
 
-@pytest.mark.parametrize("corruption", ["oversized", "symlink"])
+@pytest.mark.parametrize("corruption", ["invalid-path", "oversized", "symlink"])
 def test_local_prompt_must_be_a_bounded_regular_file(tmp_path, monkeypatch, corruption):
     manifest, manifest_dir = build_manifest(tmp_path)
     target = make_target_model(tmp_path)
@@ -350,7 +350,11 @@ def test_local_prompt_must_be_a_bounded_regular_file(tmp_path, monkeypatch, corr
         e for e in manifest.entries if e.decode_mode == DECODE_MODE_AUTOREGRESSIVE
     )
     prompt_path = Path(entry.prompt_path)
-    if corruption == "oversized":
+    if corruption == "invalid-path":
+        payload = entry.to_dict()
+        payload["prompt_path"] = "\0"
+        entry = MatrixEntry.from_dict(payload)
+    elif corruption == "oversized":
         monkeypatch.setattr(verify_module, "MAX_EVIDENCE_ARTIFACT_BYTES", 8)
     else:
         target_path = tmp_path / "prompt-target.txt"
