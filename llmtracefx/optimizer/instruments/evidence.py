@@ -184,6 +184,40 @@ def failed_recording_evidence(
     )
 
 
+def failed_export_evidence(
+    capability: XctraceCapabilityReport,
+    *,
+    template: str,
+    trace_bundle_name: str,
+    reason: str,
+) -> InstrumentsEvidence:
+    """Evidence for a trace that recorded but could not be exported.
+
+    Distinct from :func:`failed_recording_evidence`, which says no trace
+    was produced. Here one was, it is on disk, and it can still be
+    exported later, so its name is kept and the note points at the
+    recovery path. Saying "no trace was produced" about a bundle that
+    exists would deny the only recoverable artifact the run left.
+    """
+    return InstrumentsEvidence(
+        tool="xctrace",
+        tool_version=capability.xctrace_version,
+        capability=capability.capability.value,
+        template=template,
+        trace_bundle_name=trace_bundle_name,
+        available_schemas=(),
+        parsed_schemas=(),
+        unsupported_schemas=(),
+        metrics={},
+        notes=(
+            f"the trace was recorded but could not be exported, so no "
+            f"metric was derived: {reason}. The bundle is on disk and can "
+            f"be exported later with `instruments import --trace "
+            f"{trace_bundle_name}`."
+        ),
+    )
+
+
 def unsupported_evidence(
     capability: XctraceCapabilityReport, *, template: str
 ) -> InstrumentsEvidence:

@@ -39,6 +39,8 @@ from llmtracefx.optimizer.instruments.export import (
     InstrumentsExportError,
     parse_exported_table,
 )
+from llmtracefx.optimizer.instruments.process import InstrumentsProcessError
+from llmtracefx.optimizer.instruments.recorder import RecordStatus
 from llmtracefx.optimizer.instruments.workflow import (
     import_trace,
     plan_trace,
@@ -130,6 +132,19 @@ def pinned_host_identity(monkeypatch):
     # module's own namespace, which is a separate binding. Pinning only
     # the workflow one would leave that subcommand reading the real host.
     monkeypatch.setattr(cli_module, "detect_xctrace_capability", pinned)
+
+
+@pytest.fixture
+def cli_launcher(monkeypatch, tmp_path):
+    """Give the CLI a fake process launcher.
+
+    `instruments record` spawns for real, so without this a CLI test
+    would depend on the profiled command existing on the machine.
+    """
+    created = tmp_path / "run.trace"
+    launcher = FakeLauncher(FakeProcess(returncode=0), creates_trace=created)
+    monkeypatch.setattr(cli_module, "SubprocessProcessLauncher", lambda: launcher)
+    return launcher
 
 
 @pytest.fixture
@@ -1409,11 +1424,19 @@ def test_a_failed_export_after_a_good_recording_replaces_stale_evidence(tmp_path
         output_dir=out,
     )
 
-    assert collection.succeeded is True
+    # The recording completed, but the run measured nothing, so it is
+    # not a success and must not exit 0.
+    assert collection.succeeded is False
+    assert collection.export_failed is True
+    assert collection.record.status is RecordStatus.COMPLETED
+
     fresh = json.loads((out / "instruments_evidence.json").read_text("utf-8"))
-    assert fresh["trace_bundle_name"] is None
+    # The bundle exists and is re-exportable, so its name is kept.
+    assert fresh["trace_bundle_name"] == "run2.trace"
     assert fresh["metrics"] == {}
     assert "could not be exported" in fresh["notes"]
+    assert "instruments import" in fresh["notes"]
+    assert "no trace was produced" not in fresh["notes"]
     record_meta = json.loads((out / "xctrace_record.json").read_text("utf-8"))
     assert record_meta["trace_name"] == "run2.trace"
 
@@ -1442,3 +1465,104 @@ def test_evidence_is_promoted_last_so_a_tear_leaves_it_stale(tmp_path):
         workflow_module._promote_staged(staging, out)
 
     assert promoted[-1] == "instruments_evidence.json"
+
+
+def test_cli_exits_nonzero_when_the_export_failed(
+    tmp_path, capsys, cli_command_runner, cli_launcher
+):
+    """A run that measured nothing must not report success.
+
+    `record.status` is COMPLETED, which is true of the recording, but
+    letting that stand in for the run would let a CI job record a green,
+    "measured" run whose evidence has zero GPU metrics.
+    """
+    cli_command_runner.exports["toc"] = fail((), returncode=1)
+    out = tmp_path / "artifacts"
+
+    code = run_cli(
+        [
+            "instruments",
+            "record",
+            "--output-trace",
+            str(tmp_path / "run.trace"),
+            "--output-dir",
+            str(out),
+            "--",
+            "/bin/infer",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert "Recorded, but the export failed" in captured.err
+    assert "instruments import" in captured.err
+    assert "Recording did not complete" not in captured.err
+
+
+def test_cli_exits_zero_on_a_fully_successful_record(
+    tmp_path, capsys, cli_command_runner, cli_launcher
+):
+    """The nonzero path must not swallow real successes."""
+    out = tmp_path / "artifacts"
+    code = run_cli(
+        [
+            "instruments",
+            "record",
+            "--output-trace",
+            str(tmp_path / "run.trace"),
+            "--output-dir",
+            str(out),
+            "--",
+            "/bin/infer",
+        ]
+    )
+    assert code == 0
+    assert "evidence written to" in capsys.readouterr().out.casefold()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        InstrumentsProcessError("could not execute xctrace"),
+        OSError("disk full"),
+    ],
+)
+def test_any_export_failure_replaces_stale_evidence(tmp_path, error):
+    """Not only InstrumentsExportError reaches this path.
+
+    xctrace can become unexecutable between the capability probe and the
+    export, and the staging or evidence writes can fail. Each used to
+    propagate past the handler and leave the previous run's GPU metrics
+    attributed to this run's command.
+    """
+    out = tmp_path / "artifacts"
+    first = tmp_path / "run1.trace"
+    record_trace(
+        runner=exporting_runner(),
+        launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=first),
+        command=("/bin/infer",),
+        output_trace=first,
+        output_dir=out,
+    )
+    assert json.loads((out / "instruments_evidence.json").read_text("utf-8"))["metrics"]
+
+    class ExplodingRunner(FakeCommandRunner):
+        def run(self, argv, *, timeout_seconds):
+            if len(argv) > 1 and argv[1] == "export":
+                raise error
+            return super().run(argv, timeout_seconds=timeout_seconds)
+
+    second = tmp_path / "run2.trace"
+    collection = record_trace(
+        runner=ExplodingRunner(),
+        launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=second),
+        command=("/bin/infer",),
+        output_trace=second,
+        output_dir=out,
+    )
+
+    assert collection.export_failed is True
+    assert collection.succeeded is False
+    evidence = json.loads((out / "instruments_evidence.json").read_text("utf-8"))
+    assert evidence["metrics"] == {}
+    assert evidence["trace_bundle_name"] == "run2.trace"

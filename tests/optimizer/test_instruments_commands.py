@@ -637,3 +637,9 @@ def test_descriptors_about_a_secret_are_not_the_secret(flag, value):
     """
     plan = make_plan(target=LaunchTarget(argv=("bench", flag, value)))
     assert plan.to_redacted_argv()[-1] == value
+
+
+@pytest.mark.parametrize("flag", ["--pwd", "--pass-phrase", "--netrc"])
+def test_further_password_spellings_are_redacted(flag):
+    plan = make_plan(target=LaunchTarget(argv=("bench", flag, SENTINEL)))
+    assert SENTINEL not in " ".join(plan.to_redacted_argv())

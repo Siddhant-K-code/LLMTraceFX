@@ -85,7 +85,9 @@ _CREDENTIAL_SEGMENTS: frozenset[str] = frozenset(
         "totp",
         "otp",
         "pw",
+        "pwd",
         "pass",
+        "netrc",
     }
 )
 

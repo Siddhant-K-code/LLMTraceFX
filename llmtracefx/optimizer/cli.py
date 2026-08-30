@@ -642,6 +642,16 @@ def _cmd_instruments_record(args: argparse.Namespace) -> int:
         if collection.message:
             print(collection.message)
         return 0
+    if collection.export_failed:
+        # The recording itself completed, so saying it did not would be
+        # wrong, but the run produced no measurement and must not exit 0.
+        print(f"Recorded, but the export failed: {collection.message}", file=sys.stderr)
+        print(
+            "The trace bundle is on disk and can be exported later with "
+            "`instruments import`.",
+            file=sys.stderr,
+        )
+        return 1
     print(f"Recording did not complete: {collection.message}", file=sys.stderr)
     if collection.wrote_artifacts:
         print(f"Artifacts preserved in {output_dir}", file=sys.stderr)

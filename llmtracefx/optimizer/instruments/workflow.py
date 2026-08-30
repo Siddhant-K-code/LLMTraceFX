@@ -43,6 +43,7 @@ from .commands import (
 from .evidence import (
     TraceEvidenceInputs,
     build_instruments_evidence,
+    failed_export_evidence,
     failed_recording_evidence,
     unsupported_evidence,
 )
@@ -55,7 +56,7 @@ from .export import (
     parse_table_of_contents,
     read_export_text,
 )
-from .process import CommandRunner, ProcessLauncher
+from .process import CommandRunner, InstrumentsProcessError, ProcessLauncher
 from .recorder import (
     InstrumentsRecordError,
     RecordResult,
@@ -191,10 +192,19 @@ class TraceCollection:
     message: str = ""
     wrote_artifacts: bool = True
     """False when the run was refused before touching the filesystem."""
+    export_failed: bool = False
+    """True when the trace recorded but could not be exported.
+
+    Kept separate from ``record.status``, which correctly says the
+    recording completed. The run as a whole did not succeed, because it
+    produced no measurement, and an exit code that said otherwise would
+    let a CI job record a green run with zero GPU metrics."""
 
     @property
     def succeeded(self) -> bool:
-        return self.record is not None and self.record.succeeded
+        return (
+            self.record is not None and self.record.succeeded and not self.export_failed
+        )
 
 
 def record_trace(
@@ -319,16 +329,28 @@ def _record_reserved(
             template=template,
             table_schema=table_schema,
         )
-    except InstrumentsExportError as exc:
+    except (
+        InstrumentsExportError,
+        InstrumentsProcessError,
+        OSError,
+    ) as exc:
         # The recording succeeded, so this run has already written its
         # capability report and record metadata into output_dir. Letting
-        # the export failure propagate would leave those beside a
-        # previous run's evidence and GPU metrics, which is exactly the
-        # mixing the staging directory prevents on the export side.
-        # Writing this run's evidence replaces them.
+        # any of these propagate would leave those beside a previous
+        # run's evidence and GPU metrics, which is exactly the mixing
+        # the staging directory prevents on the export side. Writing
+        # this run's evidence replaces them.
+        #
+        # All three are reachable: the export tool can fail (export
+        # error), become unexecutable between the capability probe and
+        # the export (process error), or the staging and evidence writes
+        # can fail (OSError).
         reason = f"the trace was recorded but could not be exported: {exc}"
-        evidence = failed_recording_evidence(
-            capability, template=template, reason=reason
+        evidence = failed_export_evidence(
+            capability,
+            template=template,
+            trace_bundle_name=result.trace_path.name,
+            reason=str(exc),
         )
         _write_evidence(output_dir, evidence)
         return TraceCollection(
@@ -336,6 +358,7 @@ def _record_reserved(
             record=result,
             evidence=evidence,
             message=reason,
+            export_failed=True,
         )
     return TraceCollection(
         capability=capability,
