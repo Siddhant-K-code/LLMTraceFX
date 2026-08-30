@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<!--
+Synthetic 'xctrace export' in TOC mode output. Structure mirrors real output
+from xctrace 16.0 (17F113) on macOS, shrunk to a handful of schemas and
+with every identifying value replaced: no real device name, no real
+hardware UUID, no real user paths.
+
+Kept deliberately faithful in two respects the parser depends on:
+  * <run number="N"> with info/summary metadata and a data/table list.
+  * an info/target/process element carrying the launched process's pid,
+    which is what metric attribution keys off.
+-->
+<trace-toc>
+    <run number="1">
+        <info>
+            <target>
+                <device platform="macOS" model="MacBook Pro" name="Example Mac" os-version="26.6.2 (25G83)" uuid="00000000-0000-0000-0000-000000000000"/>
+                <process arguments="120" type="launched" return-exit-status="0" name="probe" pid="4242" termination-reason="exit(0)"/>
+            </target>
+            <summary>
+                <start-date>2026-01-01T00:00:00.000+00:00</start-date>
+                <end-date>2026-01-01T00:00:00.500+00:00</end-date>
+                <duration>0.500000</duration>
+                <end-reason>Target app exited</end-reason>
+                <instruments-version>16.0 (17F113)</instruments-version>
+                <template-name>Metal System Trace</template-name>
+                <recording-mode>Deferred</recording-mode>
+                <time-limit>30 seconds</time-limit>
+            </summary>
+        </info>
+        <data>
+            <table schema="metal-gpu-intervals"/>
+            <table schema="displayed-surfaces-per-second"/>
+            <table schema="metal-application-encoders-list"/>
+            <table schema="time-profile"/>
+        </data>
+    </run>
+</trace-toc>

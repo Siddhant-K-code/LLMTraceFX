@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+<!--
+Synthetic 'xctrace export' in XPath mode for the metal-gpu-intervals table
+output. Shrunk to 4 columns and 4 rows, but structurally faithful to real
+xctrace 16.0 output in the ways the parser depends on:
+
+  * <node> holds one <schema name="..."> whose ordered <col> entries each
+    declare a <mnemonic> and an <engineering-type>.
+  * Every <row> has exactly one child per column, in column order, and
+    each child's tag equals that column's <engineering-type>.
+  * Repeated values are emitted once with an id and then referenced by
+    <tag ref="id"/>. Row 2 references the process defined in row 1, and
+    row 4 uses a ref to a value that is itself only defined later in
+    document order, which is why the id index is built over the whole
+    document before rows are resolved.
+  * <process> is a composite value carrying a nested <pid> and an
+    fmt attribute of the form "name (pid)".
+
+Durations and start times are integer nanoseconds, as in real output.
+-->
+<trace-query-result>
+<node xpath='//trace-toc[1]/run[1]/data[1]/table[1]'>
+<schema name="metal-gpu-intervals" documentation="Denotes an interesting period of activity in the GPU.">
+<col><mnemonic>start</mnemonic><name>Creation</name><engineering-type>start-time</engineering-type></col>
+<col><mnemonic>duration</mnemonic><name>Duration</name><engineering-type>duration</engineering-type></col>
+<col><mnemonic>channel-name</mnemonic><name>Channel Name</name><engineering-type>gpu-channel-name</engineering-type></col>
+<col><mnemonic>process</mnemonic><name>Process</name><engineering-type>process</engineering-type></col>
+</schema>
+<row>
+<start-time id="1" fmt="00:00.000.100">100000</start-time>
+<duration id="2" fmt="10.00 µs">10000</duration>
+<gpu-channel-name id="3" fmt="Compute">Compute</gpu-channel-name>
+<process id="4" fmt="probe (4242)"><pid id="5" fmt="4242">4242</pid><device-session id="6" fmt="TODO">TODO</device-session></process>
+</row>
+<row>
+<start-time id="7" fmt="00:00.000.200">200000</start-time>
+<duration id="8" fmt="20.00 µs">20000</duration>
+<gpu-channel-name ref="3"/>
+<process ref="4"/>
+</row>
+<row>
+<start-time id="9" fmt="00:00.000.300">300000</start-time>
+<duration id="10" fmt="5.00 µs">5000</duration>
+<gpu-channel-name id="11" fmt="Vertex">Vertex</gpu-channel-name>
+<process id="12" fmt="WindowServer (77)"><pid id="13" fmt="77">77</pid><device-session ref="6"/></process>
+</row>
+<row>
+<start-time id="14" fmt="00:00.000.400">400000</start-time>
+<duration ref="15"/>
+<gpu-channel-name ref="11"/>
+<process ref="12"/>
+</row>
+<row>
+<start-time id="16" fmt="00:00.000.500">500000</start-time>
+<duration id="15" fmt="1.00 µs">1000</duration>
+<gpu-channel-name ref="3"/>
+<process ref="4"/>
+</row>
+</node>
+</trace-query-result>

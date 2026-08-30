@@ -1709,6 +1709,215 @@ implemented and tested against a fake runtime so it is ready to wrap a
 genuinely stable, metrics-differentiated API if one is published upstream --
 no production adapter claims that today.
 
+### Apple Instruments / Metal traces via `xctrace`
+
+`llmtracefx-optimizer instruments` wraps Apple's Instruments CLI to record a
+**Metal System Trace** around a local inference command and turn the
+resulting `.trace` bundle into canonical `ExperimentRecord` evidence.
+
+**Setup.** `xctrace` ships only with the full Xcode, never with Command Line
+Tools alone. On a Command Line Tools machine `/usr/bin/xctrace` still exists
+and is executable, so a plain "is it on PATH" check is misleading; the
+capability probe therefore always invokes the tool:
+
+```bash
+# Install Xcode from the Mac App Store, then select it:
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+sudo xcodebuild -runFirstLaunch      # run these yourself; the project
+sudo xcodebuild -license accept      # never invokes sudo on your behalf
+
+uv run llmtracefx-optimizer instruments capability
+```
+
+`capability` exits `0` when supported, `3` when a known cause blocks it, and
+`1` on error. Each cause is reported separately with its own remediation
+rather than collapsed into "unavailable": not macOS, not arm64, xctrace
+absent from PATH, Command Line Tools only, license not accepted, first launch
+incomplete, template unavailable, permission denied, and probe failed for an
+unrecognized reason.
+
+**Dry run first.** `plan` validates everything and executes nothing, printing
+the exact argv and the exact artifact paths it would write:
+
+```bash
+uv run llmtracefx-optimizer instruments plan \
+  --output-trace artifacts/metal/run.trace \
+  --output-dir artifacts/metal \
+  --time-limit 45s \
+  -- ./your-inference-command --tokens 128
+```
+
+**Record and import.** `record` performs the capture and then exports and
+parses it; `import` does the export and parse half against a `.trace` bundle
+you already have:
+
+```bash
+uv run llmtracefx-optimizer instruments record \
+  --output-trace artifacts/metal/run.trace \
+  --output-dir artifacts/metal \
+  --time-limit 45s \
+  -- ./your-inference-command --tokens 128
+
+uv run llmtracefx-optimizer instruments import \
+  --trace artifacts/metal/run.trace --output-dir artifacts/metal
+```
+
+#### What is actually measured
+
+Validated live on this hardware, and reproducible with the commands above:
+
+| Fact | Value |
+| --- | --- |
+| Tool | `xctrace version 16.0 (17F113)` |
+| Host | macOS 26.6.2 (25G83), Apple M5 Pro, arm64 |
+| Template | `Metal System Trace` |
+| Table schemas advertised by one capture | 82 |
+| Table this project parses | `metal-gpu-intervals` |
+
+The four metrics emitted, all with provenance `measured_native` and all
+scoped to a single pid:
+
+- `metal_gpu_interval_count` -- GPU intervals attributed to the profiled
+  process.
+- `metal_gpu_interval_duration_sum` (ms) -- the sum of those intervals'
+  durations.
+- `metal_gpu_interval_wall_span` (ms) -- last interval end minus first
+  interval start for that process.
+- `metal_gpu_interval_count_all_processes` -- the trace-wide interval count,
+  so the attributed share is visible rather than implied.
+
+Correctness of the parser was cross-checked against a workload that issues a
+known number of GPU dispatches: 400, 250, 120 and 77 dispatches produced
+exactly 400, 250, 120 and 77 attributed intervals.
+
+#### What is explicitly not claimed
+
+This wrapper reports **no** GPU utilization, GPU busy percentage, kernel
+time, memory bandwidth, occupancy, GPU power, GPU energy or GPU memory
+footprint. Metal System Trace advertises tables whose names gesture at some
+of these, but deriving those numbers needs modelling assumptions this project
+has not validated against ground truth, so they stay absent rather than
+approximated. `ExperimentRecord.validate` enforces this structurally, with an
+allowlist rather than a denylist: only the four metric names above may be
+persisted, each with exactly the unit and provenance it declares, each
+requiring the table it is derived from to appear in `parsed_schemas`, and
+`parsed_schemas` itself must be a subset of the schemas the trace actually
+advertised. A fabricated hardware number therefore cannot be persisted even by
+a caller that tries.
+
+Two further limits worth stating plainly:
+
+- `metal_gpu_interval_duration_sum` is **not** GPU busy time and **not** a
+  utilization numerator. Metal runs Vertex, Fragment and Compute channels
+  concurrently, so overlapping intervals are counted more than once and the
+  sum can exceed wall-clock time.
+- Metal System Trace records GPU work for **every** process on the system.
+  A capture of a trivial local Metal program also contained intervals
+  belonging to `WindowServer` and `com.apple.WebKit.GPU`, and in one capture
+  81% of all intervals were `WindowServer`'s. Metrics are therefore always
+  attributed per pid, read from the `<process>` cell's structured `pid` child
+  rather than scraped from its display label. Without a target pid, and when
+  one pid appears under two different labels (pid reuse, or a process that
+  renamed itself), no scalar metric is emitted at all. Nothing here is a
+  benchmark result or a comparison between runtimes.
+
+The other 81 schemas found in a capture are listed in
+`instruments.unsupported_schemas` so the gap is explicit. Instruments
+evidence is kept separate from `memory` and `power`, which carry
+runtime-allocator and host-side values (the MLX allocator's active, cache and
+peak bytes), so a bookkeeping figure can never be mistaken for a profiler
+measurement.
+
+#### Safety and privacy
+
+- **Traces are never overwritten.** The output path is resolved (symlinks and
+  `..` collapsed, and case-insensitively on a default macOS filesystem) and
+  claimed with a single atomic `O_CREAT | O_EXCL` reservation that is held for
+  the whole run, so two concurrent recordings cannot both pass a check and
+  then race into the same path. `--append-run` is never passed.
+- **No shell.** Every invocation is an argv list, so no template name, path
+  or inference argument can be reinterpreted as shell syntax. Schema names
+  are validated against a conservative character set before entering an XPath
+  so they cannot break out of the query.
+- **Bounded and cleaned up.** Each recording has a host deadline strictly
+  greater than `--time-limit`, leaving room for xctrace to finalize the
+  bundle. The child runs in its own process group, whose id is captured at
+  spawn so it stays reachable after xctrace itself exits, and teardown
+  escalates SIGINT then SIGTERM then SIGKILL until the group is actually
+  empty. The leader exiting is not treated as cleanup: `xctrace record
+  --launch` starts the profiled program itself, and that program can outlive
+  xctrace or ignore SIGINT.
+- **Failures are preserved,** not cleaned away: stdout, stderr, run metadata
+  and any partial bundle stay on disk. The whole request is validated before
+  the first byte is written, so an invalid time limit or output path leaves
+  nothing behind, and a refused rerun leaves an earlier run's artifacts byte
+  for byte intact rather than mixing the two. The CLI says plainly that
+  nothing was written instead of naming an evidence file it did not produce.
+  Imports stage their exports and promote them together, and a run that fails
+  before promoting clears the exported files an earlier run left, so a
+  directory never holds one run's metadata beside another run's GPU table.
+- **A run that measured nothing does not exit 0.** `instruments record`
+  returns a nonzero status when the export failed, and when the profiled
+  program survived every stop signal, while still recording truthfully in the
+  metadata that the recording itself completed.
+- **No prompt or completion capture.** `--target-stdin` and `--target-stdout`
+  are never constructed, so the profiled program's own input and output never
+  flow through xctrace into captured logs. `--all-processes` is never used,
+  and attaching is offered by numeric pid only, since attaching by name
+  resolves ambiguously.
+- **Credential redaction.** Secrets are redacted from every argv this project
+  stores or prints, in all three shapes they arrive in: `NAME=value`,
+  `--api-key=value`, and `--api-key value` (where the following argument is
+  replaced even if it starts with a dash). Name matching is case and separator
+  insensitive, so `--API_KEY` and `--api-key` are the same. It deliberately
+  distinguishes credentials from quantities and settings: `--hf-token` and
+  `--basic-auth` are redacted, while `--max-tokens`, `--token-count` and
+  `--auth-mode` are not, because destroying ordinary parameters would defeat
+  the reproducibility the recorded argv exists to provide. The real value
+  still reaches the process.
+
+  **Treat this as a safety net, not a guarantee.** It classifies option names,
+  so it can only catch spellings it recognizes, and it cannot see a secret
+  embedded in a positional argument. Two limits are pinned by tests: a value
+  attached to a single-dash short option (`-ksecret`) is not detected, and a
+  name ending in a configuration or location suffix (`--auth-mode`,
+  `--private-key-path`) is treated as naming a setting or a file. The reliable
+  protection is not to put secrets on the command line at all: pass them
+  through the profiled program's environment, or have it read them from a
+  file.
+- **Identity is not ingested, and not copied.** A trace's table of contents
+  contains the device's display name (routinely a person's name), its hardware
+  UUID, and the target's full argument list. None are read, and the copy of
+  the table of contents written into your output directory has all three
+  stripped, since the raw file would otherwise carry them even though the
+  parser ignored them. Only the launched process's own pid and name are kept,
+  because attribution is impossible without them, and records store the trace
+  bundle's basename rather than an absolute path.
+- **The `.trace` bundle itself is sensitive.** It is raw evidence, so nothing
+  in it is sanitized: it contains the device name and UUID, the profiled
+  command's arguments, and the names of every other process that used the GPU
+  while it was recording. Treat a bundle like a memory dump. Do not attach one
+  to a public issue. The same applies to `trace_table.xml`, the raw exported
+  GPU table, which lists every process that produced a GPU interval. The
+  derived artifacts do not: `instruments_evidence.json` and `trace_toc.json`
+  carry only your own process's pid and counts, never another process's name.
+  When a pid is ambiguous the evidence note reports how many labels conflicted
+  but not what they were; the labels appear only in the error shown to whoever
+  ran the command.
+- **One run per artifact directory.** The trace path and the output directory
+  are both claimed with atomic `O_CREAT | O_EXCL` reservations held for the
+  whole run, so two concurrent runs cannot interleave metadata or exports even
+  when their trace names differ.
+- **Malformed input is refused.** Exports declaring a `DOCTYPE` or `ENTITY`
+  are rejected before parsing (entity expansion denial of service), oversized
+  exports are refused with a suggestion to shorten `--time-limit`, and a row
+  whose value count or engineering types disagree with the declared schema is
+  an error rather than being mapped onto the wrong columns.
+
+The test suite covers all of the above without Xcode installed, by injecting
+the subprocess and process-launch boundaries and parsing small synthetic
+export fixtures.
+
 ### Deterministic code/JSON/reasoning workload matrix
 
 `llmtracefx.optimizer.workloads` pins a small, versioned, redistributable
