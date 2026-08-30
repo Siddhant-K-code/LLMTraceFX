@@ -171,6 +171,28 @@ def test_evaluate_code_completion_posix_file_size_limit_kills_large_write(monkey
     assert outcome.success is False
 
 
+def test_terminate_candidate_process_falls_back_when_killpg_is_not_permitted(
+    monkeypatch,
+):
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(evaluators, "_IS_POSIX", True)
+    monkeypatch.setattr(
+        evaluators.os,
+        "killpg",
+        lambda *_: (_ for _ in ()).throw(PermissionError),
+    )
+    monkeypatch.setattr(
+        evaluators, "_process_ids_in_group", lambda process_group_id: (41, 42)
+    )
+    monkeypatch.setattr(
+        evaluators.os, "kill", lambda pid, signal: killed.append((pid, signal))
+    )
+
+    evaluators._terminate_candidate_process(object(), process_group_id=40)
+
+    assert killed == [(41, evaluators.signal.SIGKILL), (42, evaluators.signal.SIGKILL)]
+
+
 @pytest.mark.skipif(
     os.name != "posix",
     reason="POSIX-only process-group containment",

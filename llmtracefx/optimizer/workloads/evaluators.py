@@ -190,11 +190,11 @@ def _terminate_candidate_process(
             return
         try:
             os.killpg(process_group_id, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             for pid in _process_ids_in_group(process_group_id):
                 try:
                     os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
+                except (ProcessLookupError, PermissionError):
                     continue
     elif process.poll() is None:
         process.kill()
