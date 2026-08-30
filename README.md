@@ -1423,10 +1423,14 @@ and are never mixed into a single unlabelled number.
   `design`, `signal`, `insignia` and `assignment` still pass on `sig`. The
   scan carries at most six states per position, so it stays linear and does
   not undo the bound below.
-- `param` and `value` are qualifiers for the same reason: alone they are one
-  word and refuse nothing, so `params`, `values` and `max_value` are
-  untouched, but glued to a noun they complete the cover of `tokenvalue` and
-  `secretparam`.
+- `param` and `value` are not credential words. They were briefly
+  qualifiers, so that `tokenvalue` and `secretparam` would be refused, and
+  they refused `hotkeyvalue`, `partitionkeyvalue`, `sortkeyvalue`,
+  `rowkeyvalue` and `keyvalue` along with them. Those are ordinary key-value
+  store parameter names and there is no principled rule that separates them
+  from `tokenvalue`, which is built the same way out of the same parts. Both
+  words are gone, and `tokenvalue` and `secretparam` are accepted as a
+  result, on the same bounded-cost reasoning as `sessionid` above.
 - The cover search looks ahead no further than the longest word either table
   spells. Without that bound every reachable offset rescanned every remaining
   substring, so a query key made of a few thousand repeated qualifier

@@ -5101,6 +5101,7 @@ def test_normalized_credential_percent_encoding_is_matched() -> None:
         "myapikey",
         "zaiapikey",
         "theaccesstoken",
+        "apikeyparam",
     ],
 )
 def test_glued_credential_names_with_unknown_affixes_are_refused(key: str) -> None:
@@ -5123,25 +5124,46 @@ def test_glued_credential_names_with_unknown_affixes_are_refused(key: str) -> No
     assert "whatever" not in str(excinfo.value)
 
 
-@pytest.mark.parametrize(
-    "key",
-    ["tokenvalue", "secretparam", "keyparam", "apikeyparam", "xsecretkey"],
-)
+@pytest.mark.parametrize("key", ["xsecretkey", "apikey", "accesstoken", "sessiontoken"])
 def test_fully_covered_glued_names_stay_refused(key: str) -> None:
-    """The phrase rule must not displace the cover it was added beside.
-
-    ``param`` and ``value`` were added as qualifiers for these, so the
-    cover now completes and the phrase rule is not what catches them.
-    """
+    """The phrase rule must not displace the cover it was added beside."""
     assert _covers_a_credential(key) is True
     assert _names_a_credential(key) is True
 
 
 @pytest.mark.parametrize(
-    "key", ["param", "params", "value", "values", "parameter", "max_value", "userid"]
+    "key",
+    [
+        "hotkeyvalue",
+        "partitionkeyvalue",
+        "sortkeyvalue",
+        "rowkeyvalue",
+        "keyvalue",
+        "paramvalue",
+        "queryparam",
+        "partitionkey",
+        "sortkey",
+        "routingkey",
+        "idempotencykey",
+        "cachekey",
+        "hotkey",
+    ],
 )
-def test_new_qualifiers_refuse_nothing_on_their_own(key: str) -> None:
-    """A qualifier alone is one word, so it can never refuse a name."""
+def test_key_value_store_names_stay_accepted(key: str) -> None:
+    """``param`` and ``value`` are too generic to be credential words.
+
+    They were added so ``tokenvalue`` and ``secretparam`` would be
+    refused, and they refused these instead. A key-value store parameter
+    is an ordinary name, and refusing it is an outage the operator cannot
+    diagnose, because the diagnostic deliberately echoes nothing.
+
+    Both words are gone. ``tokenvalue`` and ``secretparam`` are accepted
+    as a result, which is the right side of the trade: every query value
+    is redacted unconditionally before it reaches an artifact, and
+    preflight refuses the request credential inside an endpoint under any
+    key name, so a missed name persists a hash of a secondary value and
+    never cleartext.
+    """
     assert _names_a_credential(key) is False
     _validate_endpoint(f"https://api.example.com/v1/chat?{key}=value")
 

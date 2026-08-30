@@ -239,11 +239,6 @@ _CREDENTIAL_QUERY_QUALIFIERS = frozenset(
         "id",
         "master",
         "ocp",
-        # ``param`` and ``value`` only ever describe a neighbouring noun,
-        # which is exactly what makes them safe here: alone they are one
-        # word and never refuse anything, but glued to a term they turn
-        # ``tokenvalue`` and ``secretparam`` into recognizable phrases.
-        "param",
         "primary",
         "private",
         "public",
@@ -260,7 +255,6 @@ _CREDENTIAL_QUERY_QUALIFIERS = frozenset(
         "shared",
         "subscription",
         "user",
-        "value",
         "x",
     }
 )
