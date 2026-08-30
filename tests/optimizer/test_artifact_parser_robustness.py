@@ -20,6 +20,7 @@ from llmtracefx.optimizer.schema import (
     SchemaValidationError,
     utc_now_iso,
 )
+from llmtracefx.optimizer.tune.loader import load_evidence
 from llmtracefx.optimizer.workloads.aggregate import summarize_results
 from llmtracefx.optimizer.workloads.matrix import MatrixManifest, MatrixSchemaError
 from llmtracefx.optimizer.workloads.verify import (
@@ -123,6 +124,27 @@ def test_experiment_record_rejects_non_object_nested_values(field: str) -> None:
     payload = _record_payload()
     payload[field] = []
     with pytest.raises(SchemaValidationError, match="object"):
+        ExperimentRecord.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value"),
+    [
+        ("model", "model_id", []),
+        ("model", "model_family", {}),
+        ("platform", "accelerator", []),
+        ("runtime", "name", {}),
+        ("runtime", "backend", []),
+        ("command", "config_hash", {}),
+        ("speculative", "method", []),
+    ],
+)
+def test_experiment_record_rejects_container_identity_fields(
+    section: str, field: str, value: object
+) -> None:
+    payload = _record_payload()
+    payload[section][field] = value  # type: ignore[index]
+    with pytest.raises(SchemaValidationError, match=field):
         ExperimentRecord.from_dict(payload)
 
 
@@ -320,3 +342,26 @@ def test_summary_excludes_non_finite_numeric_evidence(
 
     assert summary.overall.total == 0
     assert summary.overall.correct_cases_per_minute is None
+
+
+def test_tune_loader_excludes_unhashable_record_identity(tmp_path: Path) -> None:
+    run_dir = tmp_path / "runs" / "run-1"
+    run_dir.mkdir(parents=True)
+    final_record_path = run_dir / "final_record.json"
+    verification = _verification_payload(
+        backend="mlx",
+        provider=None,
+        final_record_path=str(final_record_path),
+    )
+    (run_dir / "verification.json").write_text(
+        json.dumps(verification), encoding="utf-8"
+    )
+    record = _record_payload()
+    record["model"]["model_id"] = []  # type: ignore[index]
+    final_record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    loaded = load_evidence((tmp_path,))
+
+    assert loaded.usable == ()
+    assert len(loaded.excluded) == 1
+    assert "model_id" in loaded.excluded[0].reason

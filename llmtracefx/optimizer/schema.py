@@ -46,6 +46,32 @@ def _require_object(value: Any, *, context: str) -> dict[str, Any]:
     return value
 
 
+def _required_string(data: dict[str, Any], key: str, *, context: str) -> str:
+    if key not in data:
+        raise SchemaValidationError(f"{context} is missing required field: '{key}'")
+    value = data[key]
+    if not isinstance(value, str):
+        raise SchemaValidationError(f"{context}.{key} must be a string, got {value!r}")
+    return value
+
+
+def _optional_string(data: dict[str, Any], key: str, *, context: str) -> str | None:
+    value = data.get(key)
+    if value is not None and not isinstance(value, str):
+        raise SchemaValidationError(
+            f"{context}.{key} must be a string or null, got {value!r}"
+        )
+    return value
+
+
+def _string_with_default(
+    data: dict[str, Any], key: str, *, context: str, default: str
+) -> str:
+    if key not in data:
+        return default
+    return _required_string(data, key, context=context)
+
+
 def utc_now_iso() -> str:
     """Return the current UTC time as an ISO-8601 string ending in ``Z``."""
     return (
@@ -111,7 +137,9 @@ class Measurement:
                     data["value"], context="Measurement", key="value"
                 ),
                 provenance=MetricProvenance(data["provenance"]),
-                unit=str(data.get("unit", "")),
+                unit=_string_with_default(
+                    data, "unit", context="Measurement", default=""
+                ),
             )
         except KeyError as exc:
             raise SchemaValidationError(
@@ -257,17 +285,21 @@ class PlatformInfo:
         data = _require_object(data, context="PlatformInfo")
         try:
             return cls(
-                os_name=data["os_name"],
-                os_version=data["os_version"],
-                architecture=data["architecture"],
-                cpu_model=data.get("cpu_model"),
+                os_name=_required_string(data, "os_name", context="PlatformInfo"),
+                os_version=_required_string(data, "os_version", context="PlatformInfo"),
+                architecture=_required_string(
+                    data, "architecture", context="PlatformInfo"
+                ),
+                cpu_model=_optional_string(data, "cpu_model", context="PlatformInfo"),
                 cpu_cores=_coerce_optional_int(
                     data, "cpu_cores", context="PlatformInfo"
                 ),
                 total_memory_gb=_coerce_optional_float(
                     data, "total_memory_gb", context="PlatformInfo"
                 ),
-                accelerator=data.get("accelerator"),
+                accelerator=_optional_string(
+                    data, "accelerator", context="PlatformInfo"
+                ),
             )
         except KeyError as exc:
             raise SchemaValidationError(
@@ -298,11 +330,19 @@ class ModelInfo:
         data = _require_object(data, context="ModelInfo")
         try:
             return cls(
-                model_id=data["model_id"],
-                model_revision=data.get("model_revision"),
-                tokenizer_revision=data.get("tokenizer_revision"),
-                quantization=data.get("quantization"),
-                model_family=data.get("model_family"),
+                model_id=_required_string(data, "model_id", context="ModelInfo"),
+                model_revision=_optional_string(
+                    data, "model_revision", context="ModelInfo"
+                ),
+                tokenizer_revision=_optional_string(
+                    data, "tokenizer_revision", context="ModelInfo"
+                ),
+                quantization=_optional_string(
+                    data, "quantization", context="ModelInfo"
+                ),
+                model_family=_optional_string(
+                    data, "model_family", context="ModelInfo"
+                ),
             )
         except KeyError as exc:
             raise SchemaValidationError(
@@ -335,11 +375,13 @@ class RuntimeInfo:
         data = _require_object(data, context="RuntimeInfo")
         try:
             return cls(
-                name=data["name"],
-                version=data.get("version"),
-                backend=data.get("backend"),
-                git_revision=data.get("git_revision"),
-                provider=data.get("provider"),
+                name=_required_string(data, "name", context="RuntimeInfo"),
+                version=_optional_string(data, "version", context="RuntimeInfo"),
+                backend=_optional_string(data, "backend", context="RuntimeInfo"),
+                git_revision=_optional_string(
+                    data, "git_revision", context="RuntimeInfo"
+                ),
+                provider=_optional_string(data, "provider", context="RuntimeInfo"),
             )
         except KeyError as exc:
             raise SchemaValidationError(
@@ -386,8 +428,10 @@ class CommandInfo:
             )
         return cls(
             argv=argv_tuple,
-            config_hash=data.get("config_hash"),
-            workload_hash=data.get("workload_hash"),
+            config_hash=_optional_string(data, "config_hash", context="CommandInfo"),
+            workload_hash=_optional_string(
+                data, "workload_hash", context="CommandInfo"
+            ),
         )
 
 
@@ -546,7 +590,7 @@ class SpeculativeDecodingInfo:
             enabled=_coerce_bool_with_default(
                 data, "enabled", context="SpeculativeDecodingInfo", default=False
             ),
-            method=data.get("method"),
+            method=_optional_string(data, "method", context="SpeculativeDecodingInfo"),
             configured_depth=_coerce_optional_int(
                 data, "configured_depth", context="SpeculativeDecodingInfo"
             ),
@@ -768,8 +812,10 @@ class OutcomeInfo:
             quality_score=_coerce_optional_float(
                 data, "quality_score", context="OutcomeInfo"
             ),
-            quality_metric=data.get("quality_metric"),
-            notes=data.get("notes"),
+            quality_metric=_optional_string(
+                data, "quality_metric", context="OutcomeInfo"
+            ),
+            notes=_optional_string(data, "notes", context="OutcomeInfo"),
         )
 
 
@@ -787,7 +833,10 @@ class ErrorInfo:
     def from_dict(cls, data: dict[str, Any]) -> ErrorInfo:
         data = _require_object(data, context="ErrorInfo")
         try:
-            return cls(category=data["category"], message=data["message"])
+            return cls(
+                category=_required_string(data, "category", context="ErrorInfo"),
+                message=_required_string(data, "message", context="ErrorInfo"),
+            )
         except KeyError as exc:
             raise SchemaValidationError(
                 f"ErrorInfo is missing required field: {exc}"
@@ -1038,10 +1087,17 @@ class ExperimentRecord:
         data = _require_object(data, context="ExperimentRecord")
         try:
             record = cls(
-                schema_version=str(data.get("schema_version", SCHEMA_VERSION)),
-                run_id=data["run_id"],
-                started_at=data["started_at"],
-                ended_at=data.get("ended_at"),
+                schema_version=_string_with_default(
+                    data,
+                    "schema_version",
+                    context="ExperimentRecord",
+                    default=SCHEMA_VERSION,
+                ),
+                run_id=_required_string(data, "run_id", context="ExperimentRecord"),
+                started_at=_required_string(
+                    data, "started_at", context="ExperimentRecord"
+                ),
+                ended_at=_optional_string(data, "ended_at", context="ExperimentRecord"),
                 platform=PlatformInfo.from_dict(data["platform"]),
                 model=ModelInfo.from_dict(data["model"]),
                 runtime=RuntimeInfo.from_dict(data["runtime"]),

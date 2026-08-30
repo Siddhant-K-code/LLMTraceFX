@@ -666,6 +666,47 @@ def test_resume_reruns_when_final_record_is_unreadable(
     assert runtime.load_calls == [target]
 
 
+@pytest.mark.parametrize("artifact", ["verification", "final-record"])
+def test_resume_reruns_when_prior_artifact_has_another_run_id(tmp_path, artifact):
+    manifest, output_dir = build_manifest(tmp_path)
+    target = make_target_model(tmp_path)
+    entry = next(
+        e for e in manifest.entries if e.decode_mode == DECODE_MODE_AUTOREGRESSIVE
+    )
+    results_dir = tmp_path / "results"
+    binding = RunBinding(target_model_path=target)
+    first = execute_row(
+        entry,
+        manifest_dir=output_dir,
+        output_dir=results_dir,
+        model_id=manifest.model_id,
+        binding=binding,
+        resume=True,
+        runtime_factory=lambda: FakeMLXRuntime(GOOD_RESPONSE),
+    )
+    if artifact == "verification":
+        path = results_dir / "runs" / entry.run_id / "verification.json"
+    else:
+        path = Path(first.verification.final_record_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["run_id"] = "copied-from-another-row"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    runtime = FakeMLXRuntime(GOOD_RESPONSE)
+    result = execute_row(
+        entry,
+        manifest_dir=output_dir,
+        output_dir=results_dir,
+        model_id=manifest.model_id,
+        binding=binding,
+        resume=True,
+        runtime_factory=lambda: runtime,
+    )
+
+    assert result.verification.status == RowStatus.COMPLETED
+    assert runtime.load_calls == [target]
+
+
 def test_resume_reruns_when_prompt_content_changes(tmp_path):
     """A stale hash-mismatched artifact must be re-run, not blindly trusted."""
     manifest, output_dir = build_manifest(tmp_path)

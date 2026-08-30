@@ -711,10 +711,13 @@ def execute_row(
             and prior.verified_prompt_hash == verified_hash
             and prior.run_binding_hash == binding_hash
             and prior.workload_version == workload.version
+            and prior.run_id == entry.run_id
         ):
             try:
                 trusted_record = ExperimentRecord.read_json(final_record_path)
             except (OSError, SchemaValidationError):
+                trusted_record = None
+            if trusted_record is not None and trusted_record.run_id != entry.run_id:
                 trusted_record = None
             if trusted_record is not None:
                 return _finish(
