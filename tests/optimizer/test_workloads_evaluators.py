@@ -81,6 +81,21 @@ def test_evaluate_code_completion_times_out_on_infinite_loop():
     assert "timed out" in outcome.notes
 
 
+def test_evaluate_code_completion_timeout_survives_invalid_output():
+    invalid_output_then_hang = (
+        "import os\n" "import time\n" "os.write(1, b'\\xff')\n" "time.sleep(60)\n"
+    )
+
+    outcome = evaluate_code_completion(
+        CODE_COMPLETION_PALINDROME.spec,
+        invalid_output_then_hang,
+        timeout_seconds=0.2,
+    )
+
+    assert outcome.success is False
+    assert "timed out" in outcome.notes
+
+
 # --- Code completion sandboxing: cwd, environment, resource limits --------
 
 
@@ -194,16 +209,39 @@ def test_terminate_candidate_process_falls_back_when_killpg_is_not_permitted(
     assert warning == evaluators._PROCESS_TERMINATION_PERMISSION_WARNING
 
 
-def test_evaluate_code_completion_reports_process_cleanup_permission_denial(
+def test_evaluate_code_completion_bounds_held_pipes_after_permission_denial(
     monkeypatch,
 ):
-    def raise_timeout(*args, **kwargs):
-        raise evaluators._CandidateTimeoutError(
-            evaluators._PROCESS_TERMINATION_PERMISSION_WARNING
-        )
+    class HeldPipeProcess:
+        pid = 40
+        args = [sys.executable, "candidate.py"]
+        returncode = None
 
-    monkeypatch.setattr(evaluators, "_run_candidate", raise_timeout)
+        def __init__(self):
+            self.communicate_timeouts = []
 
+        def communicate(self, timeout=None):
+            self.communicate_timeouts.append(timeout)
+            raise subprocess.TimeoutExpired(self.args, timeout)
+
+    process = HeldPipeProcess()
+    monkeypatch.setattr(evaluators, "_IS_POSIX", True)
+    monkeypatch.setattr(evaluators.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        evaluators.os,
+        "killpg",
+        lambda *_: (_ for _ in ()).throw(PermissionError),
+    )
+    monkeypatch.setattr(
+        evaluators, "_process_ids_in_group", lambda process_group_id: (41,)
+    )
+    monkeypatch.setattr(
+        evaluators.os,
+        "kill",
+        lambda *_: (_ for _ in ()).throw(PermissionError),
+    )
+
+    started = time.perf_counter()
     outcome = evaluate_code_completion(
         CodeCompletionSpec(
             function_stub="def f() -> None:\n    pass\n",
@@ -213,7 +251,14 @@ def test_evaluate_code_completion_reports_process_cleanup_permission_denial(
         "def f() -> None:\n    pass\n",
         timeout_seconds=0.5,
     )
+    elapsed = time.perf_counter() - started
 
+    assert process.communicate_timeouts == [
+        0.5,
+        evaluators._POST_TERMINATION_GRACE_SECONDS,
+    ]
+    assert elapsed < evaluators._POST_TERMINATION_GRACE_SECONDS
+    assert outcome.success is False
     assert outcome.notes == (
         "candidate completion timed out after 0.5s; "
         f"{evaluators._PROCESS_TERMINATION_PERMISSION_WARNING}"

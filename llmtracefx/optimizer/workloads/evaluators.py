@@ -96,6 +96,7 @@ _IS_POSIX = os.name == "posix"
 _MAX_CPU_SECONDS = 10
 _MAX_ADDRESS_SPACE_BYTES = 1 * 1024 * 1024 * 1024  # 1 GiB
 _MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MiB
+_POST_TERMINATION_GRACE_SECONDS = 1.0
 
 _PROCESS_TERMINATION_PERMISSION_WARNING = (
     "warning: the operating system denied permission to terminate the candidate "
@@ -237,6 +238,7 @@ def _run_candidate(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        errors="replace",
         shell=False,
         start_new_session=_IS_POSIX,
         preexec_fn=(_posix_preexec_resource_limits if _IS_POSIX else None),
@@ -253,7 +255,13 @@ def _run_candidate(
         cleanup_warning = _terminate_candidate_process(
             process, process_group_id=process_group_id
         )
-        process.communicate()
+        try:
+            process.communicate(timeout=_POST_TERMINATION_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            # A surviving candidate or descendant can keep the pipes open after
+            # cleanup. The configured evaluation timeout has already elapsed, so
+            # allow only a fixed termination grace and never block on another read.
+            pass
     finally:
         # A candidate can let its direct process exit while leaving detached
         # workers in the new process group. Clean up the whole group before
