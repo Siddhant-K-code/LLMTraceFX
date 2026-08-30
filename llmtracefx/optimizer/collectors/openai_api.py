@@ -3668,13 +3668,22 @@ def _assert_credential_not_embedded(
         (f"command_argv[{index}]", value)
         for index, value in enumerate(config.command_argv)
     )
-    for category, reasons in (
-        ("terminal", config.finish_reasons.terminal),
-        ("failure", config.finish_reasons.failure),
+    default_finish_reasons = FinishReasonVocabulary()
+    for category, reasons, defaults in (
+        (
+            "terminal",
+            config.finish_reasons.terminal,
+            default_finish_reasons.terminal,
+        ),
+        (
+            "failure",
+            config.finish_reasons.failure,
+            default_finish_reasons.failure,
+        ),
     ):
         haystacks.extend(
             (f"finish_reasons.{category}[{index}]", reason)
-            for index, reason in enumerate(sorted(reasons))
+            for index, reason in enumerate(sorted(reasons - defaults))
         )
     for label, value in haystacks:
         if _contains_credential(value, credential):
