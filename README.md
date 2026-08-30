@@ -661,6 +661,96 @@ uv run ruff check llmtracefx/hardware.py \
   llmtracefx/profiler/gpu_analyzer.py tests
 ```
 
+### Continuous Integration
+
+GitHub Actions runs three jobs on every pull request and on pushes to `main`
+(see `.github/workflows/ci.yml`):
+
+| Job | What it does |
+| --- | --- |
+| `test` | Full `pytest` suite on Python 3.10, 3.11, 3.12 and 3.13 on Linux, plus 3.10 and 3.13 on macOS |
+| `quality ratchet` | `ruff check`, `black`, `isort` and `mypy` on changed files only |
+| `build` | `uv build`, then installs the wheel into a clean environment and imports it |
+
+macOS is included because GitHub's macOS runners are Apple Silicon. MLX
+collection is gated on Darwin plus arm64 in
+`llmtracefx/optimizer/collectors/mlx.py`, and `optimizer/manifest.py` records
+platform details, so a Linux-only matrix never executes those branches.
+
+The macOS jobs install the `mlx` extra, whose dependency markers only resolve on
+Darwin plus arm64, and then run a smoke check that constructs `MLXLMRuntime`.
+That constructor is the real runtime boundary: it rejects any other platform and
+raises if `mlx` or `mlx_lm` cannot be imported. The check reads the resolved
+versions, the accelerator name and a memory snapshot, and deliberately never
+calls `load_model` or `stream_generate`, so nothing is downloaded. Without the
+extra installed the MLX tests exercise a monkeypatched stand-in and the real
+import path never runs, which would leave the macOS jobs costing time without
+proving anything.
+
+A separate `.github/workflows/codeql.yml` runs CodeQL static analysis for Python
+on pull requests, pushes to `main`, and weekly. It reports into the repository
+Security tab rather than blocking pull requests. `.github/dependabot.yml` keeps
+Python dependencies and the SHA-pinned GitHub Actions up to date.
+
+The quality job checks only the Python files a change touches, rather than the
+whole repository. Older modules still carry lint and typing debt, so a repo-wide
+gate would fail every pull request regardless of its contents. Narrowing the
+gate keeps new code at the intended standard while that debt is paid down
+separately.
+
+Note that the unit is the whole file, not the changed lines. Touching a module
+that still carries debt means inheriting all of it: a one line edit to
+`llmtracefx/modal_app.py` currently fails on 39 ruff findings and 10 mypy
+errors that the change did not introduce.
+
+Most of that is mechanical. `make format` satisfies black and isort and clears
+36 of the 39 ruff findings, and `ruff check --fix llmtracefx/modal_app.py`
+clears the last 3, which leaves the 10 mypy errors as the only part that needs
+real edits. That is deliberate, since it is what makes the debt shrink rather
+than persist, but it is worth knowing before editing an older module. Files
+added by recent work are already clean and stay that way.
+
+Run the same check locally before pushing:
+
+```bash
+make lint-changed
+```
+
+That compares against `origin/main`. To compare against something else, call the
+script directly:
+
+```bash
+./scripts/lint-changed.sh <base-ref-or-sha>
+```
+
+The script fails closed. If it cannot work out what changed, because the base is
+missing or shares no history with `HEAD`, it exits non-zero instead of reporting
+that there is nothing to check. That distinction is the whole point: a gate that
+runs its tools over an empty file list reports success, so a ratchet that guesses
+when it is confused stops gating without anyone noticing. `scripts/test-lint-changed.sh`
+pins that behaviour down, together with renames, deletions, paths containing
+spaces, multi-commit pushes and the first push of a branch:
+
+```bash
+make test-ratchet
+```
+
+It stubs `uv` on `PATH` rather than running the real linters, so each case
+asserts on the exact file list the script builds and the status it returns.
+
+Note that `ruff format` is not used anywhere in this project. It and `black`
+disagree on a few files here and each undoes the other, so running both can
+never pass. `black` is the formatter of record, and `make format` matches what
+CI enforces. `ruff check` is still used for linting, which does not conflict.
+
+`make format` and `make format-check` cover the whole tree rather than just
+`llmtracefx/`, because the ratchet checks every changed `.py` file wherever it
+lives. Two files at the repository root, `launch_dashboard.py` and
+`generate_trace.py`, fail black and isort today and were invisible to the older
+`llmtracefx/`-only scope, so editing either one meant CI rejecting formatting
+that `make format` had declined to fix. `make lint` stays scoped to
+`llmtracefx/`, which is how the ratchet scopes mypy.
+
 ## 🧭 Inference Optimizer Foundation
 
 LLMTraceFX is evolving from a trace *analyzer* into a workload-aware
