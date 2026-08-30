@@ -218,6 +218,23 @@ check "multi commit push checks every commit" "one.py,three.py,two.py" "$(files_
 check "black sees every commit's files" "one.py,three.py,two.py" "$(files_for black)"
 check "isort sees every commit's files" "one.py,three.py,two.py" "$(files_for isort)"
 
+# A pull request base can advance after the feature branch forks. Diffing from
+# the base tip rather than the merge base makes base-only work look like part of
+# the feature and hands unrelated files to every tool.
+new_repo
+commit_file "shared.py"
+commit_file "feature.py"
+git -C "$REPO" branch base
+git -C "$REPO" checkout -q -b feature
+commit_file "feature.py" "feature_value = 2"
+git -C "$REPO" checkout -q base
+commit_file "shared.py" "base_value = 2"
+BASE="$(git -C "$REPO" rev-parse HEAD)"
+git -C "$REPO" checkout -q feature
+run_script "$BASE"
+check "divergent base changes are excluded" "feature.py" "$(files_for ruff)"
+check "divergent history exits 0" "0" "$RC"
+
 # --- failing closed -------------------------------------------------------
 
 new_repo
@@ -329,14 +346,18 @@ commit_file "llmtracefx/__init__.py"
 BASE="$(git -C "$REPO" rev-parse HEAD)"
 commit_file "llmtracefx/mod.py"
 commit_file "llmtracefx/other.py"
+commit_file "llmtracefx_extra/mod.py"
 commit_file "tests/test_mod.py"
 run_script "$BASE"
 check "ruff sees package and tests" \
-    "llmtracefx/mod.py,llmtracefx/other.py,tests/test_mod.py" "$(files_for ruff)"
+    "llmtracefx/mod.py,llmtracefx/other.py,llmtracefx_extra/mod.py,tests/test_mod.py" \
+    "$(files_for ruff)"
 check "black sees package and tests" \
-    "llmtracefx/mod.py,llmtracefx/other.py,tests/test_mod.py" "$(files_for black)"
+    "llmtracefx/mod.py,llmtracefx/other.py,llmtracefx_extra/mod.py,tests/test_mod.py" \
+    "$(files_for black)"
 check "isort sees package and tests" \
-    "llmtracefx/mod.py,llmtracefx/other.py,tests/test_mod.py" "$(files_for isort)"
+    "llmtracefx/mod.py,llmtracefx/other.py,llmtracefx_extra/mod.py,tests/test_mod.py" \
+    "$(files_for isort)"
 check "mypy sees only the package" \
     "llmtracefx/mod.py,llmtracefx/other.py" "$(files_for mypy)"
 check "mypy argv" \
