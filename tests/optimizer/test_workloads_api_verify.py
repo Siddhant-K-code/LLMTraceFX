@@ -1878,3 +1878,45 @@ def test_a_malformed_run_marker_is_rejected_not_raised(tmp_path, payload_label):
     (run_dir / RUN_MANIFEST_NAME).write_bytes(_MALFORMED_ROOTS[payload_label])
 
     assert not run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)
+
+
+@pytest.mark.parametrize("corruption", ["recursion", "oversized", "symlink"])
+def test_an_unsafe_run_marker_is_rejected_not_raised(tmp_path, corruption, monkeypatch):
+    result = run_one(
+        tmp_path, transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    )
+    run_dir = Path(result.verification.collection_dir or "").parent
+    marker_path = run_dir / RUN_MANIFEST_NAME
+    if corruption == "recursion":
+        marker_path.write_text("[" * 10_000 + "0" + "]" * 10_000, encoding="utf-8")
+    elif corruption == "oversized":
+        monkeypatch.setattr(api_verify, "MAX_METADATA_ARTIFACT_BYTES", 16)
+        marker_path.write_bytes(b"x" * 17)
+    else:
+        target = marker_path.with_name("run-target.json")
+        target.write_bytes(marker_path.read_bytes())
+        marker_path.unlink()
+        marker_path.symlink_to(target)
+
+    assert not run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)
+
+
+@pytest.mark.parametrize("corruption", ["oversized", "symlink"])
+def test_an_unsafe_sealed_artifact_is_rejected_not_raised(
+    tmp_path, corruption, monkeypatch
+):
+    result = run_one(
+        tmp_path, transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    )
+    run_dir = Path(result.verification.collection_dir or "").parent
+    artifact_path = run_dir / "verification.json"
+    if corruption == "oversized":
+        monkeypatch.setitem(api_verify._SEALED_ARTIFACT_LIMITS, "verification.json", 16)
+        artifact_path.write_bytes(b"x" * 17)
+    else:
+        target = artifact_path.with_name("verification-target.json")
+        target.write_bytes(artifact_path.read_bytes())
+        artifact_path.unlink()
+        artifact_path.symlink_to(target)
+
+    assert not run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)

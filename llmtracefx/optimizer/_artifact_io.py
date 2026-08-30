@@ -14,8 +14,8 @@ class ArtifactReadError(ValueError):
     """Raised when an artifact is not a bounded, regular UTF-8 file."""
 
 
-def read_bounded_regular_text(path: str | Path, max_bytes: int) -> str:
-    """Read a regular UTF-8 file without following symlinks or exceeding a limit.
+def read_bounded_regular_bytes(path: str | Path, max_bytes: int) -> bytes:
+    """Read a regular file without following symlinks or exceeding a limit.
 
     Filesystem failures remain ``OSError`` so callers can distinguish a missing
     artifact from one that exists but is structurally unsafe.
@@ -51,7 +51,13 @@ def read_bounded_regular_text(path: str | Path, max_bytes: int) -> str:
     finally:
         os.close(descriptor)
 
+    return b"".join(chunks)
+
+
+def read_bounded_regular_text(path: str | Path, max_bytes: int) -> str:
+    """Read a bounded regular file and require strict UTF-8."""
+    raw = read_bounded_regular_bytes(path, max_bytes)
     try:
-        return b"".join(chunks).decode("utf-8")
+        return raw.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise ArtifactReadError(f"{artifact_path} is not valid UTF-8") from exc
+        raise ArtifactReadError(f"{path} is not valid UTF-8") from exc

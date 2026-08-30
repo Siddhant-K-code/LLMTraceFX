@@ -88,6 +88,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .._artifact_io import (
+    MAX_EVIDENCE_ARTIFACT_BYTES,
+    MAX_METADATA_ARTIFACT_BYTES,
+    ArtifactReadError,
+    read_bounded_regular_bytes,
+    read_bounded_regular_text,
+)
 from ..collectors._shared import (
     atomic_write_text,
     config_hash,
@@ -160,6 +167,11 @@ _SEALED_COLLECTION_MARKER = f"collection/{ARTIFACT_MANIFEST_NAME}"
 _SEALED_ARTIFACT_NAMES = frozenset(
     {_SEALED_COLLECTION_MARKER, "final_record.json", "verification.json"}
 )
+_SEALED_ARTIFACT_LIMITS = {
+    _SEALED_COLLECTION_MARKER: MAX_METADATA_ARTIFACT_BYTES,
+    "final_record.json": MAX_EVIDENCE_ARTIFACT_BYTES,
+    "verification.json": MAX_METADATA_ARTIFACT_BYTES,
+}
 
 
 def _run_marker_payload(
@@ -186,7 +198,12 @@ def _run_marker_payload(
         "schema_version": RUN_MANIFEST_SCHEMA_VERSION,
         "run_id": run_id,
         "artifacts": [
-            {"name": name, "sha256": sha256_bytes(path.read_bytes())}
+            {
+                "name": name,
+                "sha256": sha256_bytes(
+                    read_bounded_regular_bytes(path, _SEALED_ARTIFACT_LIMITS[name])
+                ),
+            }
             for name, path in (
                 (_SEALED_COLLECTION_MARKER, collection_dir / ARTIFACT_MANIFEST_NAME),
                 ("final_record.json", final_record_path),
@@ -209,8 +226,11 @@ def run_artifacts_are_complete(run_dir: Path, *, expected_run_id: str) -> bool:
     made without regenerating the marker.
     """
     try:
-        marker = json.loads((run_dir / RUN_MANIFEST_NAME).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        marker_text = read_bounded_regular_text(
+            run_dir / RUN_MANIFEST_NAME, MAX_METADATA_ARTIFACT_BYTES
+        )
+        marker = json.loads(marker_text)
+    except (OSError, ArtifactReadError, json.JSONDecodeError, RecursionError):
         return False
     if not isinstance(marker, dict):
         return False
@@ -250,8 +270,10 @@ def run_artifacts_are_complete(run_dir: Path, *, expected_run_id: str) -> bool:
 
     for name, digest in sealed.items():
         try:
-            raw = (run_dir / name).read_bytes()
-        except OSError:
+            raw = read_bounded_regular_bytes(
+                run_dir / name, _SEALED_ARTIFACT_LIMITS[name]
+            )
+        except (OSError, ArtifactReadError):
             return False
         if sha256_bytes(raw) != digest:
             return False
