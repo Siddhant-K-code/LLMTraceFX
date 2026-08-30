@@ -1,0 +1,1 @@
+Explain in two sentences what a stack data structure is and when it is preferable to a queue.

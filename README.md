@@ -877,6 +877,745 @@ An optional existing MLX-LM draft model can be supplied with
 verification time through this API, so those fields remain absent. This is
 generic draft-model speculation, not native Qwen3.8 MTP.
 
+### Collect a streaming OpenAI-compatible API run
+
+`collect-api` is the remote counterpart to `collect-mlx`. It streams one
+chat completion from any OpenAI-compatible `/chat/completions` endpoint and
+writes the same canonical evidence artifacts, so a local run and an API run
+can later be compared on identical record structures. The collector itself
+is provider neutral: the endpoint, model ID, credential environment variable
+name and provider-specific request fields are all configuration.
+
+The examples below are commands, not measured results. This repository
+publishes no latency, throughput or cost numbers for any hosted API.
+
+**Dry run first.** `--dry-run` validates the configuration, prints the
+credential-free request plan and performs no network request at all:
+
+```bash
+uv run llmtracefx-optimizer collect-api \
+  --run-id zai-glm-5.3-dry \
+  --provider z.ai \
+  --endpoint https://api.z.ai/api/paas/v4/chat/completions \
+  --model-id glm-5.3 \
+  --prompt-file examples/optimizer/api-smoke-prompt.txt \
+  --output-dir artifacts/zai-glm-5.3-dry \
+  --reasoning-effort high \
+  --dry-run
+```
+
+**Collecting real evidence.** Export the key first; it is never accepted as
+a command argument:
+
+```bash
+export ZAI_API_KEY=...   # read by name, never persisted or echoed
+
+# Frontier model
+uv run llmtracefx-optimizer collect-api \
+  --run-id zai-glm-5.3-1 \
+  --provider z.ai \
+  --endpoint https://api.z.ai/api/paas/v4/chat/completions \
+  --model-id glm-5.3 \
+  --prompt-file examples/optimizer/api-smoke-prompt.txt \
+  --output-dir artifacts/zai-glm-5.3-1 \
+  --max-output-tokens 256 \
+  --reasoning-effort high \
+  --clear-thinking true
+
+# Efficiency model
+uv run llmtracefx-optimizer collect-api \
+  --run-id zai-glm-5.3-flash-1 \
+  --provider z.ai \
+  --endpoint https://api.z.ai/api/paas/v4/chat/completions \
+  --model-id glm-5.3-flash \
+  --prompt-file examples/optimizer/api-smoke-prompt.txt \
+  --output-dir artifacts/zai-glm-5.3-flash-1 \
+  --max-output-tokens 256 \
+  --reasoning-effort low
+```
+
+#### Provider-specific request fields
+
+`reasoning_effort` and `thinking` are not portable OpenAI chat-completions
+parameters. They are kept in a typed `ProviderExtensions` block and are only
+sent when explicitly requested, so a record never implies a default the
+provider did not actually apply. Per Z.ai's published documentation
+([chat completions](https://docs.z.ai/api-reference/llm/chat-completion),
+[GLM-5.3-Flash guide](https://docs.z.ai/guides/vlm/glm-5.3-flash)):
+
+| Flag | Body field | Documented values | Notes |
+| --- | --- | --- | --- |
+| `--reasoning-effort` | `reasoning_effort` | `low`, `high`, `max` | `max` is the provider default for `glm-5.3` and `glm-5.3-flash`. Other values are rejected by the API. |
+| `--thinking` | `thinking.type` | `enabled`, `disabled` | `glm-5.3` and `glm-5.3-flash` accept only `enabled`. |
+| `--clear-thinking` | `thinking.clear_thinking` | `true`, `false` | Provider default is `true`. It controls whether `reasoning_content` from *previous* turns is cleared. It does not change whether the current turn thinks. |
+| `--provider-request-id` | `request_id` | any string | Optional caller-supplied ID. Leave unset to let the provider generate one. |
+
+Two flags shape the collection rather than the request:
+
+| Flag | Default | Notes |
+| --- | --- | --- |
+| `--request-timeout` | `120.0` | Whole-response budget in seconds, covering connect, TLS and every read. No retries are performed. |
+| `--retained-event-limit` | `20000` | How many per-event timing rows the timeline keeps. Counters, rates and the inter-token distribution stay exact past the bound; only the individual rows stop. Part of the config identity hash. |
+
+#### Artifacts
+
+```
+artifacts/<run-id>/
+  record.json         canonical ExperimentRecord, identical schema to collect-mlx
+  response.txt        final answer text only
+  api_evidence.json   streaming timeline, statistics, provider usage, failure detail
+  environment.json    non-sensitive client package and platform metadata
+  artifacts.json      completion marker listing the evidence files with sha256
+```
+
+`--dry-run` writes only `request_plan.json`.
+
+The four evidence files are written one at a time, so a crash or a full disk
+partway through would otherwise leave a fresh `record.json` sitting next to
+stale or missing evidence from an earlier run, which reads as a success. To
+make that detectable, `artifacts.json` is deleted before the set is written
+and written last. A reader can call
+`llmtracefx.optimizer.collectors.artifact_set_is_complete(output_dir)`, which
+returns `True` only when a bounded regular, non-symlink marker names the exact
+canonical artifact set and every bounded regular file still matches its
+sha256. Paths outside the run directory, partial sets, duplicates, symlinks
+and special files are rejected. Publication uses randomized exclusive
+temporary files in the destination directory, so a pre-created predictable
+symlink cannot redirect an atomic write. Both sides of the integrity check
+work on raw bytes, so an answer containing CRLF or a lone CR verifies
+correctly instead of looking tampered with because text mode rewrote it.
+
+#### What is measured and how it is labelled
+
+Client-observed timing and provider-reported usage are kept strictly apart
+and are never mixed into a single unlabelled number.
+
+- **Client-measured** (`timeline`, `provenance: measured_wall_clock`), taken
+  from a monotonic clock: request start, response headers, first body byte,
+  first content token, last event, completion.
+- **Time to first content token** is the offset of the first non-empty
+  `delta.content` string. Empty content deltas (GLM's role-only opening
+  chunk and its final chunk both carry `""`), metadata chunks,
+  reasoning-only deltas and `:` keepalive comments do not count.
+- **Provider-reported** (`usage`, `provenance: provider_reported`):
+  `prompt_tokens`, `completion_tokens`, `total_tokens`,
+  `prompt_tokens_details.cached_tokens`, and
+  `completion_tokens_details.reasoning_tokens` when the provider sends it.
+  A metric the provider does not report stays `null`. It is never inferred
+  as zero. Values that arrive malformed are listed in
+  `usage.malformed_fields` rather than silently discarded.
+- **Derived** (`content_delta_rate_per_second`, `inter_content_delta`):
+  computed from SSE content deltas, which are not necessarily one token
+  each, so the field is labelled `derived` and named after deltas rather
+  than tokens. `provider_completion_tokens_per_second` combines a
+  provider-reported count with a client-measured window and carries an
+  explicit mixed-provenance note.
+- **Two windows, each matching its numerator.** `content_window_ms` runs
+  from the first content delta arrival to the last and is the denominator
+  for `content_delta_rate_per_second`. `generation_window_ms` starts at the
+  first generated event of any kind, reasoning or content, and is the
+  denominator for `provider_completion_tokens_per_second`, because Z.ai
+  counts reasoning tokens inside `completion_tokens` and dividing them by
+  the visible window would credit a long silent reasoning phase to a short
+  answer. With no reasoning deltas the two windows are identical. Both
+  exclude the request, the response headers, any leading metadata chunk and
+  the trailing usage, finish-reason and `[DONE]` events. The windows are
+  persisted alongside the rates because a rate is only as trustworthy as
+  the window it came from: two deltas a few microseconds apart produce a
+  very large number that is arithmetic rather than evidence, and only the
+  window makes that visible. A window with no measurable width leaves its
+  rate `null` rather than zero.
+- **Reasoning that was billed but never observed withdraws the rate.** The
+  window above only works because a reasoning phase announces itself as
+  reasoning deltas. Z.ai can report a positive `reasoning_tokens` while
+  streaming no reasoning delta at all, which is what happens when the
+  thinking is done server-side and only the answer is sent. The numerator
+  still contains those tokens, but the window now starts at the first
+  visible content delta, so the entire reasoning phase sits outside the
+  denominator and the rate reads high in proportion to how long the model
+  spent thinking. There is no honest window to divide by, because the
+  evidence never showed when that work began. So
+  `provider_completion_tokens_per_second` is left `null` in that case and
+  `provider_completion_tokens_per_second_unavailable_reason` records why,
+  rather than publishing a number that is wrong in a flattering direction.
+  The rate remains available only when thinking was explicitly disabled, the
+  provider reported zero reasoning tokens without contradicting itself, or
+  reasoning was observed from the first generated event. A late reasoning
+  delta does not validate an earlier window and overrides disabled or
+  zero-count assurances.
+- **A visible-token rate is published only when it can be.**
+  `provider_visible_completion_tokens_per_second` divides
+  `completion_tokens` minus the provider-reported reasoning tokens by
+  `content_window_ms`. When the provider does not report a reasoning token
+  count the field is `null`, because a missing count is not zero. It is also
+  `null` when a reported zero contradicts a streamed reasoning delta, because
+  that leaves no trustworthy visible-token numerator.
+- **The token rate is an estimate, not a measurement.** Its window starts
+  at the first generated delta, so that delta's own generation time is
+  outside it, and when the delta count is far below `completion_tokens` the
+  window endpoints are delta boundaries rather than token boundaries. The
+  persisted note says so.
+- **One clock read per network chunk.** Several SSE events can arrive in a
+  single chunk. Every event decoded from a chunk is stamped with that
+  chunk's arrival time, so the parser's own CPU time never appears as
+  inter-token latency. Deltas that shared a packet therefore show a zero
+  gap, which is what was actually observed.
+- **The finish reason is classified before it is redacted.** Redaction
+  rewrites provider-controlled text, so classifying from the redacted
+  string would let a credential that happens to contain `error` dissolve
+  `network_error` and turn an aborted generation into a success.
+  `finish_reason` holds the redacted provider text,
+  `finish_reason_classification` holds `terminal`, `failure` or
+  `unrecognized`, and `finish_reason_code` holds the documented spelling
+  this collector recognized. The code is drawn from a configured set held
+  in this repository rather than from provider bytes. A reported failure is
+  sticky: nothing in the wire format stops a provider sending a second
+  `finish_reason`, and last-write-wins would let a trailing `stop` erase an
+  earlier `network_error` and publish an aborted generation as a success with
+  a full latency timeline. Two ordinary terminal reasons still take the later
+  one.
+- **Which reasons end a stream is configuration, not collector policy.**
+  `finish_reason` is not fully standardized: OpenAI documents one set and
+  providers add their own, so the meaning of a reason belongs to the
+  endpoint being measured. `FinishReasonVocabulary` carries the two sets as
+  typed configuration, the applied vocabulary is written into
+  `plan.finish_reasons` so a record says which reading produced its verdict,
+  and it feeds `config_hash`, because two runs that read the same reason
+  differently are not the same measurement configuration even though they
+  send identical requests. The default is the union of the OpenAI reasons
+  and Z.ai's documented additions (`sensitive` as terminal,
+  `network_error` and `model_context_window_exceeded` as failures), which
+  is what this collector was validated against. Those strings appear in no
+  other OpenAI-compatible vocabulary known at the time of writing, so the
+  union classifies a non-Z.ai stream exactly as the OpenAI set alone would;
+  `FinishReasonVocabulary.openai_only()` drops them for an endpoint known to
+  reuse one differently. A reason in neither set is `unrecognized`, which is
+  deliberately not a synonym for terminal: an unknown reason is no evidence
+  that generation completed, so a stream ending on one without `[DONE]` is
+  still reported as truncated. Custom vocabulary entries also pass credential
+  preflight before the plan is built, since those strings are persisted as
+  configuration and may become a finish-reason code.
+- **The canonical `prefill` and `decode` fields are left unset.** They name
+  model phases, prompt processing and generation, and neither is observable
+  from outside a hosted API. The client-side interval before the first
+  content token also contains DNS, connection setup, TLS, request transfer
+  and any server-side queueing. The interval after it runs to the last SSE
+  event, which can be a usage chunk or `[DONE]` sent long after generation
+  ended: a provider that waits a minute before its sentinel would add that
+  minute to `decode`, with no generation in it. Publishing those two numbers
+  under those names would assert a decomposition the evidence does not
+  support. `total` is genuinely measurable end to end and is kept, and the
+  client-observed offsets are kept in the API evidence timeline under names
+  that say they are client-observed and include transport.
+- **`runtime.backend` stays empty for a hosted run.** That field is the
+  local compute backend (`Metal`, `CUDA`, `CPU`). `runtime.provider` exists
+  so a remote run is recorded without overloading it, and writing a
+  transport into `backend` would put `remote-http` everywhere a reader
+  expects hardware.
+- **The request timeout is a whole-response budget, not just an idle
+  timeout.** Passed to the transport it applies per socket operation, so a
+  server that emits a keepalive comment before each one expires resets it
+  forever and the run neither completes nor fails. The stream is checked
+  against a monotonic deadline as well, and a response that outlives its
+  budget is abandoned as a `timeout` failure.
+- **Silence about reasoning suppresses the provider completion rate.** Not
+  asking for reasoning is not the same as reasoning being off. Omitting
+  `reasoning_effort` leaves the provider free to apply its own default, and
+  for `glm-5.3` and `glm-5.3-flash` that default is `max`, so the plainest
+  request is a thinking request. A provider that then reports neither a
+  reasoning delta nor a reasoning token count has said nothing either way,
+  and dividing completion tokens that may include reasoning by a window
+  that opens at the first visible character would overstate throughput.
+  Three things provide enough evidence: `--thinking disabled` on the request,
+  an explicit reasoning token count of zero, or reasoning observed from the
+  first generated event. Otherwise the rate is left unavailable with the
+  reason recorded.
+- **The request timeout bounds the whole response.** DNS resolution,
+  address attempts, connection setup, TLS, request upload, response headers
+  and every body read draw from one monotonic deadline. A watchdog closes
+  the live socket at that deadline, so byte-dripped status lines, headers or
+  chunk framing cannot reset an idle timeout forever. EOF and read errors
+  are checked against the deadline before they can become a successful
+  terminal stream. The socket is also
+  found through both success and `HTTPError` wrapper shapes before each body
+  read, and its timeout is reduced to the remaining budget. DNS uses one
+  bounded daemon worker rather than starting an uncancellable thread per
+  timeout, and the TLS socket is registered before its handshake so the
+  watchdog can interrupt that phase too.
+- **The per-event timeline is capped by explicit configuration.** One
+  timing row per SSE event with no limit lets a chatty provider decide how
+  large the artifact gets, and serialization amplifies it again. The bound
+  is a typed field on the collection configuration with a documented
+  default, settable with `--retained-event-limit` and validated as a
+  positive integer, so a run cannot silently discard its whole timeline.
+  Past the bound the rows stop accumulating and the timeline records
+  `events_truncated`, exact total, retained and dropped counts, and the
+  `retained_event_limit` that produced them. Error frames and `[DONE]`
+  participate in the same accounting. Content, reasoning and metadata
+  counters and the first and last offsets used by derived metrics stay
+  exact. The bound is recorded in the request plan and config identity hash:
+  two runs that kept different amounts of evidence are not the same
+  configuration.
+- **Asking for reasoning and hearing nothing back suppresses the rate too.**
+  When the request enabled thinking or set `reasoning_effort` and the
+  provider returns neither reasoning deltas nor a reasoning token count,
+  reasoning cannot be ruled out of `completion_tokens`, so
+  `provider_completion_tokens_per_second` stays `null` with a recorded
+  reason. The test is what this collector asked for, not who the provider
+  is, so it stays meaningful for any OpenAI-compatible endpoint.
+- **A request id in an error body is kept.** On a non-200 the stream never
+  runs, so headers used to be the only source. A `request_id` at the top
+  level of the error payload or inside its `error` object is now read as
+  well, redacted like any other identifier, and the header value still wins
+  when both are present.
+
+#### Privacy guarantees
+
+- The API key is read only from the environment variable named by
+  `--api-key-env` (default `ZAI_API_KEY`). There is no `--api-key` flag, and
+  prefix abbreviation is disabled on this subcommand so `--api-key` cannot
+  resolve to `--api-key-env`. A credential-shaped flag such as `--api-key`,
+  `--api_key`, `--token` or `--secret`, in either the separate or the
+  `--flag=value` form, is refused before argparse sees it, because argparse
+  quotes an unrecognized argument straight back into stderr, value and all.
+  The refusal names the flag and points at `--api-key-env`, never the value.
+  The scan stops at a bare `--`, because everything after it belongs to a
+  recorded external command rather than to this program, and `llama-server`
+  has its own `--api-key`. Those values are redacted where `parse-llama-cpp`
+  persists them instead, so the flag stays visible as evidence and the
+  credential does not reach `record.command.argv`. A separate value is
+  redacted whatever it looks like, because such a flag always takes one and
+  the base64url alphabet starts a value with `-` often enough to matter.
+  The one exception is another credential flag: letting the first flag
+  consume it would skip the second flag's own handler and append the real
+  credential verbatim.
+- No parse diagnostic repeats a value the caller supplied. A token is a name
+  only when this program defined it, which the parser itself is asked; token
+  syntax is not evidence. Option names and the usage block are kept, since
+  they carry no caller input and are what make the error actionable, and
+  everything else is replaced. That includes the tail of an attached short
+  cluster such as `-p<secret>`, which is a value wearing an option's clothes,
+  including when the value ends in the `=` padding a base64 key carries. It
+  also includes a long option with a dropped space, `--api-key<secret>`: when
+  a defined option is a prefix of the token only the tail is replaced, so
+  `--dry-run<secret>` still reads as `--dry-run[REDACTED]`, and otherwise the
+  whole token goes. This program's own vocabulary is put beyond reach first,
+  so mistyping `collect-ap` does not rewrite the valid `collect-api` in the
+  list of choices; a literal is only protected when no supplied value contains
+  it, so a secret that embeds an option name is still replaced whole. A secret
+  pasted into the wrong option is still a secret.
+- The credential value is never written to an artifact, never logged, never
+  hashed and never included in the reconstructed command. `HTTPRequest`
+  overrides `repr` so a traceback cannot surface the `Authorization` header.
+  Only header *names* are persisted.
+- **A credential pasted into the name slot is contained as well.** The refusal
+  for `--api-key` points the caller at `--api-key-env`, and the mechanical
+  response is to keep the value and change the flag, which puts the credential
+  exactly where a variable name is expected. Two independent rules apply.
+  First, the value must be a conventional exported variable name, uppercase
+  with digits and underscores, which rejects the `sk-`, `sk_live_` and `ghp_`
+  shapes real keys take; the refusal never repeats the rejected value. Second,
+  a name is only treated as a name when the environment defines it, which is
+  the one thing a caller cannot fake and which catches an all-uppercase key
+  such as an AWS access key id. An unproven name is replaced by `[REDACTED]`
+  in `credential_env_var` and in the reconstructed command, in both the
+  separate and the `--flag=value` spelling. This is the same rule the parse
+  diagnostics use one level down: syntax is not evidence, so the authoritative
+  source is asked instead.
+- The variable name is not part of the request identity hash. It does not
+  change the bytes on the wire, and hashing it would persist a derivation of
+  a value that may be the credential itself. The missing-variable diagnostic
+  does not name the variable either, for the same reason.
+- Collection aborts before any request if the credential value appears in the
+  run id, endpoint, provider label, model id, model revision, prompt, system
+  prompt, any provider extension string or command arguments. The check also
+  decodes percent-encoded forms, because a key pasted into a URL is normally
+  encoded and `abc%2Fdef` is trivially reversible once persisted. Case
+  variants, `+` for space and a few rounds of double encoding are covered by
+  decoding the candidate rather than enumerating encodings of the key. Very
+  short values are compared literally only, so the refusal does not fire on
+  coincidence.
+- Endpoint query keys and values are stripped from every persisted form of
+  the command, including `record.json`, and from `HTTPRequest.__repr__`.
+  `endpoint_query_keys` records one redaction marker per query pair, while
+  the config hash still distinguishes the original keys and values. This
+  contains opaque key-shaped names even when no configured credential is
+  available to match them. Identity uses the exact raw query representation,
+  including field order, separators, invalid percent-encoded bytes and an
+  empty `?` delimiter, because routers, signatures and caches may distinguish
+  those request targets.
+- A malformed endpoint is reported as a sanitized error rather than an
+  escaping `ValueError`. `urlsplit` raises on an unclosed IPv6 bracket and
+  `SplitResult.port` raises on a port that is not an integer in range, both
+  with messages that can quote the netloc, so every parse and every lazy
+  property access is guarded.
+- Surrounding whitespace is stripped from the credential, and a value that
+  cannot be sent as an HTTP header value (control characters, non latin-1) is
+  rejected by name before the request is built. An unencodable header would
+  otherwise make `http.client` raise an error whose message contains the whole
+  header value.
+- Prompt and system prompt are hashed, never copied into artifacts.
+- Redirects are refused, so the credential is never replayed to a host you
+  did not name. Plain `http` is rejected except for loopback hosts, and
+  loopback HTTP disables environment proxies so the Authorization header
+  cannot be routed off-host in clear text.
+- Reasoning content is counted, never stored: `api_evidence.json` records
+  `reasoning_delta_count`, `reasoning_characters` and
+  `reasoning_text_persisted: false`, and `response.txt` holds the final
+  answer only.
+- Every provider-controlled string is passed through a redactor before it is
+  persisted, not only error messages: generated content, response and request
+  IDs, the echoed model name, the finish reason, response header request IDs,
+  provider error codes, and both the names and the values of rate-limit
+  headers. A provider that echoes your key back in any of those fields cannot
+  get it into an artifact or onto the terminal. The redactor removes the known
+  credential and any bearer-token shape, and it preserves whitespace in
+  generated text so redaction does not quietly alter the answer.
+- Redaction runs before any transform that could hide a match, and it matches
+  more than the literal value. The credential is matched case insensitively,
+  because header names are lowercased before they are persisted, and each run
+  of whitespace inside the credential is matched flexibly, because a space is
+  a legal header value character and different sinks treat whitespace
+  differently. `response.txt` preserves the answer's own spacing and still
+  gets the same coverage as a collapsed diagnostic. Provider payloads that a
+  byte cap or a cut connection truncated are repaired at the cut point,
+  because truncation can slice through an echoed credential and leave a
+  trailing fragment that an exact-substring match would not recognize. That
+  repair is applied to truncated evidence only, so a complete answer is never
+  altered, and it uses the same flexible matching as the whole-value scrub so
+  the two controls guarding the same threat have equal strength.
+- Redaction also recognizes percent-encoded echoes. A provider that
+  reflects a key it received in a URL sends back `sk-slash%2Fcredential`
+  rather than `sk-slash/credential`, which is reversible and therefore
+  still a leak. Each credential character is matched as its literal form,
+  its `%XX` form or its double-encoded `%25XX` form, case insensitively, so
+  a mixed encoding is covered without enumerating whole-string variants.
+  Matching starts from candidate positions found by a single scan rather
+  than by compiling one pattern per prefix length, which keeps the cost of
+  a long credential flat. Truncation is repaired inside an encoding too, not
+  only between characters. A cut that lands after `%` or `%2` leaves a
+  fragment that is not yet a character in any spelling, so an exact match
+  fails and, without the repair, everything before the cut survives: a
+  20 character key truncated to `secret%2` would keep 6 of its characters in
+  the artifact. A trailing fragment that is a proper prefix of the next
+  credential character's literal, `%XX` or `%25XX` form is treated as that
+  character having been cut, and redaction starts from where the credential
+  began. Single and double encodings and mixed-case hex are all covered.
+- Backslash escapes count as spellings of the credential, alongside
+  percent-encoding. A JSON encoder writes the key as `\u0073\u006b...`
+  and a Python `repr` writes it as `\x73\x6b...`; both are one mechanical
+  decode away from the key. This matters most where the text is not
+  re-parsed: a non-JSON error body is persisted as it arrived, so an escape
+  in it stays an escape rather than being decoded back into characters the
+  literal matcher would catch. `\xXX`, `\uXXXX`, `\UXXXXXXXX` and the
+  UTF-16 surrogate pair a JSON encoder emits outside the BMP are all
+  matched, in either hex case, and a cut inside one is repaired the same
+  way a cut inside `%2F` is. The same applies to a space spelled `%2520` or
+  `\u0020`: a cut inside an encoded whitespace run used to leave every
+  credential character before it exposed. The matcher and the truncation
+  repair are generated from one list of spellings, so a form cannot be
+  added to one without the other.
+- The one-character escapes count too. A JSON encoder may write `/` as
+  `\/`, and every encoder writes a backslash as `\\` and a double quote as
+  `\"`; Python adds `\'`. These are shorter spellings of the same leak the
+  numeric escapes carry, and `json.loads` recovers the key from them
+  exactly, so they are matched and their truncation is repaired alongside
+  the numeric forms. Raw, once-escaped and twice-escaped forms are covered.
+  A non-ASCII whitespace character keeps its own percent and JSON spellings,
+  such as `%C2%A0` and `\u00A0`, rather than being reduced to ASCII space
+  forms. The truncation floor counts decoded credential characters, including
+  every character in a collapsed whitespace run.
+- Whole-value re-encodings count as spellings too. Percent-encoding and
+  backslash escapes keep the credential's own characters, so a matcher that
+  walks characters sees them. Base64, base64url, hex and octal do not: they
+  share no character with the key, and a logging proxy or a request echo
+  that returns one of them defeats a character-wise matcher completely
+  while staying trivially reversible for anyone reading the artifact. The
+  three byte alignments of base64 are each derived, so a key embedded in a
+  longer encoded blob is still found, minus the leading and trailing
+  characters whose bits are shared with the surrounding bytes. Unicode
+  normalization is included for the same reason: an intermediary that
+  normalizes an accented key returns a different sequence of codepoints
+  that renders identically. These extra spellings apply only above a
+  minimum credential length, because a short value's encodings collide with
+  ordinary text and a redactor that fires on noise destroys the evidence it
+  is guarding.
+- Matching is a deterministic walk over positions, not a backtracking
+  search. Several spellings of the same character are prefixes of each
+  other: a literal backslash is a prefix of `\\`, of `\x5C`, of `\u005C` and
+  of the octal `\134`, and `%` is a prefix of `%25`. Expressing that as a
+  regex alternation and repeating it is the classic exponential
+  backtracking shape, and provider text is untrusted, so a key made of
+  backslashes would be a denial of service against the redactor itself.
+  Committing to the longest spelling instead is not a fix, because it
+  produces real misses: a credential containing a literal `%25` would never
+  match. Carrying the set of reachable positions forward one element at a
+  time is exact and stays linear in the length of the text.
+- Repairing a credential cut short by truncation searches only a bounded
+  window at the end of the text. Truncation removes the tail, so a cut
+  credential runs to the last character, and a match consumes a bounded
+  number of characters; a candidate starting further back than that cannot
+  reach the end and so cannot be the one. Searching the whole body was
+  linear in candidate starts and linear again in the walk from each, and
+  provider text can put a candidate start every few characters: 256 KiB of
+  near misses took about six seconds, quadrupling with each doubling. That
+  is reachable from the network and it runs after the read loop, where the
+  request deadline no longer applies, so it was a way to spend unbounded
+  CPU on a response that had already failed.
+- The pre-flight check that refuses to persist a credential uses that same
+  matcher, not a plain substring test. The two controls guard the same
+  threat from opposite ends, so a difference between them is a gap: a
+  provider request ID echoing the key in lowercase, or a provider extension
+  holding it with a tab where a space was, would be scrubbed on the way out
+  by the redactor and yet pass the check that decides whether a
+  `RequestPlan`, its reconstructed command or a persisted config may be
+  written at all. Both now match case insensitively, tolerate whitespace
+  differences and see through percent-encoding, and the credential
+  environment variable's own name is part of what is checked. The match runs
+  at every credential length. A minimum length still applies, but only to the
+  extra rounds of percent-decoding, which is where a coincidental hit is
+  plausible; gating the ordinary match on it meant a short key was scrubbed
+  by the redactor and waved through by the check. The output directory is
+  checked too, since a credential there is written into the filesystem as a
+  pathname, where no downstream redactor can reach it.
+- A credential flag that swallowed its value is redacted in a recorded
+  external command. Separate, equals, dropped-space long and attached `-k`
+  or `-p` forms are covered, including values beginning with `-` or `_`.
+  Glued prefixes come from an explicit credential-option vocabulary and the
+  tail must also have credential evidence, such as a case boundary, digit or
+  known key prefix. This keeps `--authentication-method`,
+  `--authorization-policy`, `--tokenizer-model` and `--api-key-file`
+  reproducible instead of corrupting legitimate command literals, including
+  their `--option=value` forms.
+- The refusal to accept a credential-shaped query parameter does not repeat
+  the parameter name. The name is caller-controlled and is exactly where a
+  key ends up when someone puts it in the URL, so quoting it back into a
+  message that reaches stderr and a failure record would republish the
+  thing the refusal exists to prevent. The diagnostic names no part of the
+  endpoint at all.
+- Because that diagnostic says nothing, a false positive is expensive: the
+  operator is refused and cannot tell which parameter caused it. The name is
+  therefore tokenized on separators, on case changes and between letters and
+  digits, and each component is judged whole. A bare substring search refused
+  `design`, `assignment`, `monkey`, `insignia`, `signal` and `keyword`, all
+  ordinary parameter names, on the strength of `sig` or `key` buried inside
+  them. A glued compound carries no separator and no case change, so a
+  component also counts when recognized words cover it end to end and at
+  least one of them names a credential outright. The cover has to be
+  complete, which is what keeps `apikey`, `xapikey`, `secretkey`,
+  `clientsecretkey` and `sessiontoken` refused while letting `keyword` and
+  `monkey` through: their leftover `word` and `mon` are not words this
+  recognizes. A cover made only of qualifiers, such as `appid`, does not
+  count either. Splitting a component once into two parts was not enough,
+  because `xapikey` is three words and the substring search it replaced had
+  caught it.
+- The credential vocabulary covers more than words spelled `key` or `token`:
+  `sid`, `jwt`, `pwd` and `passphrase` each name authentication material
+  outright, so all four are credential nouns. The cover rule keeps that from
+  spreading: `sidebar` and `sidecar` are still accepted, because `ebar` and
+  `car` are not words this recognizes.
+- The credential vocabulary also covers session and authorization-code
+  material. `sessionid`, `session_id`, `authcode` and `authorizationcode` are
+  credential compounds, while bare `session` and `code` remain ordinary
+  parameter names.
+- A complete cover cannot see a credential glued to a word the tables do not
+  know, so `openaiapikey`, `myapikey` and `zaiapikey` were accepted. A
+  component is also refused when a contiguous run of two recognized words,
+  at least one of them a credential noun, sits anywhere inside it. Two words
+  is what makes the surrounding text safe to ignore: one ambiguous noun
+  proves nothing, which is why `keyword` and `monkey` still pass on `key` and
+  `design`, `signal`, `insignia` and `assignment` still pass on `sig`. The
+  scan carries at most six states per position, so it stays linear and does
+  not undo the bound below.
+- `param` and `value` are not credential words. They were briefly
+  qualifiers, so that `tokenvalue` and `secretparam` would be refused, and
+  they refused `hotkeyvalue`, `partitionkeyvalue`, `sortkeyvalue`,
+  `rowkeyvalue` and `keyvalue` along with them. Those are ordinary key-value
+  store parameter names and there is no principled rule that separates them
+  from `tokenvalue`, which is built the same way out of the same parts. Both
+  words are gone, and `tokenvalue` and `secretparam` are accepted as a
+  result, on the same bounded-cost reasoning as `sessionid` above.
+- The cover search looks ahead no further than the longest word either table
+  spells. Without that bound every reachable offset rescanned every remaining
+  substring, so a query key made of a few thousand repeated qualifier
+  characters cost seconds of work before the endpoint it belonged to was even
+  rejected: an 8,003 character key took over seventeen seconds, and the cost
+  quadrupled with each doubling. No cover step can use a word longer than the
+  longest one there is, so nothing is missed, and the bound is derived from
+  the tables rather than written down, which keeps a longer noun added later
+  reachable.
+- The whitespace run cap is a floor, not a ceiling. It stops a matcher being
+  walked across unbounded whitespace hunting for its next element, but
+  applying it to a credential whose own spelling contains a longer run left
+  the matcher unable to consume its own value, and the exact secret survived
+  verbatim. Each matcher raises its cap to its own longest literal run, so a
+  credential can always match itself while ordinary ones are unaffected.
+- Transport encodings are built from every literal spelling, not only the one
+  supplied. Normalization and encoding compose in both orders, and an
+  intermediary that normalized an accented key before base64 encoding it
+  produced bytes that decode straight back to the credential yet matched no
+  spelling the redactor knew.
+- The cover search looks ahead no further than the longest word either table
+  spells. Without that bound every reachable offset rescanned every remaining
+  substring, so a query key made of a few thousand repeated qualifier
+  characters cost seconds of work before the endpoint it belonged to was even
+  rejected: an 8,003 character key took over seventeen seconds, and the cost
+  quadrupled with each doubling. No cover step can use a word longer than the
+  longest one there is, so nothing is missed, and the bound is derived from
+  the tables rather than written down, which keeps a longer noun added later
+  reachable.
+- A provider cannot end a run with no evidence at all by sending JSON that
+  `json` refuses past its own limits. An integer literal over the
+  interpreter's digit cap raises a plain `ValueError` and deep nesting raises
+  `RecursionError`, neither of which is a `JSONDecodeError`, so both used to
+  escape as an unhandled crash rather than a failure record. Both are now
+  stream decode failures with the usual canonical artifacts.
+- A JSON string containing an unpaired surrogate is also a stream decode
+  failure. Python accepts that escape during `json.loads`, but it cannot be
+  encoded as UTF-8 for `response.txt`; rejecting it while handling the event
+  prevents a partial artifact set during publication.
+- Stream bytes, accumulated visible content and retained content-arrival
+  timings have explicit safety bounds. A fast provider therefore cannot
+  exhaust memory inside the wall-clock deadline with an unterminated frame or
+  millions of tiny content deltas, and every successfully published artifact
+  stays within the verifier's own size limit.
+- Valid events before malformed UTF-8 are yielded before the decoder reports
+  the suffix. Once `[DONE]` is accepted, trailing bytes are ignored
+  consistently whether the transport delivered them together or across two
+  reads. EOF also terminates a final comment line without turning an otherwise
+  completed stream into a false truncation.
+- A provider token count above the largest integer a float represents exactly
+  is recorded as malformed and dropped. Smaller but still enormous counts
+  parsed fine and then raised `OverflowError` in the rate arithmetic; beyond
+  that bound a count either cannot become a float at all or becomes one with
+  silent precision loss, so any rate derived from it would be fiction. The
+  metric stays missing, which is the same rule applied everywhere else.
+- A null provider completion token rate always records why it is null. The
+  reasons that a hidden reasoning phase makes the window unusable were
+  already recorded, but a run whose generated tokens all arrived inside one
+  network chunk has no window with any width to divide by, and that case left
+  the rate null with nothing said about it, which reads as a metric the
+  provider never sent rather than one that could not be measured.
+- Provider usage that implies zero visible tokens while non-empty visible
+  content was streamed is internally inconsistent. Completion and visible
+  rates remain null with an explicit reason rather than becoming valid-looking
+  zeroes.
+- No parse diagnostic repeats a value the caller supplied, in any
+  rendering. argparse formats several of its messages with `%r`, so a value
+  containing a newline, a tab, a zero-width space or a backslash reaches
+  stderr as an escape sequence that does not match the raw string. Both the
+  value and its `repr` body are scrubbed, longest rendering first. Short
+  values are scrubbed as well. Quoted renderings are replaced directly, and
+  bare short values are replaced only as whole diagnostic tokens, so
+  `unrecognized arguments: xy` is contained without deleting `xy` from
+  unrelated words. The scrub state lives in a `ContextVar`
+  installed per parse rather than in globals set once by `main`, so
+  `build_parser().parse_args(...)` is as safe as the real entrypoint and
+  `main` no longer leaves state standing after it exits. An absent
+  `ContextVar` is distinguishable from an empty one, which an emptiness test
+  was not: stale state from `main` looked exactly like an active enclosing
+  scope and suppressed the installation of a real one.
+  `parse_args` and `parse_known_args` are both public and both reachable on
+  their own, and `parse_args` reports unrecognized arguments itself after the
+  inner call has returned, so each installs the scope and a nested parse
+  inherits the enclosing one instead of narrowing it. Parsed handlers run
+  inside the same scope, including normal returns, `SystemExit` and errors.
+  Returned collection failures and dry-run write errors use the same scrub,
+  and dry-run output is printed only after its plan was written successfully.
+- `--dry-run` applies the same refusal a real run does. If the configured
+  environment variable holds a value that appears in the endpoint or the
+  command, the pre-flight check fails instead of printing a plan that a real
+  run would reject, and the rendered plan is scrubbed as a second line of
+  defence. Endpoint rejection is generic and never repeats its netloc, path,
+  query key or query value.
+
+#### Failure evidence
+
+Transport and protocol failures produce a failure-shaped record instead of
+an exception or a silent success: `outcome.success = false`, an
+`error.category`, and the same four artifacts. Categories are
+`http_status`, `timeout`, `connection`, `stream_decode`,
+`stream_truncated`, `provider_error_payload` and `missing_content`. Safe status code, provider
+error code, provider request ID and rate-limit headers are preserved where
+the provider returns them. Both the OpenAI `{"error": {...}}` shape and
+Z.ai's bare `{"code": ..., "message": ...}` shape are recognized. Protocol
+level failures that Python raises as `http.client.HTTPException` rather than
+`OSError`, such as an `IncompleteRead` when a proxy hangs up mid chunk or a
+`BadStatusLine` from a garbled response, are recorded as `connection`
+failures.
+
+A stream is only accepted when it reaches a terminal condition the provider
+documents: a `[DONE]` sentinel, or a `finish_reason` of `stop`, `length`,
+`content_filter`, `tool_calls`, `function_call` or `sensitive`. A connection
+that closes cleanly after some content but before either of those is recorded
+as `stream_truncated`, not as a short success. Accepting it would silently
+convert a dropped connection into a real answer and, worse, into a plausible
+latency measurement. A body shorter than its own `Content-Length` is a
+`connection` failure: `http.client` returns a clean end of file there rather
+than raising, so the collector compares bytes read against the declared
+length itself.
+
+Z.ai documents `network_error` and `model_context_window_exceeded` alongside
+those successful reasons, so a stream can carry content, one of these, and
+`[DONE]` all at once
+([API reference](https://docs.z.ai/api-reference/llm/chat-completion)). The
+sentinel does not outrank them. It reports that the transport finished, not
+that the generation did, so a run ending on either reason is recorded as
+`provider_error_payload` with the reason as the provider error code.
+
+An event the stream leaves pending is discarded rather than dispatched. The
+event-stream rules dispatch on a blank line, and end of stream is not one, so a
+frame still buffered when the body ends was cut in transit. Dispatching it
+anyway would let an unterminated `data: [DONE]` close a truncated collection as
+though the provider had ended it cleanly. The run is recorded as
+`stream_truncated` instead. A lone `\r` at the very end of a body is the
+exception: it is deferred while streaming because the next chunk may start with
+`\n`, but at end of stream nothing can follow it, so it is resolved as the line
+terminator the rules say it is rather than treated as a cut line. One leading
+U+FEFF byte order mark is ignored, as
+the rules require, including when its bytes arrive split across chunks;
+without that the first field name is not `data` and the whole first event is
+silently dropped.
+
+A named `event: error` frame is treated as a provider error even when its
+payload is only a message string, is empty, or is the `[DONE]` sentinel. The
+event name is resolved before its data is interpreted, because handling
+`[DONE]` first would let a provider close a failed stream as though it had
+finished cleanly. A `choices` field that is present but not a list of objects
+is a `stream_decode` failure rather than an ignorable metadata chunk. All of
+these remain failures when they arrive after partial content has already been
+received.
+
+Invalid configuration and a missing credential remain hard errors with no
+artifacts, because neither describes a request that was actually attempted.
+
+#### Limitations
+
+- **No retries.** Exactly one request is issued per invocation. A retry
+  policy would have to represent every attempt as separate evidence, which
+  is out of scope here.
+- **Transport is not separable from generation.** Time to first content
+  token includes DNS, TLS, queueing and network transit. The headers and
+  first-body-byte offsets are recorded separately so the transport share is
+  visible, but the remote decode time cannot be isolated from a client-side
+  observation.
+- **No provider hardware or memory is recorded.** It is not observable, so
+  the record claims no accelerator and no memory rather than substituting a
+  local value.
+- **Model revision is usually unavailable.** Hosted APIs generally do not
+  expose a build identifier. `--model-revision` stays unset in that case
+  instead of guessing, and the config hash pins the request identity that
+  *is* observable. The hash covers the exact raw endpoint query representation,
+  so versions, field order, separators, invalid percent-encoded bytes and an
+  empty `?` delimiter remain distinct. The raw query is hashed rather than
+  recorded, so sensitive keys and values affect identity without being
+  persisted.
+- **`reasoning_tokens` is not documented for GLM.** It is captured if the
+  provider sends it and stays `null` otherwise.
+- **No pricing.** Cost per correct case belongs to a later versioned
+  comparison layer. Baking mutable prices into a collector would make old
+  evidence silently wrong.
+
 ### Native Qwen MTP: capability report and honest evidence collection
 
 Native multi-token-prediction (MTP) is architecturally different from the

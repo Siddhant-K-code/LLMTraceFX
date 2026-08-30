@@ -4,6 +4,8 @@ Subcommands:
     manifest         Collect a CPU-only, non-sensitive environment manifest.
     run              Execute a configured experiment (warmups + measured reps).
     collect-mlx      Run one local MLX-LM inference and record normalized evidence.
+    collect-api      Stream one OpenAI-compatible chat completion (e.g. Z.ai GLM)
+                     and record normalized, credential-free evidence.
     native-mtp       Native Qwen MTP capability report / evidence collection.
     parse-llama-cpp  Convert llama.cpp text output into a canonical ExperimentRecord.
     doctor speculative  Diagnose whether speculative decoding/MTP is a net regression.
@@ -24,10 +26,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import sys
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict
 from itertools import combinations
 from pathlib import Path
+from typing import NoReturn, Protocol, TypeVar, cast, overload
 
 from .collectors._shared import atomic_write_text
 from .collectors.mlx import (
@@ -41,6 +49,19 @@ from .collectors.native_mtp import (
     NativeMTPCollectorError,
     capability_report_for_target,
     collect_native_mtp,
+)
+from .collectors.openai_api import (
+    DEFAULT_RETAINED_EVENT_LIMIT,
+    GLM_REASONING_EFFORT_LEVELS,
+    THINKING_TYPES,
+    APICollectionConfig,
+    OpenAIStreamCollectorError,
+    ProviderExtensions,
+    UrllibStreamingTransport,
+    assert_credential_not_embedded,
+    build_request_plan,
+    collect_openai_stream,
+    redact_text_for_dry_run,
 )
 from .doctor.speculative import diagnose_speculative_regression
 from .manifest import collect_environment_manifest
@@ -211,6 +232,177 @@ def _cmd_collect_mlx(args: argparse.Namespace) -> int:
     return 1
 
 
+def _collect_api_argv(args: argparse.Namespace) -> tuple[str, ...]:
+    """Rebuild a credential-free, fully explicit invocation for the record.
+
+    The real ``sys.argv`` is deliberately not reused here. Reconstructing
+    the command resolves every default (so the record states which
+    environment variable held the credential instead of relying on the
+    default at replay time) and guarantees that nothing the caller typed
+    can reach an artifact.
+    """
+    reconstructed = [
+        "llmtracefx-optimizer",
+        "collect-api",
+        "--run-id",
+        args.run_id,
+        "--provider",
+        args.provider,
+        "--endpoint",
+        args.endpoint,
+        "--model-id",
+        args.model_id,
+        "--prompt-file",
+        args.prompt_file,
+        "--output-dir",
+        args.output_dir,
+        "--api-key-env",
+        args.api_key_env,
+        "--request-timeout",
+        str(args.request_timeout),
+        "--retained-event-limit",
+        str(args.retained_event_limit),
+    ]
+    for flag, value in (
+        ("--model-revision", args.model_revision),
+        ("--system-prompt-file", args.system_prompt_file),
+        ("--max-output-tokens", args.max_output_tokens),
+        ("--temperature", args.temperature),
+        ("--top-p", args.top_p),
+        ("--seed", args.seed),
+        ("--reasoning-effort", args.reasoning_effort),
+        ("--thinking", args.thinking),
+        ("--clear-thinking", args.clear_thinking),
+        ("--provider-request-id", args.provider_request_id),
+    ):
+        if value is not None:
+            reconstructed.extend((flag, str(value)))
+    if args.dry_run:
+        reconstructed.append("--dry-run")
+    return tuple(reconstructed)
+
+
+def _api_collection_config(args: argparse.Namespace) -> APICollectionConfig:
+    system_prompt = (
+        Path(args.system_prompt_file).read_text(encoding="utf-8")
+        if args.system_prompt_file
+        else None
+    )
+    return APICollectionConfig(
+        run_id=args.run_id,
+        provider=args.provider,
+        endpoint=args.endpoint,
+        model_id=args.model_id,
+        prompt=Path(args.prompt_file).read_text(encoding="utf-8"),
+        output_dir=Path(args.output_dir),
+        command_argv=_collect_api_argv(args),
+        credential_env_var=args.api_key_env,
+        system_prompt=system_prompt,
+        max_output_tokens=args.max_output_tokens,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        seed=args.seed,
+        request_timeout_seconds=args.request_timeout,
+        retained_event_limit=args.retained_event_limit,
+        extensions=ProviderExtensions(
+            reasoning_effort=args.reasoning_effort,
+            thinking_type=args.thinking,
+            clear_thinking=(
+                None if args.clear_thinking is None else args.clear_thinking == "true"
+            ),
+            provider_request_id=args.provider_request_id,
+        ),
+        model_revision=args.model_revision,
+    )
+
+
+def _api_detail(args: argparse.Namespace, exc: BaseException) -> str:
+    """Render a collector diagnostic with no caller-supplied value in it.
+
+    Two independent scrubs, because they cover different gaps. The
+    credential scrub catches a key that reached the message through the
+    endpoint, and it is keyed on the resolved environment value, so it does
+    nothing when the caller put the credential in the ``--api-key-env``
+    name slot and no such variable exists. The argv scrub covers exactly
+    that case, because it replaces every token the caller supplied
+    regardless of whether it names anything.
+    """
+    credential = os.environ.get(args.api_key_env, "").strip() or None
+    return _scrub_argv_values(redact_text_for_dry_run(str(exc), credential))
+
+
+def _cmd_collect_api(args: argparse.Namespace) -> int:
+    try:
+        config = _api_collection_config(args)
+    except (OSError, UnicodeError, OpenAIStreamCollectorError) as exc:
+        # Config failure is the most likely moment for a key pasted into the
+        # endpoint to surface, so the diagnostic is scrubbed before it is
+        # printed even though no request was attempted.
+        print(
+            f"Failed to configure API collection: {_api_detail(args, exc)}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.dry_run:
+        credential = os.environ.get(config.credential_env_var, "")
+        try:
+            assert_credential_not_embedded(config, os.environ)
+        except OpenAIStreamCollectorError as exc:
+            print(
+                f"Failed to configure API collection: {_api_detail(args, exc)}",
+                file=sys.stderr,
+            )
+            return 1
+        plan = build_request_plan(config, environ=os.environ)
+        payload = {
+            "dry_run": True,
+            "network_request_performed": False,
+            # The plan decides what may be written down. A name the
+            # environment does not define was never proven to be a name and
+            # may be the credential, so the plan masks it and the payload
+            # follows rather than reaching around it to the raw config.
+            "credential_env_var": plan.credential_env_var,
+            "credential_env_var_present": bool(credential.strip()),
+            "plan": plan.to_dict(),
+        }
+        text = json.dumps(payload, indent=2, allow_nan=False)
+        # Defence in depth behind the check above: the rendered document is
+        # scrubbed rather than trusting every field to have been sanitized
+        # individually.
+        text = redact_text_for_dry_run(text, credential.strip() or None)
+        try:
+            atomic_write_text(config.output_dir / "request_plan.json", text + "\n")
+        except OSError as exc:
+            print(
+                f"Failed to write request plan: {_api_detail(args, exc)}",
+                file=sys.stderr,
+            )
+            return 1
+        print(text)
+        return 0
+
+    try:
+        result = collect_openai_stream(config, transport=UrllibStreamingTransport())
+    except (OSError, OpenAIStreamCollectorError) as exc:
+        print(
+            f"Failed to collect API evidence: {_api_detail(args, exc)}", file=sys.stderr
+        )
+        return 1
+
+    if result.record.outcome.success:
+        print(f"API experiment record written to {config.output_dir / 'record.json'}")
+        return 0
+    failure = result.evidence.failure
+    detail = (
+        "unknown failure"
+        if failure is None
+        else f"{failure.category}: {failure.message}"
+    )
+    print(f"API collection failed: {_scrub_argv_values(detail)}", file=sys.stderr)
+    return 1
+
+
 def _cmd_native_mtp_capability_report(args: argparse.Namespace) -> int:
     try:
         report = capability_report_for_target(Path(args.target_model_path))
@@ -330,6 +522,7 @@ def _cmd_parse_llama_cpp(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    command_argv = _redact_credential_flag_values(command_argv)
 
     try:
         record = build_experiment_record(
@@ -1148,8 +1341,520 @@ def _cmd_optimize(args: argparse.Namespace) -> int:
     return exit_code
 
 
+_MIN_SCRUBBED_ARGUMENT_CHARS = 4
+
+_CREDENTIAL_ARGUMENT_STEMS = frozenset(
+    {
+        "apikey",
+        "apikeys",
+        "apisecret",
+        "apitoken",
+        "accesskey",
+        "accesstoken",
+        "auth",
+        "authorization",
+        "authtoken",
+        "bearer",
+        "bearertoken",
+        "clientsecret",
+        "credential",
+        "credentials",
+        "key",
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "secretkey",
+        "token",
+    }
+)
+
+_GLUED_CREDENTIAL_FLAGS = tuple(
+    sorted(
+        {
+            "--access-key",
+            "--access-token",
+            "--access_key",
+            "--access_token",
+            "--api-key",
+            "--api-secret",
+            "--api-token",
+            "--api_key",
+            "--api_secret",
+            "--api_token",
+            "--apikey",
+            "--auth",
+            "--auth-token",
+            "--auth_token",
+            "--authorization",
+            "--bearer",
+            "--bearer-token",
+            "--bearer_token",
+            "--client-secret",
+            "--client_secret",
+            "--credential",
+            "--key",
+            "--passwd",
+            "--password",
+            "--pwd",
+            "--secret",
+            "--secret-key",
+            "--secret_key",
+            "--token",
+            "-key",
+            "-k",
+            "-p",
+        }
+        | {f"--{stem}" for stem in _CREDENTIAL_ARGUMENT_STEMS},
+        key=len,
+        reverse=True,
+    )
+)
+
+#: Scrub state for one parse, held per context rather than in module
+#: globals. ``main`` used to set globals and never restore them, so a
+#: later ``build_parser().parse_args(...)`` in the same process inherited
+#: a populated state that did not describe its own argv and echoed the
+#: value it was given. A ``ContextVar`` is restored by its token on every
+#: exit path and is not shared between threads.
+_scrub_state: ContextVar[tuple[tuple[str, ...], tuple[str, ...]] | None] = ContextVar(
+    "llmtracefx_argv_scrub_state", default=None
+)
+
+
+def _option_stem(token: str) -> str:
+    """Normalize ``--Api_Key=value`` to ``apikey`` for comparison.
+
+    Spelling is not evidence of intent. A caller reaching for a credential
+    flag may type it with dashes, underscores or neither, so the stem is
+    compared with all of that removed and the value dropped.
+    """
+    name = token.split("=", 1)[0].lstrip("-")
+    return "".join(character for character in name.lower() if character.isalnum())
+
+
+def _redact_credential_flag_values(argv: Sequence[str]) -> tuple[str, ...]:
+    """Replace the value of any credential-shaped flag in a recorded command.
+
+    ``parse-llama-cpp`` records the command the operator actually ran, and
+    ``llama-server`` has its own ``--api-key``. The flag itself is evidence
+    worth keeping, the value is a credential that would otherwise be
+    written verbatim into ``record.command.argv``. Both the separate and
+    the attached form are covered.
+    """
+    redacted: list[str] = []
+    skip_next = False
+    for index, token in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            redacted.append("[REDACTED]")
+            continue
+        if not _is_credential_flag(token):
+            glued = _glued_credential_prefix(token)
+            redacted.append(f"{glued}[REDACTED]" if glued else token)
+            continue
+        name, separator, _ = token.partition("=")
+        if separator:
+            redacted.append(f"{name}=[REDACTED]")
+            continue
+        following = argv[index + 1] if index + 1 < len(argv) else None
+        # A credential flag always takes a value, so whatever follows is
+        # redacted whatever it looks like: the base64url alphabet includes
+        # ``-``, so skipping values that start like a flag would leak
+        # roughly one credential in sixty four. The one token that is not a
+        # value is another credential flag, which has its own value after
+        # it. Consuming that would leave the real credential untouched, so
+        # it is left for the next iteration to handle.
+        skip_next = following is not None and not _is_credential_flag(following)
+        redacted.append(token)
+    return tuple(redacted)
+
+
+def _glued_credential_prefix(token: str) -> str:
+    """The credential flag ``token`` begins with, when it swallowed a value.
+
+    Dropping the space is an ordinary typing slip and an ordinary shell
+    habit, so ``--api-keySECRET`` reaches a recorded command as one token.
+    Nothing later in the pipeline splits it, so without this the value is
+    written into ``record.command.argv`` in full.
+
+    Prefixes are explicit rather than inferred from every credential-like
+    word. That keeps legitimate options such as ``--authentication-method``,
+    ``--authorization-policy`` and ``--tokenizer-model`` reproducible.
+    Because a delimiter is missing, the tail must also have credential
+    evidence: a case boundary, a digit, a credential prefix, or a
+    non-option alphabet character. Leading ``-`` and ``_`` are retained as
+    evidence because both belong to common credential alphabets.
+    """
+    option_name = token.split("=", 1)[0]
+    folded_name = option_name.casefold()
+    for prefix in _GLUED_CREDENTIAL_FLAGS:
+        if not folded_name.startswith(prefix.casefold()) or len(option_name) == len(
+            prefix
+        ):
+            continue
+        tail = option_name[len(prefix) :]
+        if prefix in {"--apikeys", "--credentials"} and not tail.startswith(("-", "_")):
+            continue
+        body = tail.lstrip("-_")
+        lowered = body.lower()
+        if len(body) < 6:
+            return ""
+        if not tail.startswith(("-", "_")) and not folded_name.startswith(
+            ("--authentication", "--tokenizer")
+        ):
+            return option_name[: len(prefix)]
+        if (
+            any(character.isupper() or character.isdigit() for character in body)
+            or any(character in "+/=" for character in body)
+            or lowered.startswith(
+                ("sk-", "sk_", "ghp_", "github_pat_", "xoxb-", "xoxp-", "eyj")
+            )
+        ):
+            return option_name[: len(prefix)]
+        # Prefixes are ordered longest first. Once the longest recognized
+        # option prefix has been classified as a legitimate option name,
+        # shorter aliases such as ``--auth`` must not reinterpret it.
+        return ""
+    return ""
+
+
+def _is_credential_flag(token: str) -> bool:
+    return token.startswith("-") and _option_stem(token) in _CREDENTIAL_ARGUMENT_STEMS
+
+
+def _argument_values(
+    raw_argv: Sequence[str], literals: Sequence[str] = ()
+) -> tuple[str, ...]:
+    """Every caller-supplied value in ``raw_argv``, longest first.
+
+    Token syntax is not evidence of what a token is. The property that
+    matters is whether this program defined the string, and ``literals``
+    answers that, so only a name this program chose is kept out of the
+    scrub set. Everything else is a value that argparse would otherwise
+    quote back into stderr. Longest first so a value that contains
+    another is replaced whole.
+
+    A short cluster such as ``-p<secret>`` is the attached form, so only
+    the flag letter is a name and the rest is a value. That is the shape
+    ``mysql -p<password>`` teaches, and it is contributed regardless of
+    any ``=`` inside it, because a base64 credential ends in ``=`` and
+    splitting on it first would leave nothing to redact. A long option
+    with a dropped space, ``--api-key<secret>``, is not a name either;
+    when a defined option is a prefix of it the tail alone is the value,
+    which keeps the diagnostic actionable, and otherwise the whole token
+    is treated as a value.
+    """
+    values: set[str] = set()
+
+    def contribute(candidate: str) -> None:
+        # Every non-empty value is collected. How much of it can be
+        # replaced safely is decided per rendering in
+        # ``_value_renderings``, which drops the bare form for values too
+        # short to replace without mangling the surrounding message.
+        if candidate:
+            values.add(candidate)
+
+    known = frozenset(literals)
+    for token in raw_argv:
+        if not token.startswith("-"):
+            contribute(token)
+            continue
+        name, separator, attached = token.partition("=")
+        if separator:
+            contribute(attached)
+        if not token.startswith("--"):
+            contribute(token[2:])
+            continue
+        if token in known or name in known:
+            continue
+        prefix = next(
+            (
+                literal
+                for literal in literals
+                if len(literal) < len(token) and token.startswith(literal)
+            ),
+            "",
+        )
+        contribute(token[len(prefix) :] if prefix else token)
+    return tuple(sorted(values, key=len, reverse=True))
+
+
+def _value_renderings(value: str) -> tuple[str, ...]:
+    """Every spelling of ``value`` an argparse message may contain.
+
+    argparse formats the offending token with ``%r`` in several of its
+    messages, not ``%s``: ``invalid choice``, ``ignored explicit
+    argument`` and every ``type=`` conversion failure among them.
+    ``repr`` escapes each character for which ``str.isprintable()`` is
+    false, so a value carrying a trailing newline, a zero-width space, a
+    non-breaking space or a backslash never appears in the message in the
+    form the caller typed. Replacing only the raw form would then match
+    nothing and print the value in full. The escaped body is returned
+    alongside the raw form so both spellings are covered; the surrounding
+    quotes are left in place because they belong to the message.
+    """
+    quoted = repr(value)
+    if len(value) < _MIN_SCRUBBED_ARGUMENT_CHARS:
+        # Too short to replace as a bare substring: a two character value
+        # occurs inside ordinary words, and blanking every occurrence
+        # would destroy the message that makes the error actionable.
+        # argparse always quotes the offending token in the messages that
+        # repeat one, so the quoted spellings are both distinctive enough
+        # to replace safely and sufficient to keep the guarantee.
+        return (quoted, f'"{value}"')
+    return (value, quoted[1:-1])
+
+
+def _scrub_short_bare_tokens(message: str, values: Sequence[str]) -> str:
+    """Replace short values only when they occupy a whole diagnostic token."""
+    scrubbed = message
+    for value in values:
+        if not value or len(value) >= _MIN_SCRUBBED_ARGUMENT_CHARS:
+            continue
+        scrubbed = re.sub(
+            rf"(?<![A-Za-z0-9_]){re.escape(value)}(?![A-Za-z0-9_])",
+            "[REDACTED]",
+            scrubbed,
+        )
+    return scrubbed
+
+
+def _scrub_argv_values(message: str) -> str:
+    """Replace every caller-supplied value in ``message``.
+
+    This program's own vocabulary is put beyond reach first, because a
+    caller value can be a prefix of one: mistyping ``collect-ap`` would
+    otherwise rewrite the valid ``collect-api`` in the list of choices and
+    leave the caller without a correct spelling to copy. A literal is only
+    protected when no value contains it, so a secret that happens to
+    embed an option name is still replaced whole.
+    """
+    values, literals = _scrub_state.get() or ((), ())
+    if not values:
+        return message
+    renderings = sorted(
+        {rendering for value in values for rendering in _value_renderings(value)},
+        key=len,
+        reverse=True,
+    )
+    protected = {
+        f"\x00PROTECTED{index}VALUE\x00": literal
+        for index, literal in enumerate(literals)
+        if not any(literal in rendering for rendering in renderings)
+    }
+    scrubbed = message
+    for placeholder, literal in protected.items():
+        scrubbed = scrubbed.replace(literal, placeholder)
+    for rendering in renderings:
+        scrubbed = scrubbed.replace(rendering, "[REDACTED]")
+    scrubbed = _scrub_short_bare_tokens(scrubbed, values)
+    for placeholder, literal in protected.items():
+        scrubbed = scrubbed.replace(placeholder, literal)
+    return scrubbed
+
+
+def _materialize_argv(args: Iterable[str] | None) -> list[str] | None:
+    """Read an argument iterable once, so two consumers both see it.
+
+    ``ArgumentParser.parse_args`` accepts any iterable of strings, and the
+    scrub scope has to read the tokens to know which values to blank. A
+    one-shot iterator would be drained by whichever ran first, leaving the
+    other with an empty command line: either the parse silently sees no
+    arguments, or the scrub has nothing to blank and the diagnostics echo
+    the values verbatim.
+    """
+    return None if args is None else list(args)
+
+
+@contextmanager
+def _argument_scrub_scope(
+    parser: argparse.ArgumentParser, argv: Sequence[str] | None
+) -> Iterator[None]:
+    """Install the scrub state for the duration of one parse.
+
+    ``main`` is not the only way in: ``build_parser().parse_args(...)`` is
+    public, is what a test or an embedding caller reaches for, and used to
+    run with the scrub state still at its module defaults. An empty state
+    makes ``_scrub_argv_values`` a no-op, so argparse echoed invalid
+    choices and unrecognized arguments verbatim.
+
+    An enclosing scope wins. Subparsers are instances of this class too and
+    parse a suffix of the command line, so letting the inner parse reinstall
+    the state would narrow it to the tokens that subparser happens to see.
+    Nesting is detected from the context variable actually being set, not
+    from it merely being non-empty, so a scope that has genuinely exited
+    can never be mistaken for one still in force.
+    """
+    if _scrub_state.get() is not None:
+        yield
+        return
+    literals = _parser_literals(parser)
+    token = _scrub_state.set(
+        (
+            _argument_values(list(sys.argv[1:] if argv is None else argv), literals),
+            literals,
+        )
+    )
+    try:
+        yield
+    finally:
+        _scrub_state.reset(token)
+
+
+_N = TypeVar("_N")
+
+
+class _ParsedCommand(Protocol):
+    func: Callable[[argparse.Namespace], int]
+
+
+class SecureArgumentParser(argparse.ArgumentParser):
+    """An ``ArgumentParser`` whose diagnostics never repeat a value.
+
+    argparse quotes the offending token straight back to the caller, so a
+    mistyped ``--api-key <secret>`` lands in stderr verbatim and from there
+    in shell history, CI logs and screenshots. Option names and the usage
+    block are kept, since they carry no caller input and are what make the
+    error actionable; every value the caller supplied is replaced.
+    """
+
+    @overload
+    def parse_args(
+        self,
+        args: Iterable[str] | None = None,
+        namespace: None = None,
+    ) -> argparse.Namespace: ...
+
+    @overload
+    def parse_args(self, args: Iterable[str] | None, namespace: _N) -> _N: ...
+
+    @overload
+    def parse_args(self, *, namespace: _N) -> _N: ...
+
+    def parse_args(
+        self,
+        args: Iterable[str] | None = None,
+        namespace: _N | None = None,
+    ) -> _N | argparse.Namespace:
+        # ``parse_args`` reports unrecognized arguments itself, after
+        # ``parse_known_args`` has returned and its scope has been undone,
+        # so the scope has to cover this call too or that one diagnostic
+        # echoes the leftover tokens verbatim.
+        argv = _materialize_argv(args)
+        handler_argv = tuple(sys.argv[1:] if argv is None else argv)
+        with _argument_scrub_scope(self, argv):
+            parsed = super().parse_args(argv, namespace)
+            handler = getattr(parsed, "func", None)
+            if callable(handler):
+                command = cast(_ParsedCommand, parsed)
+                command.func = _scoped_command_handler(self, handler_argv, handler)
+            return parsed
+
+    @overload
+    def parse_known_args(
+        self,
+        args: Iterable[str] | None = None,
+        namespace: None = None,
+    ) -> tuple[argparse.Namespace, list[str]]: ...
+
+    @overload
+    def parse_known_args(
+        self, args: Iterable[str] | None, namespace: _N
+    ) -> tuple[_N, list[str]]: ...
+
+    @overload
+    def parse_known_args(self, *, namespace: _N) -> tuple[_N, list[str]]: ...
+
+    def parse_known_args(
+        self,
+        args: Iterable[str] | None = None,
+        namespace: _N | None = None,
+    ) -> tuple[_N | argparse.Namespace, list[str]]:
+        argv = _materialize_argv(args)
+        handler_argv = tuple(sys.argv[1:] if argv is None else argv)
+        with _argument_scrub_scope(self, argv):
+            parsed, remaining = super().parse_known_args(argv, namespace)
+            handler = getattr(parsed, "func", None)
+            if callable(handler):
+                command = cast(_ParsedCommand, parsed)
+                command.func = _scoped_command_handler(self, handler_argv, handler)
+            return parsed, remaining
+
+    def error(self, message: str) -> NoReturn:
+        super().error(_scrub_argv_values(message))
+
+
+def _scoped_command_handler(
+    parser: argparse.ArgumentParser,
+    raw_argv: tuple[str, ...],
+    handler: Callable[[argparse.Namespace], int],
+) -> Callable[[argparse.Namespace], int]:
+    """Keep caller-value scrubbing installed while a parsed handler runs."""
+
+    def run(args: argparse.Namespace) -> int:
+        with _argument_scrub_scope(parser, raw_argv):
+            return handler(args)
+
+    return run
+
+
+def _reject_credential_arguments(raw_argv: Sequence[str]) -> None:
+    """Refuse a credential-bearing flag before argparse can echo its value.
+
+    The collectors read the credential from the environment and have no
+    flag that accepts one, so any such flag is a mistake. Rejecting it here
+    rather than letting it fall through to "unrecognized arguments" means
+    the value is never formatted into a message in the first place, and the
+    caller is told where the credential actually belongs.
+
+    Scanning stops at a bare ``--``. Everything after it belongs to a
+    recorded external command, not to this program, and ``llama-server``
+    has its own ``--api-key``. Refusing that would leave no way to record
+    such a run and would point the caller at a flag that does not exist on
+    the subcommand they used. Those values are redacted where they are
+    persisted instead.
+    """
+    for token in raw_argv:
+        if token == "--":
+            return
+        if not token.startswith("-"):
+            continue
+        if _option_stem(token) not in _CREDENTIAL_ARGUMENT_STEMS:
+            continue
+        name = token.split("=", 1)[0]
+        print(
+            f"llmtracefx-optimizer: error: {name} is not a supported option "
+            "and a credential must never appear in a command line. Export "
+            "the credential to an environment variable and name that "
+            "variable with --api-key-env.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+
+def _parser_literals(parser: argparse.ArgumentParser) -> tuple[str, ...]:
+    """Every option string and subcommand name this program defines.
+
+    These are the parts of a diagnostic worth keeping, so they are
+    collected once and put beyond the reach of the value scrub.
+    """
+    literals: set[str] = set()
+    for action in parser._actions:
+        literals.update(action.option_strings)
+        choices = action.choices
+        if isinstance(choices, dict):
+            for name, subparser in choices.items():
+                literals.add(name)
+                if isinstance(subparser, argparse.ArgumentParser):
+                    literals.update(_parser_literals(subparser))
+        elif choices is not None:
+            literals.update(choice for choice in choices if isinstance(choice, str))
+    return tuple(sorted(literals, key=len, reverse=True))
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = SecureArgumentParser(
         prog="llmtracefx-optimizer",
         description="Inference-optimizer foundation primitives for LLMTraceFX",
     )
@@ -1216,6 +1921,130 @@ def build_parser() -> argparse.ArgumentParser:
     )
     collect_mlx_parser.add_argument("--num-draft-tokens", type=int, default=2)
     collect_mlx_parser.set_defaults(func=_cmd_collect_mlx)
+
+    collect_api_parser = subparsers.add_parser(
+        "collect-api",
+        help=(
+            "Stream one OpenAI-compatible chat completion and record "
+            "normalized, credential-free evidence"
+        ),
+        # Prefix matching would let "--api-key <secret>" resolve to
+        # "--api-key-env", which would then treat the secret as an
+        # environment variable name and persist it.
+        allow_abbrev=False,
+    )
+    collect_api_parser.add_argument("--run-id", required=True)
+    collect_api_parser.add_argument(
+        "--provider",
+        default="z.ai",
+        help="Short provider label recorded in evidence (never a secret)",
+    )
+    collect_api_parser.add_argument(
+        "--endpoint",
+        required=True,
+        help=(
+            "Full chat-completions URL, e.g. "
+            "https://api.z.ai/api/paas/v4/chat/completions. Must be https for "
+            "non-local hosts and must not embed credentials."
+        ),
+    )
+    collect_api_parser.add_argument(
+        "--model-id",
+        required=True,
+        help="Provider model ID, e.g. glm-5.3 or glm-5.3-flash",
+    )
+    collect_api_parser.add_argument(
+        "--model-revision",
+        default=None,
+        help=(
+            "Provider-side model build, when the provider exposes one. Hosted "
+            "APIs usually do not, in which case leave it unset rather than "
+            "guessing."
+        ),
+    )
+    collect_api_parser.add_argument(
+        "--prompt-file",
+        required=True,
+        help="UTF-8 prompt file; prompt contents are hashed but not copied into artifacts",
+    )
+    collect_api_parser.add_argument(
+        "--system-prompt-file",
+        default=None,
+        help="Optional UTF-8 system prompt file; also hashed, never copied",
+    )
+    collect_api_parser.add_argument("--output-dir", required=True)
+    collect_api_parser.add_argument(
+        "--api-key-env",
+        default="ZAI_API_KEY",
+        help=(
+            "Name of the environment variable holding the API key. Only the "
+            "name is recorded; the value is never persisted, echoed or "
+            "accepted as a command argument."
+        ),
+    )
+    collect_api_parser.add_argument("--max-output-tokens", type=int, default=None)
+    collect_api_parser.add_argument("--temperature", type=float, default=None)
+    collect_api_parser.add_argument("--top-p", type=float, default=None)
+    collect_api_parser.add_argument("--seed", type=int, default=None)
+    collect_api_parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=120.0,
+        help="Per-request timeout in seconds; no retries are performed",
+    )
+    collect_api_parser.add_argument(
+        "--retained-event-limit",
+        type=int,
+        default=DEFAULT_RETAINED_EVENT_LIMIT,
+        help=(
+            "How many per-event timing rows to keep in the timeline. The "
+            "counters, the rates and the inter-token distribution stay exact "
+            "past this bound; only the individual rows stop being retained, "
+            "and the record says so."
+        ),
+    )
+    collect_api_parser.add_argument(
+        "--reasoning-effort",
+        choices=GLM_REASONING_EFFORT_LEVELS,
+        default=None,
+        help=(
+            "Provider-specific reasoning budget. Z.ai documents low/high/max "
+            "for glm-5.3 and glm-5.3-flash, defaulting to max when unset."
+        ),
+    )
+    collect_api_parser.add_argument(
+        "--thinking",
+        choices=THINKING_TYPES,
+        default=None,
+        help=(
+            "Provider-specific thinking.type. Z.ai documents that glm-5.3 and "
+            "glm-5.3-flash accept only 'enabled'."
+        ),
+    )
+    collect_api_parser.add_argument(
+        "--clear-thinking",
+        choices=("true", "false"),
+        default=None,
+        help=(
+            "Provider-specific thinking.clear_thinking. Controls whether "
+            "reasoning_content from previous turns is cleared; it does not "
+            "change whether this turn thinks. Unset means the provider default."
+        ),
+    )
+    collect_api_parser.add_argument(
+        "--provider-request-id",
+        default=None,
+        help="Optional caller-supplied provider request ID (Z.ai body request_id)",
+    )
+    collect_api_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Validate configuration and print the credential-free request plan "
+            "without performing any network request"
+        ),
+    )
+    collect_api_parser.set_defaults(func=_cmd_collect_api)
 
     native_mtp_parser = subparsers.add_parser(
         "native-mtp",
@@ -1725,9 +2554,23 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     raw_argv = list(sys.argv[1:] if argv is None else argv)
-    args = parser.parse_args(raw_argv)
-    args._invocation = (parser.prog, *raw_argv)
-    sys.exit(args.func(args))
+    # The scope, rather than a bare assignment, so the state is undone on
+    # every exit path including the ``SystemExit`` argparse raises. Left
+    # standing it would suppress installation for the next parse in this
+    # process, which would then be scrubbed against the wrong argv.
+    #
+    # The command runs inside the scope too. ``_api_detail`` scrubs argv
+    # values out of its diagnostics, and a value the caller supplied can
+    # surface long after parsing succeeds: a path that does not open
+    # reaches the error text verbatim. Closing the scope at the end of
+    # parsing left that scrub with nothing installed and made it a no-op
+    # for exactly the values it exists to remove.
+    with _argument_scrub_scope(parser, raw_argv):
+        _reject_credential_arguments(raw_argv)
+        args = parser.parse_args(raw_argv)
+        args._invocation = (parser.prog, *raw_argv)
+        status = args.func(args)
+    sys.exit(status)
 
 
 if __name__ == "__main__":
