@@ -577,6 +577,24 @@ class PowerMetrics:
         )
 
 
+#: Substrings that must never appear in an ``InstrumentsEvidence``
+#: metric name. Instruments exposes tables whose names gesture at these
+#: quantities, but deriving them needs modelling assumptions this
+#: project has not validated, so the schema refuses to persist a metric
+#: that claims one. Enforced by ``ExperimentRecord.validate``, not only
+#: by convention.
+FORBIDDEN_INSTRUMENT_METRIC_MARKERS: tuple[str, ...] = (
+    "utilization",
+    "occupancy",
+    "bandwidth",
+    "busy_percent",
+    "kernel_time",
+    "gpu_power",
+    "gpu_energy",
+    "gpu_memory",
+)
+
+
 @dataclass(frozen=True)
 class InstrumentsEvidence:
     """Evidence sourced from an Apple Instruments ``.trace`` bundle.
@@ -842,6 +860,17 @@ class ExperimentRecord:
                 raise SchemaValidationError(
                     "instruments.metrics keys must be non-empty strings"
                 )
+            folded = name.casefold()
+            for marker in FORBIDDEN_INSTRUMENT_METRIC_MARKERS:
+                if marker in folded:
+                    raise SchemaValidationError(
+                        f"instruments.metrics.{name} claims a quantity this "
+                        f"project cannot derive from an Instruments export "
+                        f"(forbidden marker '{marker}'). GPU utilization, "
+                        "occupancy, bandwidth, kernel time, power and memory "
+                        "are not recoverable from the exported tables "
+                        "without unvalidated modelling assumptions."
+                    )
             if measurement.value < 0:
                 raise SchemaValidationError(
                     f"instruments.metrics.{name} must be >= 0, "

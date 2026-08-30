@@ -151,7 +151,7 @@ def test_references_are_resolved_including_forward_references():
     """
     table = parse_exported_table(read_fixture(TABLE))
     fourth = table.rows[3]
-    assert fourth.require("duration").as_int(field="duration") == 1000
+    assert fourth.require("duration").as_int(field_name="duration") == 1000
     assert fourth.require("channel-name").text == "Vertex"
     assert fourth.require("process").fmt == "WindowServer (77)"
 
@@ -254,7 +254,7 @@ def test_non_integer_cell_is_refused():
     )
     table = parse_exported_table(payload)
     with pytest.raises(InstrumentsExportError, match="is not an integer"):
-        table.rows[0].require("a").as_int(field="a")
+        table.rows[0].require("a").as_int(field_name="a")
 
 
 def test_requiring_an_absent_column_is_an_error():
@@ -404,3 +404,133 @@ def test_forbidden_metric_names_cover_the_usual_gpu_overclaims():
         "gpu_power",
     ):
         assert name in FORBIDDEN_METRIC_NAMES
+
+
+# --- Regressions found in independent review --------------------------
+
+
+def test_a_ref_pointing_at_the_wrong_engineering_type_is_refused():
+    """Almost every real cell is a ref.
+
+    Checking only the referencing element's tag would leave the
+    engineering-type contract enforced on a tiny minority of the data,
+    and let a duration column take its value from a start-time.
+    """
+    payload = (
+        "<trace-query-result><node>"
+        '<schema name="t">'
+        "<col><mnemonic>a</mnemonic>"
+        "<engineering-type>start-time</engineering-type></col>"
+        "<col><mnemonic>b</mnemonic>"
+        "<engineering-type>duration</engineering-type></col>"
+        "</schema>"
+        '<row><start-time id="1">100</start-time>'
+        '<duration id="2">7</duration></row>'
+        '<row><start-time ref="1"/><duration ref="1"/></row>'
+        "</node></trace-query-result>"
+    )
+    with pytest.raises(InstrumentsExportError, match="referenced value"):
+        parse_exported_table(payload)
+
+
+def test_duplicate_column_mnemonics_are_refused():
+    """A repeated mnemonic would let one column overwrite another."""
+    payload = (
+        "<trace-query-result><node>"
+        '<schema name="t">'
+        "<col><mnemonic>duration</mnemonic>"
+        "<engineering-type>duration</engineering-type></col>"
+        "<col><mnemonic>duration</mnemonic>"
+        "<engineering-type>duration</engineering-type></col>"
+        "</schema>"
+        '<row><duration id="1">100</duration>'
+        '<duration id="2">999999</duration></row>'
+        "</node></trace-query-result>"
+    )
+    with pytest.raises(InstrumentsExportError, match="duplicate column mnemonics"):
+        parse_exported_table(payload)
+
+
+def test_multiple_nodes_are_refused_rather_than_silently_truncated():
+    node = (
+        "<node>"
+        '<schema name="t"><col><mnemonic>a</mnemonic>'
+        "<engineering-type>uint64</engineering-type></col></schema>"
+        '<row><uint64 id="{i}">1</uint64></row>'
+        "</node>"
+    )
+    payload = (
+        "<trace-query-result>"
+        + node.format(i=1)
+        + node.format(i=2)
+        + "</trace-query-result>"
+    )
+    with pytest.raises(InstrumentsExportError, match="2 <node> elements"):
+        parse_exported_table(payload)
+
+
+def _intervals_table(*rows: str) -> str:
+    return (
+        "<trace-query-result><node>"
+        '<schema name="metal-gpu-intervals">'
+        "<col><mnemonic>start</mnemonic>"
+        "<engineering-type>start-time</engineering-type></col>"
+        "<col><mnemonic>duration</mnemonic>"
+        "<engineering-type>duration</engineering-type></col>"
+        "<col><mnemonic>process</mnemonic>"
+        "<engineering-type>process</engineering-type></col>"
+        "</schema>" + "".join(rows) + "</node></trace-query-result>"
+    )
+
+
+def test_one_pid_under_two_labels_refuses_to_attribute():
+    """Pid reuse or an exec rename must not silently pick a winner."""
+    table = parse_exported_table(
+        _intervals_table(
+            '<row><start-time id="1">10</start-time>'
+            '<duration id="2">10</duration>'
+            '<process id="3" fmt="probe (4242)"><pid id="4">4242</pid>'
+            "</process></row>",
+            '<row><start-time id="5">20</start-time>'
+            '<duration id="6">30</duration>'
+            '<process id="7" fmt="WindowServer (4242)"><pid id="8">4242</pid>'
+            "</process></row>",
+        )
+    )
+    summary = summarize_metal_gpu_intervals(table)
+    assert len(summary.per_process) == 2
+    with pytest.raises(InstrumentsExportError, match="is ambiguous"):
+        summary.for_process(4242)
+
+
+def test_pid_comes_from_the_structured_child_not_the_label():
+    """The display label is only a fallback."""
+    table = parse_exported_table(
+        _intervals_table(
+            '<row><start-time id="1">10</start-time>'
+            '<duration id="2">10</duration>'
+            '<process id="3" fmt="misleading (999)"><pid id="4">4242</pid>'
+            "</process></row>"
+        )
+    )
+    summary = summarize_metal_gpu_intervals(table)
+    assert summary.per_process[0].pid == 4242
+    assert summary.for_process(999) is None
+
+
+def test_processes_without_a_label_are_kept_apart_by_pid():
+    """Two unlabelled processes must not merge into one bucket."""
+    table = parse_exported_table(
+        _intervals_table(
+            '<row><start-time id="1">10</start-time>'
+            '<duration id="2">10</duration>'
+            '<process id="3"><pid id="4">11</pid></process></row>',
+            '<row><start-time id="5">20</start-time>'
+            '<duration id="6">10</duration>'
+            '<process id="7"><pid id="8">22</pid></process></row>',
+        )
+    )
+    summary = summarize_metal_gpu_intervals(table)
+    assert len(summary.per_process) == 2
+    assert {entry.pid for entry in summary.per_process} == {11, 22}
+    assert summary.for_process(11).interval_count == 1

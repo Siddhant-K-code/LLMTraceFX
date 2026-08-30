@@ -39,6 +39,7 @@ from .commands import (
 from .evidence import (
     TraceEvidenceInputs,
     build_instruments_evidence,
+    failed_recording_evidence,
     unsupported_evidence,
 )
 from .export import (
@@ -230,7 +231,9 @@ def record_trace(
     result = run_record(plan, launcher=launcher, artifacts_dir=output_dir)
 
     if result.status is not RecordStatus.COMPLETED:
-        evidence = unsupported_evidence(capability, template=template)
+        evidence = failed_recording_evidence(
+            capability, template=template, reason=result.message
+        )
         _write_evidence(output_dir, evidence)
         return TraceCollection(
             capability=capability,

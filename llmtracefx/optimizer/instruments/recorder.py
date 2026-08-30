@@ -256,6 +256,13 @@ def run_record(
                 f"{plan.grace_seconds:g}s finalization grace) and the "
                 "process group was stopped. Artifacts are preserved."
             )
+        except BaseException:
+            # Anything other than a timeout (an unexpected error, or a
+            # KeyboardInterrupt while waiting) still propagates, but the
+            # recording must not be left running detached. It is in its
+            # own session, so nothing else would ever reap it.
+            _stop_process_group(process)
+            raise
 
     ended_at = utc_now_iso()
     duration = time.perf_counter() - start

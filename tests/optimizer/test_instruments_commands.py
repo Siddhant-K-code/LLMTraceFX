@@ -326,3 +326,59 @@ def test_simple_argv_builders():
     assert build_version_argv("/usr/bin/xctrace") == ("/usr/bin/xctrace", "version")
     with pytest.raises(InstrumentsCommandError):
         build_version_argv("")
+
+
+# --- Regressions found in independent review --------------------------
+
+
+def test_secrets_in_the_profiled_command_are_redacted():
+    """The profiled command is user supplied and can carry a secret."""
+    plan = make_plan(
+        target=LaunchTarget(
+            argv=(
+                "/usr/bin/env",
+                "HF_TOKEN=hf_supersecret",
+                "python",
+                "bench.py",
+                "OPENAI_API_KEY=sk-live-123",
+            )
+        )
+    )
+    stored = " ".join(plan.to_redacted_argv())
+    assert "hf_supersecret" not in stored
+    assert "sk-live-123" not in stored
+    assert f"HF_TOKEN={REDACTED}" in plan.to_redacted_argv()
+    # The real invocation still receives the true values.
+    assert "HF_TOKEN=hf_supersecret" in plan.to_argv()
+    # Ordinary arguments survive so the run stays reproducible.
+    assert "bench.py" in plan.to_redacted_argv()
+
+
+def test_redaction_does_not_disturb_launch_being_last():
+    plan = make_plan(
+        target=LaunchTarget(argv=("/bin/infer", "TOKEN=abc", "--tokens", "8"))
+    )
+    argv = plan.to_redacted_argv()
+    separator = argv.index("--launch")
+    assert argv[separator + 1] == "--"
+    assert argv[separator + 2 :] == (
+        "/bin/infer",
+        f"TOKEN={REDACTED}",
+        "--tokens",
+        "8",
+    )
+
+
+def test_output_trace_tilde_is_expanded_once(tmp_path, monkeypatch):
+    """The checked path and the recorded path must be identical.
+
+    An unexpanded `~` would make the collision check and mkdir target
+    $HOME while xctrace created a literal './~' directory.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    plan = make_plan(output_trace=Path("~/traces/run.trace"))
+    argv = plan.to_argv()
+    recorded = argv[argv.index("--output") + 1]
+    assert "~" not in recorded
+    assert recorded == str(plan.output_trace)
+    assert Path(recorded).is_absolute()

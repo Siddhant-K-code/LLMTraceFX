@@ -308,10 +308,12 @@ def test_non_timeout_wait_errors_propagate(tmp_path):
 
     class Exploding(FakeProcess):
         def wait(self, timeout_seconds: float) -> int:
+            self.wait_calls.append(timeout_seconds)
             raise subprocess.SubprocessError("unexpected")
 
     trace = tmp_path / "run.trace"
-    launcher = FakeLauncher(Exploding())
+    process = Exploding()
+    launcher = FakeLauncher(process)
 
     with pytest.raises(subprocess.SubprocessError, match="unexpected"):
         run_record(
@@ -319,3 +321,29 @@ def test_non_timeout_wait_errors_propagate(tmp_path):
             launcher=launcher,
             artifacts_dir=tmp_path / "artifacts",
         )
+
+    # The recording lives in its own session, so nothing else would reap
+    # it. It must be stopped even on an unexpected error.
+    assert process.signals[0] == signal.SIGINT
+
+
+def test_keyboard_interrupt_while_waiting_still_stops_the_recording(tmp_path):
+    """KeyboardInterrupt is a BaseException, not an Exception."""
+
+    class Interrupted(FakeProcess):
+        def wait(self, timeout_seconds: float) -> int:
+            self.wait_calls.append(timeout_seconds)
+            raise KeyboardInterrupt
+
+    trace = tmp_path / "run.trace"
+    process = Interrupted()
+    launcher = FakeLauncher(process)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_record(
+            make_plan(trace),
+            launcher=launcher,
+            artifacts_dir=tmp_path / "artifacts",
+        )
+
+    assert process.signals[0] == signal.SIGINT

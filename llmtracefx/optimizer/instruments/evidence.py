@@ -22,6 +22,7 @@ from .capability import XctraceCapabilityReport
 from .export import (
     SUPPORTED_TABLE_SCHEMAS,
     ExportedTable,
+    InstrumentsExportError,
     MetalGpuIntervalSummary,
     ProcessGpuIntervals,
     summarize_metal_gpu_intervals,
@@ -117,13 +118,22 @@ def build_instruments_evidence(inputs: TraceEvidenceInputs) -> InstrumentsEviden
                     "would misattribute other processes' GPU work."
                 )
             else:
-                entry = summary.for_process(inputs.target_pid)
-                if entry is None:
-                    notes.append(
-                        f"pid {inputs.target_pid} contributed no GPU "
-                        "intervals to this trace, so no metric was derived"
-                    )
+                entry = None
+                try:
+                    entry = summary.for_process(inputs.target_pid)
+                except InstrumentsExportError as exc:
+                    # An ambiguous pid is a refusal, not a crash: the
+                    # trace is still valid evidence, there is just no
+                    # honest way to attribute a scalar to one process.
+                    notes.append(str(exc))
                 else:
+                    if entry is None:
+                        notes.append(
+                            f"pid {inputs.target_pid} contributed no GPU "
+                            "intervals to this trace, so no metric was "
+                            "derived"
+                        )
+                if entry is not None:
                     metrics = metrics_for_process(summary, entry)
                     notes.append(
                         f"metrics describe pid {inputs.target_pid} only "
@@ -146,6 +156,31 @@ def build_instruments_evidence(inputs: TraceEvidenceInputs) -> InstrumentsEviden
         unsupported_schemas=unsupported,
         metrics=metrics,
         notes=" ".join(notes) if notes else None,
+    )
+
+
+def failed_recording_evidence(
+    capability: XctraceCapabilityReport, *, template: str, reason: str
+) -> InstrumentsEvidence:
+    """Evidence recorded when a supported toolchain still failed to record.
+
+    Distinct from :func:`unsupported_evidence`: capability succeeded, so
+    reusing the capability reason here would persist an affirmatively
+    misleading note ("xctrace provides the template") on an artifact
+    that represents a failed recording. The recorder's own message is
+    carried instead.
+    """
+    return InstrumentsEvidence(
+        tool="xctrace",
+        tool_version=capability.xctrace_version,
+        capability=capability.capability.value,
+        template=template,
+        trace_bundle_name=None,
+        available_schemas=(),
+        parsed_schemas=(),
+        unsupported_schemas=(),
+        metrics={},
+        notes=f"no trace was produced: {reason}",
     )
 
 

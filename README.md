@@ -1799,7 +1799,10 @@ of these, but deriving those numbers needs modelling assumptions this project
 has not validated against ground truth, so they stay absent rather than
 approximated. `ExperimentRecord.validate` enforces the rule structurally: a
 metric may carry `measured_native` provenance only when a table schema was
-genuinely parsed, so a fabricated hardware number cannot be persisted.
+genuinely parsed, and any metric name containing `utilization`, `occupancy`,
+`bandwidth`, `busy_percent`, `kernel_time`, `gpu_power`, `gpu_energy` or
+`gpu_memory` is rejected outright, so a fabricated hardware number cannot be
+persisted even by a caller that tries.
 
 Two further limits worth stating plainly:
 
@@ -1811,8 +1814,11 @@ Two further limits worth stating plainly:
   A capture of a trivial local Metal program also contained intervals
   belonging to `WindowServer` and `com.apple.WebKit.GPU`, and in one capture
   81% of all intervals were `WindowServer`'s. Metrics are therefore always
-  attributed per pid; without a target pid, no scalar metric is emitted at
-  all. Nothing here is a benchmark result or a comparison between runtimes.
+  attributed per pid, read from the `<process>` cell's structured `pid` child
+  rather than scraped from its display label. Without a target pid, and when
+  one pid appears under two different labels (pid reuse, or a process that
+  renamed itself), no scalar metric is emitted at all. Nothing here is a
+  benchmark result or a comparison between runtimes.
 
 The other 81 schemas found in a capture are listed in
 `instruments.unsupported_schemas` so the gap is explicit. Instruments
@@ -1842,10 +1848,12 @@ measurement.
   flow through xctrace into captured logs. `--all-processes` is never used,
   and attaching is offered by numeric pid only, since attaching by name
   resolves ambiguously.
-- **Credential redaction.** `--env` values whose names look like credentials
-  (`token`, `secret`, `password`, `api_key`, `access_key`, `private_key`,
-  `credential`) are replaced with `<redacted>` in every argv this project
-  stores or prints, while the real value still reaches the process.
+- **Credential redaction.** `--env` values and the profiled command's own
+  arguments whose names look like credentials (`token`, `secret`, `password`,
+  `api_key`, `access_key`, `private_key`, `credential`) are replaced with
+  `<redacted>` in every argv this project stores or prints, while the real
+  value still reaches the process. So `env HF_TOKEN=... python bench.py` is
+  persisted with the token masked.
 - **Identity is not ingested.** A trace's table of contents contains the
   device's display name (routinely a person's name), its hardware UUID, and
   the target's full argument list. None of these are read. Only the launched

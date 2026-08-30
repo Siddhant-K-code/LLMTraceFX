@@ -598,3 +598,128 @@ def test_cli_exposes_the_four_documented_subcommands():
     )[1]
     names = set(instruments._subparsers._group_actions[0].choices)
     assert names == {"capability", "plan", "record", "import"}
+
+
+# --- Regressions found in independent review --------------------------
+
+
+def test_failed_recording_evidence_does_not_claim_success(tmp_path):
+    """Capability succeeded, but no trace was produced.
+
+    Reusing the capability reason here would persist a note saying
+    xctrace provides the template, on an artifact that represents a
+    failed recording.
+    """
+    trace = tmp_path / "run.trace"
+    out = tmp_path / "artifacts"
+    record_trace(
+        runner=exporting_runner(),
+        launcher=FakeLauncher(FakeProcess(returncode=5)),
+        command=("/bin/infer",),
+        output_trace=trace,
+        output_dir=out,
+    )
+
+    payload = json.loads((out / "instruments_evidence.json").read_text("utf-8"))
+    assert payload["metrics"] == {}
+    assert payload["trace_bundle_name"] is None
+    notes = payload["notes"]
+    assert notes.startswith("no trace was produced:")
+    assert "provides the template" not in notes
+
+
+def test_timed_out_recording_evidence_says_so(tmp_path):
+    trace = tmp_path / "run.trace"
+    out = tmp_path / "artifacts"
+    record_trace(
+        runner=exporting_runner(),
+        launcher=FakeLauncher(FakeProcess(timeout_waits=1)),
+        command=("/bin/infer",),
+        output_trace=trace,
+        output_dir=out,
+    )
+    notes = json.loads((out / "instruments_evidence.json").read_text("utf-8"))["notes"]
+    assert "host deadline" in notes
+
+
+def test_ambiguous_target_pid_yields_no_metric():
+    """A pid under two labels must not get one of them attributed."""
+    table = parse_exported_table(
+        "<trace-query-result><node>"
+        '<schema name="metal-gpu-intervals">'
+        "<col><mnemonic>start</mnemonic>"
+        "<engineering-type>start-time</engineering-type></col>"
+        "<col><mnemonic>duration</mnemonic>"
+        "<engineering-type>duration</engineering-type></col>"
+        "<col><mnemonic>process</mnemonic>"
+        "<engineering-type>process</engineering-type></col>"
+        "</schema>"
+        '<row><start-time id="1">10</start-time>'
+        '<duration id="2">10</duration>'
+        '<process id="3" fmt="probe (7)"><pid id="4">7</pid></process></row>'
+        '<row><start-time id="5">20</start-time>'
+        '<duration id="6">50</duration>'
+        '<process id="7" fmt="other (7)"><pid id="8">7</pid></process></row>'
+        "</node></trace-query-result>"
+    )
+    evidence = build_instruments_evidence(
+        TraceEvidenceInputs(
+            capability=capability(exporting_runner()),
+            trace_bundle_name="run.trace",
+            template="Metal System Trace",
+            available_schemas=("metal-gpu-intervals",),
+            table=table,
+            target_pid=7,
+        )
+    )
+    assert evidence.metrics == {}
+    assert "is ambiguous" in (evidence.notes or "")
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "gpu_utilization",
+        "metal_gpu_occupancy",
+        "memory_bandwidth",
+        "gpu_busy_percent",
+        "metal_kernel_time",
+        "gpu_power_watts",
+        "gpu_memory_bytes",
+    ],
+)
+def test_schema_structurally_rejects_overclaiming_metric_names(name):
+    """The rule is enforced by validate(), not only by convention."""
+    from llmtracefx.optimizer.schema import (
+        InstrumentsEvidence,
+        Measurement,
+        MetricProvenance,
+    )
+
+    evidence = InstrumentsEvidence(
+        parsed_schemas=("metal-gpu-intervals",),
+        metrics={
+            name: Measurement(
+                value=1.0, provenance=MetricProvenance.MEASURED_NATIVE, unit="x"
+            )
+        },
+    )
+    with pytest.raises(SchemaValidationError, match="forbidden marker"):
+        base_record(instruments=evidence).validate()
+
+
+def test_the_metrics_this_project_emits_survive_that_rule():
+    """The guard must not be so broad that real metrics are rejected."""
+    table = parse_exported_table(read_fixture(TABLE))
+    evidence = build_instruments_evidence(
+        TraceEvidenceInputs(
+            capability=capability(exporting_runner()),
+            trace_bundle_name="run.trace",
+            template="Metal System Trace",
+            available_schemas=("metal-gpu-intervals",),
+            table=table,
+            target_pid=4242,
+        )
+    )
+    assert evidence.metrics
+    base_record(instruments=evidence).validate()

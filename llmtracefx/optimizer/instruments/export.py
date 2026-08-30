@@ -39,7 +39,7 @@ record or a log line.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -293,17 +293,25 @@ class CellValue:
     tag: str
     text: str | None
     fmt: str | None
+    children: dict[str, CellValue] = field(default_factory=dict)
+    """Resolved direct children, keyed by tag.
 
-    def as_int(self, *, field: str) -> int:
+    Composite values carry structured sub-values: a ``process`` cell has
+    a ``pid`` child. Reading that structure is strictly more reliable
+    than scraping the human-readable display label, so it is kept rather
+    than discarded."""
+
+    def as_int(self, *, field_name: str) -> int:
         if self.text is None:
             raise InstrumentsExportError(
-                f"exported value for {field!r} has no text content"
+                f"exported value for {field_name!r} has no text content"
             )
         try:
             return int(self.text.strip())
         except ValueError as exc:
             raise InstrumentsExportError(
-                f"exported value for {field!r} is not an integer: " f"{self.text!r}"
+                f"exported value for {field_name!r} is not an integer: "
+                f"{self.text!r}"
             ) from exc
 
 
@@ -400,7 +408,45 @@ def _parse_columns(schema_element: ElementTree.Element) -> tuple[TableColumn, ..
         )
     if not columns:
         raise InstrumentsExportError("exported table schema declares no <col> elements")
+    mnemonics = [column.mnemonic for column in columns]
+    duplicates = sorted({name for name in mnemonics if mnemonics.count(name) > 1})
+    if duplicates:
+        # Rows are keyed by mnemonic, so a repeated one would let a later
+        # column silently overwrite an earlier one and make require()
+        # hand back a different column's value.
+        raise InstrumentsExportError(
+            "exported table schema declares duplicate column mnemonics: "
+            + ", ".join(duplicates)
+        )
     return tuple(columns)
+
+
+def _cell_from(
+    element: ElementTree.Element, index: dict[str, ElementTree.Element]
+) -> CellValue:
+    """Build a cell from a resolved element, resolving its children too.
+
+    Only direct children are resolved, which is enough to read a
+    structured sub-value such as a ``process`` cell's ``pid`` without
+    walking an unbounded tree.
+    """
+    children: dict[str, CellValue] = {}
+    for child in element:
+        resolved_child = _resolve(child, index)
+        children.setdefault(
+            resolved_child.tag,
+            CellValue(
+                tag=resolved_child.tag,
+                text=resolved_child.text,
+                fmt=resolved_child.get("fmt"),
+            ),
+        )
+    return CellValue(
+        tag=element.tag,
+        text=element.text,
+        fmt=element.get("fmt"),
+        children=children,
+    )
 
 
 def parse_exported_table(
@@ -420,12 +466,21 @@ def parse_exported_table(
             "This does not look like `xctrace export --xpath` output."
         )
 
-    node = root.find("node")
-    if node is None:
+    nodes = root.findall("node")
+    if not nodes:
         raise InstrumentsExportError(
             "trace export contains no <node>; the XPath selected nothing. "
             "Check the schema name against `xctrace export --toc`."
         )
+    if len(nodes) > 1:
+        # Parsing only the first node would report a subset of the rows
+        # as though it were the whole table.
+        raise InstrumentsExportError(
+            f"trace export contains {len(nodes)} <node> elements. This "
+            "project exports one table at a time and refuses to report "
+            "one node's rows as the whole result."
+        )
+    node = nodes[0]
 
     schema_element = node.find("schema")
     if schema_element is None:
@@ -459,19 +514,24 @@ def parse_exported_table(
         # strict=True is belt and braces: the length check above
         # already guarantees the two sequences match.
         for column, child in zip(columns, children, strict=True):
-            if child.tag != column.engineering_type:
-                raise InstrumentsExportError(
-                    f"row {row_number} of table {schema_name!r} has "
-                    f"<{child.tag}> where column {column.mnemonic!r} "
-                    f"declares engineering type "
-                    f"{column.engineering_type!r}"
-                )
             resolved = _resolve(child, index)
-            values[column.mnemonic] = CellValue(
-                tag=resolved.tag,
-                text=resolved.text,
-                fmt=resolved.get("fmt"),
-            )
+            # Both tags are checked. The referencing element's tag caught
+            # inline mismatches, but in real output almost every cell is
+            # a <tag ref="N"/>, so checking only that would leave the
+            # engineering-type contract enforced on a tiny minority of
+            # the data and let a ref point at a value of the wrong type.
+            for tag, source in (
+                (child.tag, "value"),
+                (resolved.tag, "referenced value"),
+            ):
+                if tag != column.engineering_type:
+                    raise InstrumentsExportError(
+                        f"row {row_number} of table {schema_name!r} has a "
+                        f"{source} <{tag}> where column "
+                        f"{column.mnemonic!r} declares engineering type "
+                        f"{column.engineering_type!r}"
+                    )
+            values[column.mnemonic] = _cell_from(resolved, index)
         rows.append(ExportedRow(values=values))
 
     return ExportedTable(schema_name=schema_name, columns=columns, rows=tuple(rows))
@@ -520,10 +580,25 @@ class MetalGpuIntervalSummary:
     per_process: tuple[ProcessGpuIntervals, ...]
 
     def for_process(self, pid: int) -> ProcessGpuIntervals | None:
-        for entry in self.per_process:
-            if entry.pid == pid:
-                return entry
-        return None
+        """The single entry for ``pid``, or ``None`` if it has none.
+
+        Raises when more than one entry shares the pid. That happens if
+        a pid was reused within the capture or a process changed its
+        name, and picking one of them would attribute another process's
+        GPU work to the caller's, which is exactly the misattribution
+        this module exists to prevent.
+        """
+        matches = [entry for entry in self.per_process if entry.pid == pid]
+        if not matches:
+            return None
+        if len(matches) > 1:
+            labels = ", ".join(sorted(entry.process_label for entry in matches))
+            raise InstrumentsExportError(
+                f"pid {pid} is ambiguous in this trace: it appears under "
+                f"{len(matches)} different process labels ({labels}). "
+                "Refusing to attribute GPU intervals to one of them."
+            )
+        return matches[0]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -542,11 +617,22 @@ class MetalGpuIntervalSummary:
 
 
 def _process_pid(value: CellValue) -> int | None:
-    """Extract a pid from a resolved ``process`` cell's ``fmt`` label.
+    """Read a pid from a resolved ``process`` cell.
 
-    The label has the shape ``name (pid)``. Returning ``None`` when it
-    does not match keeps an unparsable label from becoming a wrong pid.
+    Prefers the structured ``<pid>`` child that real xctrace output
+    carries. The ``name (pid)`` display label is only a fallback for
+    exports that omit the child, and ``None`` is returned rather than a
+    guess when neither is usable, so an unreadable process never becomes
+    a wrong pid.
     """
+    pid_child = value.children.get("pid")
+    if pid_child is not None and pid_child.text is not None:
+        try:
+            return int(pid_child.text.strip())
+        except ValueError:
+            # Fall through to the label rather than failing the whole
+            # table for one unreadable pid element.
+            pass
     if value.fmt is None:
         return None
     match = re.search(r"\((\d+)\)\s*$", value.fmt)
@@ -569,40 +655,44 @@ def summarize_metal_gpu_intervals(table: ExportedTable) -> MetalGpuIntervalSumma
             + ", ".join(sorted(missing))
         )
 
-    counts: dict[str, int] = {}
-    duration_sums: dict[str, int] = {}
-    first_start: dict[str, int] = {}
-    last_end: dict[str, int] = {}
-    pids: dict[str, int | None] = {}
+    # Keyed on (pid, label) rather than the label alone. Two processes
+    # can share a display label, and one pid can appear under two labels
+    # after a pid is reused or a process changes its name; keying on the
+    # pair keeps both cases as distinct entries so neither is silently
+    # merged into the other.
+    Key = tuple[int | None, str]
+    counts: dict[Key, int] = {}
+    duration_sums: dict[Key, int] = {}
+    first_start: dict[Key, int] = {}
+    last_end: dict[Key, int] = {}
 
     for row in table.rows:
         process = row.require("process")
-        label = process.fmt or "<unknown process>"
-        start = row.require("start").as_int(field="start")
-        duration = row.require("duration").as_int(field="duration")
+        key: Key = (_process_pid(process), process.fmt or "<unknown process>")
+        start = row.require("start").as_int(field_name="start")
+        duration = row.require("duration").as_int(field_name="duration")
         if duration < 0:
             raise InstrumentsExportError(
                 f"metal-gpu-intervals row has a negative duration: {duration}"
             )
         end = start + duration
 
-        counts[label] = counts.get(label, 0) + 1
-        duration_sums[label] = duration_sums.get(label, 0) + duration
-        pids.setdefault(label, _process_pid(process))
-        if label not in first_start or start < first_start[label]:
-            first_start[label] = start
-        if label not in last_end or end > last_end[label]:
-            last_end[label] = end
+        counts[key] = counts.get(key, 0) + 1
+        duration_sums[key] = duration_sums.get(key, 0) + duration
+        if key not in first_start or start < first_start[key]:
+            first_start[key] = start
+        if key not in last_end or end > last_end[key]:
+            last_end[key] = end
 
     per_process = tuple(
         ProcessGpuIntervals(
-            process_label=label,
-            pid=pids[label],
-            interval_count=counts[label],
-            duration_sum_ns=duration_sums[label],
-            wall_span_ns=last_end[label] - first_start[label],
+            process_label=key[1],
+            pid=key[0],
+            interval_count=counts[key],
+            duration_sum_ns=duration_sums[key],
+            wall_span_ns=last_end[key] - first_start[key],
         )
-        for label in sorted(counts, key=lambda key: (-counts[key], key))
+        for key in sorted(counts, key=lambda item: (-counts[item], item[1]))
     )
     return MetalGpuIntervalSummary(
         total_interval_count=sum(counts.values()), per_process=per_process

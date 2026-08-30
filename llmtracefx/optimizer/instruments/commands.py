@@ -257,6 +257,11 @@ class RecordPlan:
             raise InstrumentsCommandError("xctrace_path must be non-empty")
         if not self.template:
             raise InstrumentsCommandError("template must be non-empty")
+        # Expand `~` once, here, so the path this plan validates is
+        # byte-for-byte the path that reaches xctrace. Leaving it
+        # unexpanded would let the collision check and mkdir target
+        # $HOME while xctrace created a literal './~' directory.
+        object.__setattr__(self, "output_trace", self.output_trace.expanduser())
         if self.output_trace.suffix != ".trace":
             raise InstrumentsCommandError(
                 f"output trace path must end in '.trace', got "
@@ -313,7 +318,11 @@ class RecordPlan:
             # This must stay last.
             argv.append("--launch")
             argv.append("--")
-            argv.extend(self.target.argv)
+            # The profiled command is user supplied and can carry a
+            # secret (for example `env HF_TOKEN=... python bench.py`),
+            # so it goes through the same redaction as --env before
+            # being persisted or printed.
+            argv.extend(redact_argv(self.target.argv) if redacted else self.target.argv)
         return tuple(argv)
 
     def to_argv(self) -> tuple[str, ...]:
