@@ -85,11 +85,71 @@ class LoadedEvidence:
     excluded: tuple[ExcludedRun, ...]
 
 
-def _resolve_artifact_path(raw: str | None, *, results_dir: Path, run_id: str) -> Path:
-    if raw is None:
-        return results_dir / "runs" / run_id / "final_record.json"
-    path = Path(raw)
-    return path if path.is_absolute() else results_dir / raw
+def _contained_regular_file(candidate: Path, *, root: Path) -> Path | None:
+    """The resolved ``candidate`` when it is a regular file inside ``root``.
+
+    Resolution happens before the containment test, so a symlink pointing
+    out of the tree fails it rather than being followed out. ``is_file`` on
+    the resolved path additionally rejects a directory, a FIFO or a device
+    node, which would otherwise be opened and read.
+    """
+    try:
+        resolved = candidate.resolve(strict=True)
+        anchor = root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not resolved.is_relative_to(anchor):
+        return None
+    if not resolved.is_file():
+        return None
+    return resolved
+
+
+def _resolve_artifact_path(
+    raw: str | None, *, results_dir: Path, run_id: str
+) -> Path | None:
+    """Resolve a recorded artifact path inside the results directory named.
+
+    ``verify.execute_row`` writes the record at
+    ``<output_dir>/runs/<run_id>/final_record.json`` unconditionally, so that
+    location is correct by construction for every recorded form and is tried
+    first. The recorded string is corroboration, not authority.
+
+    Anchoring on the results directory rather than on the recorded string
+    matters in both directions. A relative ``--output-dir`` records a path
+    relative to the *working directory* of that run, so reading the recorded
+    string literally would resolve it against whatever tree this process
+    happens to be standing in: run ``compare --results B`` from inside tree
+    ``A`` and you would silently get A's measurements labelled as B's, with
+    every identity check passing because a matrix ``run_id`` names the task
+    and not the system. Joining the recorded string under the results
+    directory instead doubles the prefix
+    (``artifacts/run/artifacts/run/...``) and finds nothing. The canonical
+    location avoids both.
+
+    Nothing outside ``results_dir`` is ever returned. The recorded string is
+    data from the artifact being validated, so an absolute path, a ``..``
+    segment or a symlink in it is under the control of whoever wrote that
+    artifact; honouring any of them would let one results tree serve another
+    tree's measurements while every identity check passed. When the recorded
+    string does not resolve to a regular file inside the tree, ``None`` is
+    returned and the caller reports the record as unreadable rather than
+    reading it from wherever the string pointed.
+    """
+    canonical = results_dir / "runs" / run_id / "final_record.json"
+    contained = _contained_regular_file(canonical, root=results_dir)
+    if contained is not None:
+        return contained
+    if raw is None or not isinstance(raw, str):
+        # Not a string means nothing usable to resolve. ``RowVerification``
+        # does not type-check this field, and reaching ``Path()`` with a list
+        # raises ``TypeError`` out of the middle of the loader.
+        return None
+    candidate = Path(raw)
+    # An absolute recorded path is believed only when it names something
+    # inside the tree that was actually asked for.
+    probe = candidate if candidate.is_absolute() else results_dir / raw
+    return _contained_regular_file(probe, root=results_dir)
 
 
 def _record_identity_error(
@@ -137,8 +197,10 @@ def _load_one_run(
 ) -> tuple[RunEvidence | None, ExcludedRun | None]:
     run_id = verification_path.parent.name
     try:
+        # ``read_json`` is bounded, regular-file-only and does not follow
+        # symlinks, so this needs no separate guard here.
         verification = RowVerification.read_json(verification_path)
-    except (OSError, VerifyError) as exc:
+    except (OSError, VerifyError, TypeError, ArithmeticError) as exc:
         return None, ExcludedRun(
             run_id=run_id,
             source_results_dir=str(results_dir),
@@ -170,9 +232,22 @@ def _load_one_run(
     final_record_path = _resolve_artifact_path(
         verification.final_record_path, results_dir=results_dir, run_id=run_id
     )
+    if final_record_path is None:
+        return None, ExcludedRun(
+            run_id=verification.run_id,
+            source_results_dir=str(results_dir),
+            reason=(
+                f"could not read final_record.json for run "
+                f"{verification.run_id!r}: it is not a regular file inside the "
+                "results directory. A record reached through an absolute "
+                "path, a parent-directory segment or a symlink leaving the "
+                "tree is not this tree's evidence"
+            ),
+        )
     try:
         # Preserve legacy tune diagnostics: the tuner classifies non-finite
-        # measurements with field-specific rejection reasons.
+        # measurements with field-specific rejection reasons. ``read_json``
+        # is bounded, regular-file-only and does not follow symlinks.
         record = ExperimentRecord.read_json(final_record_path, allow_non_finite=True)
     except OSError as exc:
         return None, ExcludedRun(
@@ -187,6 +262,23 @@ def _load_one_run(
             reason=(
                 f"final_record.json ({final_record_path}) failed schema "
                 f"validation: {exc}"
+            ),
+        )
+    except (ArithmeticError, ValueError, TypeError, RecursionError) as exc:
+        # A record is untrusted input, and JSON's own limits are not reported
+        # as schema failures. A numeric literal too large for a float raises
+        # ``OverflowError``, which is an ``ArithmeticError`` and so is caught
+        # by nothing above; deep nesting raises ``RecursionError``; a value
+        # of the wrong type reaches an arithmetic or a hash as ``TypeError``.
+        # None of those are conditions the caller can act on as themselves,
+        # so they become the same exclusion every other malformed record
+        # produces rather than escaping as a stack trace.
+        return None, ExcludedRun(
+            run_id=verification.run_id,
+            source_results_dir=str(results_dir),
+            reason=(
+                f"final_record.json ({final_record_path}) could not be parsed: "
+                f"{type(exc).__name__}: {exc}"
             ),
         )
 

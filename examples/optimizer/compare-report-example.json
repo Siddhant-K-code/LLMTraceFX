@@ -1,0 +1,746 @@
+{
+  "schema_version": "1",
+  "generated_at": "2026-01-01T00:00:00.000000Z",
+  "results_dirs": [
+    "artifacts/example-results"
+  ],
+  "tune_report_paths": [],
+  "policy": {
+    "schema_version": "1",
+    "name": "local vs frontier vs flash, lowest mean latency",
+    "description": "SYNTHETIC EXAMPLE DATA ONLY. Not a real benchmark, and not evidence about any actual model's performance, latency or price. It exists solely to exercise every section of the `compare` report and its HTML renderer: a recommended system, a full ranking, a Pareto-style evidence frontier, a rejected system, provider-reported token usage, an illustrative cost estimate, a separate stratum for a different comparable unit, and an excluded run.",
+    "objective": "min_mean_total_latency_ms",
+    "constraints": {
+      "required_statuses": [
+        "completed",
+        "skipped"
+      ],
+      "min_pass_rate": 0.75,
+      "min_quality_score": 0.75,
+      "required_quality_metric": "structured_json_exact_field_match",
+      "max_mean_total_latency_ms": null,
+      "max_cost_per_correct_case": null,
+      "allowed_provenances": null,
+      "min_measured_repetitions": 2,
+      "max_coefficient_of_variation": 0.35
+    }
+  },
+  "pricing": {
+    "manifest_path": "artifacts/example-pricing/illustrative-rates.json",
+    "manifest_sha256": "11b7bf1654cd766ad576fa875f917113a73ed94378e3121edcd6459329cbeac7",
+    "currency": "USD",
+    "rates_are_illustrative": true,
+    "entry_ids_used": [
+      "example-flash-api",
+      "example-frontier-api"
+    ]
+  },
+  "strata": [
+    {
+      "comparable_unit_key": {
+        "workload_id": "structured-json-profile-extraction",
+        "workload_version": "1",
+        "workload_prompt_hash": "sha256:synthetic-prompt-abc",
+        "context_tier": "2k",
+        "quality_metric": "structured_json_exact_field_match",
+        "max_output_tokens": 512,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "request_shape": null
+      },
+      "comparable_unit_label": "structured-json-profile-extraction@v1 [2k] evaluator=structured_json_exact_field_match max_output=512 temperature=0 top_p=1",
+      "outcome": "recommended",
+      "objective_name": "min_mean_total_latency_ms",
+      "recommended": {
+        "system_key": {
+          "model_id": "example-flash-model",
+          "model_revision": null,
+          "provider": "example-provider",
+          "runtime_name": "openai-compatible-stream",
+          "runtime_backend": null,
+          "accelerator": null,
+          "quantization": null,
+          "reasoning_effort": "low",
+          "decode_mode": "autoregressive",
+          "endpoint": "https://example.invalid/v1/chat/completions",
+          "thinking_type": null,
+          "execution_config_hash": "flash-cfg",
+          "is_local": false
+        },
+        "system_label": "example-flash-model via example-provider [openai-compatible-stream/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=https://example.invalid/v1/chat/completions",
+        "rank": 1,
+        "run_ids": [
+          "flash-2k-1",
+          "flash-2k-2",
+          "flash-2k-3",
+          "flash-2k-4"
+        ],
+        "verification_paths": [
+          "artifacts/example-results/runs/flash-2k-1/verification.json",
+          "artifacts/example-results/runs/flash-2k-2/verification.json",
+          "artifacts/example-results/runs/flash-2k-3/verification.json",
+          "artifacts/example-results/runs/flash-2k-4/verification.json"
+        ],
+        "record_paths": [
+          "artifacts/example-results/runs/flash-2k-1/final_record.json",
+          "artifacts/example-results/runs/flash-2k-2/final_record.json",
+          "artifacts/example-results/runs/flash-2k-3/final_record.json",
+          "artifacts/example-results/runs/flash-2k-4/final_record.json"
+        ],
+        "evidence_count": 4,
+        "objective_name": "min_mean_total_latency_ms",
+        "objective_value": 1195.0,
+        "pass_rate": 0.75,
+        "mean_quality_score": 0.75,
+        "quality_metric": "structured_json_exact_field_match",
+        "mean_total_latency_ms": 1195.0,
+        "p50_total_latency_ms": 1200.0,
+        "p95_total_latency_ms": 1230.0,
+        "stdev_total_latency_ms": 29.58039891549808,
+        "coefficient_of_variation": 0.024753471895814293,
+        "correct_cases_per_minute": 50.420168067226896,
+        "mean_ttft_ms": 107.5,
+        "ttft_basis": "client_observed_stream",
+        "usage": {
+          "provenance": "provider_reported",
+          "runs_reporting_usage": 4,
+          "runs_total": 4,
+          "complete": true,
+          "input_tokens": 8400,
+          "output_tokens": 1840,
+          "cached_input_tokens": 2400,
+          "reasoning_tokens": null
+        },
+        "cost": {
+          "currency": "USD",
+          "estimated": true,
+          "monetary_basis": "estimated_from_provider_reported_usage_and_manifest_rates",
+          "pricing_entry_id": "example-flash-api",
+          "pricing_entry_sha256": "1258f24dfa65f4367707374daf099b4d969db3b04af5de654463a6a8c3bfdad8",
+          "rates_are_illustrative": true,
+          "total_amount": 0.0012,
+          "cost_per_case": 0.0003,
+          "cost_per_correct_case": 0.00039999999999999996,
+          "correct_cases_per_currency_unit": 2500.0,
+          "reasons": [
+            "run flash-2k-1: provider did not report reasoning token usage; completion tokens are billed at the output rate and no hidden reasoning cost is inferred",
+            "run flash-2k-2: provider did not report reasoning token usage; completion tokens are billed at the output rate and no hidden reasoning cost is inferred",
+            "run flash-2k-3: provider did not report reasoning token usage; completion tokens are billed at the output rate and no hidden reasoning cost is inferred",
+            "run flash-2k-4: provider did not report reasoning token usage; completion tokens are billed at the output rate and no hidden reasoning cost is inferred"
+          ]
+        },
+        "mean_peak_memory_bytes": null,
+        "max_peak_memory_bytes": null,
+        "missing_evidence": [
+          "peak memory is a local-only measurement and is not available for a system executed by a hosted provider"
+        ]
+      },
+      "inconclusive_reason": null,
+      "ranked": [
+        {
+          "system_key": {
+            "model_id": "example-flash-model",
+            "model_revision": null,
+            "provider": "example-provider",
+            "runtime_name": "openai-compatible-stream",
+            "runtime_backend": null,
+            "accelerator": null,
+            "quantization": null,
+            "reasoning_effort": "low",
+            "decode_mode": "autoregressive",
+            "endpoint": "https://example.invalid/v1/chat/completions",
+            "thinking_type": null,
+            "execution_config_hash": "flash-cfg",
+            "is_local": false
+          },
+          "system_label": "example-flash-model via example-provider [openai-compatible-stream/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=https://example.invalid/v1/chat/completions",
+          "rank": 1,
+          "run_ids": [
+            "flash-2k-1",
+            "flash-2k-2",
+            "flash-2k-3",
+            "flash-2k-4"
+          ],
+          "verification_paths": [
+            "artifacts/example-results/runs/flash-2k-1/verification.json",
+            "artifacts/example-results/runs/flash-2k-2/verification.json",
+            "artifacts/example-results/runs/flash-2k-3/verification.json",
+            "artifacts/example-results/runs/flash-2k-4/verification.json"
+          ],
+          "record_paths": [
+            "artifacts/example-results/runs/flash-2k-1/final_record.json",
+            "artifacts/example-results/runs/flash-2k-2/final_record.json",
+            "artifacts/example-results/runs/flash-2k-3/final_record.json",
+            "artifacts/example-results/runs/flash-2k-4/final_record.json"
+          ],
+          "evidence_count": 4,
+          "objective_name": "min_mean_total_latency_ms",
+          "objective_value": 1195.0,
+          "pass_rate": 0.75,
+          "mean_quality_score": 0.75,
+          "quality_metric": "structured_json_exact_field_match",
+          "mean_total_latency_ms": 1195.0,
+          "p50_total_latency_ms": 1200.0,
+          "p95_total_latency_ms": 1230.0,
+          "stdev_total_latency_ms": 29.58039891549808,
+          "coefficient_of_variation": 0.024753471895814293,
+          "correct_cases_per_minute": 50.420168067226896,
+          "mean_ttft_ms": 107.5,
+          "ttft_basis": "client_observed_stream",
+          "usage": {
+            "provenance": "provider_reported",
+            "runs_reporting_usage": 4,
+            "runs_total": 4,
+            "complete": true,
+            "input_tokens": 8400,
+            "output_tokens": 1840,
+            "cached_input_tokens": 2400,
+            "reasoning_tokens": null
+          },
+          "cost": {
+            "currency": "USD",
+            "estimated": true,
+            "monetary_basis": "estimated_from_provider_reported_usage_and_manifest_rates",
+            "pricing_entry_id": "example-flash-api",
+            "pricing_entry_sha256": "1258f24dfa65f4367707374daf099b4d969db3b04af5de654463a6a8c3bfdad8",
+            "rates_are_illustrative": true,
+            "total_amount": 0.0012,
+            "cost_per_case": 0.0003,
+            "cost_per_correct_case": 0.00039999999999999996,
+            "correct_cases_per_currency_unit": 2500.0,
+            "reasons": [
+              "run flash-2k-1: provider did not report reasoning token usage; completion tokens are billed at the output rate and no hidden reasoning cost is inferred",
+              "run flash-2k-2: provider did not report reasoning token usage; completion tokens are billed at the output rate and no hidden reasoning cost is inferred",
+              "run flash-2k-3: provider did not report reasoning token usage; completion tokens are billed at the output rate and no hidden reasoning cost is inferred",
+              "run flash-2k-4: provider did not report reasoning token usage; completion tokens are billed at the output rate and no hidden reasoning cost is inferred"
+            ]
+          },
+          "mean_peak_memory_bytes": null,
+          "max_peak_memory_bytes": null,
+          "missing_evidence": [
+            "peak memory is a local-only measurement and is not available for a system executed by a hosted provider"
+          ]
+        },
+        {
+          "system_key": {
+            "model_id": "example-frontier-model",
+            "model_revision": null,
+            "provider": "example-provider",
+            "runtime_name": "openai-compatible-stream",
+            "runtime_backend": null,
+            "accelerator": null,
+            "quantization": null,
+            "reasoning_effort": "high",
+            "decode_mode": "autoregressive",
+            "endpoint": "https://example.invalid/v1/chat/completions",
+            "thinking_type": null,
+            "execution_config_hash": "frontier-cfg",
+            "is_local": false
+          },
+          "system_label": "example-frontier-model via example-provider [openai-compatible-stream/unknown] quant=unrecorded reasoning=high decode=autoregressive endpoint=https://example.invalid/v1/chat/completions",
+          "rank": 2,
+          "run_ids": [
+            "frontier-2k-1",
+            "frontier-2k-2"
+          ],
+          "verification_paths": [
+            "artifacts/example-results/runs/frontier-2k-1/verification.json",
+            "artifacts/example-results/runs/frontier-2k-2/verification.json"
+          ],
+          "record_paths": [
+            "artifacts/example-results/runs/frontier-2k-1/final_record.json",
+            "artifacts/example-results/runs/frontier-2k-2/final_record.json"
+          ],
+          "evidence_count": 2,
+          "objective_name": "min_mean_total_latency_ms",
+          "objective_value": 3000.0,
+          "pass_rate": 1.0,
+          "mean_quality_score": 1.0,
+          "quality_metric": "structured_json_exact_field_match",
+          "mean_total_latency_ms": 3000.0,
+          "p50_total_latency_ms": 3000.0,
+          "p95_total_latency_ms": 3100.0,
+          "stdev_total_latency_ms": 100.0,
+          "coefficient_of_variation": 0.03333333333333333,
+          "correct_cases_per_minute": 20.0,
+          "mean_ttft_ms": 217.5,
+          "ttft_basis": "client_observed_stream",
+          "usage": {
+            "provenance": "provider_reported",
+            "runs_reporting_usage": 2,
+            "runs_total": 2,
+            "complete": true,
+            "input_tokens": 4200,
+            "output_tokens": 960,
+            "cached_input_tokens": 1200,
+            "reasoning_tokens": null
+          },
+          "cost": {
+            "currency": "USD",
+            "estimated": true,
+            "monetary_basis": "estimated_from_provider_reported_usage_and_manifest_rates",
+            "pricing_entry_id": "example-frontier-api",
+            "pricing_entry_sha256": "337697c524f506936ea43c9f97aa5dd8e464575e72e4148857d9739180e5af69",
+            "rates_are_illustrative": true,
+            "total_amount": 0.004044,
+            "cost_per_case": 0.002022,
+            "cost_per_correct_case": 0.002022,
+            "correct_cases_per_currency_unit": 494.5598417408507,
+            "reasons": [
+              "run frontier-2k-1: provider did not report reasoning token usage; completion tokens are billed at the output rate and no hidden reasoning cost is inferred",
+              "run frontier-2k-2: provider did not report reasoning token usage; completion tokens are billed at the output rate and no hidden reasoning cost is inferred"
+            ]
+          },
+          "mean_peak_memory_bytes": null,
+          "max_peak_memory_bytes": null,
+          "missing_evidence": [
+            "peak memory is a local-only measurement and is not available for a system executed by a hosted provider"
+          ]
+        },
+        {
+          "system_key": {
+            "model_id": "example-local/qwen3-8b",
+            "model_revision": null,
+            "provider": null,
+            "runtime_name": "mlx-lm",
+            "runtime_backend": "Metal",
+            "accelerator": "Apple M5 Pro",
+            "quantization": "Q4",
+            "reasoning_effort": null,
+            "decode_mode": "autoregressive",
+            "endpoint": null,
+            "thinking_type": null,
+            "execution_config_hash": "cfg-hash",
+            "is_local": true
+          },
+          "system_label": "example-local/qwen3-8b via Apple M5 Pro [mlx-lm/Metal] quant=Q4 reasoning=unrecorded decode=autoregressive",
+          "rank": 3,
+          "run_ids": [
+            "local-qwen3-8b-2k-1",
+            "local-qwen3-8b-2k-2"
+          ],
+          "verification_paths": [
+            "artifacts/example-results/runs/local-qwen3-8b-2k-1/verification.json",
+            "artifacts/example-results/runs/local-qwen3-8b-2k-2/verification.json"
+          ],
+          "record_paths": [
+            "artifacts/example-results/runs/local-qwen3-8b-2k-1/final_record.json",
+            "artifacts/example-results/runs/local-qwen3-8b-2k-2/final_record.json"
+          ],
+          "evidence_count": 2,
+          "objective_name": "min_mean_total_latency_ms",
+          "objective_value": 8100.0,
+          "pass_rate": 1.0,
+          "mean_quality_score": 1.0,
+          "quality_metric": "structured_json_exact_field_match",
+          "mean_total_latency_ms": 8100.0,
+          "p50_total_latency_ms": 8100.0,
+          "p95_total_latency_ms": 8300.0,
+          "stdev_total_latency_ms": 200.0,
+          "coefficient_of_variation": 0.024691358024691357,
+          "correct_cases_per_minute": 7.407407407407408,
+          "mean_ttft_ms": 315.0,
+          "ttft_basis": "local_prefill",
+          "usage": null,
+          "cost": null,
+          "mean_peak_memory_bytes": 9663676416.0,
+          "max_peak_memory_bytes": 9663676416.0,
+          "missing_evidence": [
+            "the pricing manifest has no entry for provider None model 'example-local/qwen3-8b'; no cost is estimated for this system"
+          ]
+        }
+      ],
+      "rejected": [
+        {
+          "system_key": {
+            "model_id": "example-flash-model",
+            "model_revision": null,
+            "provider": "example-provider",
+            "runtime_name": "openai-compatible-stream",
+            "runtime_backend": null,
+            "accelerator": null,
+            "quantization": null,
+            "reasoning_effort": "none",
+            "decode_mode": "autoregressive",
+            "endpoint": "https://example.invalid/v1/chat/completions",
+            "thinking_type": null,
+            "execution_config_hash": "flash-nothink-cfg",
+            "is_local": false
+          },
+          "system_label": "example-flash-model via example-provider [openai-compatible-stream/unknown] quant=unrecorded reasoning=none decode=autoregressive endpoint=https://example.invalid/v1/chat/completions",
+          "run_ids": [
+            "flash-nothink-2k-1",
+            "flash-nothink-2k-2"
+          ],
+          "verification_paths": [
+            "artifacts/example-results/runs/flash-nothink-2k-1/verification.json",
+            "artifacts/example-results/runs/flash-nothink-2k-2/verification.json"
+          ],
+          "record_paths": [
+            "artifacts/example-results/runs/flash-nothink-2k-1/final_record.json",
+            "artifacts/example-results/runs/flash-nothink-2k-2/final_record.json"
+          ],
+          "reasons": [
+            "pass rate 0.0 is below the required minimum 0.75",
+            "mean quality_score 0.2500 is below the required minimum 0.75"
+          ]
+        }
+      ],
+      "frontier_axes": [
+        "max_pass_rate",
+        "max_correct_cases_per_minute",
+        "min_mean_total_latency_ms"
+      ],
+      "frontier": [
+        {
+          "system_key": {
+            "model_id": "example-flash-model",
+            "model_revision": null,
+            "provider": "example-provider",
+            "runtime_name": "openai-compatible-stream",
+            "runtime_backend": null,
+            "accelerator": null,
+            "quantization": null,
+            "reasoning_effort": "low",
+            "decode_mode": "autoregressive",
+            "endpoint": "https://example.invalid/v1/chat/completions",
+            "thinking_type": null,
+            "execution_config_hash": "flash-cfg",
+            "is_local": false
+          },
+          "system_label": "example-flash-model via example-provider [openai-compatible-stream/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=https://example.invalid/v1/chat/completions",
+          "dominated": false,
+          "dominated_by": []
+        },
+        {
+          "system_key": {
+            "model_id": "example-frontier-model",
+            "model_revision": null,
+            "provider": "example-provider",
+            "runtime_name": "openai-compatible-stream",
+            "runtime_backend": null,
+            "accelerator": null,
+            "quantization": null,
+            "reasoning_effort": "high",
+            "decode_mode": "autoregressive",
+            "endpoint": "https://example.invalid/v1/chat/completions",
+            "thinking_type": null,
+            "execution_config_hash": "frontier-cfg",
+            "is_local": false
+          },
+          "system_label": "example-frontier-model via example-provider [openai-compatible-stream/unknown] quant=unrecorded reasoning=high decode=autoregressive endpoint=https://example.invalid/v1/chat/completions",
+          "dominated": false,
+          "dominated_by": []
+        },
+        {
+          "system_key": {
+            "model_id": "example-local/qwen3-8b",
+            "model_revision": null,
+            "provider": null,
+            "runtime_name": "mlx-lm",
+            "runtime_backend": "Metal",
+            "accelerator": "Apple M5 Pro",
+            "quantization": "Q4",
+            "reasoning_effort": null,
+            "decode_mode": "autoregressive",
+            "endpoint": null,
+            "thinking_type": null,
+            "execution_config_hash": "cfg-hash",
+            "is_local": true
+          },
+          "system_label": "example-local/qwen3-8b via Apple M5 Pro [mlx-lm/Metal] quant=Q4 reasoning=unrecorded decode=autoregressive",
+          "dominated": true,
+          "dominated_by": [
+            "example-frontier-model via example-provider [openai-compatible-stream/unknown] quant=unrecorded reasoning=high decode=autoregressive endpoint=https://example.invalid/v1/chat/completions"
+          ]
+        }
+      ],
+      "missing_evidence": [
+        "frontier axes min_cost_per_correct_case were dropped because at least one ranked system has no evidence for them"
+      ]
+    },
+    {
+      "comparable_unit_key": {
+        "workload_id": "structured-json-profile-extraction",
+        "workload_version": "1",
+        "workload_prompt_hash": "sha256:synthetic-prompt-32k",
+        "context_tier": "32k",
+        "quality_metric": "structured_json_exact_field_match",
+        "max_output_tokens": 512,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "request_shape": null
+      },
+      "comparable_unit_label": "structured-json-profile-extraction@v1 [32k] evaluator=structured_json_exact_field_match max_output=512 temperature=0 top_p=1",
+      "outcome": "recommended",
+      "objective_name": "min_mean_total_latency_ms",
+      "recommended": {
+        "system_key": {
+          "model_id": "example-frontier-model",
+          "model_revision": null,
+          "provider": "example-provider",
+          "runtime_name": "openai-compatible-stream",
+          "runtime_backend": null,
+          "accelerator": null,
+          "quantization": null,
+          "reasoning_effort": "high",
+          "decode_mode": "autoregressive",
+          "endpoint": "https://example.invalid/v1/chat/completions",
+          "thinking_type": null,
+          "execution_config_hash": "frontier-cfg",
+          "is_local": false
+        },
+        "system_label": "example-frontier-model via example-provider [openai-compatible-stream/unknown] quant=unrecorded reasoning=high decode=autoregressive endpoint=https://example.invalid/v1/chat/completions",
+        "rank": 1,
+        "run_ids": [
+          "frontier-32k-1",
+          "frontier-32k-2"
+        ],
+        "verification_paths": [
+          "artifacts/example-results/runs/frontier-32k-1/verification.json",
+          "artifacts/example-results/runs/frontier-32k-2/verification.json"
+        ],
+        "record_paths": [
+          "artifacts/example-results/runs/frontier-32k-1/final_record.json",
+          "artifacts/example-results/runs/frontier-32k-2/final_record.json"
+        ],
+        "evidence_count": 2,
+        "objective_name": "min_mean_total_latency_ms",
+        "objective_value": 6250.0,
+        "pass_rate": 1.0,
+        "mean_quality_score": 1.0,
+        "quality_metric": "structured_json_exact_field_match",
+        "mean_total_latency_ms": 6250.0,
+        "p50_total_latency_ms": 6250.0,
+        "p95_total_latency_ms": 6400.0,
+        "stdev_total_latency_ms": 150.0,
+        "coefficient_of_variation": 0.024,
+        "correct_cases_per_minute": 9.6,
+        "mean_ttft_ms": 640.0,
+        "ttft_basis": "client_observed_stream",
+        "usage": {
+          "provenance": "provider_reported",
+          "runs_reporting_usage": 2,
+          "runs_total": 2,
+          "complete": true,
+          "input_tokens": 62000,
+          "output_tokens": 1040,
+          "cached_input_tokens": 16000,
+          "reasoning_tokens": null
+        },
+        "cost": {
+          "currency": "USD",
+          "estimated": true,
+          "monetary_basis": "estimated_from_provider_reported_usage_and_manifest_rates",
+          "pricing_entry_id": "example-frontier-api",
+          "pricing_entry_sha256": "337697c524f506936ea43c9f97aa5dd8e464575e72e4148857d9739180e5af69",
+          "rates_are_illustrative": true,
+          "total_amount": 0.031648,
+          "cost_per_case": 0.015824,
+          "cost_per_correct_case": 0.015824,
+          "correct_cases_per_currency_unit": 63.19514661274014,
+          "reasons": [
+            "run frontier-32k-1: provider did not report reasoning token usage; completion tokens are billed at the output rate and no hidden reasoning cost is inferred",
+            "run frontier-32k-2: provider did not report reasoning token usage; completion tokens are billed at the output rate and no hidden reasoning cost is inferred"
+          ]
+        },
+        "mean_peak_memory_bytes": null,
+        "max_peak_memory_bytes": null,
+        "missing_evidence": [
+          "peak memory is a local-only measurement and is not available for a system executed by a hosted provider"
+        ]
+      },
+      "inconclusive_reason": null,
+      "ranked": [
+        {
+          "system_key": {
+            "model_id": "example-frontier-model",
+            "model_revision": null,
+            "provider": "example-provider",
+            "runtime_name": "openai-compatible-stream",
+            "runtime_backend": null,
+            "accelerator": null,
+            "quantization": null,
+            "reasoning_effort": "high",
+            "decode_mode": "autoregressive",
+            "endpoint": "https://example.invalid/v1/chat/completions",
+            "thinking_type": null,
+            "execution_config_hash": "frontier-cfg",
+            "is_local": false
+          },
+          "system_label": "example-frontier-model via example-provider [openai-compatible-stream/unknown] quant=unrecorded reasoning=high decode=autoregressive endpoint=https://example.invalid/v1/chat/completions",
+          "rank": 1,
+          "run_ids": [
+            "frontier-32k-1",
+            "frontier-32k-2"
+          ],
+          "verification_paths": [
+            "artifacts/example-results/runs/frontier-32k-1/verification.json",
+            "artifacts/example-results/runs/frontier-32k-2/verification.json"
+          ],
+          "record_paths": [
+            "artifacts/example-results/runs/frontier-32k-1/final_record.json",
+            "artifacts/example-results/runs/frontier-32k-2/final_record.json"
+          ],
+          "evidence_count": 2,
+          "objective_name": "min_mean_total_latency_ms",
+          "objective_value": 6250.0,
+          "pass_rate": 1.0,
+          "mean_quality_score": 1.0,
+          "quality_metric": "structured_json_exact_field_match",
+          "mean_total_latency_ms": 6250.0,
+          "p50_total_latency_ms": 6250.0,
+          "p95_total_latency_ms": 6400.0,
+          "stdev_total_latency_ms": 150.0,
+          "coefficient_of_variation": 0.024,
+          "correct_cases_per_minute": 9.6,
+          "mean_ttft_ms": 640.0,
+          "ttft_basis": "client_observed_stream",
+          "usage": {
+            "provenance": "provider_reported",
+            "runs_reporting_usage": 2,
+            "runs_total": 2,
+            "complete": true,
+            "input_tokens": 62000,
+            "output_tokens": 1040,
+            "cached_input_tokens": 16000,
+            "reasoning_tokens": null
+          },
+          "cost": {
+            "currency": "USD",
+            "estimated": true,
+            "monetary_basis": "estimated_from_provider_reported_usage_and_manifest_rates",
+            "pricing_entry_id": "example-frontier-api",
+            "pricing_entry_sha256": "337697c524f506936ea43c9f97aa5dd8e464575e72e4148857d9739180e5af69",
+            "rates_are_illustrative": true,
+            "total_amount": 0.031648,
+            "cost_per_case": 0.015824,
+            "cost_per_correct_case": 0.015824,
+            "correct_cases_per_currency_unit": 63.19514661274014,
+            "reasons": [
+              "run frontier-32k-1: provider did not report reasoning token usage; completion tokens are billed at the output rate and no hidden reasoning cost is inferred",
+              "run frontier-32k-2: provider did not report reasoning token usage; completion tokens are billed at the output rate and no hidden reasoning cost is inferred"
+            ]
+          },
+          "mean_peak_memory_bytes": null,
+          "max_peak_memory_bytes": null,
+          "missing_evidence": [
+            "peak memory is a local-only measurement and is not available for a system executed by a hosted provider"
+          ]
+        },
+        {
+          "system_key": {
+            "model_id": "example-local/qwen3-8b",
+            "model_revision": null,
+            "provider": null,
+            "runtime_name": "mlx-lm",
+            "runtime_backend": "Metal",
+            "accelerator": "Apple M5 Pro",
+            "quantization": "Q4",
+            "reasoning_effort": null,
+            "decode_mode": "autoregressive",
+            "endpoint": null,
+            "thinking_type": null,
+            "execution_config_hash": "cfg-hash",
+            "is_local": true
+          },
+          "system_label": "example-local/qwen3-8b via Apple M5 Pro [mlx-lm/Metal] quant=Q4 reasoning=unrecorded decode=autoregressive",
+          "rank": 2,
+          "run_ids": [
+            "local-qwen3-8b-32k-1",
+            "local-qwen3-8b-32k-2"
+          ],
+          "verification_paths": [
+            "artifacts/example-results/runs/local-qwen3-8b-32k-1/verification.json",
+            "artifacts/example-results/runs/local-qwen3-8b-32k-2/verification.json"
+          ],
+          "record_paths": [
+            "artifacts/example-results/runs/local-qwen3-8b-32k-1/final_record.json",
+            "artifacts/example-results/runs/local-qwen3-8b-32k-2/final_record.json"
+          ],
+          "evidence_count": 2,
+          "objective_name": "min_mean_total_latency_ms",
+          "objective_value": 21700.0,
+          "pass_rate": 1.0,
+          "mean_quality_score": 1.0,
+          "quality_metric": "structured_json_exact_field_match",
+          "mean_total_latency_ms": 21700.0,
+          "p50_total_latency_ms": 21700.0,
+          "p95_total_latency_ms": 22400.0,
+          "stdev_total_latency_ms": 700.0,
+          "coefficient_of_variation": 0.03225806451612903,
+          "correct_cases_per_minute": 2.7649769585253456,
+          "mean_ttft_ms": 2100.0,
+          "ttft_basis": "local_prefill",
+          "usage": null,
+          "cost": null,
+          "mean_peak_memory_bytes": 13958643712.0,
+          "max_peak_memory_bytes": 13958643712.0,
+          "missing_evidence": [
+            "the pricing manifest has no entry for provider None model 'example-local/qwen3-8b'; no cost is estimated for this system"
+          ]
+        }
+      ],
+      "rejected": [],
+      "frontier_axes": [
+        "max_pass_rate",
+        "max_correct_cases_per_minute",
+        "min_mean_total_latency_ms"
+      ],
+      "frontier": [
+        {
+          "system_key": {
+            "model_id": "example-frontier-model",
+            "model_revision": null,
+            "provider": "example-provider",
+            "runtime_name": "openai-compatible-stream",
+            "runtime_backend": null,
+            "accelerator": null,
+            "quantization": null,
+            "reasoning_effort": "high",
+            "decode_mode": "autoregressive",
+            "endpoint": "https://example.invalid/v1/chat/completions",
+            "thinking_type": null,
+            "execution_config_hash": "frontier-cfg",
+            "is_local": false
+          },
+          "system_label": "example-frontier-model via example-provider [openai-compatible-stream/unknown] quant=unrecorded reasoning=high decode=autoregressive endpoint=https://example.invalid/v1/chat/completions",
+          "dominated": false,
+          "dominated_by": []
+        },
+        {
+          "system_key": {
+            "model_id": "example-local/qwen3-8b",
+            "model_revision": null,
+            "provider": null,
+            "runtime_name": "mlx-lm",
+            "runtime_backend": "Metal",
+            "accelerator": "Apple M5 Pro",
+            "quantization": "Q4",
+            "reasoning_effort": null,
+            "decode_mode": "autoregressive",
+            "endpoint": null,
+            "thinking_type": null,
+            "execution_config_hash": "cfg-hash",
+            "is_local": true
+          },
+          "system_label": "example-local/qwen3-8b via Apple M5 Pro [mlx-lm/Metal] quant=Q4 reasoning=unrecorded decode=autoregressive",
+          "dominated": true,
+          "dominated_by": [
+            "example-frontier-model via example-provider [openai-compatible-stream/unknown] quant=unrecorded reasoning=high decode=autoregressive endpoint=https://example.invalid/v1/chat/completions"
+          ]
+        }
+      ],
+      "missing_evidence": [
+        "frontier axes min_cost_per_correct_case were dropped because at least one ranked system has no evidence for them"
+      ]
+    }
+  ],
+  "excluded_runs": [
+    {
+      "run_id": "interrupted-run",
+      "source_results_dir": "artifacts/example-results",
+      "reason": "final_record.json failed schema validation: Invalid JSON for ExperimentRecord (the artifact set was interrupted mid-write)"
+    }
+  ]
+}

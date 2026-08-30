@@ -2267,6 +2267,14 @@ would skip the second repetition rather than measure it, and the spread
 across repetitions stays visible instead of being averaged away by a
 pipeline that never saw it as a spread.
 
+`compare` consumes those directories directly: pass every repetition to
+`--results` and each one counts as a separate measurement of the same row,
+which is how a policy's `min_measured_repetitions` above 1 is satisfied.
+Repetitions are distinguished by the artifact they were read from, not by
+run id, because a matrix `run_id` names the task and every repetition of a
+matrix therefore carries the same one. Naming the same directory twice is
+still counted once.
+
 This command deliberately computes no cost, no price and no cross-provider
 ranking. The provider's own usage counters are persisted exactly as
 reported; turning them into money or into a comparison is a separate
@@ -2328,6 +2336,216 @@ and marks execution, verification, tuning, and rendering as `not_run`; it does
 not load MLX or write tune reports. Existing unrelated runs under `--results`
 are excluded from tuning, while repeatable `--extra-results` paths explicitly
 opt additional evidence into the comparison.
+
+### Cross-system comparison: local vs frontier vs flash
+
+`tune` answers "which configuration of this model on this machine is
+fastest". `compare` answers a different question: **how does a local model
+actually stack up against a hosted frontier API and a cheap fast API on work
+they have all already done.**
+
+It is offline in the strictest sense. It loads no model, calls no API,
+deploys nothing, and runs no benchmark. It reads results directories that
+already exist and produces a versioned JSON report and a self-contained
+branded HTML rendering of it.
+
+**What it can ingest, precisely.** The only accepted input is a results
+directory shaped like `workloads run --output-dir`: a `runs/<run_id>/` tree
+holding a `verification.json` and the `final_record.json` it points at. When
+a run was collected against a hosted API, the collector's
+`api_evidence.json` is read from the collection directory that verification
+names, and the whole artifact set is checked against the collector's own
+`artifacts.json` marker before a single number is taken from it.
+
+Raw `collect-api` output is **not** directly ingestible, and `compare` says
+so rather than silently reporting nothing. That command writes a flat
+artifact set into whatever `--output-dir` it is given and produces no
+`verification.json`, which means nothing has evaluated the response: there
+is no pass rate and no quality score, so there is nothing to compare
+honestly.
+
+The hosted side of a comparison comes from `workloads run-api`, which
+executes the matrix against an OpenAI-compatible endpoint and writes the
+same `runs/<run_id>/` tree the local pipeline does:
+
+```bash
+uv run llmtracefx-optimizer workloads run-api \
+  --matrix artifacts/qwen3.8-matrix/manifest.json \
+  --output-dir artifacts/glm-5.3-run \
+  --profile z.ai --model-id glm-5.3
+```
+
+`compare` deliberately does not invent an adapter of its own, because a
+second, subtly different ingestion path is exactly how two numbers stop
+meaning the same thing.
+
+```bash
+uv run llmtracefx-optimizer compare \
+  --results artifacts/qwen3.8-local-run artifacts/glm-5.3-run artifacts/glm-5.3-flash-run \
+  --policy examples/optimizer/compare-policy-local-vs-api-latency.json \
+  --pricing examples/optimizer/pricing-manifest-illustrative.json \
+  --output artifacts/cross-system-compare.json
+
+uv run llmtracefx-optimizer compare-report \
+  --input artifacts/cross-system-compare.json \
+  --output artifacts/cross-system-compare.html
+```
+
+**This is evidence, not marketing.** Everything below exists because the
+easiest way to produce a cross-system chart is also the fastest way to
+produce a dishonest one.
+
+**Systems are only compared when they answered the identical question.** The
+comparable unit is the workload id and version, the exact prompt hash, the
+context tier, the evaluator/quality metric, the maximum output tokens, the
+sampling settings, and the shape of the request itself. If any of those
+differ, the runs land in *separate strata* and are reported side by side as
+different questions rather than averaged into one. An unrecorded setting is
+not a wildcard: a run whose output cap was never recorded is only ever
+compared against other runs whose cap is equally unrecorded, because
+"unknown" is not the same as "512".
+
+Request shape matters because a prompt hash alone does not identify a
+request. The same user prompt sent under a system prompt, or as the tail of
+a conversation, is a different question. The message structure is normalized
+so the ordinary case still works: a single user message whose content hash
+is the workload prompt is exactly what a local run does, so it and a bare
+API request share a unit. Anything else gets a structural digest that no
+local run can match, which separates the stratum instead of quietly
+comparing a system-prompted request against a bare one.
+
+**Systems keep their labels.** Each system is identified by model and model
+revision, provider, runtime and backend, accelerator, quantization, reasoning
+effort, thinking type, deployment endpoint, decode mode, and the collector's
+own execution configuration hash. That last one is the catch-all: it covers
+endpoint, sampling, provider extensions, finish-reason vocabulary, timeout
+and system prompt, so a configuration difference this layer does not model
+by name still separates two systems rather than pooling them. Two candidates
+that differ on any one of those are
+different systems, and their measurements are never pooled.
+
+**Metrics are reported where the evidence supports them**: pass rate, mean
+quality score with its metric named, mean/p50/p95 total latency,
+time-to-first-token, correct cases per minute, provider-reported
+input/output/cached/reasoning token usage, estimated cost per case, and
+correct cases per unit of currency.
+
+Three of those need a caveat the report always carries:
+
+- **Time-to-first-token is two different measurements.** A local collector
+  records prefill, which is prompt processing observed on the host. A hosted
+  API can only offer the client-observed offset to the first content token,
+  which also contains DNS, connection setup, TLS, request transfer and
+  server-side queueing. The report labels which one each figure is, never
+  averages them together, and never ranks on them.
+- **Peak memory stays local-only.** A hosted API cannot produce one, so the
+  field is absent for those systems rather than zero, and the schema refuses
+  to load a report that claims otherwise.
+- **A missing value stays unavailable.** Nothing is ever backfilled with a
+  zero, because a zero wins latency and cost rankings for free.
+
+**Pricing is an input, not a constant.** No rate is baked into this code and
+nothing is fetched at runtime. Rates arrive through a versioned pricing
+manifest that must declare a currency, an `effective_at` date, and a `source`
+for every entry:
+
+```json
+{
+  "schema_version": "1",
+  "currency": "USD",
+  "entries": [
+    {
+      "entry_id": "example-flash-api",
+      "provider": "example-provider",
+      "model_id": "example-flash-model",
+      "currency": "USD",
+      "effective_at": "2026-01-01",
+      "source": "illustrative example, not a published price list",
+      "rates_are_illustrative": true,
+      "input_per_million": 0.10,
+      "output_per_million": 0.30,
+      "cached_input_per_million": 0.02
+    }
+  ]
+}
+```
+
+The manifest is refused outright on an ambiguous provider/model match, a
+non-finite or negative rate, mixed currencies, or a duplicate entry id. The
+exact entry used for every figure is recorded by id *and* by content hash, so
+editing the manifest afterwards cannot quietly change what a published report
+claimed to have used.
+
+Cost derivation keeps provider accounting and client timing strictly apart,
+and every monetary value is labeled estimated:
+
+- `prompt_tokens` already includes cached tokens, so a declared
+  `cached_input_per_million` bills them separately instead of double-charging
+  them. If the provider reports cached tokens and the manifest has no cached
+  rate, the cost is refused rather than guessed at full price or at zero. The
+  reverse is refused too: if the manifest prices a cache tier but the
+  provider reported no cached count, there is no way to know how much of the
+  prompt was served from cache, and assuming none of it was would overstate
+  the bill.
+- `completion_tokens` already includes reasoning tokens. With no separate
+  reasoning rate they are billed at the output rate, which is the ordinary
+  OpenAI-compatible behaviour. **If the provider omits reasoning usage, no
+  hidden reasoning cost is inferred** -- the omission is recorded instead.
+
+`pricing-manifest-illustrative.json` in `examples/optimizer/` is exactly what
+its name says. Every rate in it is invented to demonstrate the arithmetic,
+`rates_are_illustrative` is `true`, and the HTML report prints that back on
+the page. Replace it with rates you sourced yourself, cite the page in
+`source`, pin the date in `effective_at`, and set the flag to `false`.
+
+**Ranking is constraints-first and single-objective.** A system is only
+ranked once it has cleared every constraint, and a run ranks on exactly one
+objective: `min_mean_total_latency_ms`, `max_correct_cases_per_minute`,
+`min_cost_per_correct_case`, or `max_correct_cases_per_currency_unit`. There
+is no blended score, because a single number mixing speed, quality and price
+hides the axis a reader actually needs. The pass-rate and
+correct-cases-per-minute formulas are imported from
+`workloads.aggregate` -- the same functions `tune` uses -- rather than
+restated.
+
+When the top two systems are exactly tied, or differ by less than their
+combined measurement noise, the result is **inconclusive** with the reason
+recorded. Each objective measures that noise on the axis it actually ranks
+on: latency uses the spread of the timings, and the two money objectives use
+the spread of the per-run costs. A system can be metronomically steady in
+latency while its token usage swings run to run, so borrowing the timing
+figure to judge a price difference would call a real gap noise, or noise a
+real gap. So is a unit where only one system produced evidence: nothing was
+compared against anything.
+
+**There is no universal winner.** Alongside the ranking, each unit publishes
+a Pareto-style evidence frontier over the axes every ranked system carries
+evidence for, naming which systems dominate which. Axes that not every system
+has evidence for are dropped and listed under missing evidence rather than
+filled in. Every recommendation is stated with the workload, context tier,
+evaluator, decode settings, objective and constraints it applies to, and
+nothing else.
+
+**Privacy.** Local artifact paths are redacted by default
+(`--include-paths` opts out). A per-run artifact keeps its stable
+`runs/<run_id>/<file>` label; a path with no run id to anchor on, such as a
+results directory or the pricing manifest, is reduced to its final component
+alone, so no ancestor directory name travels with the report. Deployment
+endpoints are redacted to their route, keeping what distinguishes two
+deployments without naming the host they run on. No
+prompt text, no response text, no reasoning content and no credential can
+reach the report, because the schema has no field that could carry one. The
+HTML is inline CSS and inline SVG with no JavaScript, no CDN and no external
+reference of any kind, every string from the report is escaped, and rendering
+the same report twice is byte-identical.
+
+See `examples/optimizer/compare-report-example.json` for a synthetic,
+clearly-marked non-benchmark report that exercises every section: two strata,
+a genuine speed-versus-reliability trade-off on the frontier, a dominated
+local system, a rejected system, illustrative cost figures, and an excluded
+run. Its companion policies are
+`compare-policy-local-vs-api-latency.json` and
+`compare-policy-cost-per-correct-case.json`.
 
 **Not yet included** (tracked as a follow-up PR): a genuinely capable
 native-MTP runtime adapter (none exists upstream today), native Metal/CUDA
