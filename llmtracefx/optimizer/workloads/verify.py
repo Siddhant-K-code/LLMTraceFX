@@ -717,7 +717,10 @@ def execute_row(
                 trusted_record = ExperimentRecord.read_json(final_record_path)
             except (OSError, SchemaValidationError):
                 trusted_record = None
-            if trusted_record is not None and trusted_record.run_id != entry.run_id:
+            if trusted_record is not None and (
+                trusted_record.run_id != entry.run_id
+                or trusted_record.model.model_id != model_id
+            ):
                 trusted_record = None
             if trusted_record is not None:
                 return _finish(
