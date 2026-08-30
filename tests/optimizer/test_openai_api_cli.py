@@ -1657,6 +1657,8 @@ def test_a_glued_credential_flag_in_a_recorded_command_is_redacted(
         "--password-env",
         "--access-token-lifetime=3600",
         "--password-policy",
+        "--credentials-file",
+        "--apikeys-file",
     ],
 )
 def test_an_option_that_only_looks_glued_is_left_intact(
@@ -1695,8 +1697,13 @@ def test_an_option_that_only_looks_glued_is_left_intact(
     "token",
     [
         "--api-keylowercasesecret",
+        "--accesskeylowercasesecret",
+        "--accesstokenlowercasesecret",
+        "--apisecretlowercasesecret",
+        "--apitokenlowercasesecret",
         "--authhuntertwo",
         "--bearerhuntertwo",
+        "--clientsecretlowercasesecret",
         "--credentialhuntertwo",
         "--passwordhuntertwo",
         "--tokenhuntertwo",

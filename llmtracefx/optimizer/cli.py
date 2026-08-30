@@ -1396,7 +1396,8 @@ _GLUED_CREDENTIAL_FLAGS = tuple(
             "-key",
             "-k",
             "-p",
-        },
+        }
+        | {f"--{stem}" for stem in _CREDENTIAL_ARGUMENT_STEMS},
         key=len,
         reverse=True,
     )
@@ -1488,7 +1489,7 @@ def _glued_credential_prefix(token: str) -> str:
         body = tail.lstrip("-_")
         lowered = body.lower()
         if len(body) < 6:
-            continue
+            return ""
         if not tail.startswith(("-", "_")) and not folded_name.startswith(
             ("--authentication", "--tokenizer")
         ):
