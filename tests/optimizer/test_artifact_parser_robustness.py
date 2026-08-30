@@ -116,6 +116,7 @@ def test_row_verification_rejects_container_identity_fields(
         "speculative",
         "memory",
         "power",
+        "instruments",
         "outcome",
         "error",
     ],
@@ -137,12 +138,20 @@ def test_experiment_record_rejects_non_object_nested_values(field: str) -> None:
         ("runtime", "backend", []),
         ("command", "config_hash", {}),
         ("speculative", "method", []),
+        ("instruments", "tool", []),
+        ("instruments", "tool_version", {}),
+        ("instruments", "capability", []),
+        ("instruments", "template", {}),
+        ("instruments", "trace_bundle_name", []),
+        ("instruments", "notes", {}),
     ],
 )
 def test_experiment_record_rejects_container_identity_fields(
     section: str, field: str, value: object
 ) -> None:
     payload = _record_payload()
+    if section == "instruments":
+        payload[section] = {}
     payload[section][field] = value  # type: ignore[index]
     with pytest.raises(SchemaValidationError, match=field):
         ExperimentRecord.from_dict(payload)

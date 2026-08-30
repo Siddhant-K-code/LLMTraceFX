@@ -762,17 +762,30 @@ class InstrumentsEvidence:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> InstrumentsEvidence:
+        data = _require_object(data, context="InstrumentsEvidence")
         metrics_data = data.get("metrics", {})
         if not isinstance(metrics_data, dict):
             raise SchemaValidationError(
                 f"InstrumentsEvidence.metrics must be an object, got {metrics_data!r}"
             )
+        if not all(isinstance(name, str) for name in metrics_data):
+            raise SchemaValidationError(
+                "InstrumentsEvidence.metrics keys must be strings"
+            )
         return cls(
-            tool=str(data.get("tool", "xctrace")),
-            tool_version=data.get("tool_version"),
-            capability=data.get("capability"),
-            template=data.get("template"),
-            trace_bundle_name=data.get("trace_bundle_name"),
+            tool=_string_with_default(
+                data, "tool", context="InstrumentsEvidence", default="xctrace"
+            ),
+            tool_version=_optional_string(
+                data, "tool_version", context="InstrumentsEvidence"
+            ),
+            capability=_optional_string(
+                data, "capability", context="InstrumentsEvidence"
+            ),
+            template=_optional_string(data, "template", context="InstrumentsEvidence"),
+            trace_bundle_name=_optional_string(
+                data, "trace_bundle_name", context="InstrumentsEvidence"
+            ),
             available_schemas=_coerce_str_tuple(
                 data, "available_schemas", context="InstrumentsEvidence"
             ),
@@ -783,10 +796,10 @@ class InstrumentsEvidence:
                 data, "unsupported_schemas", context="InstrumentsEvidence"
             ),
             metrics={
-                str(name): Measurement.from_dict(value)
+                name: Measurement.from_dict(value)
                 for name, value in metrics_data.items()
             },
-            notes=data.get("notes"),
+            notes=_optional_string(data, "notes", context="InstrumentsEvidence"),
         )
 
 
