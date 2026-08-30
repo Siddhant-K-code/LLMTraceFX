@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pytest
 from _fakes import PINNED_IMAGE, TAG_ONLY_IMAGE, VALID_REVISION
@@ -115,6 +116,13 @@ def test_the_plan_asserts_it_touched_nothing() -> None:
     assert payload["network_request_performed"] is False
     assert payload["gpu_allocated"] is False
     assert payload["modal_authentication_used"] is False
+
+
+def test_default_collect_step_uses_a_committed_prompt() -> None:
+    collect = next(step for step in make_plan().steps if step.name == "collect")
+    prompt = collect.argv[collect.argv.index("--prompt-file") + 1]
+    assert isinstance(prompt, str)
+    assert Path(prompt).is_file()
 
 
 def test_over_budget_withholds_every_paid_step() -> None:

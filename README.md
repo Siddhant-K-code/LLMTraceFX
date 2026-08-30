@@ -410,7 +410,10 @@ The console scripts below come from `pyproject.toml`.
 | `llmtracefx-serve` | Legacy compatibility | Local FastAPI surface for the earlier analyzer |
 | `llmtracefx-dashboard` | Legacy compatibility | Earlier Streamlit dashboard; not the current evidence workflow |
 
-Use `uv run <command> --help` as the source of truth for flags.
+Use `uv run llmtracefx-optimizer --help` and
+`uv run llmtracefx-deploy --help` as the source of truth for current flags.
+The legacy scripts are listed for package inventory only. Do not assume they
+implement a side-effect-free `--help` path.
 
 ## Current status and limitations
 

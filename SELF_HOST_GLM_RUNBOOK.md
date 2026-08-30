@@ -196,10 +196,12 @@ Keep the reviewed `LLMTRACEFX_GLM_*` variables in the shell used for
 deployment. If deployment happens in a new shell, re-export the same reviewed
 values and re-run the plan there before any paid step.
 
-The plan prints the exact lifecycle commands for its app name, volume name,
-model revision, and endpoint. It does not print the required environment
-exports. Use the block above for those values, then use the generated lifecycle
-commands rather than copying an old command from a document.
+The initial plan prints the exact lifecycle commands for its app name, volume
+name, and model revision. Endpoint-dependent commands contain a
+`<deployed-url>` placeholder until Modal assigns the URL. It also does not
+print the required environment exports. Use the block above for those values,
+then use the generated lifecycle commands rather than copying an old command
+from a document.
 
 ### Protect endpoint credentials
 
@@ -226,11 +228,27 @@ An approved plan orders the work as follows:
 2. Stage the pinned model revision in a CPU-only function.
 3. Verify the staged file inventory in a CPU-only function.
 4. Deploy the serving application with the adjudicated environment.
-5. Run health and readiness checks.
-6. Send one output-capped smoke request.
-7. Measure the endpoint with `llmtracefx-optimizer collect-api`.
-8. Stop the app.
-9. Delete the volume unless there is an explicit, reviewed reason to retain it.
+5. Re-run the no-spend plan with the assigned endpoint URL.
+6. Run health and readiness checks from the refreshed plan.
+7. Send one output-capped smoke request.
+8. Measure the endpoint with `llmtracefx-optimizer collect-api`.
+9. Stop the app.
+10. Delete the volume unless there is an explicit, reviewed reason to retain it.
+
+After `modal deploy` prints the URL, export it and repeat the exact approved
+plan command from the previous section with one additional flag:
+
+```bash
+export LLMTRACEFX_GLM_ENDPOINT_BASE_URL="https://<assigned-modal-host>"
+
+# Add this to the same llmtracefx-deploy plan invocation:
+--endpoint-base-url "$LLMTRACEFX_GLM_ENDPOINT_BASE_URL"
+```
+
+The replan is still offline and no-spend. Review that it remains approved, then
+use its refreshed health, readiness, smoke, and collection commands. They must
+contain the assigned host, not `<deployed-url>`. The generated collector uses
+the repository's existing `examples/optimizer/api-smoke-prompt.txt`.
 
 Staging and verification avoid spending accelerator time on the large model
 download, but they still use billable compute, storage, and network resources.
