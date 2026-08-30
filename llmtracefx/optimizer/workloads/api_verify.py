@@ -134,6 +134,7 @@ from .verify import (
     RowStatus,
     RowVerification,
     VerifyError,
+    _record_is_safe_to_resume,
     select_entries,
 )
 
@@ -1323,9 +1324,11 @@ def execute_api_row(
                 trusted_record = ExperimentRecord.read_json(final_record_path)
             except (OSError, UnicodeError, SchemaValidationError):
                 trusted_record = None
-            # The record carries its own run_id, and a copied directory
-            # is exactly the case where it disagrees with this row.
-            if trusted_record is not None and trusted_record.run_id != entry.run_id:
+            if trusted_record is not None and not _record_is_safe_to_resume(
+                trusted_record,
+                expected_run_id=entry.run_id,
+                expected_model_id=binding.model_id,
+            ):
                 trusted_record = None
             if trusted_record is not None:
                 return _finish(

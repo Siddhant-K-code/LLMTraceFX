@@ -1868,6 +1868,31 @@ def test_a_malformed_final_record_behind_a_valid_marker_reruns(tmp_path, payload
     assert second.verification.status is RowStatus.COMPLETED
 
 
+def test_a_non_finite_final_record_behind_a_valid_marker_reruns(tmp_path):
+    bundle = build_manifest(tmp_path)
+    first = run_one(
+        tmp_path,
+        transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER))),
+        manifest_bundle=bundle,
+    )
+    run_dir = Path(first.verification.collection_dir or "").parent
+    record_path = run_dir / "final_record.json"
+    payload = json.loads(record_path.read_text(encoding="utf-8"))
+    payload["timing"]["total"]["value"] = "NON_FINITE"
+    record_path.write_text(
+        json.dumps(payload).replace('"NON_FINITE"', "1e400"), encoding="utf-8"
+    )
+    _reseal(run_dir)
+
+    assert run_artifacts_are_complete(run_dir, expected_run_id=run_dir.name)
+
+    transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    second = run_one(tmp_path, transport=transport, manifest_bundle=bundle)
+
+    assert transport.requests
+    assert second.verification.status is RowStatus.COMPLETED
+
+
 @pytest.mark.parametrize("payload_label", sorted(_MALFORMED_ROOTS))
 def test_a_malformed_run_marker_is_rejected_not_raised(tmp_path, payload_label):
     """The marker reader is the one gate that must never raise."""

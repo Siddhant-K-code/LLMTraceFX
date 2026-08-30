@@ -113,6 +113,18 @@ class VerifyError(ValueError):
     """Raised for invalid verify-pipeline configuration (not row outcomes)."""
 
 
+def _record_is_safe_to_resume(
+    record: ExperimentRecord, *, expected_run_id: str, expected_model_id: str
+) -> bool:
+    if record.run_id != expected_run_id or record.model.model_id != expected_model_id:
+        return False
+    try:
+        json.dumps(record.to_dict(), allow_nan=False)
+    except ValueError:
+        return False
+    return True
+
+
 def _required_identity(data: dict[str, Any], key: str) -> str:
     try:
         value = data[key]
@@ -717,9 +729,10 @@ def execute_row(
                 trusted_record = ExperimentRecord.read_json(final_record_path)
             except (OSError, SchemaValidationError):
                 trusted_record = None
-            if trusted_record is not None and (
-                trusted_record.run_id != entry.run_id
-                or trusted_record.model.model_id != model_id
+            if trusted_record is not None and not _record_is_safe_to_resume(
+                trusted_record,
+                expected_run_id=entry.run_id,
+                expected_model_id=model_id,
             ):
                 trusted_record = None
             if trusted_record is not None:
