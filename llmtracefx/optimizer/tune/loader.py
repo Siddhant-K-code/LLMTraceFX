@@ -4,8 +4,7 @@ Consumes exactly the artifacts PR #6's verification pipeline produces:
 ``<results_dir>/runs/<run_id>/verification.json`` and the
 ``final_record.json`` it references. Never trusts a ``verification.json``
 summary at face value -- the referenced ``final_record.json`` is always
-re-read and re-validated (``ExperimentRecord.from_json`` already enforces
-the canonical schema), and run/workload/hash identity between the two
+re-read and structurally validated, and run/workload/hash identity between the two
 artifacts is re-checked here. A row whose identity does not check out is
 excluded entirely (not merely rejected as a candidate) because nothing
 about it can be trusted enough to even place it in a comparable group.
@@ -172,7 +171,9 @@ def _load_one_run(
         verification.final_record_path, results_dir=results_dir, run_id=run_id
     )
     try:
-        record = ExperimentRecord.read_json(final_record_path)
+        # Preserve legacy tune diagnostics: the tuner classifies non-finite
+        # measurements with field-specific rejection reasons.
+        record = ExperimentRecord.read_json(final_record_path, allow_non_finite=True)
     except OSError as exc:
         return None, ExcludedRun(
             run_id=verification.run_id,

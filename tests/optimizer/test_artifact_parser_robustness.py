@@ -181,6 +181,22 @@ def test_experiment_record_wraps_overflowing_numbers() -> None:
         ExperimentRecord.from_dict(payload)
 
 
+@pytest.mark.parametrize("token", ["1e400", "NaN", "Infinity", "-Infinity"])
+def test_experiment_record_rejects_non_finite_json_numbers(token: str) -> None:
+    payload = _record_payload()
+    payload["timing"] = {
+        "total": {
+            "value": "NON_FINITE",
+            "provenance": "measured_wall_clock",
+            "unit": "ms",
+        }
+    }
+    serialized = json.dumps(payload).replace('"NON_FINITE"', token)
+
+    with pytest.raises(SchemaValidationError, match="finite|non-finite"):
+        ExperimentRecord.from_json(serialized)
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [

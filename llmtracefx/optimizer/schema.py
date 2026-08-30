@@ -29,6 +29,7 @@ from ._artifact_io import (
     MAX_EVIDENCE_ARTIFACT_BYTES,
     ArtifactReadError,
     read_bounded_regular_text,
+    reject_non_finite_json_constant,
 )
 
 SCHEMA_VERSION = "1"
@@ -1083,7 +1084,9 @@ class ExperimentRecord:
         return json.dumps(self.to_dict(), indent=indent, sort_keys=False)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ExperimentRecord:
+    def from_dict(
+        cls, data: dict[str, Any], *, allow_non_finite: bool = False
+    ) -> ExperimentRecord:
         data = _require_object(data, context="ExperimentRecord")
         try:
             record = cls(
@@ -1127,12 +1130,26 @@ class ExperimentRecord:
                 f"ExperimentRecord is missing required field: {exc}"
             ) from exc
         record.validate()
+        if not allow_non_finite:
+            try:
+                json.dumps(record.to_dict(), allow_nan=False)
+            except ValueError as exc:
+                raise SchemaValidationError(
+                    "ExperimentRecord numeric fields must be finite"
+                ) from exc
         return record
 
     @classmethod
-    def from_json(cls, payload: str) -> ExperimentRecord:
+    def from_json(
+        cls, payload: str, *, allow_non_finite: bool = False
+    ) -> ExperimentRecord:
         try:
-            data = json.loads(payload)
+            data = json.loads(
+                payload,
+                parse_constant=(
+                    None if allow_non_finite else reject_non_finite_json_constant
+                ),
+            )
         except (ValueError, RecursionError) as exc:
             raise SchemaValidationError(
                 f"Invalid JSON for ExperimentRecord: {exc}"
@@ -1146,7 +1163,7 @@ class ExperimentRecord:
             raise SchemaValidationError(
                 f"ExperimentRecord JSON must be an object, got {type(data).__name__}"
             )
-        return cls.from_dict(data)
+        return cls.from_dict(data, allow_non_finite=allow_non_finite)
 
     def write_json(self, path: str | Path) -> None:
         """Atomically write this record as pretty JSON to ``path``."""
@@ -1158,11 +1175,13 @@ class ExperimentRecord:
         os.replace(tmp_path, target)
 
     @classmethod
-    def read_json(cls, path: str | Path) -> ExperimentRecord:
+    def read_json(
+        cls, path: str | Path, *, allow_non_finite: bool = False
+    ) -> ExperimentRecord:
         try:
             payload = read_bounded_regular_text(path, MAX_EVIDENCE_ARTIFACT_BYTES)
         except ArtifactReadError as exc:
             raise SchemaValidationError(
                 f"Invalid ExperimentRecord file: {exc}"
             ) from exc
-        return cls.from_json(payload)
+        return cls.from_json(payload, allow_non_finite=allow_non_finite)
