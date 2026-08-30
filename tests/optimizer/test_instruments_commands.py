@@ -590,3 +590,50 @@ def test_auth_compounds_are_redacted_not_only_the_bare_spelling(flag):
 def test_auth_locations_are_still_readable(flag):
     plan = make_plan(target=LaunchTarget(argv=("bench", flag, "/etc/auth.conf")))
     assert plan.to_redacted_argv()[-1] == "/etc/auth.conf"
+
+
+@pytest.mark.parametrize(
+    "flag", ["--pw", "--pass", "--db-pass", "--connection-string", "--dsn"]
+)
+def test_short_and_embedded_credential_spellings_are_redacted(flag):
+    """A DSN or connection string carries the password inline."""
+    plan = make_plan(target=LaunchTarget(argv=("bench", flag, SENTINEL)))
+    assert SENTINEL not in " ".join(plan.to_redacted_argv())
+
+
+@pytest.mark.parametrize(
+    "flag,value",
+    [
+        ("--pass-count", "3"),
+        ("--passes", "2"),
+        ("--key-count", "8"),
+        ("--retry-limit", "5"),
+        ("--batch-size", "16"),
+    ],
+)
+def test_quantity_suffixes_are_not_treated_as_secrets(flag, value):
+    plan = make_plan(target=LaunchTarget(argv=("bench", flag, value)))
+    assert plan.to_redacted_argv()[-1] == value
+
+
+@pytest.mark.parametrize(
+    "flag,value",
+    [
+        ("--secret-type", "vault"),
+        ("--password-mode", "interactive"),
+        ("--api-key-version", "v2"),
+        ("--token-format", "jwt"),
+        ("--auth-scheme", "bearer"),
+        ("--credential-method", "oauth"),
+    ],
+)
+def test_descriptors_about_a_secret_are_not_the_secret(flag, value):
+    """These name how a credential is configured, not its value.
+
+    `--secret-type vault` and `--auth-scheme bearer` are settings.
+    Redacting them would hide nothing and lose reproducibility. This
+    pins the reasoning so the suffix exemption is a decision rather
+    than an accident.
+    """
+    plan = make_plan(target=LaunchTarget(argv=("bench", flag, value)))
+    assert plan.to_redacted_argv()[-1] == value

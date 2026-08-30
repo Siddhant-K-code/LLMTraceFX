@@ -84,6 +84,8 @@ _CREDENTIAL_SEGMENTS: frozenset[str] = frozenset(
         "jwt",
         "totp",
         "otp",
+        "pw",
+        "pass",
     }
 )
 
@@ -126,6 +128,9 @@ _CREDENTIAL_PHRASES: tuple[str, ...] = (
     "refresh_token",
     "session_token",
     "id_token",
+    # Connection strings and DSNs routinely embed the password inline.
+    "connection_string",
+    "dsn",
 )
 
 #: Segments that mark a ``token`` name as a *quantity* rather than a
@@ -181,6 +186,15 @@ _NON_SECRET_SUFFIXES: frozenset[str] = frozenset(
         "timeout",
         "enabled",
         "required",
+        # quantities
+        "count",
+        "size",
+        "length",
+        "limit",
+        "level",
+        "retries",
+        "attempts",
+        "interval",
     }
 )
 
@@ -575,11 +589,21 @@ def redact_argv(argv: Sequence[str]) -> tuple[str, ...]:
         element is always replaced, including when it starts with a
         dash, since a credential can legitimately look like an option.
 
-    Not recognized, and documented rather than guessed at: a value
-    attached to a single-dash short option (``-ksk-live``). There is no
-    way to tell that from a cluster of short flags without knowing the
-    target program's own option grammar, and guessing would corrupt
-    legitimate arguments.
+    **This is a safety net, not a guarantee.** It classifies option
+    names, so it can only catch spellings it recognizes. It will miss a
+    secret passed under an unusual name, and it cannot see one embedded
+    in a positional argument. Two known limits are pinned by tests: a
+    value attached to a single-dash short option (``-ksk-live``) is not
+    detected, because it cannot be told from a cluster of short flags
+    without the target program's own option grammar; and a name ending
+    in a configuration or location suffix (``--auth-mode``,
+    ``--private-key-path``) is treated as naming a setting or a file
+    rather than a secret, which is right for those and would be wrong
+    for a name that broke the convention.
+
+    The reliable protection is not to put secrets on the command line at
+    all: pass them through the environment of the profiled program, or
+    read them from a file it opens itself.
     """
     redacted: list[str] = []
     redact_next = False

@@ -1865,13 +1865,21 @@ measurement.
   `--api-key=value`, and `--api-key value` (where the following argument is
   replaced even if it starts with a dash). Name matching is case and separator
   insensitive, so `--API_KEY` and `--api-key` are the same. It deliberately
-  distinguishes credentials from quantities: `--hf-token` is redacted,
-  `--max-tokens` and `--token-count` are not, because destroying ordinary
-  inference parameters would defeat the reproducibility the recorded argv
-  exists to provide. The real value still reaches the process. One documented
-  limit: a value attached to a single-dash short option (`-ksecret`) is not
-  detected, because it cannot be told apart from a cluster of short flags
-  without knowing the target program's own option grammar.
+  distinguishes credentials from quantities and settings: `--hf-token` and
+  `--basic-auth` are redacted, while `--max-tokens`, `--token-count` and
+  `--auth-mode` are not, because destroying ordinary parameters would defeat
+  the reproducibility the recorded argv exists to provide. The real value
+  still reaches the process.
+
+  **Treat this as a safety net, not a guarantee.** It classifies option names,
+  so it can only catch spellings it recognizes, and it cannot see a secret
+  embedded in a positional argument. Two limits are pinned by tests: a value
+  attached to a single-dash short option (`-ksecret`) is not detected, and a
+  name ending in a configuration or location suffix (`--auth-mode`,
+  `--private-key-path`) is treated as naming a setting or a file. The reliable
+  protection is not to put secrets on the command line at all: pass them
+  through the profiled program's environment, or have it read them from a
+  file.
 - **Identity is not ingested.** A trace's table of contents contains the
   device's display name (routinely a person's name), its hardware UUID, and
   the target's full argument list. None of these are read. Only the launched
