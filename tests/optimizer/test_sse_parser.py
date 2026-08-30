@@ -158,6 +158,25 @@ def test_invalid_utf8_raises_a_decode_error() -> None:
         list(decoder.feed(b"data: \xff\xfe\n\n"))
 
 
+def test_invalid_utf8_preserves_a_lone_cr_framed_prefix() -> None:
+    decoder = SSEDecoder()
+    events = decoder.feed(b"data: [DONE]\r\r\xff")
+
+    assert next(events).data == "[DONE]"
+    with pytest.raises(SSEDecodeError, match="not valid UTF-8"):
+        next(events)
+
+
+def test_invalid_utf8_preserves_a_lone_cr_prefix_across_chunks() -> None:
+    decoder = SSEDecoder()
+    assert list(decoder.feed(b"data: [DONE]\r\r")) == []
+
+    events = decoder.feed(b"\xff")
+    assert next(events).data == "[DONE]"
+    with pytest.raises(SSEDecodeError, match="not valid UTF-8"):
+        next(events)
+
+
 def test_stream_ending_mid_character_raises_a_decode_error() -> None:
     decoder = SSEDecoder()
     list(decoder.feed(b"data: \xcf"))

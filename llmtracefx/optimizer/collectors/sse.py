@@ -86,6 +86,12 @@ class SSEDecoder:
                 prefix = self._decoder.decode(chunk[:prefix_length], False)
                 self._buffer += self._strip_leading_bom(prefix)
                 yield from self._drain_complete_lines()
+            if self._buffer.endswith("\r"):
+                # The following byte is malformed, so the deferred CR
+                # cannot be the first half of CRLF. Resolve it as the
+                # legal lone-CR terminator before reporting the suffix.
+                self._buffer = f"{self._buffer[:-1]}\n"
+                yield from self._drain_complete_lines()
             raise SSEDecodeError(f"stream is not valid UTF-8: {exc}") from exc
         self._buffer += self._strip_leading_bom(decoded)
         yield from self._drain_complete_lines()

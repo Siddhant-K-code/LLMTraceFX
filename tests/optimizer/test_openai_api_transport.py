@@ -706,6 +706,11 @@ class _FakeSocket:
         self.timeouts.append(value)
 
 
+class _ClosedSocket:
+    def settimeout(self, _value: float) -> None:
+        raise OSError("socket closed")
+
+
 class _FakeRaw:
     """An ``HTTPResponse`` stub exposing the documented ``fp.raw._sock`` chain."""
 
@@ -759,6 +764,19 @@ def test_a_read_that_starts_past_the_deadline_is_a_timeout() -> None:
     with pytest.raises(TransportTimeout):
         for _ in response.iter_bytes():
             now[0] += 6.0
+
+
+def test_socket_timeout_race_is_a_typed_transport_failure() -> None:
+    response = _UrllibResponse(
+        _FakeRaw([b"a"], _ClosedSocket()),
+        200,
+        {},
+        deadline=10.0,
+        clock=lambda: 0.0,
+    )
+
+    with pytest.raises(TransportConnectionError, match="timeout adjustment failed"):
+        list(response.iter_bytes())
 
 
 def test_a_response_without_a_deadline_is_unchanged() -> None:
