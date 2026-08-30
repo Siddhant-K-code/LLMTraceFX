@@ -475,9 +475,9 @@ def test_first_content_is_observed_before_the_stream_completes() -> None:
     frames = [
         b'data: {"id": "c1", "choices": [{"index": 0, "delta": {"content": "A"}}]}\n\n',
         b'data: {"choices": [{"index": 0, "delta": {"content": "B"}},'
-        b'{"index": 0}]}\n\n',
+        + b'{"index": 0}]}\n\n',
         b'data: {"choices": [{"index": 0, "delta": {"content": ""},'
-        b'"finish_reason": "stop"}]}\n\ndata: [DONE]\n\n',
+        + b'"finish_reason": "stop"}]}\n\ndata: [DONE]\n\n',
     ]
     server = SlowChunkedServer(frames)
     try:

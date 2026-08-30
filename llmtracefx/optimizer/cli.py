@@ -28,7 +28,7 @@ import argparse
 import json
 import os
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict
@@ -1591,6 +1591,19 @@ def _scrub_argv_values(message: str) -> str:
     return scrubbed
 
 
+def _materialize_argv(args: Iterable[str] | None) -> list[str] | None:
+    """Read an argument iterable once, so two consumers both see it.
+
+    ``ArgumentParser.parse_args`` accepts any iterable of strings, and the
+    scrub scope has to read the tokens to know which values to blank. A
+    one-shot iterator would be drained by whichever ran first, leaving the
+    other with an empty command line: either the parse silently sees no
+    arguments, or the scrub has nothing to blank and the diagnostics echo
+    the values verbatim.
+    """
+    return None if args is None else list(args)
+
+
 @contextmanager
 def _argument_scrub_scope(
     parser: argparse.ArgumentParser, argv: Sequence[str] | None
@@ -1642,38 +1655,39 @@ class SecureArgumentParser(argparse.ArgumentParser):
     @overload
     def parse_args(
         self,
-        args: Sequence[str] | None = None,
+        args: Iterable[str] | None = None,
         namespace: None = None,
     ) -> argparse.Namespace: ...
 
     @overload
-    def parse_args(self, args: Sequence[str] | None, namespace: _N) -> _N: ...
+    def parse_args(self, args: Iterable[str] | None, namespace: _N) -> _N: ...
 
     @overload
     def parse_args(self, *, namespace: _N) -> _N: ...
 
     def parse_args(
         self,
-        args: Sequence[str] | None = None,
+        args: Iterable[str] | None = None,
         namespace: _N | None = None,
     ) -> _N | argparse.Namespace:
         # ``parse_args`` reports unrecognized arguments itself, after
         # ``parse_known_args`` has returned and its scope has been undone,
         # so the scope has to cover this call too or that one diagnostic
         # echoes the leftover tokens verbatim.
-        with _argument_scrub_scope(self, args):
-            return super().parse_args(args, namespace)
+        argv = _materialize_argv(args)
+        with _argument_scrub_scope(self, argv):
+            return super().parse_args(argv, namespace)
 
     @overload
     def parse_known_args(
         self,
-        args: Sequence[str] | None = None,
+        args: Iterable[str] | None = None,
         namespace: None = None,
     ) -> tuple[argparse.Namespace, list[str]]: ...
 
     @overload
     def parse_known_args(
-        self, args: Sequence[str] | None, namespace: _N
+        self, args: Iterable[str] | None, namespace: _N
     ) -> tuple[_N, list[str]]: ...
 
     @overload
@@ -1681,11 +1695,12 @@ class SecureArgumentParser(argparse.ArgumentParser):
 
     def parse_known_args(
         self,
-        args: Sequence[str] | None = None,
+        args: Iterable[str] | None = None,
         namespace: _N | None = None,
     ) -> tuple[_N | argparse.Namespace, list[str]]:
-        with _argument_scrub_scope(self, args):
-            return super().parse_known_args(args, namespace)
+        argv = _materialize_argv(args)
+        with _argument_scrub_scope(self, argv):
+            return super().parse_known_args(argv, namespace)
 
     def error(self, message: str) -> NoReturn:
         super().error(_scrub_argv_values(message))

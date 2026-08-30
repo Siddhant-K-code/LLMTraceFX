@@ -1685,3 +1685,55 @@ def test_a_non_positive_retained_event_limit_is_refused(
 
     assert code == 1
     assert "retained_event_limit must be a positive integer" in err
+
+
+# ---------------------------------------------------------------------------
+# Sixteenth review pass: argument iterables are read exactly once
+# ---------------------------------------------------------------------------
+
+
+def test_parse_args_accepts_a_one_shot_iterator_without_losing_tokens(
+    tmp_path: Path,
+) -> None:
+    """argparse documents an iterable, and the scrub scope also reads it.
+
+    Two consumers reading the same generator would leave one of them with
+    an empty command line. Whichever lost would either parse nothing or
+    scrub nothing, and the second failure mode is the dangerous one.
+    """
+    argv = base_argv(tmp_path) + ["--dry-run"]
+    parser = cli.build_parser()
+
+    args = parser.parse_args(token for token in argv)
+
+    assert args.model_id == "glm-5.3"
+    assert args.dry_run is True
+
+
+def test_a_one_shot_iterator_still_gets_its_values_scrubbed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The scrub state has to be built from the same tokens argparse parses."""
+    secret = "GENERATOR_CANARY_SECRET"
+    argv = base_argv(tmp_path) + ["--reasoning-effort", secret]
+    parser = cli.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(token for token in argv)
+
+    captured = capsys.readouterr()
+    assert secret not in captured.out
+    assert secret not in captured.err
+    assert "--reasoning-effort" in captured.err
+
+
+def test_parse_known_args_also_reads_a_one_shot_iterator_once(
+    tmp_path: Path,
+) -> None:
+    argv = base_argv(tmp_path) + ["--dry-run", "--not-a-flag"]
+    parser = cli.build_parser()
+
+    args, leftover = parser.parse_known_args(token for token in argv)
+
+    assert args.model_id == "glm-5.3"
+    assert leftover == ["--not-a-flag"]

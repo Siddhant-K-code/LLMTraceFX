@@ -832,6 +832,21 @@ def _try_parse_qsl(query: str) -> list[tuple[str, str]] | None:
         return None
 
 
+def _force_netloc_component(read: Callable[[], object], message: str) -> object:
+    """Read one lazily parsed netloc component, mapping failure to our error.
+
+    ``SplitResult.hostname`` and ``SplitResult.port`` only parse the netloc
+    when they are read, and they raise ``ValueError`` with the offending
+    text in the message. Reading them behind this barrier is what keeps a
+    malformed netloc from escaping as an exception that quotes what the
+    operator typed.
+    """
+    try:
+        return read()
+    except ValueError:
+        raise OpenAIStreamCollectorError(message) from None
+
+
 def parse_endpoint(endpoint: str) -> SplitResult:
     """Split an endpoint, turning any parse failure into a safe error.
 
@@ -847,19 +862,17 @@ def parse_endpoint(endpoint: str) -> SplitResult:
             "IPv6 brackets"
         )
     # Both are lazily parsed properties, so reading them here is what
-    # forces the netloc to be validated inside this guard.
-    try:
-        _host = parts.hostname
-    except ValueError:
-        raise OpenAIStreamCollectorError(
-            "endpoint has a host that could not be parsed"
-        ) from None
-    try:
-        _port = parts.port
-    except ValueError:
-        raise OpenAIStreamCollectorError(
-            "endpoint has a port that is not an integer in the range 0 to 65535"
-        ) from None
+    # forces the netloc to be validated inside this guard. The values are
+    # deliberately discarded: this call is a validation barrier, and the
+    # caller reads whichever component it needs from the returned split.
+    _force_netloc_component(
+        lambda: parts.hostname,
+        "endpoint has a host that could not be parsed",
+    )
+    _force_netloc_component(
+        lambda: parts.port,
+        "endpoint has a port that is not an integer in the range 0 to 65535",
+    )
     return parts
 
 

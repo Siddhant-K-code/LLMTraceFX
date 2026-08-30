@@ -127,8 +127,11 @@ def test_close_is_idempotent() -> None:
     decoder = SSEDecoder()
     list(decoder.feed(b"data: one\n\n"))
 
-    assert list(decoder.close()) == []
-    assert list(decoder.close()) == []
+    first_close = list(decoder.close())
+    second_close = list(decoder.close())
+
+    assert first_close == []
+    assert second_close == []
 
 
 def test_feeding_a_closed_decoder_is_an_error() -> None:
