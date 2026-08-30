@@ -1806,3 +1806,59 @@ def test_import_clears_stale_exports_when_xctrace_is_unavailable(tmp_path):
     for name in ("trace_toc.xml", "trace_toc.json", "trace_table.xml"):
         assert not (out / name).exists(), f"{name} survived from the earlier run"
     assert (out / "instruments_evidence.json").exists()
+
+
+def test_a_successful_no_export_run_clears_a_previous_gpu_table(tmp_path):
+    """The staged set is not always complete.
+
+    trace_table.xml is staged only when a table was actually exported,
+    so --no-export promotes three files and a fourth survives from an
+    earlier run. The run succeeds and exits 0, leaving this run's
+    zero-metric evidence beside another run's GPU intervals.
+    """
+    out = tmp_path / "artifacts"
+    first = tmp_path / "run1.trace"
+    record_trace(
+        runner=exporting_runner(),
+        launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=first),
+        command=("/bin/infer",),
+        output_trace=first,
+        output_dir=out,
+    )
+    assert (out / "trace_table.xml").exists()
+
+    second = tmp_path / "run2.trace"
+    collection = record_trace(
+        runner=exporting_runner(),
+        launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=second),
+        command=("/bin/infer",),
+        output_trace=second,
+        output_dir=out,
+        table_schema=None,
+    )
+
+    assert collection.succeeded is True
+    assert collection.evidence.metrics == {}
+    assert not (out / "trace_table.xml").exists()
+    # The artifacts this run did produce are still there.
+    assert (out / "trace_toc.xml").exists()
+    assert (out / "trace_toc.json").exists()
+
+
+def test_an_import_for_an_absent_schema_clears_a_previous_gpu_table(tmp_path):
+    """Same hole, reached by importing a trace without the table."""
+    trace = tmp_path / "run.trace"
+    trace.mkdir()
+    out = tmp_path / "artifacts"
+    import_trace(runner=exporting_runner(), trace_path=trace, output_dir=out)
+    assert (out / "trace_table.xml").exists()
+
+    import_trace(
+        runner=exporting_runner(),
+        trace_path=trace,
+        output_dir=out,
+        table_schema="os-signpost",
+    )
+
+    assert not (out / "trace_table.xml").exists()
+    assert (out / "trace_toc.json").exists()

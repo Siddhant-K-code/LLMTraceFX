@@ -610,6 +610,15 @@ def _export_and_build(
     atomic_write_text(
         staging / "trace_toc.json", json.dumps(toc.to_dict(), indent=2) + "\n"
     )
+    # Clear before promoting, not only on failure paths. The staged set
+    # is not always complete: trace_table.xml is staged only when a
+    # table was actually exported, so --no-export and a schema absent
+    # from the trace both promote a partial set. Without this, a
+    # successful run could leave a previous run's GPU table beside its
+    # own zero-metric evidence. Safe because every staged file is
+    # written before promotion begins, so this only removes artifacts
+    # this run is not about to replace.
+    _clear_stale_exports(output_dir)
     _promote_staged(staging, output_dir)
     return TraceCollection(
         capability=resolved_capability,

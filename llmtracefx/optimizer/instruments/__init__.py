@@ -51,6 +51,7 @@ from .export import (
     FORBIDDEN_METRIC_NAMES,
     MAX_EXPORT_BYTES,
     SUPPORTED_TABLE_SCHEMAS,
+    AmbiguousProcessError,
     ExportedRow,
     ExportedTable,
     InstrumentsExportError,
@@ -82,6 +83,7 @@ from .recorder import (
 )
 
 __all__ = [
+    "AmbiguousProcessError",
     "AttachTarget",
     "CAPABILITY_SCHEMA_VERSION",
     "CommandResult",
