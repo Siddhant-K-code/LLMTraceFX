@@ -1387,6 +1387,12 @@ def _names_a_credential(key: str) -> bool:
     end to end and at least one of them names a credential outright.
     """
     components: list[str] = []
+    embedded_compounds = (
+        "authcode",
+        "authorizationcode",
+        "refreshsession",
+        "sessionid",
+    )
     for raw in _QUERY_KEY_COMPONENT.findall(key):
         component = raw.lower()
         # One trailing plural, so ``keys`` is read as ``key``.
@@ -1401,6 +1407,7 @@ def _names_a_credential(key: str) -> bool:
                 "refreshsession",
                 "sessionid",
             }
+            or any(compound in component for compound in embedded_compounds)
             or _covers_a_credential(component)
             or _spans_a_credential_phrase(component)
         ):
@@ -2391,8 +2398,10 @@ def build_request_plan(
     config: APICollectionConfig, *, environ: Mapping[str, str] | None = None
 ) -> RequestPlan:
     """Describe the request without sending it and without any secret."""
+    source = os.environ if environ is None else environ
+    assert_credential_not_embedded(config, source)
     parts = parse_endpoint(config.endpoint)
-    env_var_display = _persistable_env_var(config.credential_env_var, environ)
+    env_var_display = _persistable_env_var(config.credential_env_var, source)
     messages = tuple(
         MessageDigest(
             role=message["role"],

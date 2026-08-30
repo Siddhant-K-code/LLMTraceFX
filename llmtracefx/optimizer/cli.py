@@ -1402,6 +1402,38 @@ _GLUED_CREDENTIAL_FLAGS = tuple(
     )
 )
 
+_UNAMBIGUOUS_GLUED_CREDENTIAL_FLAGS = frozenset(
+    {
+        "--access-key",
+        "--access-token",
+        "--api-key",
+        "--api-secret",
+        "--api-token",
+        "--api_key",
+        "--apikey",
+        "--auth-token",
+        "--bearer-token",
+        "--client-secret",
+        "--passwd",
+        "--password",
+        "--pwd",
+        "--secret-key",
+    }
+)
+
+_SAFE_CREDENTIAL_OPTION_SUFFIXES = frozenset(
+    {
+        "-env",
+        "-file",
+        "-name",
+        "-path",
+        "_env",
+        "_file",
+        "_name",
+        "_path",
+    }
+)
+
 #: Scrub state for one parse, held per context rather than in module
 #: globals. ``main`` used to set globals and never restore them, so a
 #: later ``build_parser().parse_args(...)`` in the same process inherited
@@ -1489,6 +1521,11 @@ def _glued_credential_prefix(token: str) -> str:
         lowered = body.lower()
         if len(body) < 6:
             continue
+        if (
+            prefix in _UNAMBIGUOUS_GLUED_CREDENTIAL_FLAGS
+            and tail.lower() not in _SAFE_CREDENTIAL_OPTION_SUFFIXES
+        ):
+            return option_name[: len(prefix)]
         if (
             any(character.isupper() or character.isdigit() for character in body)
             or any(character in "+/=" for character in body)

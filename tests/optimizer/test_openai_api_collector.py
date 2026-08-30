@@ -1886,6 +1886,18 @@ def test_raw_query_values_are_never_persisted_in_the_plan(tmp_path: Path) -> Non
     assert "[REDACTED]" in " ".join(plan.command)
 
 
+def test_public_plan_builder_applies_credential_preflight(tmp_path: Path) -> None:
+    credential = "huntertwo"
+    config = make_config(
+        tmp_path,
+        provider=credential,
+        credential_env_var="TEST_API_KEY",
+    )
+
+    with pytest.raises(OpenAIStreamCollectorError, match="appears in provider"):
+        build_request_plan(config, environ={"TEST_API_KEY": credential})
+
+
 # --- Artifact set publication ------------------------------------------------
 
 
@@ -5743,6 +5755,9 @@ def test_authorization_code_query_compounds_are_refused(key: str) -> None:
         "session-id",
         "session_id",
         "sessionId",
+        "myrefreshsession",
+        "mysessionid",
+        "xsessionid",
     ],
 )
 def test_separated_session_credential_compounds_are_refused(key: str) -> None:

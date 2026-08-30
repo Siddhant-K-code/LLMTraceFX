@@ -1653,6 +1653,8 @@ def test_a_glued_credential_flag_in_a_recorded_command_is_redacted(
         "--authentication-method=oauth",
         "--authorization-policy=deny",
         "--tokenizer-model=model.json",
+        "--password-file",
+        "--password-env",
     ],
 )
 def test_an_option_that_only_looks_glued_is_left_intact(
@@ -1685,6 +1687,41 @@ def test_an_option_that_only_looks_glued_is_left_intact(
 
     assert code == 0
     assert json.loads(out)["command"]["argv"] == ["llama-server", token]
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "--api-keylowercasesecret",
+        "--passwordhuntertwo",
+    ],
+)
+def test_lowercase_value_glued_to_unambiguous_flag_is_redacted(
+    tmp_path: Path, token: str
+) -> None:
+    stdout_file = tmp_path / "llama.txt"
+    stdout_file.write_text("llama_perf_context_print: eval time = 1.0 ms\n")
+
+    code, out, err = run_main(
+        [
+            "parse-llama-cpp",
+            "--run-id",
+            "r1",
+            "--model-id",
+            "local.gguf",
+            "--stdout-file",
+            str(stdout_file),
+            "--",
+            "llama-server",
+            token,
+        ]
+    )
+
+    assert code == 0
+    assert err == ""
+    assert "lowercasesecret" not in out
+    assert "huntertwo" not in out
+    assert "[REDACTED]" in out
 
 
 def test_the_retained_event_limit_is_reconstructed_and_validated(
