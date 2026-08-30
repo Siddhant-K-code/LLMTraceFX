@@ -217,9 +217,7 @@ def _terminate_candidate_process(
                 continue
             except PermissionError:
                 permission_denied = True
-        return (
-            _PROCESS_TERMINATION_PERMISSION_WARNING if permission_denied else None
-        )
+        return _PROCESS_TERMINATION_PERMISSION_WARNING if permission_denied else None
     elif process.poll() is None:
         process.kill()
     return None
@@ -304,14 +302,14 @@ def evaluate_code_completion(
                 timeout_seconds=timeout_seconds,
             )
         except _CandidateTimeoutError as exc:
-            notes = f"candidate completion timed out after {timeout_seconds}s"
+            timeout_notes = f"candidate completion timed out after {timeout_seconds}s"
             if exc.cleanup_warning:
-                notes = f"{notes}; {exc.cleanup_warning}"
+                timeout_notes = f"{timeout_notes}; {exc.cleanup_warning}"
             return OutcomeInfo(
                 success=False,
                 quality_score=0.0,
                 quality_metric="unit_test_pass",
-                notes=notes,
+                notes=timeout_notes,
             )
 
     success = completed.returncode == 0
