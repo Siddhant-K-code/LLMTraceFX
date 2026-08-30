@@ -776,6 +776,38 @@ def test_reasoning_delta_alias_is_also_recognized(tmp_path: Path) -> None:
     assert result.response_text == "answer"
 
 
+def test_non_empty_reasoning_alias_wins_over_empty_preferred_alias(
+    tmp_path: Path,
+) -> None:
+    """An empty provider alias cannot hide reasoning from accounting."""
+    chunks = [
+        sse(
+            {
+                "id": "c1",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "reasoning_content": "",
+                            "reasoning": "hidden",
+                        },
+                    }
+                ],
+            }
+        ),
+        sse({"id": "c1", "choices": [{"index": 0, "delta": {"content": "answer"}}]}),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(make_config(tmp_path), chunks)
+
+    assert result.evidence.statistics.reasoning_delta_count == 1
+    assert result.evidence.statistics.reasoning_characters == len("hidden")
+    assert result.response_text == "answer"
+    for artifact in sorted((tmp_path / "artifacts").iterdir()):
+        assert "hidden" not in artifact.read_text(encoding="utf-8")
+
+
 def test_inter_token_latency_is_derived_from_content_deltas_only(
     tmp_path: Path,
 ) -> None:
@@ -5652,6 +5684,30 @@ def test_authorization_code_query_compounds_are_refused(key: str) -> None:
     assert key not in str(excinfo.value)
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "refresh-session",
+        "refresh_session",
+        "refreshSession",
+        "session-id",
+        "session_id",
+        "sessionId",
+    ],
+)
+def test_separated_session_credential_compounds_are_refused(key: str) -> None:
+    assert _names_a_credential(key) is True
+    with pytest.raises(OpenAIStreamCollectorError) as excinfo:
+        _validate_endpoint(f"https://api.example.com/v1/chat?{key}=value")
+    assert key not in str(excinfo.value)
+
+
 def test_bare_code_remains_an_ordinary_query_key() -> None:
     assert _names_a_credential("code") is False
     _validate_endpoint("https://api.example.com/v1/chat?code=value")
+
+
+@pytest.mark.parametrize("key", ["refresh", "session"])
+def test_bare_session_terms_remain_ordinary_query_keys(key: str) -> None:
+    assert _names_a_credential(key) is False
+    _validate_endpoint(f"https://api.example.com/v1/chat?{key}=value")

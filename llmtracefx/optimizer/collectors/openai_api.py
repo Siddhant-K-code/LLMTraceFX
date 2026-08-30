@@ -54,10 +54,12 @@ to exactly one request.
 from __future__ import annotations
 
 import base64
+import hashlib
 import http.client
 import json
 import math
 import os
+import queue
 import re
 import socket
 import ssl
@@ -109,6 +111,10 @@ from .sse import SSEDecodeError, SSEDecoder, SSEEvent
 API_EVIDENCE_SCHEMA_VERSION = "1"
 ARTIFACT_MANIFEST_NAME = "artifacts.json"
 ARTIFACT_MANIFEST_SCHEMA_VERSION = "1"
+_CANONICAL_ARTIFACT_NAMES = frozenset(
+    {"record.json", "response.txt", "api_evidence.json", "environment.json"}
+)
+_MAX_VERIFIED_ARTIFACT_BYTES = 64 * 1024 * 1024
 
 RUNTIME_NAME = "openai-compatible-api"
 """``RuntimeInfo.name`` for every record this collector writes."""
@@ -438,6 +444,87 @@ class _DeadlineWatchdog:
             sock.close()
 
 
+@dataclass
+class _ResolverTask:
+    host: str
+    port: int
+    completed: threading.Event = field(default_factory=threading.Event)
+    cancelled: threading.Event = field(default_factory=threading.Event)
+    addresses: list[tuple[Any, ...]] = field(default_factory=list)
+    failure: OSError | UnicodeError | None = None
+
+
+class _BoundedResolver:
+    """One daemon resolver worker with a bounded pending queue."""
+
+    def __init__(self) -> None:
+        self._tasks: queue.Queue[_ResolverTask] = queue.Queue(maxsize=1)
+        self._worker = threading.Thread(
+            target=self._run,
+            name="llmtracefx-dns-resolver",
+            daemon=True,
+        )
+        self._worker.start()
+
+    def resolve(
+        self,
+        host: str,
+        port: int,
+        *,
+        deadline: float,
+        clock: Callable[[], float],
+    ) -> list[tuple[Any, ...]]:
+        task = _ResolverTask(host=host, port=port)
+        try:
+            self._tasks.put(
+                task,
+                timeout=_remaining_deadline_seconds(deadline, clock),
+            )
+        except queue.Full as exc:
+            raise TimeoutError(
+                "DNS resolver remained busy past the whole-response timeout"
+            ) from exc
+        if not task.completed.wait(_remaining_deadline_seconds(deadline, clock)):
+            task.cancelled.set()
+            raise TimeoutError("DNS resolution exceeded the whole-response timeout")
+        if task.failure is not None:
+            raise task.failure
+        return task.addresses
+
+    def _run(self) -> None:
+        while True:
+            task = self._tasks.get()
+            try:
+                if task.cancelled.is_set():
+                    continue
+                try:
+                    addresses = socket.getaddrinfo(
+                        task.host,
+                        task.port,
+                        0,
+                        socket.SOCK_STREAM,
+                    )
+                except (OSError, UnicodeError) as exc:
+                    task.failure = exc
+                else:
+                    task.addresses.extend(addresses)
+            finally:
+                task.completed.set()
+                self._tasks.task_done()
+
+
+_resolver_lock = threading.Lock()
+_resolver_instance: _BoundedResolver | None = None
+
+
+def _bounded_resolver() -> _BoundedResolver:
+    global _resolver_instance
+    with _resolver_lock:
+        if _resolver_instance is None:
+            _resolver_instance = _BoundedResolver()
+        return _resolver_instance
+
+
 def _resolve_with_deadline(
     host: str,
     port: int,
@@ -446,25 +533,7 @@ def _resolve_with_deadline(
     clock: Callable[[], float],
 ) -> list[tuple[Any, ...]]:
     """Resolve a host without letting DNS consume the request deadline."""
-    completed = threading.Event()
-    addresses: list[tuple[Any, ...]] = []
-    failures: list[OSError | UnicodeError] = []
-
-    def resolve() -> None:
-        try:
-            addresses.extend(socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM))
-        except (OSError, UnicodeError) as exc:
-            failures.append(exc)
-        finally:
-            completed.set()
-
-    thread = threading.Thread(target=resolve, daemon=True)
-    thread.start()
-    if not completed.wait(_remaining_deadline_seconds(deadline, clock)):
-        raise TimeoutError("DNS resolution exceeded the whole-response timeout")
-    if failures:
-        raise failures[0]
-    return addresses
+    return _bounded_resolver().resolve(host, port, deadline=deadline, clock=clock)
 
 
 def _create_connection_with_deadline(
@@ -653,9 +722,26 @@ class _DeadlineHTTPSConnection(_DeadlineConnectionMixin, http.client.HTTPSConnec
 
     def connect(self) -> None:
         self._tighten_deadline()
-        super().connect()
-        if self.sock is not None:
-            self._watchdog.register(self.sock)
+        http.client.HTTPConnection.connect(self)
+        raw_sock = self.sock
+        if raw_sock is None:
+            raise OSError("connection did not create a socket")
+        server_hostname = self._tunnel_host or self.host
+        self._watchdog.discard(raw_sock)
+        try:
+            tls_sock = self._context.wrap_socket(
+                raw_sock,
+                server_hostname=server_hostname,
+                do_handshake_on_connect=False,
+            )
+        except (OSError, ValueError):
+            raw_sock.close()
+            raise
+        self.sock = tls_sock
+        self._watchdog.register(tls_sock)
+        self._tighten_deadline()
+        tls_sock.do_handshake()
+        self._tighten_deadline()
 
     def send(self, data: Any) -> None:
         self._tighten_deadline()
@@ -1316,8 +1402,14 @@ def _names_a_credential(key: str) -> bool:
             or _spans_a_credential_phrase(component)
         ):
             return True
+    credential_pairs = {
+        ("auth", "code"),
+        ("authorization", "code"),
+        ("refresh", "session"),
+        ("session", "id"),
+    }
     return any(
-        component == "session" and following == "id"
+        (component, following) in credential_pairs
         for component, following in zip(components, components[1:], strict=False)
     )
 
@@ -2137,7 +2229,7 @@ def _request_body(config: APICollectionConfig) -> dict[str, Any]:
 
 
 def _normalized_query_identity(query: str) -> list[list[Any]]:
-    """Query keys in a stable order, values hashed, per-key order preserved.
+    """Raw query fields in stable key order, hashed before persistence.
 
     Dropping the values entirely made ``?api-version=2024-01`` and
     ``?api-version=2025-06`` share one identity, which silently merges two
@@ -2146,16 +2238,17 @@ def _normalized_query_identity(query: str) -> list[list[Any]]:
     because a value here is provider-controlled and may be sensitive even
     when its key does not look like a credential.
 
-    Keys are sorted so that ``?a=1&b=2`` and ``?b=2&a=1`` agree, since the
-    order of distinct keys is not significant in a query string. Values
-    under a *repeated* key keep their original order, because there the
-    order can carry meaning and sorting the flat pair list would make
-    ``?a=1&a=2`` and ``?a=2&a=1`` collide.
+    Raw percent-encoded text is used rather than ``parse_qsl`` output. The
+    parser replaces invalid UTF-8 with U+FFFD, which made distinct request
+    bytes such as ``%FF`` and ``%FE`` share an identity. Keys are sorted so
+    distinct-key order remains insignificant, while repeated values retain
+    their order. The presence of ``=`` is identity-bearing too.
     """
     grouped: dict[str, list[str]] = {}
-    for key, value in parse_qsl(query, keep_blank_values=True):
-        grouped.setdefault(key, []).append(sha256_text(value))
-    return [[key, grouped[key]] for key in sorted(grouped)]
+    for field_text in query.split("&") if query else ():
+        key, separator, value = field_text.partition("=")
+        grouped.setdefault(key, []).append(sha256_text(f"{separator}{value}"))
+    return [[sha256_text(key), grouped[key]] for key in sorted(grouped)]
 
 
 def _config_identity_hash(config: APICollectionConfig) -> str:
@@ -2165,8 +2258,8 @@ def _config_identity_hash(config: APICollectionConfig) -> str:
             "provider": config.provider,
             "endpoint_origin": f"{parts.scheme}://{parts.netloc}",
             "endpoint_path": parts.path,
-            "endpoint_query_keys": sorted(
-                key for key, _ in parse_qsl(parts.query, keep_blank_values=True)
+            "endpoint_query_pair_count": len(
+                parse_qsl(parts.query, keep_blank_values=True)
             ),
             "endpoint_query_identity": _normalized_query_identity(parts.query),
             "model_id": config.model_id,
@@ -3312,10 +3405,17 @@ def _reasoning_delta(delta: Mapping[str, Any]) -> Any:
     because other OpenAI-compatible providers use it; the text is only
     ever counted, never stored.
     """
+    empty_value: str | None = None
     for key in ("reasoning_content", "reasoning"):
-        if key in delta and delta[key] is not None:
-            return delta[key]
-    return None
+        if key not in delta or delta[key] is None:
+            continue
+        value = delta[key]
+        if not isinstance(value, str):
+            return value
+        if value:
+            return value
+        empty_value = value
+    return empty_value
 
 
 def _provider_error_from_payload(
@@ -3880,7 +3980,16 @@ def artifact_set_is_complete(output_dir: Path) -> bool:
     if marker.get("schema_version") != ARTIFACT_MANIFEST_SCHEMA_VERSION:
         return False
     artifacts = marker.get("artifacts")
-    if not isinstance(artifacts, list) or not artifacts:
+    if not isinstance(artifacts, list):
+        return False
+    names = [entry.get("name") for entry in artifacts if isinstance(entry, dict)]
+    if (
+        len(artifacts) != len(_CANONICAL_ARTIFACT_NAMES)
+        or len(names) != len(artifacts)
+        or not all(isinstance(name, str) for name in names)
+        or len(set(names)) != len(names)
+        or set(names) != _CANONICAL_ARTIFACT_NAMES
+    ):
         return False
     for entry in artifacts:
         if not isinstance(entry, dict):
@@ -3889,11 +3998,26 @@ def artifact_set_is_complete(output_dir: Path) -> bool:
         digest = entry.get("sha256")
         if not isinstance(name, str) or not isinstance(digest, str):
             return False
+        relative = Path(name)
+        if (
+            relative.is_absolute()
+            or relative.name != name
+            or name not in _CANONICAL_ARTIFACT_NAMES
+        ):
+            return False
+        path = output_dir / relative
         try:
-            raw = (output_dir / name).read_bytes()
+            if path.is_symlink() or not path.is_file():
+                return False
+            if path.stat().st_size > _MAX_VERIFIED_ARTIFACT_BYTES:
+                return False
+            hasher = hashlib.sha256()
+            with path.open("rb") as artifact:
+                while chunk := artifact.read(64 * 1024):
+                    hasher.update(chunk)
         except OSError:
             return False
-        if sha256_bytes(raw) != digest:
+        if f"sha256:{hasher.hexdigest()}" != digest:
             return False
     return True
 
