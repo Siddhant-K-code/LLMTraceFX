@@ -1518,6 +1518,32 @@ def test_a_credential_split_across_deltas_still_never_reaches_disk(
         assert API_KEY not in path.read_text(encoding="utf-8"), path.name
 
 
+def test_scrubbed_prefix_does_not_hide_a_split_credential(tmp_path: Path) -> None:
+    """Fragment scrubbing must not destroy the joined match."""
+    credential = "abcdefghijk"
+    config = make_config(tmp_path, credential_env_var="TEST_API_KEY")
+    chunks = [
+        sse({"choices": [{"index": 0, "delta": {"content": "abc"}}]}),
+        sse({"choices": [{"index": 0, "delta": {"content": "defghijk"}}]}),
+        sse(
+            {
+                "choices": [
+                    {"index": 0, "delta": {"content": ""}, "finish_reason": "stop"}
+                ]
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks, environ={"TEST_API_KEY": credential})
+
+    assert credential not in result.response_text
+    assert "defghijk" not in result.response_text
+    assert _REDACTED in result.response_text
+    for path in sorted(config.output_dir.iterdir()):
+        assert credential not in path.read_text(encoding="utf-8"), path.name
+
+
 def test_persisted_content_length_matches_the_scrubbed_response(
     tmp_path: Path,
 ) -> None:
@@ -3609,6 +3635,35 @@ def test_provider_token_rate_is_published_when_the_window_is_observable(
     statistics = result.evidence.statistics
     assert statistics.provider_completion_tokens_per_second is not None
     assert statistics.provider_completion_tokens_per_second_unavailable_reason is None
+
+
+def test_observed_reasoning_with_zero_reported_tokens_suppresses_rates(
+    tmp_path: Path,
+) -> None:
+    """Contradictory provider accounting cannot support a derived rate."""
+    usage = {
+        "prompt_tokens": 5,
+        "completion_tokens": 3,
+        "total_tokens": 8,
+        "completion_tokens_details": {"reasoning_tokens": 0},
+    }
+
+    result, _ = run(
+        make_config(tmp_path),
+        glm_stream(
+            content_parts=("answer", " done"),
+            reasoning_parts=("thinking",),
+            usage=usage,
+        ),
+    )
+
+    statistics = result.evidence.statistics
+    assert statistics.reasoning_delta_count == 1
+    assert statistics.provider_completion_tokens_per_second is None
+    assert statistics.provider_visible_completion_tokens_per_second is None
+    assert "reporting zero reasoning tokens" in (
+        statistics.provider_completion_tokens_per_second_unavailable_reason or ""
+    )
 
 
 def test_the_unavailable_reason_is_persisted_in_the_record(tmp_path: Path) -> None:

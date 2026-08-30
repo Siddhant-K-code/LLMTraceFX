@@ -2981,10 +2981,6 @@ class _StreamAccumulator:
             )
 
         if content:
-            # Scrubbed before it is stored, so a provider that echoes the
-            # credential back inside generated text cannot reach response.txt.
-            content = redact.text(content)
-        if content:
             if self.first_content_token_at is None:
                 self.first_content_token_at = now
             if self.first_generated_token_at is None:
@@ -2993,6 +2989,11 @@ class _StreamAccumulator:
             self.content_arrival_times.append(now)
             self.last_content_at = now
             self.last_generated_token_at = now
+            # Keep the raw deltas in memory until assembly. Scrubbing each
+            # fragment independently can erase an early prefix and prevent the
+            # assembled credential from matching. ``content_text`` is the only
+            # path that exposes or persists these parts and scrubs the joined
+            # value authoritatively.
             self.content_parts.append(content)
             self.content_delta_count += 1
             self._record_event(_EVENT_KIND_CONTENT, len(content), now)
@@ -3180,6 +3181,11 @@ class _StreamAccumulator:
         elif reasoning_tokens is not None and reasoning_tokens > completion_tokens:
             rate_unavailable = (
                 "the provider reported more reasoning tokens than completion "
+                "tokens, so its token accounting is internally inconsistent"
+            )
+        elif reasoning_tokens == 0 and self.reasoning_delta_count > 0:
+            rate_unavailable = (
+                "the provider streamed reasoning while reporting zero reasoning "
                 "tokens, so its token accounting is internally inconsistent"
             )
         elif visible_usage_inconsistent:
