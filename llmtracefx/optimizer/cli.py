@@ -1486,6 +1486,8 @@ def _glued_credential_prefix(token: str) -> str:
         ):
             continue
         tail = option_name[len(prefix) :]
+        if prefix in {"--apikeys", "--credentials"} and not tail.startswith(("-", "_")):
+            continue
         body = tail.lstrip("-_")
         lowered = body.lower()
         if len(body) < 6:
