@@ -976,11 +976,14 @@ stale or missing evidence from an earlier run, which reads as a success. To
 make that detectable, `artifacts.json` is deleted before the set is written
 and written last. A reader can call
 `llmtracefx.optimizer.collectors.artifact_set_is_complete(output_dir)`, which
-returns `True` only when the marker exists, every file it lists is present and
-every sha256 still matches. Treat a directory without a valid marker as an
-incomplete run rather than as evidence. Both sides of that check work on raw
-bytes, so an answer containing CRLF or a lone CR verifies correctly instead of
-looking tampered with because text mode rewrote its line endings.
+returns `True` only when a bounded regular, non-symlink marker names the exact
+canonical artifact set and every bounded regular file still matches its
+sha256. Paths outside the run directory, partial sets, duplicates, symlinks
+and special files are rejected. Publication uses randomized exclusive
+temporary files in the destination directory, so a pre-created predictable
+symlink cannot redirect an atomic write. Both sides of the integrity check
+work on raw bytes, so an answer containing CRLF or a lone CR verifies
+correctly instead of looking tampered with because text mode rewrote it.
 
 #### What is measured and how it is labelled
 
@@ -1089,7 +1092,9 @@ and are never mixed into a single unlabelled number.
   reuse one differently. A reason in neither set is `unrecognized`, which is
   deliberately not a synonym for terminal: an unknown reason is no evidence
   that generation completed, so a stream ending on one without `[DONE]` is
-  still reported as truncated.
+  still reported as truncated. Custom vocabulary entries also pass credential
+  preflight before the plan is built, since those strings are persisted as
+  configuration and may become a finish-reason code.
 - **The canonical `prefill` and `decode` fields are left unset.** They name
   model phases, prompt processing and generation, and neither is observable
   from outside a hosted API. The client-side interval before the first
@@ -1133,7 +1138,10 @@ and are never mixed into a single unlabelled number.
   are checked against the deadline before they can become a successful
   terminal stream. The socket is also
   found through both success and `HTTPError` wrapper shapes before each body
-  read, and its timeout is reduced to the remaining budget.
+  read, and its timeout is reduced to the remaining budget. DNS uses one
+  bounded daemon worker rather than starting an uncancellable thread per
+  timeout, and the TLS socket is registered before its handshake so the
+  watchdog can interrupt that phase too.
 - **The per-event timeline is capped by explicit configuration.** One
   timing row per SSE event with no limit lets a chatty provider decide how
   large the artifact gets, and serialization amplifies it again. The bound
@@ -1232,7 +1240,10 @@ and are never mixed into a single unlabelled number.
   `endpoint_query_keys` records one redaction marker per query pair, while
   the config hash still distinguishes the original keys and values. This
   contains opaque key-shaped names even when no configured credential is
-  available to match them.
+  available to match them. Identity uses the exact raw query representation,
+  including field order, separators, invalid percent-encoded bytes and an
+  empty `?` delimiter, because routers, signatures and caches may distinguish
+  those request targets.
 - A malformed endpoint is reported as a sanitized error rather than an
   escaping `ValueError`. `urlsplit` raises on an unclosed IPv6 bracket and
   `SplitResult.port` raises on a port that is not an integer in range, both
@@ -1463,6 +1474,16 @@ and are never mixed into a single unlabelled number.
   failure. Python accepts that escape during `json.loads`, but it cannot be
   encoded as UTF-8 for `response.txt`; rejecting it while handling the event
   prevents a partial artifact set during publication.
+- Stream bytes, accumulated visible content and retained content-arrival
+  timings have explicit safety bounds. A fast provider therefore cannot
+  exhaust memory inside the wall-clock deadline with an unterminated frame or
+  millions of tiny content deltas, and every successfully published artifact
+  stays within the verifier's own size limit.
+- Valid events before malformed UTF-8 are yielded before the decoder reports
+  the suffix. Once `[DONE]` is accepted, trailing bytes are ignored
+  consistently whether the transport delivered them together or across two
+  reads. EOF also terminates a final comment line without turning an otherwise
+  completed stream into a false truncation.
 - A provider token count above the largest integer a float represents exactly
   is recorded as malformed and dropped. Smaller but still enormous counts
   parsed fine and then raised `OverflowError` in the rate arithmetic; beyond
@@ -1484,11 +1505,10 @@ and are never mixed into a single unlabelled number.
   containing a newline, a tab, a zero-width space or a backslash reaches
   stderr as an escape sequence that does not match the raw string. Both the
   value and its `repr` body are scrubbed, longest rendering first. Short
-  values are scrubbed as well. They are replaced only in their quoted
-  renderings, because argparse always quotes the offending token in the
-  messages that repeat one, while blanking a one or two character value
-  wherever it appeared would eat letters out of the surrounding English and
-  leave an unreadable error. The scrub state lives in a `ContextVar`
+  values are scrubbed as well. Quoted renderings are replaced directly, and
+  bare short values are replaced only as whole diagnostic tokens, so
+  `unrecognized arguments: xy` is contained without deleting `xy` from
+  unrelated words. The scrub state lives in a `ContextVar`
   installed per parse rather than in globals set once by `main`, so
   `build_parser().parse_args(...)` is as safe as the real entrypoint and
   `main` no longer leaves state standing after it exits. An absent
@@ -1585,13 +1605,11 @@ artifacts, because neither describes a request that was actually attempted.
 - **Model revision is usually unavailable.** Hosted APIs generally do not
   expose a build identifier. `--model-revision` stays unset in that case
   instead of guessing, and the config hash pins the request identity that
-  *is* observable. The hash covers normalized endpoint query pairs, so an
-  endpoint carrying `?api-version=2024-08-01` gets a different identity from
-  the same endpoint at a different version. Query *values* are hashed rather
-  than recorded, so a value that happens to be sensitive still affects
-  identity without being persisted. Distinct keys are sorted, since their
-  order carries no meaning, but values under a repeated key keep their
-  original order, so `?a=1&a=2` and `?a=2&a=1` do not collide.
+  *is* observable. The hash covers the exact raw endpoint query representation,
+  so versions, field order, separators, invalid percent-encoded bytes and an
+  empty `?` delimiter remain distinct. The raw query is hashed rather than
+  recorded, so sensitive keys and values affect identity without being
+  persisted.
 - **`reasoning_tokens` is not documented for GLM.** It is captured if the
   provider sends it and stays `null` otherwise.
 - **No pricing.** Cost per correct case belongs to a later versioned

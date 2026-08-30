@@ -73,10 +73,21 @@ class SSEDecoder:
         """Decode ``chunk`` and yield every event completed by it."""
         if self._closed:
             raise SSEDecodeError("cannot feed a closed SSE decoder")
+        state = self._decoder.getstate()
         try:
-            self._buffer += self._strip_leading_bom(self._decoder.decode(chunk, False))
+            decoded = self._decoder.decode(chunk, False)
         except UnicodeDecodeError as exc:
+            # Preserve whole events before the malformed byte. The exception's
+            # offset includes any partial codepoint buffered from the previous
+            # chunk, so subtract that state before slicing this chunk.
+            self._decoder.setstate(state)
+            prefix_length = max(0, exc.start - len(state[0]))
+            if prefix_length:
+                prefix = self._decoder.decode(chunk[:prefix_length], False)
+                self._buffer += self._strip_leading_bom(prefix)
+                yield from self._drain_complete_lines()
             raise SSEDecodeError(f"stream is not valid UTF-8: {exc}") from exc
+        self._buffer += self._strip_leading_bom(decoded)
         yield from self._drain_complete_lines()
 
     def close(self) -> Iterator[SSEEvent]:

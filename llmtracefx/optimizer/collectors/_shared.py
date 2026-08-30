@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -54,9 +55,23 @@ def atomic_write_text(path: Path, content: str) -> None:
     to the same value it was written with.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    temporary.write_text(content, encoding="utf-8", newline="")
-    os.replace(temporary, path)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.tmp-",
+        dir=path.parent,
+        text=True,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(
+            descriptor,
+            "w",
+            encoding="utf-8",
+            newline="",
+        ) as stream:
+            stream.write(content)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def record_platform(
