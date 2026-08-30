@@ -173,6 +173,21 @@ _REDACTED = "[REDACTED]"
 _ENV_VAR_OPTION = "--api-key-env"
 _MIN_ENCODED_CREDENTIAL_CHARS = 6
 
+# The one-character escapes JSON and Python emit instead of a numeric one.
+# A JSON encoder is free to write "/" as "\/", and every encoder writes a
+# backslash and a double quote that way, so these are as much a spelling of
+# the credential as \u002F is. The whitespace short escapes (\t, \n, \v, \f,
+# \r) are handled by the whitespace run rather than here.
+_SHORT_ESCAPES = {'"': '\\"', "\\": "\\\\", "/": "\\/", "'": "\\'"}
+
+# Upper bound on retained per-event timing rows. One row per SSE event with
+# no cap lets a chatty provider grow the timeline without limit, and JSON
+# serialization amplifies it again. Past the cap the rows stop accumulating
+# and the timeline says so; the counters and the first/last offsets every
+# derived metric actually reads stay exact, so capping costs per-event
+# detail and not a single published number.
+_MAX_RETAINED_EVENT_ROWS = 20_000
+
 _PROVIDER_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 #: An exported credential variable name. Deliberately narrower than POSIX,
 #: which also permits lowercase. The mechanical response to the ``--api-key``
@@ -299,11 +314,49 @@ class _UrllibResponse:
 
     _CHUNK_SIZE = 8192
 
-    def __init__(self, raw: Any, status_code: int, headers: Mapping[str, str]) -> None:
+    def __init__(
+        self,
+        raw: Any,
+        status_code: int,
+        headers: Mapping[str, str],
+        *,
+        deadline: float | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._raw = raw
         self._status_code = status_code
         self._headers = headers
         self._bytes_read = 0
+        self._deadline = deadline
+        self._clock = clock
+
+    def _tighten_socket_timeout(self) -> float | None:
+        """Shrink the socket timeout to what is left of the whole budget.
+
+        The timeout handed to ``urlopen`` bounds one blocking operation, so
+        a read that starts just inside the budget can still block for a
+        further full timeout and overshoot the advertised total by close to
+        two times. Lowering the socket timeout to the remaining budget makes
+        the per-operation bound and the whole-response bound the same
+        deadline. Returns the remaining seconds, or ``None`` when no
+        deadline is configured.
+
+        The socket is reached through the documented ``fp`` chain and the
+        adjustment is skipped when it is not reachable, which is what a
+        stubbed response in a test looks like. Skipping it costs the tighter
+        bound, not correctness: the accumulator still fails the run once the
+        deadline passes.
+        """
+        if self._deadline is None:
+            return None
+        remaining = self._deadline - self._clock()
+        sock = getattr(
+            getattr(getattr(self._raw, "fp", None), "raw", None), "_sock", None
+        )
+        setter = getattr(sock, "settimeout", None)
+        if callable(setter) and remaining > 0:
+            setter(remaining)
+        return remaining
 
     @property
     def status_code(self) -> int:
@@ -334,6 +387,12 @@ class _UrllibResponse:
         if not callable(reader):
             reader = self._raw.read
         while True:
+            remaining = self._tighten_socket_timeout()
+            if remaining is not None and remaining <= 0:
+                raise TransportTimeout(
+                    "request timed out: the response did not finish within "
+                    "the configured request timeout"
+                )
             try:
                 chunk = reader(self._CHUNK_SIZE)
             except TimeoutError as exc:
@@ -374,6 +433,10 @@ class UrllibStreamingTransport:
     """
 
     def open_stream(self, request: HTTPRequest) -> StreamingResponse:
+        # One deadline for the whole exchange, fixed before the connection
+        # is attempted so connect, TLS and every read draw on the same
+        # budget rather than each getting a fresh one.
+        deadline = time.monotonic() + float(request.timeout_seconds)
         opener = urllib.request.build_opener(_NoRedirectHandler)
         urllib_request = urllib.request.Request(
             request.url,
@@ -386,7 +449,12 @@ class UrllibStreamingTransport:
         except urllib.error.HTTPError as exc:
             # A non-2xx response is still a response: keep it so the error
             # body and status can be recorded as evidence.
-            return _UrllibResponse(exc, int(exc.code), _normalize_headers(exc.headers))
+            return _UrllibResponse(
+                exc,
+                int(exc.code),
+                _normalize_headers(exc.headers),
+                deadline=deadline,
+            )
         except urllib.error.URLError as exc:
             reason = exc.reason
             if isinstance(reason, TimeoutError):
@@ -412,7 +480,9 @@ class UrllibStreamingTransport:
             ) from None
         except OSError as exc:
             raise TransportConnectionError(f"request failed: {exc}") from exc
-        return _UrllibResponse(raw, int(raw.status), _normalize_headers(raw.headers))
+        return _UrllibResponse(
+            raw, int(raw.status), _normalize_headers(raw.headers), deadline=deadline
+        )
 
 
 def _normalize_headers(headers: Any) -> dict[str, str]:
@@ -559,18 +629,25 @@ class ProviderExtensions:
         return fields
 
 
-def _reasoning_requested(extensions: ProviderExtensions) -> bool:
-    """True when the request asked the model to think before answering.
+def _reasoning_ruled_out(extensions: ProviderExtensions) -> bool:
+    """True only when this request cannot have produced hidden reasoning.
 
-    Derived from what this collector sent, not from the provider's
-    identity, so it stays meaningful for any OpenAI-compatible endpoint
-    that accepts these extensions. It decides only whether an absent
-    reasoning token count is suspicious: having asked for reasoning and
-    been told nothing about it is different from never having asked.
+    Not having asked for reasoning is not the same as reasoning being off.
+    Omitting ``reasoning_effort`` leaves the provider free to apply its own
+    default, and for ``glm-5.3`` and ``glm-5.3-flash`` that default is
+    ``max``: the common invocation, which sets nothing, is a thinking one.
+    Treating silence as "no reasoning" would publish a completion rate whose
+    numerator counts tokens generated before the visible window opened.
+
+    So the only thing that rules hidden reasoning out on the request side is
+    turning thinking off explicitly. Everything else is settled by evidence
+    at the end of the stream, where an explicit zero reasoning token count
+    or an observed reasoning delta answers the question directly.
+
+    Derived from what this collector sent rather than from the provider's
+    identity, so it stays meaningful for any OpenAI-compatible endpoint.
     """
-    return extensions.thinking_type == "enabled" or (
-        extensions.reasoning_effort is not None
-    )
+    return extensions.thinking_type == "disabled"
 
 
 @dataclass(frozen=True)
@@ -851,6 +928,9 @@ class _Redactor:
         codepoint = ord(character)
         encoded = "".join(f"%{byte:02X}" for byte in character.encode("utf-8"))
         forms = [character, encoded, encoded.replace("%", "%25")]
+        short = _SHORT_ESCAPES.get(character)
+        if short is not None:
+            forms.append(short)
         if codepoint < 0x100:
             forms.append(f"\\x{codepoint:02X}")
         if codepoint <= 0xFFFF:
@@ -1522,6 +1602,8 @@ class StreamTimeline:
     last_event_offset_ms: float | None = None
     completed_offset_ms: float | None = None
     events: tuple[StreamEventTiming, ...] = ()
+    total_event_count: int = 0
+    events_truncated: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1533,6 +1615,9 @@ class StreamTimeline:
             "last_event_offset_ms": self.last_event_offset_ms,
             "completed_offset_ms": self.completed_offset_ms,
             "events": [event.to_dict() for event in self.events],
+            "total_event_count": self.total_event_count,
+            "events_truncated": self.events_truncated,
+            "retained_event_limit": _MAX_RETAINED_EVENT_ROWS,
         }
 
 
@@ -1773,6 +1858,7 @@ class _StreamAccumulator:
         self.metadata_event_count = 0
         self.comment_count = 0
         self.events: list[StreamEventTiming] = []
+        self.total_event_count = 0
         self.content_arrival_times: list[float] = []
         self.response_id: str | None = None
         self.provider_request_id: str | None = None
@@ -2062,9 +2148,13 @@ class _StreamAccumulator:
         if kind == _EVENT_KIND_METADATA:
             self.metadata_event_count += 1
         offset = self.offset_ms(moment)
+        index = self.total_event_count
+        self.total_event_count += 1
+        if index >= _MAX_RETAINED_EVENT_ROWS:
+            return
         self.events.append(
             StreamEventTiming(
-                index=len(self.events),
+                index=index,
                 offset_ms=0.0 if offset is None else offset,
                 kind=kind,
                 characters=characters,
@@ -2122,7 +2212,7 @@ class _StreamAccumulator:
             return joined
         return self._redactor.boundary(joined)
 
-    def statistics(self, *, reasoning_requested: bool = False) -> StreamStatistics:
+    def statistics(self, *, reasoning_ruled_out: bool = False) -> StreamStatistics:
         gaps = [
             (later - earlier) * 1000
             for earlier, later in zip(
@@ -2198,23 +2288,26 @@ class _StreamAccumulator:
                     "generated in was never observed and any rate over the "
                     "visible window would overstate throughput"
                 )
-            elif (
-                reasoning_requested
-                and reasoning_tokens is None
-                and self.reasoning_delta_count == 0
+            elif not (
+                reasoning_ruled_out
+                or reasoning_tokens == 0
+                or self.reasoning_delta_count > 0
             ):
-                # Reasoning was asked for and the provider accounted for it
-                # in neither of the two ways it can: no reasoning delta on
-                # the wire and no reasoning token count in usage. A hidden
-                # phase cannot be ruled out, and treating the absent count
+                # The provider accounted for reasoning in neither of the two
+                # ways it can: no reasoning delta on the wire and no
+                # reasoning token count in usage. Silence is not evidence of
+                # absence here, because a provider that defaults to thinking
+                # produces exactly this shape, and treating the absent count
                 # as zero is the inference this collector refuses to make
-                # everywhere else. Requests that did not ask for reasoning
-                # are unaffected, because there is no hidden phase to miss.
+                # everywhere else. Ruling it out takes either an explicit
+                # ``thinking.type=disabled`` on the request, an explicit zero
+                # reasoning token count, or an observed reasoning delta.
                 rate_unavailable = (
-                    "reasoning was requested but the provider reported "
-                    "neither reasoning deltas nor a reasoning token count, "
-                    "so a hidden reasoning phase cannot be ruled out and "
-                    "the observed window may not span every counted token"
+                    "the provider reported neither reasoning deltas nor a "
+                    "reasoning token count, and thinking was not explicitly "
+                    "disabled, so a hidden reasoning phase cannot be ruled "
+                    "out and the observed window may not span every counted "
+                    "token"
                 )
             elif completion_tokens is not None:
                 token_rate = completion_tokens / generation_seconds
@@ -2247,6 +2340,8 @@ class _StreamAccumulator:
             last_event_offset_ms=self.offset_ms(self.last_event_at),
             completed_offset_ms=self.offset_ms(completed_at),
             events=tuple(self.events),
+            total_event_count=self.total_event_count,
+            events_truncated=self.total_event_count > len(self.events),
         )
 
 
@@ -2769,7 +2864,7 @@ def collect_openai_stream(
         usage=accumulator.usage,
         timeline=accumulator.timeline(completed),
         statistics=accumulator.statistics(
-            reasoning_requested=_reasoning_requested(config.extensions)
+            reasoning_ruled_out=_reasoning_ruled_out(config.extensions)
         ),
         rate_limit_headers=rate_limit_headers,
         stream_terminated_with_done=accumulator.terminated_with_done,

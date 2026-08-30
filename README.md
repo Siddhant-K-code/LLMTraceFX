@@ -1103,6 +1103,31 @@ and are never mixed into a single unlabelled number.
   against a monotonic deadline as well, and a response that outlives its
   budget is abandoned as a `timeout` failure. That also bounds the memory a
   single collection can consume, since every event appends a timing row.
+- **Silence about reasoning suppresses the provider completion rate.** Not
+  asking for reasoning is not the same as reasoning being off. Omitting
+  `reasoning_effort` leaves the provider free to apply its own default, and
+  for `glm-5.3` and `glm-5.3-flash` that default is `max`, so the plainest
+  request is a thinking request. A provider that then reports neither a
+  reasoning delta nor a reasoning token count has said nothing either way,
+  and dividing completion tokens that may include reasoning by a window
+  that opens at the first visible character would overstate throughput.
+  Three things rule it out: `--thinking disabled` on the request, an
+  explicit reasoning token count of zero, or an observed reasoning delta.
+  Any of them and the rate is published; otherwise it is left unavailable
+  with the reason recorded.
+- **The request timeout bounds each read as well as the whole response.**
+  The timeout handed to the transport bounds one blocking socket
+  operation, so a read starting just inside the budget could block for
+  another full timeout and overshoot the advertised total by close to two
+  times. The socket timeout is lowered to the remaining budget before each
+  read, so the per-operation bound and the whole-response bound are the
+  same deadline.
+- **The per-event timeline is capped.** One timing row per SSE event with
+  no limit lets a chatty provider grow it without bound, and serialization
+  amplifies it again. Past a documented cap the rows stop accumulating and
+  the timeline records `events_truncated` with the true total. The
+  counters and the first and last offsets that every derived metric reads
+  stay exact, so the cap costs per-event detail and not a published number.
 - **Asking for reasoning and hearing nothing back suppresses the rate too.**
   When the request enabled thinking or set `reasoning_effort` and the
   provider returns neither reasoning deltas nor a reasoning token count,
@@ -1257,6 +1282,12 @@ and are never mixed into a single unlabelled number.
   credential character before it exposed. The matcher and the truncation
   repair are generated from one list of spellings, so a form cannot be
   added to one without the other.
+- The one-character escapes count too. A JSON encoder may write `/` as
+  `\/`, and every encoder writes a backslash as `\\` and a double quote as
+  `\"`; Python adds `\'`. These are shorter spellings of the same leak the
+  numeric escapes carry, and `json.loads` recovers the key from them
+  exactly, so they are matched and their truncation is repaired alongside
+  the numeric forms.
 - The pre-flight check that refuses to persist a credential uses that same
   matcher, not a plain substring test. The two controls guard the same
   threat from opposite ends, so a difference between them is a gap: a

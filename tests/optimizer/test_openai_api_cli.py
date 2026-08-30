@@ -1504,3 +1504,58 @@ def test_scrubbing_a_short_value_keeps_the_message_readable() -> None:
     # contains one of the value's characters.
     for choice in ("low", "high", "max"):
         assert choice in message
+
+
+# --- Fourteenth review pass ---------------------------------------------------
+
+
+@pytest.mark.parametrize("slot", ["prompt-file", "system-prompt-file"])
+def test_a_runtime_diagnostic_scrubs_values_the_caller_supplied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slot: str
+) -> None:
+    """The argv scrub has to stay installed while the command runs.
+
+    Parsing succeeding is not the end of the risk. A path that does not open
+    surfaces in ``OSError`` text verbatim, and that happens inside
+    ``args.func(args)``. With the scrub scope closed at the end of parsing,
+    the scrub that exists to remove caller-supplied values had nothing
+    installed and silently did nothing.
+    """
+    monkeypatch.setenv("ZAI_API_KEY", "test-key-not-a-real-credential")
+    secret_shaped = "sk-caller-supplied-value-that-must-not-echo"
+    argv = base_argv(tmp_path)
+    if slot == "prompt-file":
+        argv[argv.index("--prompt-file") + 1] = secret_shaped
+    else:
+        argv.extend(["--system-prompt-file", secret_shaped])
+    argv.append("--dry-run")
+
+    code, out, err = run_main(argv)
+
+    assert code != 0
+    assert secret_shaped not in out
+    assert secret_shaped not in err
+    assert "[REDACTED]" in out + err
+
+
+def test_the_scrub_scope_is_still_undone_after_the_command_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Running inside the scope must not leave state behind for the next parse.
+
+    The scope was widened to cover execution, so the property it was
+    introduced for, that nothing survives into a later parse in the same
+    process, is re-checked at the wider boundary.
+    """
+    monkeypatch.setenv("ZAI_API_KEY", "test-key-not-a-real-credential")
+    first = base_argv(tmp_path)
+    first[first.index("--prompt-file") + 1] = "sk-first-invocation-value"
+    first.append("--dry-run")
+    run_main(first)
+
+    # A second, unrelated parse must not be scrubbed against the first argv.
+    code, out, err = run_main(["collect-api", "--help"])
+
+    assert code == 0
+    assert "[REDACTED]" not in out
+    assert "sk-first-invocation-value" not in out + err

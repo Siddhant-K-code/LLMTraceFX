@@ -11,6 +11,7 @@ documentation:
 
 from __future__ import annotations
 
+import codecs
 import json
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
@@ -20,6 +21,7 @@ import pytest
 
 from llmtracefx.optimizer.collectors.openai_api import (
     _MAX_PERSISTED_HEADER_CHARS,
+    _MAX_RETAINED_EVENT_ROWS,
     ARTIFACT_MANIFEST_NAME,
     FAILURE_CONNECTION,
     FAILURE_HTTP_STATUS,
@@ -3549,18 +3551,18 @@ def test_hidden_reasoning_leaves_the_provider_token_rate_unavailable(
     [
         (90, ("thinking", "harder")),
         (0, ()),
-        (None, ()),
     ],
 )
 def test_provider_token_rate_is_published_when_the_window_is_observable(
     tmp_path: Path, reasoning_tokens: int | None, reasoning_parts: tuple[str, ...]
 ) -> None:
-    """Streamed, zero and missing reasoning counts all leave the rate usable.
+    """Streamed reasoning and an explicit zero both leave the rate usable.
 
-    Suppression targets exactly one case, hidden reasoning. A count of
-    zero means no reasoning happened, and a missing count means the
-    provider said nothing, neither of which makes the observed window
-    wrong for the tokens it is dividing.
+    These are the two shapes that answer the question with evidence. A
+    streamed reasoning delta puts the reasoning inside the observed window,
+    and an explicit zero says there was none. A *missing* count answers
+    nothing and is covered separately, because silence is the shape a
+    provider that thinks by default produces.
     """
     config = make_config(tmp_path)
     usage: dict[str, Any] = {
@@ -3698,15 +3700,45 @@ def test_reasoning_effort_alone_also_counts_as_requesting_reasoning(
     assert result.evidence.statistics.provider_completion_tokens_per_second is None
 
 
-def test_an_unasked_for_reasoning_absence_still_publishes_the_rate(
-    tmp_path: Path,
-) -> None:
-    """No reasoning was requested, so there is no hidden phase to miss.
+def test_silence_about_reasoning_withholds_the_rate(tmp_path: Path) -> None:
+    """Not asking for reasoning does not mean reasoning did not happen.
 
-    Suppressing here would delete the metric for every ordinary
-    non-reasoning model, which is a cost with no evidence behind it.
+    Omitting ``reasoning_effort`` leaves the provider free to apply its own
+    default, and for ``glm-5.3`` and ``glm-5.3-flash`` that default is
+    ``max``. So the plainest possible request, which sets nothing, is a
+    thinking request, and a provider that then reports no reasoning delta
+    and no reasoning token count has told us nothing either way. Publishing
+    a rate here would divide a numerator that may include reasoning tokens
+    by a window that begins at the first visible character.
     """
     config = make_config(tmp_path, extensions=ProviderExtensions())
+    usage = {"prompt_tokens": 5, "completion_tokens": 100, "total_tokens": 105}
+
+    result, _ = run(
+        config,
+        glm_stream(content_parts=("a", "b"), reasoning_parts=(), usage=usage),
+    )
+
+    statistics = result.evidence.statistics
+    assert statistics.provider_completion_tokens_per_second is None
+    reason = statistics.provider_completion_tokens_per_second_unavailable_reason
+    assert reason is not None
+    assert "cannot be ruled out" in reason
+    # The visible rate is unavailable too, and for its own reason: it works
+    # by subtracting reasoning tokens from the numerator, which a provider
+    # that reported no count has not given us anything to subtract.
+    assert statistics.provider_visible_completion_tokens_per_second is None
+
+
+def test_explicitly_disabled_thinking_publishes_the_rate(tmp_path: Path) -> None:
+    """Turning thinking off is the request-side way to rule reasoning out.
+
+    This is the escape hatch that keeps the metric available for ordinary
+    non-reasoning models: say so explicitly and the rate is published.
+    """
+    config = make_config(
+        tmp_path, extensions=ProviderExtensions(thinking_type="disabled")
+    )
     usage = {"prompt_tokens": 5, "completion_tokens": 100, "total_tokens": 105}
 
     result, _ = run(
@@ -4147,3 +4179,125 @@ def test_the_timeout_message_never_repeats_provider_text(tmp_path: Path) -> None
     assert result.evidence.failure is not None
     assert API_KEY not in result.evidence.failure.message
     assert_artifacts_are_credential_free(config)
+
+
+# --- Fourteenth review pass ---------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("credential", "spelling", "decoder"),
+    [
+        ("sk-slash/abc123def456", "sk-slash\\/abc123def456", "json"),
+        ("sk-back\\abc123def456", "sk-back\\\\abc123def456", "json"),
+        ('sk-quote"abc123def456', 'sk-quote\\"abc123def456', "json"),
+        ("sk-tick'abc123def456", "sk-tick\\'abc123def456", "python"),
+    ],
+)
+def test_json_short_escapes_are_a_spelling_of_the_credential(
+    credential: str, spelling: str, decoder: str
+) -> None:
+    """``\\/``, ``\\\\``, ``\\"`` and ``\\'`` decode straight back to the key.
+
+    A JSON encoder is free to write ``/`` as ``\\/``, and every encoder
+    writes a backslash and a double quote that way. The numeric escapes were
+    already covered; these short ones are the same leak with a shorter
+    spelling, and ``json.loads`` recovers the credential exactly.
+    """
+    redactor = _Redactor(credential)
+    persisted = redactor(redactor.boundary(f"error {spelling} denied"))
+
+    assert spelling not in persisted
+    assert credential not in persisted
+    # The spelling really is one mechanical decode from the key, which is
+    # what makes persisting it a leak rather than a cosmetic issue.
+    if decoder == "json":
+        assert json.loads(f'"{spelling}"') == credential
+    else:
+        assert codecs.decode(spelling, "unicode_escape") == credential
+    assert "[REDACTED]" in persisted
+
+
+def test_no_cut_through_a_short_escape_leaks_a_usable_prefix() -> None:
+    """Truncation inside ``\\/`` must repair like truncation inside ``%2F``."""
+    credential = "sk-slash/abc123def456"
+    redactor = _Redactor(credential)
+    body = "error sk-slash\\/abc123def456 denied"
+
+    for cut in range(len(body) + 1):
+        persisted = redactor(redactor.boundary(body[:cut]))
+        for length in range(_MIN_LEAKED_PREFIX_CHARS, len(credential) + 1):
+            assert credential[:length] not in persisted, f"cut {cut}"
+
+
+def test_an_innocent_escape_is_not_redacted() -> None:
+    """The added spellings must not swallow unrelated text."""
+    persisted = _Redactor("sk-slash/abc123def456").text(
+        "traceback: opened C:\\temp and wrote \\u0041 ok"
+    )
+
+    assert "[REDACTED]" not in persisted
+
+
+def test_silence_about_reasoning_leaves_the_rate_unavailable_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """The suppressed rate must be absent from the persisted artifact too."""
+    config = make_config(tmp_path, extensions=ProviderExtensions())
+    usage = {"prompt_tokens": 5, "completion_tokens": 100, "total_tokens": 105}
+
+    run(config, glm_stream(content_parts=("a", "b"), reasoning_parts=(), usage=usage))
+
+    payload = json.loads(
+        (config.output_dir / "api_evidence.json").read_text(encoding="utf-8")
+    )
+    statistics = payload["statistics"]
+    assert statistics["provider_completion_tokens_per_second"] is None
+    assert "cannot be ruled out" in (
+        statistics["provider_completion_tokens_per_second_unavailable_reason"]
+    )
+
+
+def test_the_retained_event_timeline_is_bounded(tmp_path: Path) -> None:
+    """A chatty provider must not grow the timeline without limit.
+
+    The counters and the offsets every derived metric reads stay exact; only
+    the per-event rows stop accumulating, and the timeline records that.
+    """
+    config = make_config(tmp_path)
+    chatty = _MAX_RETAINED_EVENT_ROWS + 250
+    stream: list[bytes] = [
+        sse({"id": "c", "choices": [{"index": 0, "delta": {"role": "assistant"}}]})
+    ]
+    # Metadata chunks carry no content, which is exactly the cheap event a
+    # provider can emit without limit.
+    stream.extend(
+        sse({"id": "c", "choices": [{"index": 0, "delta": {}}]}) for _ in range(chatty)
+    )
+    stream.append(
+        sse({"id": "c", "choices": [{"index": 0, "delta": {"content": "a"}}]})
+    )
+    stream.append(
+        sse(
+            {
+                "id": "c",
+                "choices": [
+                    {"index": 0, "delta": {"content": ""}, "finish_reason": "stop"}
+                ],
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 1,
+                    "total_tokens": 6,
+                    "completion_tokens_details": {"reasoning_tokens": 0},
+                },
+            }
+        )
+    )
+    stream.append(b"data: [DONE]\n\n")
+
+    result, _ = run(config, stream)
+
+    timeline = result.evidence.timeline
+    assert len(timeline.events) == _MAX_RETAINED_EVENT_ROWS
+    assert timeline.total_event_count > _MAX_RETAINED_EVENT_ROWS
+    assert timeline.events_truncated is True
+    assert timeline.completed_offset_ms is not None

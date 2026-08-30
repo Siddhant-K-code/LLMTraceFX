@@ -24,7 +24,9 @@ from llmtracefx.optimizer.collectors.openai_api import (
     APICollectionConfig,
     HTTPRequest,
     TransportConnectionError,
+    TransportTimeout,
     UrllibStreamingTransport,
+    _UrllibResponse,
     collect_openai_stream,
 )
 
@@ -682,3 +684,80 @@ def test_the_collector_sends_the_resolved_credential_to_a_real_socket(
     # ...and the same value never reaches an artifact.
     for path in sorted(config.output_dir.iterdir()):
         assert sentinel not in path.read_text(encoding="utf-8"), path.name
+
+
+# --- Fourteenth review pass ---------------------------------------------------
+
+
+class _FakeSocket:
+    """Records every timeout the response asks for."""
+
+    def __init__(self) -> None:
+        self.timeouts: list[float] = []
+
+    def settimeout(self, value: float) -> None:
+        self.timeouts.append(value)
+
+
+class _FakeRaw:
+    """An ``HTTPResponse`` stub exposing the documented ``fp.raw._sock`` chain."""
+
+    def __init__(self, chunks: list[bytes], sock: _FakeSocket) -> None:
+        self._chunks = list(chunks)
+        self.fp = type("_FP", (), {"raw": type("_Raw", (), {"_sock": sock})()})()
+
+    def read1(self, _size: int) -> bytes:
+        return self._chunks.pop(0) if self._chunks else b""
+
+    def close(self) -> None:
+        return None
+
+
+def test_each_read_is_bounded_by_what_is_left_of_the_budget() -> None:
+    """The socket timeout must shrink toward the deadline, not reset per read.
+
+    The timeout handed to ``urlopen`` bounds one blocking operation. Without
+    this, a read starting just inside the budget can block for another full
+    timeout, so the advertised whole-response bound is close to twice what
+    was configured.
+    """
+    sock = _FakeSocket()
+    now = [0.0]
+    response = _UrllibResponse(
+        _FakeRaw([b"a", b"b", b"c"], sock),
+        200,
+        {},
+        deadline=10.0,
+        clock=lambda: now[0],
+    )
+
+    consumed = []
+    for chunk in response.iter_bytes():
+        consumed.append(chunk)
+        now[0] += 3.0
+
+    assert consumed == [b"a", b"b", b"c"]
+    assert sock.timeouts == [10.0, 7.0, 4.0, 1.0]
+    assert sock.timeouts == sorted(sock.timeouts, reverse=True)
+
+
+def test_a_read_that_starts_past_the_deadline_is_a_timeout() -> None:
+    """Once the budget is gone the stream fails rather than blocking again."""
+    sock = _FakeSocket()
+    now = [0.0]
+    response = _UrllibResponse(
+        _FakeRaw([b"a", b"b"], sock), 200, {}, deadline=5.0, clock=lambda: now[0]
+    )
+
+    with pytest.raises(TransportTimeout):
+        for _ in response.iter_bytes():
+            now[0] += 6.0
+
+
+def test_a_response_without_a_deadline_is_unchanged() -> None:
+    """No deadline configured means no socket adjustment at all."""
+    sock = _FakeSocket()
+    response = _UrllibResponse(_FakeRaw([b"a"], sock), 200, {})
+
+    assert list(response.iter_bytes()) == [b"a"]
+    assert sock.timeouts == []

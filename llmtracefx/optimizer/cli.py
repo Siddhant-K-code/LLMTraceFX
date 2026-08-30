@@ -2387,11 +2387,19 @@ def main(argv: list[str] | None = None) -> None:
     # every exit path including the ``SystemExit`` argparse raises. Left
     # standing it would suppress installation for the next parse in this
     # process, which would then be scrubbed against the wrong argv.
+    #
+    # The command runs inside the scope too. ``_api_detail`` scrubs argv
+    # values out of its diagnostics, and a value the caller supplied can
+    # surface long after parsing succeeds: a path that does not open
+    # reaches the error text verbatim. Closing the scope at the end of
+    # parsing left that scrub with nothing installed and made it a no-op
+    # for exactly the values it exists to remove.
     with _argument_scrub_scope(parser, raw_argv):
         _reject_credential_arguments(raw_argv)
         args = parser.parse_args(raw_argv)
         args._invocation = (parser.prog, *raw_argv)
-    sys.exit(args.func(args))
+        status = args.func(args)
+    sys.exit(status)
 
 
 if __name__ == "__main__":
