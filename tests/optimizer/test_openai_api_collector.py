@@ -1544,6 +1544,62 @@ def test_scrubbed_prefix_does_not_hide_a_split_credential(tmp_path: Path) -> Non
         assert credential not in path.read_text(encoding="utf-8"), path.name
 
 
+def test_event_lengths_use_raw_deltas_before_joined_redaction(tmp_path: Path) -> None:
+    """Per-event evidence describes wire content, not redaction markers."""
+    credential = "credential-eleven"
+    config = make_config(tmp_path, credential_env_var="TEST_API_KEY")
+    chunks = [
+        sse({"choices": [{"index": 0, "delta": {"content": credential}}]}),
+        sse({"choices": [{"index": 0, "delta": {"content": " tail"}}]}),
+        sse(
+            {
+                "choices": [
+                    {"index": 0, "delta": {"content": ""}, "finish_reason": "stop"}
+                ]
+            }
+        ),
+        b"data: [DONE]\n\n",
+    ]
+
+    result, _ = run(config, chunks, environ={"TEST_API_KEY": credential})
+
+    content_events = [
+        event for event in result.evidence.timeline.events if event.kind == "content"
+    ]
+    assert content_events[0].characters == len(credential)
+    assert credential not in result.response_text
+    assert result.evidence.statistics.content_characters == len(result.response_text)
+
+
+def test_failure_after_terminal_signal_repairs_truncated_credential(
+    tmp_path: Path,
+) -> None:
+    """A later protocol failure overrides an earlier clean finish signal."""
+    credential = "abcdefghijk"
+    config = make_config(tmp_path, credential_env_var="TEST_API_KEY")
+    chunks = [
+        sse({"choices": [{"index": 0, "delta": {"content": credential[:-1]}}]}),
+        sse(
+            {
+                "choices": [
+                    {"index": 0, "delta": {"content": ""}, "finish_reason": "stop"}
+                ]
+            }
+        ),
+        b"data: not-json\n\n",
+    ]
+
+    result, _ = run(config, chunks, environ={"TEST_API_KEY": credential})
+
+    assert result.evidence.failure is not None
+    assert result.evidence.failure.category == FAILURE_STREAM_DECODE
+    assert credential[:-1] not in result.response_text
+    assert _REDACTED in result.response_text
+    assert result.evidence.statistics.content_characters == len(result.response_text)
+    for path in sorted(config.output_dir.iterdir()):
+        assert credential[:-1] not in path.read_text(encoding="utf-8"), path.name
+
+
 def test_persisted_content_length_matches_the_scrubbed_response(
     tmp_path: Path,
 ) -> None:

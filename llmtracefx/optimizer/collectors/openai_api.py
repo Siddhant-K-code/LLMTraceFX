@@ -3079,7 +3079,7 @@ class _StreamAccumulator:
             return None
         return self.finish_reason_code
 
-    def content_text(self) -> str:
+    def content_text(self, *, force_boundary: bool = False) -> str:
         """The final answer, scrubbed as one string.
 
         Per-delta redaction is not sufficient on its own. A provider that
@@ -3095,11 +3095,13 @@ class _StreamAccumulator:
         end cleanly, so a complete answer is never altered.
         """
         joined = self._redactor.text("".join(self.content_parts))
-        if self.terminated_cleanly():
+        if self.terminated_cleanly() and not force_boundary:
             return joined
         return self._redactor.boundary(joined)
 
-    def statistics(self, *, reasoning_ruled_out: bool = False) -> StreamStatistics:
+    def statistics(
+        self, *, response_text: str, reasoning_ruled_out: bool = False
+    ) -> StreamStatistics:
         gaps = [
             (later - earlier) * 1000
             for earlier, later in zip(
@@ -3229,7 +3231,7 @@ class _StreamAccumulator:
 
         return StreamStatistics(
             content_delta_count=self.content_delta_count,
-            content_characters=len(self.content_text()),
+            content_characters=len(response_text),
             reasoning_delta_count=self.reasoning_delta_count,
             reasoning_characters=self.reasoning_characters,
             metadata_event_count=self.metadata_event_count,
@@ -3761,7 +3763,7 @@ def collect_openai_stream(
                 pass
 
     completed = clock()
-    response_text = accumulator.content_text()
+    response_text = accumulator.content_text(force_boundary=failure is not None)
 
     if failure is None:
         failure = _terminal_condition_failure(accumulator, response_text)
@@ -3783,7 +3785,8 @@ def collect_openai_stream(
         usage=accumulator.usage,
         timeline=accumulator.timeline(completed),
         statistics=accumulator.statistics(
-            reasoning_ruled_out=_reasoning_ruled_out(config.extensions)
+            response_text=response_text,
+            reasoning_ruled_out=_reasoning_ruled_out(config.extensions),
         ),
         rate_limit_headers=rate_limit_headers,
         stream_terminated_with_done=accumulator.terminated_with_done,
