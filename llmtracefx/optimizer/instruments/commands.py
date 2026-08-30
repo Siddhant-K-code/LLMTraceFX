@@ -81,6 +81,8 @@ _CREDENTIAL_SEGMENTS: frozenset[str] = frozenset(
         "bearer",
         "authorization",
         "jwt",
+        "totp",
+        "otp",
     }
 )
 

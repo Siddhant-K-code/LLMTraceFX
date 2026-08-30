@@ -29,9 +29,13 @@ Evidence preserving
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import subprocess
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -149,6 +153,10 @@ def check_output_collision(output_trace: Path) -> Path:
     cannot be treated as different destinations. On the case-insensitive
     filesystem macOS ships by default, ``Probe.trace`` and
     ``probe.trace`` also collide here, which is the intended behavior.
+
+    This is a check, so on its own it is subject to a check-then-use
+    race. Callers that go on to record must hold a
+    :func:`reserve_trace_path` reservation, which closes it.
     """
     resolved = output_trace.expanduser().resolve()
     if resolved.exists():
@@ -159,6 +167,62 @@ def check_output_collision(output_trace: Path) -> Path:
             "different --output path, or move the existing bundle aside."
         )
     return resolved
+
+
+def reservation_path_for(resolved_trace: Path) -> Path:
+    """Where the exclusive claim for ``resolved_trace`` lives."""
+    return resolved_trace.with_name(f".{resolved_trace.name}.reservation")
+
+
+@contextmanager
+def reserve_trace_path(output_trace: Path) -> Iterator[Path]:
+    """Claim a trace output path exclusively for the whole run.
+
+    Checking that a path is free and then recording into it is a
+    check-then-use race: two runs can both pass the check, and a
+    concurrent writer can create the bundle in between. The claim here
+    is a single atomic ``O_CREAT | O_EXCL`` file creation, which the
+    filesystem guarantees exactly one caller wins, and it is held until
+    the recording finishes rather than released immediately.
+
+    The reservation marker sits beside the bundle as a dotfile and is
+    always removed on exit, including on failure. A leftover marker from
+    a killed process is reported as a conflict naming its path, which is
+    recoverable by deleting it, rather than being silently ignored.
+    """
+    resolved = check_output_collision(output_trace)
+    # The parent has to exist to hold the marker, and it has to exist
+    # for the bundle regardless. Creating it is not an artifact.
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    marker = reservation_path_for(resolved)
+
+    try:
+        descriptor = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError as exc:
+        raise InstrumentsRecordError(
+            f"another recording already reserved {resolved.name} "
+            f"({marker}). Wait for it to finish, or delete that marker if "
+            "no recording is running."
+        ) from exc
+    except OSError as exc:
+        raise InstrumentsRecordError(f"could not reserve {resolved}: {exc}") from exc
+
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(f"pid={os.getpid()} started_at={utc_now_iso()}\n")
+        # Re-check after the claim: a writer could have created the
+        # bundle between the check above and the claim. Winning the
+        # marker means nobody else can now, so this is the last window.
+        if resolved.exists():
+            kind = "directory" if resolved.is_dir() else "file"
+            raise InstrumentsRecordError(
+                f"refusing to record over an existing {kind}: {resolved}. "
+                "It appeared while this run was starting."
+            )
+        yield resolved
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            marker.unlink()
 
 
 def _classify_failure_tail(stderr_path: Path) -> XctraceCapability | None:
@@ -229,13 +293,39 @@ def run_record(
     *,
     launcher: ProcessLauncher,
     artifacts_dir: Path,
+    reserved_trace: Path | None = None,
 ) -> RecordResult:
-    """Execute ``plan``, preserving artifacts whatever the outcome."""
+    """Execute ``plan``, preserving artifacts whatever the outcome.
+
+    ``reserved_trace`` is the resolved path from an outer
+    :func:`reserve_trace_path`. Callers that already hold the
+    reservation pass it so the claim spans their artifact writes as well
+    as the recording; callers that do not get one acquired here for the
+    duration of the recording.
+    """
     redacted_argv = plan.to_redacted_argv()
     started_at = utc_now_iso()
 
+    if reserved_trace is not None:
+        return _run_record_reserved(
+            plan,
+            launcher=launcher,
+            artifacts_dir=artifacts_dir,
+            resolved_trace=reserved_trace,
+            redacted_argv=redacted_argv,
+            started_at=started_at,
+        )
+
     try:
-        resolved_trace = check_output_collision(plan.output_trace)
+        with reserve_trace_path(plan.output_trace) as resolved_trace:
+            return _run_record_reserved(
+                plan,
+                launcher=launcher,
+                artifacts_dir=artifacts_dir,
+                resolved_trace=resolved_trace,
+                redacted_argv=redacted_argv,
+                started_at=started_at,
+            )
     except InstrumentsRecordError as exc:
         return RecordResult(
             status=RecordStatus.REFUSED,
@@ -245,6 +335,18 @@ def run_record(
             started_at=started_at,
             ended_at=utc_now_iso(),
         )
+
+
+def _run_record_reserved(
+    plan: RecordPlan,
+    *,
+    launcher: ProcessLauncher,
+    artifacts_dir: Path,
+    resolved_trace: Path,
+    redacted_argv: tuple[str, ...],
+    started_at: str,
+) -> RecordResult:
+    """Record into a path whose reservation is already held."""
 
     artifacts = Path(artifacts_dir)
     artifacts.mkdir(parents=True, exist_ok=True)

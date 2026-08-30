@@ -1832,7 +1832,9 @@ measurement.
 
 - **Traces are never overwritten.** The output path is resolved (symlinks and
   `..` collapsed, and case-insensitively on a default macOS filesystem) and
-  refused if anything exists there. `--append-run` is never passed.
+  claimed with a single atomic `O_CREAT | O_EXCL` reservation that is held for
+  the whole run, so two concurrent recordings cannot both pass a check and
+  then race into the same path. `--append-run` is never passed.
 - **No shell.** Every invocation is an argv list, so no template name, path
   or inference argument can be reinterpreted as shell syntax. Schema names
   are validated against a conservative character set before entering an XPath
@@ -1848,7 +1850,11 @@ measurement.
 - **Failures are preserved,** not cleaned away: stdout, stderr, run metadata
   and any partial bundle stay on disk. A trace path collision is resolved
   before anything is written, so a refused rerun leaves an earlier run's
-  artifacts byte for byte intact rather than mixing the two.
+  artifacts byte for byte intact rather than mixing the two, and the CLI says
+  plainly that nothing was written instead of naming an evidence file it did
+  not produce. Imports stage their exports and promote them together, so a
+  failed export cannot leave one run's table of contents beside another run's
+  evidence.
 - **No prompt or completion capture.** `--target-stdin` and `--target-stdout`
   are never constructed, so the profiled program's own input and output never
   flow through xctrace into captured logs. `--all-processes` is never used,

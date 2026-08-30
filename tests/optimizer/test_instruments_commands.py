@@ -533,3 +533,31 @@ def test_unrecognized_key_style_options_default_to_secret(flag):
 def test_lookup_keys_are_still_readable(flag):
     plan = make_plan(target=LaunchTarget(argv=("bench", flag, "user_id")))
     assert plan.to_redacted_argv()[-1] == "user_id"
+
+
+@pytest.mark.parametrize("flag", ["--totp", "--otp", "--one-time-password"])
+def test_one_time_passwords_are_redacted(flag):
+    plan = make_plan(target=LaunchTarget(argv=("bench", flag, SENTINEL)))
+    assert SENTINEL not in " ".join(plan.to_redacted_argv())
+
+
+@pytest.mark.parametrize(
+    "flag", ["--cert", "--certificate", "--keystore", "--keyfile", "--nonce"]
+)
+def test_public_or_location_values_are_documented_as_not_redacted(flag):
+    """Pins a deliberate boundary rather than an oversight.
+
+    A certificate is public by design, a nonce is not secret, and a
+    keystore or keyfile names where a secret lives rather than being
+    one. Redacting them would cost reproducibility for no privacy gain.
+    The secret-bearing companions (`--keystore-password`,
+    `--private-key`) are still caught.
+    """
+    plan = make_plan(target=LaunchTarget(argv=("bench", flag, "/some/value")))
+    assert REDACTED not in plan.to_redacted_argv()
+
+
+def test_the_secret_bearing_companions_are_still_caught():
+    for flag in ("--keystore-password", "--private-key", "--jwt-secret"):
+        plan = make_plan(target=LaunchTarget(argv=("bench", flag, SENTINEL)))
+        assert SENTINEL not in " ".join(plan.to_redacted_argv()), flag

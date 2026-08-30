@@ -1296,3 +1296,49 @@ def test_cli_still_announces_evidence_on_a_real_run(
     )
     assert code == 0
     assert "instruments_evidence.json" in capsys.readouterr().out
+
+
+def test_a_concurrent_record_is_refused_before_touching_artifacts(tmp_path):
+    """The reservation is held across the artifact writes, not just the
+    recording.
+
+    A second run must not overwrite the first run's capability report
+    and evidence on its way to discovering the conflict.
+    """
+    from llmtracefx.optimizer.instruments.recorder import reserve_trace_path
+
+    out = tmp_path / "artifacts"
+    out.mkdir()
+    seeded = out / "capability_report.json"
+    seeded.write_bytes(b"FIRST RUN")
+    trace = tmp_path / "run.trace"
+
+    with reserve_trace_path(trace):
+        launcher = FakeLauncher(FakeProcess(returncode=0))
+        collection = record_trace(
+            runner=exporting_runner(),
+            launcher=launcher,
+            command=("/bin/infer",),
+            output_trace=trace,
+            output_dir=out,
+        )
+
+    assert collection.succeeded is False
+    assert collection.wrote_artifacts is False
+    assert "already reserved" in collection.message
+    assert launcher.spawned == []
+    assert seeded.read_bytes() == b"FIRST RUN"
+
+
+def test_a_normal_record_still_works_with_the_reservation(tmp_path):
+    trace = tmp_path / "run.trace"
+    collection = record_trace(
+        runner=exporting_runner(),
+        launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=trace),
+        command=("/bin/infer",),
+        output_trace=trace,
+        output_dir=tmp_path / "artifacts",
+    )
+    assert collection.succeeded is True
+    # The marker must not survive the run.
+    assert not list(tmp_path.glob(".*reservation"))

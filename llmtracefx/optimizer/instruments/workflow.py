@@ -59,6 +59,7 @@ from .recorder import (
     RecordResult,
     RecordStatus,
     check_output_collision,
+    reserve_trace_path,
     run_record,
 )
 
@@ -208,14 +209,26 @@ def record_trace(
     unsupported evidence artifact rather than attempting a recording
     that is known to fail.
     """
-    # The collision check runs before anything is written. Doing it
-    # inside run_record (after the capability report had already landed)
-    # meant a rerun into a directory that still held a trace refused the
+    # The trace path is reserved before anything is written, and the
+    # reservation is held for the whole run. Doing this inside
+    # run_record (after the capability report had already landed) meant
+    # a rerun into a directory that still held a trace refused the
     # recording but had by then overwritten capability_report.json and
     # instruments_evidence.json, leaving one run's trace beside another
-    # run's metadata.
+    # run's metadata. A bare check would also still race a concurrent
+    # writer, so the claim is atomic and outlives the check.
     try:
-        check_output_collision(output_trace)
+        with reserve_trace_path(output_trace) as reserved_trace:
+            return _record_reserved(
+                runner=runner,
+                launcher=launcher,
+                command=command,
+                reserved_trace=reserved_trace,
+                output_dir=output_dir,
+                template=template,
+                time_limit=time_limit,
+                table_schema=table_schema,
+            )
     except InstrumentsRecordError as exc:
         capability = detect_xctrace_capability(runner=runner, template=template)
         return TraceCollection(
@@ -235,6 +248,20 @@ def record_trace(
             wrote_artifacts=False,
         )
 
+
+def _record_reserved(
+    *,
+    runner: CommandRunner,
+    launcher: ProcessLauncher,
+    command: tuple[str, ...],
+    reserved_trace: Path,
+    output_dir: Path,
+    template: str,
+    time_limit: str,
+    table_schema: str | None,
+) -> TraceCollection:
+    """Record into a trace path whose reservation is already held."""
+    output_trace = reserved_trace
     output_dir.mkdir(parents=True, exist_ok=True)
     capability = detect_xctrace_capability(runner=runner, template=template)
     capability.write_json(output_dir / "capability_report.json")
@@ -259,7 +286,12 @@ def record_trace(
         target=LaunchTarget(argv=command),
         time_limit=time_limit,
     )
-    result = run_record(plan, launcher=launcher, artifacts_dir=output_dir)
+    result = run_record(
+        plan,
+        launcher=launcher,
+        artifacts_dir=output_dir,
+        reserved_trace=reserved_trace,
+    )
 
     if result.status is not RecordStatus.COMPLETED:
         evidence = failed_recording_evidence(

@@ -8,12 +8,15 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
+from unittest import mock
 
 import pytest
 from _instruments_fakes import COMMAND_LINE_TOOLS_STDERR, FakeLauncher, FakeProcess
 
+from llmtracefx.optimizer.instruments import recorder as recorder_module
 from llmtracefx.optimizer.instruments.commands import LaunchTarget, RecordPlan
 from llmtracefx.optimizer.instruments.process import (
     InstrumentsProcessError,
@@ -23,6 +26,8 @@ from llmtracefx.optimizer.instruments.recorder import (
     InstrumentsRecordError,
     RecordStatus,
     check_output_collision,
+    reservation_path_for,
+    reserve_trace_path,
     run_record,
 )
 
@@ -690,3 +695,117 @@ def test_unsignalable_group_is_not_reported_as_stopped(tmp_path):
         artifacts_dir=tmp_path / "artifacts",
     )
     assert "could NOT be stopped" in result.message
+
+
+# --- Atomic reservation -----------------------------------------------
+#
+# Checking that a path is free and then recording into it is a
+# check-then-use race. These pin the atomic claim that closes it.
+
+
+def test_reservation_is_exclusive(tmp_path):
+    trace = tmp_path / "run.trace"
+    with reserve_trace_path(trace):
+        with pytest.raises(InstrumentsRecordError, match="already reserved"):
+            with reserve_trace_path(trace):
+                pass
+
+
+def test_reservation_is_released_on_success(tmp_path):
+    trace = tmp_path / "run.trace"
+    with reserve_trace_path(trace) as resolved:
+        marker = reservation_path_for(resolved)
+        assert marker.exists()
+    assert not marker.exists()
+
+
+def test_reservation_is_released_when_the_body_raises(tmp_path):
+    trace = tmp_path / "run.trace"
+    marker = reservation_path_for(trace.resolve())
+    with pytest.raises(ValueError):
+        with reserve_trace_path(trace):
+            raise ValueError("boom")
+    assert not marker.exists()
+
+
+def test_reservation_refuses_a_bundle_that_appears_mid_start(tmp_path):
+    """The window between checking and claiming is itself checked.
+
+    A writer can create the bundle after the initial check passes.
+    Winning the marker is what makes the recheck conclusive.
+    """
+    trace = tmp_path / "run.trace"
+    real_check = recorder_module.check_output_collision
+
+    def check_then_create(path):
+        resolved = real_check(path)
+        resolved.mkdir(parents=True)  # a concurrent writer wins the race
+        return resolved
+
+    with mock.patch.object(
+        recorder_module, "check_output_collision", check_then_create
+    ):
+        with pytest.raises(InstrumentsRecordError, match="appeared while"):
+            with reserve_trace_path(trace):
+                pass
+    assert not reservation_path_for(trace.resolve()).exists()
+
+
+def test_only_one_of_many_concurrent_reservations_wins(tmp_path):
+    """The claim is a single atomic O_CREAT|O_EXCL, so exactly one wins."""
+    trace = tmp_path / "run.trace"
+    barrier = threading.Barrier(8)
+    won: list[int] = []
+    refused: list[int] = []
+    lock = threading.Lock()
+
+    def attempt(index: int) -> None:
+        barrier.wait(timeout=30)
+        try:
+            with reserve_trace_path(trace):
+                with lock:
+                    won.append(index)
+                time.sleep(0.05)
+        except InstrumentsRecordError:
+            with lock:
+                refused.append(index)
+
+    threads = [threading.Thread(target=attempt, args=(i,)) for i in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert len(won) == 1, f"expected exactly one winner, got {won}"
+    assert len(refused) == 7
+    assert not reservation_path_for(trace.resolve()).exists()
+
+
+def test_a_concurrent_run_is_refused_and_writes_nothing(tmp_path):
+    """A second recorder must not touch the first one's artifacts."""
+    trace = tmp_path / "run.trace"
+    artifacts = tmp_path / "artifacts"
+
+    with reserve_trace_path(trace):
+        launcher = FakeLauncher(FakeProcess(returncode=0))
+        result = run_record(
+            make_plan(trace), launcher=launcher, artifacts_dir=artifacts
+        )
+
+    assert result.status is RecordStatus.REFUSED
+    assert "already reserved" in result.message
+    assert launcher.spawned == []
+    assert not artifacts.exists()
+
+
+def test_a_held_reservation_is_not_reacquired(tmp_path):
+    """The caller's claim spans its artifact writes and the recording."""
+    trace = tmp_path / "run.trace"
+    with reserve_trace_path(trace) as resolved:
+        result = run_record(
+            make_plan(trace),
+            launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=trace),
+            artifacts_dir=tmp_path / "artifacts",
+            reserved_trace=resolved,
+        )
+    assert result.status is RecordStatus.COMPLETED
