@@ -1420,6 +1420,23 @@ def test_a_completed_row_writes_a_run_level_marker(tmp_path):
     assert "verification.json" in sealed
 
 
+def test_an_unsafe_artifact_during_marker_creation_does_not_crash(
+    tmp_path, monkeypatch
+):
+    def refuse_marker(**_kwargs):
+        raise api_verify.ArtifactReadError("unsafe sealed artifact")
+
+    monkeypatch.setattr(api_verify, "_run_marker_payload", refuse_marker)
+
+    result = run_one(
+        tmp_path, transport=FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
+    )
+    run_dir = Path(result.verification.collection_dir or "").parent
+
+    assert result.verification.status is RowStatus.COMPLETED
+    assert not (run_dir / RUN_MANIFEST_NAME).exists()
+
+
 @pytest.mark.parametrize("victim", ["final_record.json", "verification.json"])
 def test_editing_a_file_outside_the_collection_marker_forces_a_rerun(tmp_path, victim):
     """These two sit outside the collector's marker and were trusted blind."""

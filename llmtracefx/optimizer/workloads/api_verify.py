@@ -1163,7 +1163,7 @@ def execute_api_row(
                     )
                     + "\n",
                 )
-            except OSError:
+            except (OSError, ArtifactReadError):
                 # A marker that cannot be written simply is not written.
                 # The row's evidence still stands on its own; only resume
                 # declines to trust it, which is the safe direction.
