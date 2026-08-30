@@ -217,12 +217,6 @@ _CREDENTIAL_QUERY_TERMS = frozenset(
         "password",
         "pwd",
         "secret",
-        # A session identifier authenticates the caller for as long as it
-        # lives, so it belongs here and not among the qualifiers, where it
-        # only ever described a neighbouring noun. As a term it also makes
-        # ``sessionid`` a credential, which a cover built from two
-        # qualifiers could never report.
-        "session",
         "sid",
         "sig",
         "signature",
@@ -245,6 +239,11 @@ _CREDENTIAL_QUERY_QUALIFIERS = frozenset(
         "id",
         "master",
         "ocp",
+        # ``param`` and ``value`` only ever describe a neighbouring noun,
+        # which is exactly what makes them safe here: alone they are one
+        # word and never refuse anything, but glued to a term they turn
+        # ``tokenvalue`` and ``secretparam`` into recognizable phrases.
+        "param",
         "primary",
         "private",
         "public",
@@ -252,9 +251,16 @@ _CREDENTIAL_QUERY_QUALIFIERS = frozenset(
         "sas",
         "secondary",
         "service",
+        # ``session`` describes a neighbouring noun rather than naming a
+        # credential on its own. It cannot be a term: parameter names are
+        # tokenized on separators, so ``session_timeout`` yields ``session``
+        # as a whole component, and a term there would refuse an ordinary
+        # timeout setting with a diagnostic that names nothing.
+        "session",
         "shared",
         "subscription",
         "user",
+        "value",
         "x",
     }
 )
@@ -911,8 +917,44 @@ def _names_a_credential(key: str) -> bool:
         # One trailing plural, so ``keys`` is read as ``key``.
         if component not in _CREDENTIAL_QUERY_TERMS and component.endswith("s"):
             component = component[:-1]
-        if _covers_a_credential(component):
+        if _covers_a_credential(component) or _spans_a_credential_phrase(component):
             return True
+    return False
+
+
+def _spans_a_credential_phrase(component: str) -> bool:
+    """True when a multiword credential phrase sits inside the component.
+
+    The complete-cover rule cannot see ``openaiapikey`` or ``myapikey``,
+    because ``openai`` and ``my`` are not words this recognizes and the
+    cover never finishes. Those are plainly credential names, and the
+    substring search that predated the cover caught them.
+
+    Requiring *two* recognized words, at least one of them a credential
+    noun, is what makes the surrounding text safe to ignore. A lone
+    ambiguous noun proves nothing, which is why ``keyword`` and ``monkey``
+    stay accepted: ``key`` is one word and neither ``word`` nor ``mon``
+    extends it. ``design``, ``signal``, ``insignia`` and ``assignment``
+    stay accepted for the same reason around ``sig``.
+
+    States are capped at two words, so each offset carries at most six of
+    them and the scan stays linear in the length of the component.
+    """
+    states: list[set[tuple[int, bool]]] = [set() for _ in range(len(component) + 1)]
+    for start in range(len(component)):
+        # A phrase may begin at any offset, so every offset seeds one.
+        states[start].add((0, False))
+        for words, seen_term in states[start]:
+            limit = min(len(component), start + _MAX_CREDENTIAL_WORD)
+            for end in range(start + 1, limit + 1):
+                word = component[start:end]
+                is_term = word in _CREDENTIAL_QUERY_TERMS
+                if not is_term and word not in _CREDENTIAL_QUERY_QUALIFIERS:
+                    continue
+                reached = (min(words + 1, 2), seen_term or is_term)
+                if reached[0] >= 2 and reached[1]:
+                    return True
+                states[end].add(reached)
     return False
 
 
@@ -1133,6 +1175,24 @@ class _CredentialVariant:
     #: contributes that spelling repeated up to the run cap, so this is a
     #: true upper bound rather than an estimate.
     span: int
+    #: How many characters one whitespace run element may consume. Normally
+    #: ``_MAX_WHITESPACE_RUN``, but never fewer than the longest run of
+    #: whitespace the credential itself contains: a matcher that cannot
+    #: consume its own literal spelling would leave the exact credential in
+    #: the artifact, which is the one thing redaction must never do.
+    whitespace_bound: int
+
+
+def _longest_whitespace_run(value: str) -> int:
+    longest = 0
+    current = 0
+    for character in value.strip():
+        if character.isspace():
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest
 
 
 def _transport_spellings(body: str) -> list[str]:
@@ -1296,12 +1356,22 @@ class _Redactor:
             normalized = unicodedata.normalize(form, credential)
             if normalized != credential:
                 spellings.append(normalized)
-        body = credential.strip()
-        if len(body) >= _MIN_ENCODED_CREDENTIAL_CHARS:
-            # Short values are left to the literal spellings. An encoding of
-            # two or three characters collides with ordinary text, and a
-            # redaction that fires on noise destroys the artifact it guards.
-            spellings.extend(_transport_spellings(body))
+        # Re-encode every literal spelling, not just the one that arrived.
+        # Normalization and transport encoding compose in both orders: an
+        # intermediary that normalizes an accented key and then base64s it
+        # produces bytes that decode straight back to the credential, and
+        # encoding only the original spelling left exactly that shape
+        # unmatched.
+        encoded: list[str] = []
+        for spelling in spellings:
+            body = spelling.strip()
+            if len(body) >= _MIN_ENCODED_CREDENTIAL_CHARS:
+                # Short values are left to the literal spellings. An encoding
+                # of two or three characters collides with ordinary text, and
+                # a redaction that fires on noise destroys the artifact it
+                # guards.
+                encoded.extend(_transport_spellings(body))
+        spellings.extend(encoded)
         return tuple(dict.fromkeys(spellings))
 
     @classmethod
@@ -1311,10 +1381,11 @@ class _Redactor:
             return None
         forms = tuple(element for element, _ in elements)
         runs = tuple(run for _, run in elements)
+        whitespace_bound = max(_MAX_WHITESPACE_RUN, _longest_whitespace_run(spelling))
         span = 0
         for index, element in enumerate(forms):
             longest = max(len(form) for form in element)
-            span += _MAX_WHITESPACE_RUN * max(longest, 1) if runs[index] else longest
+            span += whitespace_bound * max(longest, 1) if runs[index] else longest
         return _CredentialVariant(
             forms=forms,
             runs=runs,
@@ -1323,6 +1394,7 @@ class _Redactor:
                 re.IGNORECASE,
             ),
             span=span,
+            whitespace_bound=whitespace_bound,
         )
 
     def __init__(self, credential: str | None) -> None:
@@ -1363,7 +1435,7 @@ class _Redactor:
                         reached.add(found.end())
             return reached
         frontier = positions
-        for _ in range(_MAX_WHITESPACE_RUN):
+        for _ in range(variant.whitespace_bound):
             step: set[int] = set()
             for position in frontier:
                 single = _WHITESPACE_STEP.match(text, position)
@@ -2687,6 +2759,17 @@ class _StreamAccumulator:
                 )
             elif completion_tokens is not None:
                 token_rate = completion_tokens / generation_seconds
+            else:
+                # The window is fine and reasoning is accounted for, but the
+                # provider sent no completion token count to divide by it.
+                # The rate is null for a reason that has nothing to do with
+                # this client's measurement, and saying so is what keeps it
+                # from reading as a window we failed to observe.
+                rate_unavailable = (
+                    "the provider reported no completion token count, so "
+                    "there is no number to divide the measured generation "
+                    "window by"
+                )
         elif self.usage.completion_tokens is not None:
             # There is a completion count but no window with any width to
             # divide it by: every generated token arrived inside one network

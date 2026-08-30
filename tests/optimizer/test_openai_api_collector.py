@@ -30,6 +30,7 @@ from llmtracefx.optimizer.collectors.openai_api import (
     _MAX_CREDENTIAL_WORD,
     _MAX_EXACT_TOKEN_COUNT,
     _MAX_PERSISTED_HEADER_CHARS,
+    _MAX_WHITESPACE_RUN,
     _REDACTED,
     ARTIFACT_MANIFEST_NAME,
     DEFAULT_RETAINED_EVENT_LIMIT,
@@ -54,6 +55,7 @@ from llmtracefx.optimizer.collectors.openai_api import (
     _Redactor,
     _response_socket,
     _safe_endpoint_for_message,
+    _spans_a_credential_phrase,
     _validate_endpoint,
     artifact_set_is_complete,
     assert_credential_not_embedded,
@@ -4928,26 +4930,20 @@ def test_a_null_completion_rate_always_records_why(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "key",
     [
-        "sessionid",
-        "session",
         "sid",
         "jwt",
         "passphrase",
         "pwd",
-        "sessionId",
-        "x-session-id",
-        "SESSIONID",
-        "session_ids",
-        "refreshsession",
+        "PWD",
+        "x-jwt",
+        "refresh_jwt",
     ],
 )
 def test_session_family_query_keys_are_refused(key: str) -> None:
     """Authentication material that is not spelled ``key`` or ``token``.
 
-    ``session`` was only a qualifier, so ``sessionid`` was covered by two
-    qualifiers and named no credential. A session identifier authenticates
-    the caller for as long as it lives, and the value under such a key is
-    hashed into the configuration identity if the endpoint is accepted.
+    These nouns each name a credential on their own, so they are terms and
+    a single component of that spelling is enough to refuse the endpoint.
     """
     assert _names_a_credential(key) is True
     with pytest.raises(OpenAIStreamCollectorError) as excinfo:
@@ -4982,7 +4978,7 @@ def test_ordinary_query_keys_stay_accepted(key: str) -> None:
     A refusal here is an outage the operator cannot diagnose, because the
     diagnostic deliberately echoes nothing. These are the names an
     unanchored substring search rejected, plus the ones the new ``sid``
-    and ``session`` nouns could plausibly have caught.
+    noun could plausibly have caught.
     """
     assert _names_a_credential(key) is False
     _validate_endpoint(f"https://api.example.com/v1/chat?{key}=value")
@@ -5020,3 +5016,214 @@ def test_query_key_cover_lookahead_bound_admits_the_longest_word() -> None:
     )
     assert _MAX_CREDENTIAL_WORD == len(longest)
     assert _names_a_credential(longest + "key") is True
+
+
+# --------------------------------------------------------------------------
+# Twentieth review pass
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("spaces", [_MAX_WHITESPACE_RUN + 1, _MAX_WHITESPACE_RUN * 4])
+def test_credential_with_a_long_whitespace_run_is_still_redacted(spaces: int) -> None:
+    """A run cap must never fall below the credential's own spelling.
+
+    The cap exists so a redactor cannot be walked across unbounded
+    whitespace looking for the next element. Applying it to a credential
+    that literally contains a longer run made the matcher unable to
+    consume its own value, and the exact secret survived verbatim.
+    """
+    credential = "sk-live" + " " * spaces + "CANARY-SECRET"
+    redactor = _Redactor(credential)
+    text = f"the command was: {credential} and it failed"
+
+    scrubbed = redactor.text(redactor.boundary(text))
+
+    assert credential not in scrubbed
+    assert "CANARY-SECRET" not in scrubbed
+    assert _REDACTED in scrubbed
+
+
+def test_short_whitespace_runs_keep_the_default_bound() -> None:
+    """Ordinary credentials are unaffected by the per-variant bound."""
+    redactor = _Redactor("sk-live-ORDINARY-SECRET")
+    gap = " " * (_MAX_WHITESPACE_RUN + 1)
+    text = f"sk-live{gap}ORDINARY-SECRET"
+
+    # The credential has no internal run, so its bound stays at the default
+    # and a longer run in the haystack is not walked. Nothing matches, and
+    # nothing is destroyed either.
+    assert redactor.text(redactor.boundary(text)) == text
+
+
+@pytest.mark.parametrize("form", ["NFC", "NFD"])
+def test_normalized_credential_survives_transport_encoding(form: str) -> None:
+    """Normalization and transport encoding compose in both orders.
+
+    Encodings were built from the credential as supplied. An intermediary
+    that normalized an accented key before base64 encoding it produced
+    bytes that decode straight back to the credential, yet matched no
+    spelling this knew about.
+    """
+    credential = "sk-live-cafe\u0301-CANARY-SECRET"
+    redactor = _Redactor(credential)
+    encoded = base64.b64encode(
+        unicodedata.normalize(form, credential).encode("utf-8")
+    ).decode("ascii")
+
+    scrubbed = redactor.text(redactor.boundary(f"body={encoded} end"))
+
+    assert encoded not in scrubbed
+    assert _REDACTED in scrubbed
+
+
+def test_normalized_credential_percent_encoding_is_matched() -> None:
+    """The same composition through percent encoding rather than base64.
+
+    This one already held before the spellings fix, because the decoding
+    rounds recover the credential and the normalized literal spellings
+    then match it. It is kept as coverage of the second transport, not as
+    a regression for that fix.
+    """
+    credential = "sk-live-cafe\u0301-CANARY-SECRET"
+    redactor = _Redactor(credential)
+    encoded = quote(unicodedata.normalize("NFC", credential), safe="")
+
+    scrubbed = redactor.text(redactor.boundary(f"url?v={encoded}"))
+
+    assert encoded not in scrubbed
+    assert _REDACTED in scrubbed
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "openaiapikey",
+        "myapikey",
+        "zaiapikey",
+        "theaccesstoken",
+    ],
+)
+def test_glued_credential_names_with_unknown_affixes_are_refused(key: str) -> None:
+    """A complete cover cannot see a credential glued to an unknown word.
+
+    ``openai`` is not a word this recognizes, so the cover of
+    ``openaiapikey`` never finished and the key was accepted. Requiring a
+    contiguous run of two recognized words, at least one of them a
+    credential noun, finds the phrase without reverting to the unanchored
+    substring search that refused ``keyword`` and ``monkey``.
+    """
+    # The cover rule genuinely cannot reach these, so the phrase rule is
+    # the only thing standing between them and acceptance.
+    assert _covers_a_credential(key) is False
+    assert _spans_a_credential_phrase(key) is True
+    assert _names_a_credential(key) is True
+    with pytest.raises(OpenAIStreamCollectorError) as excinfo:
+        _validate_endpoint(f"https://api.example.com/v1/chat?{key}=whatever")
+    assert key not in str(excinfo.value)
+    assert "whatever" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["tokenvalue", "secretparam", "keyparam", "apikeyparam", "xsecretkey"],
+)
+def test_fully_covered_glued_names_stay_refused(key: str) -> None:
+    """The phrase rule must not displace the cover it was added beside.
+
+    ``param`` and ``value`` were added as qualifiers for these, so the
+    cover now completes and the phrase rule is not what catches them.
+    """
+    assert _covers_a_credential(key) is True
+    assert _names_a_credential(key) is True
+
+
+@pytest.mark.parametrize(
+    "key", ["param", "params", "value", "values", "parameter", "max_value", "userid"]
+)
+def test_new_qualifiers_refuse_nothing_on_their_own(key: str) -> None:
+    """A qualifier alone is one word, so it can never refuse a name."""
+    assert _names_a_credential(key) is False
+    _validate_endpoint(f"https://api.example.com/v1/chat?{key}=value")
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "keyword",
+        "monkey",
+        "design",
+        "signal",
+        "insignia",
+        "assignment",
+        "sidebar",
+        "sidecar",
+        "session_timeout",
+        "session_mode",
+        "session_length",
+        "session",
+        "region",
+        "api-version",
+        "residency",
+        "stream",
+        "user",
+        "id",
+    ],
+)
+def test_phrase_rule_does_not_refuse_ordinary_names(key: str) -> None:
+    """One ambiguous noun is not a phrase.
+
+    ``key`` alone does not make ``keyword`` a credential, because neither
+    ``word`` nor ``mon`` is a second recognized word. ``session`` is a
+    qualifier for the same reason: parameter names are tokenized on
+    separators, so ``session_timeout`` presents ``session`` as a whole
+    component, and a term there would refuse an ordinary timeout setting.
+    """
+    assert _spans_a_credential_phrase(key) is False
+    assert _names_a_credential(key) is False
+    _validate_endpoint(f"https://api.example.com/v1/chat?{key}=value")
+
+
+def test_phrase_rule_stays_linear_in_the_key_length() -> None:
+    """Two words are enough, so the scan must not revisit every offset.
+
+    A phrase search that restarted at each offset would be quadratic and
+    would undo the bound the previous pass established.
+    """
+    key = "a" * 64_000 + "apikey"
+
+    started = time.monotonic()
+    assert _names_a_credential(key) is True
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5.0
+
+
+def test_absent_provider_usage_explains_the_null_completion_rate(
+    tmp_path: Path,
+) -> None:
+    """A rate is null for a reason, and the reason is always recorded.
+
+    The generation window was measured and reasoning was ruled out, so
+    neither of those branches fired, yet there was no completion token
+    count to divide by. Leaving the reason null made a provider omission
+    look like a window this client had failed to observe.
+    """
+    chunks = [
+        b'data: {"choices": [{"index": 0, "delta": {"content": "one"}}]}\n\n',
+        b'data: {"choices": [{"index": 0, "delta": {"content": " two"}}]}\n\n',
+        b'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+    config = make_config(
+        tmp_path, extensions=ProviderExtensions(thinking_type="disabled")
+    )
+    result, _ = run(config, chunks)
+
+    stats = result.evidence.statistics
+    assert result.evidence.failure is None
+    assert result.evidence.usage.completion_tokens is None
+    assert stats.generation_window_ms is not None
+    assert stats.provider_completion_tokens_per_second is None
+    reason = stats.provider_completion_tokens_per_second_unavailable_reason
+    assert reason is not None
+    assert "no completion token count" in reason

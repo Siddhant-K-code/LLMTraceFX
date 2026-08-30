@@ -1399,14 +1399,54 @@ and are never mixed into a single unlabelled number.
   count either. Splitting a component once into two parts was not enough,
   because `xapikey` is three words and the substring search it replaced had
   caught it.
-- The credential vocabulary covers session material, not just words spelled
-  `key` or `token`. `session` used to be only a qualifier, so `sessionid` was
-  covered by two qualifiers, named no credential outright and was accepted. A
-  session identifier authenticates the caller for as long as it lives, and
-  `sid`, `jwt`, `pwd` and `passphrase` name one just as plainly, so all of
-  them are credential nouns now. The cover rule keeps that from spreading:
-  `sidebar` and `sidecar` are still accepted, because `ebar` and `car` are not
-  words this recognizes.
+- The credential vocabulary covers more than words spelled `key` or `token`:
+  `sid`, `jwt`, `pwd` and `passphrase` each name authentication material
+  outright, so all four are credential nouns. The cover rule keeps that from
+  spreading: `sidebar` and `sidecar` are still accepted, because `ebar` and
+  `car` are not words this recognizes.
+- `session` is a qualifier and not a noun, which is a deliberate choice
+  against a stricter one. Parameter names are tokenized on separators, so
+  `session_timeout` presents `session` as a whole component, and a noun there
+  refuses an ordinary timeout setting with a diagnostic that by design names
+  nothing the caller supplied. Availability wins that trade, because the cost
+  of the false negative is bounded: `sessionid` is accepted, but every query
+  value is redacted unconditionally before it reaches any artifact, and the
+  preflight check refuses the request credential inside an endpoint under any
+  key name whatsoever. What a missed name can persist is a hash of a
+  secondary value, never cleartext.
+- A complete cover cannot see a credential glued to a word the tables do not
+  know, so `openaiapikey`, `myapikey` and `zaiapikey` were accepted. A
+  component is also refused when a contiguous run of two recognized words,
+  at least one of them a credential noun, sits anywhere inside it. Two words
+  is what makes the surrounding text safe to ignore: one ambiguous noun
+  proves nothing, which is why `keyword` and `monkey` still pass on `key` and
+  `design`, `signal`, `insignia` and `assignment` still pass on `sig`. The
+  scan carries at most six states per position, so it stays linear and does
+  not undo the bound below.
+- `param` and `value` are qualifiers for the same reason: alone they are one
+  word and refuse nothing, so `params`, `values` and `max_value` are
+  untouched, but glued to a noun they complete the cover of `tokenvalue` and
+  `secretparam`.
+- The cover search looks ahead no further than the longest word either table
+  spells. Without that bound every reachable offset rescanned every remaining
+  substring, so a query key made of a few thousand repeated qualifier
+  characters cost seconds of work before the endpoint it belonged to was even
+  rejected: an 8,003 character key took over seventeen seconds, and the cost
+  quadrupled with each doubling. No cover step can use a word longer than the
+  longest one there is, so nothing is missed, and the bound is derived from
+  the tables rather than written down, which keeps a longer noun added later
+  reachable.
+- The whitespace run cap is a floor, not a ceiling. It stops a matcher being
+  walked across unbounded whitespace hunting for its next element, but
+  applying it to a credential whose own spelling contains a longer run left
+  the matcher unable to consume its own value, and the exact secret survived
+  verbatim. Each matcher raises its cap to its own longest literal run, so a
+  credential can always match itself while ordinary ones are unaffected.
+- Transport encodings are built from every literal spelling, not only the one
+  supplied. Normalization and encoding compose in both orders, and an
+  intermediary that normalized an accented key before base64 encoding it
+  produced bytes that decode straight back to the credential yet matched no
+  spelling the redactor knew.
 - The cover search looks ahead no further than the longest word either table
   spells. Without that bound every reachable offset rescanned every remaining
   substring, so a query key made of a few thousand repeated qualifier
