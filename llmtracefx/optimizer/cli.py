@@ -2648,9 +2648,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_STREAM_EVENTS,
         help=(
-            "Ceiling on dispatched SSE events per row. A stream that exceeds "
-            "it is abandoned, and the row fails as truncated rather than "
-            "being graded: what arrived is a prefix of the answer."
+            "Ceiling on dispatched SSE events per row, counting the "
+            "terminal sentinel. A stream that exceeds it is abandoned, and "
+            "the row fails as truncated rather than being graded. Chunks "
+            "that dispatch no event, such as keepalive comments, are not "
+            "charged, so the verdict does not depend on how the network "
+            "split the body."
         ),
     )
     run_api_parser.add_argument(

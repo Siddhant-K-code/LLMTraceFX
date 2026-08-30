@@ -164,21 +164,33 @@ class _EventCappedResponse:
     authoritative diagnostic, so a decode error here only stops counting
     and lets the bytes through untouched.
 
-    The cap trips only when the stream genuinely had more events than the
-    limit allows, never merely on reaching it. Those are different facts
-    and conflating them condemns clean measurements: a provider may close
+    The cap trips only when the stream actually dispatched more events
+    than the limit allows. Reaching the limit is not exceeding it, and
+    conflating the two condemns clean measurements: a provider may close
     with a terminal ``finish_reason`` and no ``[DONE]`` sentinel, which
     this project supports, and the collector keeps pulling after the final
-    chunk. Tripping the moment the count reached the limit therefore
-    failed streams that had already delivered every byte they were ever
-    going to send, discarding a valid answer as a truncation.
+    chunk.
 
-    Telling the two apart needs one chunk of lookahead, because "the count
-    reached the limit" and "there was more to read" are only distinguished
-    by trying to read. The lookahead chunk is deliberately not yielded:
-    once the limit is known to be exceeded the row fails, so forwarding it
-    would only grow the answer this class has already decided not to
-    trust.
+    The decision is made from the event count alone, never from whether
+    another chunk happens to exist. Those are different quantities: a
+    chunk may carry several events, or none at all. A keepalive comment, a
+    stray blank line and a sentinel arriving in its own socket read are all
+    chunks that dispatch nothing, so treating "another chunk arrived" as
+    "the cap was exceeded" fails streams that never exceeded it, and makes
+    the verdict depend on how the network happened to segment the body.
+    Two runs over identical bytes must not disagree because one of them
+    was read in smaller pieces.
+
+    Counting only what the shared decoder dispatches keeps the outcome a
+    property of the stream rather than of the network. The count is taken
+    before the chunk is handed on, so the decision cannot depend on
+    whether the collector happened to stop reading first: a body that
+    arrives in one large read is capped exactly as the same body split
+    across many small ones.
+
+    The terminal ``[DONE]`` sentinel is itself a dispatched event and is
+    charged to the budget like any other. That is the only reading under
+    which the count is a property of the bytes alone.
     """
 
     def __init__(self, inner: StreamingResponse, *, limit: int) -> None:
@@ -198,29 +210,20 @@ class _EventCappedResponse:
         return self._inner.headers
 
     def iter_bytes(self) -> Iterator[bytes]:
-        iterator = iter(self._inner.iter_bytes())
-        while True:
-            try:
-                chunk = next(iterator)
-            except StopIteration:
-                return
-            yield chunk
-            if not self._counting:
-                continue
-            try:
-                self.events_seen += sum(1 for _ in self._decoder.feed(chunk))
-            except SSEDecodeError:
-                self._counting = False
-                continue
-            if self.events_seen >= self._limit:
+        for chunk in self._inner.iter_bytes():
+            if self._counting:
                 try:
-                    next(iterator)
-                except StopIteration:
-                    # The stream ended exactly at the limit. Nothing was
-                    # abandoned, so nothing was truncated.
-                    return
-                self.cap_tripped = True
-                return
+                    self.events_seen += sum(1 for _ in self._decoder.feed(chunk))
+                except SSEDecodeError:
+                    # The collector's own decoder is about to reject this
+                    # with the authoritative diagnostic, so counting stops
+                    # and the bytes go through untouched.
+                    self._counting = False
+                else:
+                    if self.events_seen > self._limit:
+                        self.cap_tripped = True
+                        return
+            yield chunk
 
     def close(self) -> None:
         self._inner.close()

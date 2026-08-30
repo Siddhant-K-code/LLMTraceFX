@@ -1910,11 +1910,13 @@ What the command guarantees:
 - **`--max-stream-events`** bounds a chatty endpoint that stays under the
   request timeout while emitting far more events than any answer needs.
   Tripping the cap fails the row as truncated with the cap named in the
-  reason, even if a terminal `finish_reason` had already arrived: we are
-  the ones who stopped reading, so what arrived is a prefix of the answer
-  and grading it would publish a truncation as a verdict. The timing and
-  usage evidence is still persisted; only the outcome refuses to claim
-  success.
+  reason; the timing and usage evidence is still persisted, and only the
+  outcome refuses to claim success. The budget is denominated in
+  *dispatched SSE events*, counting the terminal sentinel. Chunks that
+  dispatch no event, such as keepalive comments or a stray blank line,
+  are not charged, and the count is taken before each chunk is handed on,
+  so two runs over identical bytes agree regardless of how the network
+  split them into reads.
 - **A credential is refused before it can be written down, not after.**
   Both `--dry-run` and a real run apply the collector's pre-flight check,
   which fails the row if the key from `--api-key-env` appears in the

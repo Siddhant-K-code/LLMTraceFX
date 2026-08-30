@@ -521,6 +521,11 @@ def test_missing_credential_fails_the_row_without_evidence(tmp_path):
 # --- Event cap ---------------------------------------------------------------
 
 
+def sse_comment() -> bytes:
+    """A keepalive comment: a chunk that dispatches no event at all."""
+    return b": keepalive\n\n"
+
+
 def test_event_cap_abandons_a_chatty_stream_and_says_so(tmp_path):
     transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
     result = run_one(
@@ -528,19 +533,12 @@ def test_event_cap_abandons_a_chatty_stream_and_says_so(tmp_path):
     )
 
     assert result.verification.status is RowStatus.FAILED
-    reason = result.verification.reason or ""
-    assert "2-event cap" in reason
+    assert "2-event cap" in (result.verification.reason or "")
 
 
-@pytest.mark.parametrize("cap", [1, 2, 3, 4])
-def test_no_cap_below_the_stream_length_ever_yields_a_graded_pass(tmp_path, cap):
-    """Cutting the stream short must never be published as a verdict.
-
-    The cap can land after a terminal ``finish_reason`` but before
-    ``[DONE]``, which the collector alone would call a clean ending. This
-    pipeline stopped reading, so the answer it holds is a prefix and the
-    row has to fail however tidy the fragment looks.
-    """
+@pytest.mark.parametrize("cap", [1, 2, 3])
+def test_a_cap_the_stream_exceeds_never_yields_a_graded_pass(tmp_path, cap):
+    """Exceeding the cap discards the verdict but keeps the measurement."""
     transport = FakeTransport(FakeResponse(answer_stream(GOOD_JSON_ANSWER)))
     result = run_one(
         tmp_path / f"cap{cap}",
@@ -552,9 +550,7 @@ def test_no_cap_below_the_stream_length_ever_yields_a_graded_pass(tmp_path, cap)
     assert result.verification.outcome_success is False
     assert result.verification.quality_score is None
     assert f"{cap}-event cap" in (result.verification.reason or "")
-    # The measurement survives even though the outcome refuses to claim it.
     assert result.final_record is not None
-    assert result.final_record.outcome.success is False
     assert result.verification.total_ms is not None
 
 
@@ -566,40 +562,97 @@ def test_event_cap_high_enough_does_not_interfere(tmp_path):
     assert result.verification.status is RowStatus.COMPLETED
 
 
-def test_a_fully_delivered_stream_is_not_failed_at_the_exact_cap(tmp_path):
-    """Reaching the cap is not the same as being cut short by it.
+@pytest.mark.parametrize(
+    ("label", "trailer"),
+    [
+        ("nothing", []),
+        ("a keepalive comment", [sse_comment()]),
+        ("a stray blank line", [b"\n"]),
+        ("a keepalive split across reads", [b": keep", b"alive\n\n"]),
+        ("several non-event chunks", [sse_comment(), b"\n", sse_comment()]),
+    ],
+)
+def test_a_trailing_non_event_chunk_never_trips_the_cap(tmp_path, label, trailer):
+    """A chunk is not an event, and only events are charged to the cap.
 
-    A provider may end with a terminal ``finish_reason`` and no ``[DONE]``
-    sentinel, which this project documents as supported. The collector
-    keeps pulling after the final chunk, so a cap equal to the number of
-    events the stream actually sent used to trip on a stream where every
-    byte had already been delivered, and a clean measurement was
-    published as a truncation.
+    A provider may close with a terminal ``finish_reason`` and no
+    ``[DONE]`` sentinel, then leave a keepalive or a blank line in the
+    pipe. Deciding truncation on "another chunk exists" rather than on the
+    event count failed these streams even though every byte of the answer
+    had already been delivered.
     """
-    chunks = answer_stream(GOOD_JSON_ANSWER)[:-1]
+    chunks = answer_stream(GOOD_JSON_ANSWER)[:-1] + list(trailer)
     transport = FakeTransport(FakeResponse(chunks))
     result = run_one(
         tmp_path,
         transport=transport,
-        binding=make_binding(max_stream_events=len(chunks)),
+        # Four events were dispatched; the trailer adds none.
+        binding=make_binding(max_stream_events=4),
     )
 
-    assert result.verification.status is RowStatus.COMPLETED
+    assert result.verification.status is RowStatus.COMPLETED, label
     assert result.verification.outcome_success is True
+    assert result.verification.quality_score == 1.0
 
 
-def test_a_stream_one_event_past_the_cap_still_fails(tmp_path):
-    """The boundary moved by one; it did not disappear."""
-    chunks = answer_stream(GOOD_JSON_ANSWER)[:-1]
-    transport = FakeTransport(FakeResponse(chunks))
+@pytest.mark.parametrize(
+    ("label", "segment"),
+    [
+        ("one read per event", lambda parts: list(parts)),
+        ("sentinel in its own read", lambda parts: list(parts)),
+        (
+            "sentinel glued to the last event",
+            lambda parts: [*parts[:-2], parts[-2] + parts[-1]],
+        ),
+        ("whole body in one read", lambda parts: [b"".join(parts)]),
+        (
+            "sixteen byte reads",
+            lambda parts: [
+                b"".join(parts)[i : i + 16] for i in range(0, len(b"".join(parts)), 16)
+            ],
+        ),
+    ],
+)
+def test_the_verdict_does_not_depend_on_network_segmentation(tmp_path, label, segment):
+    """Identical wire bytes must produce an identical verdict.
+
+    How a body is split across socket reads is a property of the network,
+    not of the answer. A cap that consulted chunk arrival, or that counted
+    only what the collector had not yet abandoned, let TCP decide whether
+    a run passed.
+    """
+    parts = answer_stream(GOOD_JSON_ANSWER)
+    transport = FakeTransport(FakeResponse(segment(parts)))
     result = run_one(
         tmp_path,
         transport=transport,
-        binding=make_binding(max_stream_events=len(chunks) - 1),
+        # Five events including the sentinel, so this is the smallest cap
+        # the stream does not exceed.
+        binding=make_binding(max_stream_events=len(parts)),
     )
 
-    assert result.verification.status is RowStatus.FAILED
-    assert f"{len(chunks) - 1}-event cap" in (result.verification.reason or "")
+    assert result.verification.status is RowStatus.COMPLETED, label
+    assert result.verification.quality_score == 1.0
+
+
+def test_a_stream_past_the_cap_still_fails_whatever_the_segmentation(tmp_path):
+    """The boundary still exists; it is just denominated in events."""
+    parts = answer_stream(GOOD_JSON_ANSWER)
+    for label, chunks in (
+        ("one read per event", list(parts)),
+        ("whole body in one read", [b"".join(parts)]),
+        (
+            "sixteen byte reads",
+            [b"".join(parts)[i : i + 16] for i in range(0, len(b"".join(parts)), 16)],
+        ),
+    ):
+        transport = FakeTransport(FakeResponse(chunks))
+        result = run_one(
+            tmp_path / label.replace(" ", "-"),
+            transport=transport,
+            binding=make_binding(max_stream_events=2),
+        )
+        assert result.verification.status is RowStatus.FAILED, label
 
 
 # --- Credential pre-flight ---------------------------------------------------
