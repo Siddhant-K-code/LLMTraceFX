@@ -153,7 +153,7 @@ def render_plan_text(plan: DeploymentPlan) -> str:
     )
     lines.append("")
 
-    lines.append("Cost envelope (worst case, not an estimate)")
+    lines.append("Modeled cost envelope (planning estimate from supplied inputs)")
     lines.append(
         f"  billable window   {envelope.billable_seconds}s "
         f"({envelope.deployment_seconds}s deployment expiry plus one "
@@ -168,17 +168,17 @@ def render_plan_text(plan: DeploymentPlan) -> str:
         f"  rates read        {envelope.price_effective_date} from "
         f"{envelope.price_source}"
     )
-    lines.append(f"  total worst case  ${envelope.worst_case_usd:.2f}")
+    lines.append(f"  modeled total     ${envelope.worst_case_usd:.2f}")
     lines.append(
-        "  bounded           "
+        "  request access    "
         + (
-            "yes, for requests that get past the edge"
+            "authenticated at the edge"
             if envelope.bounded
-            else "NO: a public endpoint has no cost bound at all"
+            else "PUBLIC: traffic can allocate unmodeled resources"
         )
     )
-    lines.append(f"  authorised budget ${envelope.budget_usd:.2f}")
-    lines.append(f"  headroom          ${envelope.headroom_usd:.2f}")
+    lines.append(f"  planning threshold ${envelope.budget_usd:.2f}")
+    lines.append(f"  modeled headroom   ${envelope.headroom_usd:.2f}")
     lines.append("")
 
     lines.append("Capacity check")
@@ -538,7 +538,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-usd",
         type=float,
         required=True,
-        help="Hard ceiling on the worst-case cost of this deployment",
+        help=(
+            "Operator planning threshold for the modeled costs calculated "
+            "from the supplied inputs; not a provider billing cap"
+        ),
     )
     money.add_argument(
         "--gpu-type", required=True, help="Accelerator model, for example H200"
@@ -554,7 +557,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         required=True,
         help=(
-            "Container timeout, and the runtime the worst case is priced "
+            "Container timeout, and the runtime the modeled serving term is priced "
             f"against (1..{MAX_RUNTIME_SECONDS_CEILING})"
         ),
     )
@@ -678,7 +681,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=1,
         help=(
             "Autoscaling ceiling. Default 1: every extra container "
-            "multiplies the worst case (default: %(default)s)"
+            "multiplies the modeled serving term (default: %(default)s)"
         ),
     )
     limits.add_argument(
@@ -686,7 +689,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help=(
-            "Warm container floor. Default 0 so nothing bills while idle "
+            "Warm container floor. Default 0 to avoid intentionally keeping "
+            "an idle serving container warm "
             "(default: %(default)s)"
         ),
     )

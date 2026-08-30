@@ -454,4 +454,4 @@ only on macOS arm64, and the `modal` extra is optional.
 
 ## License
 
-[GPL-3.0-only](LICENSE)
+[Apache-2.0](LICENSE)

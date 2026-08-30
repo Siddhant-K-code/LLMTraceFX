@@ -270,8 +270,8 @@ def build_plan(
 
     if not envelope.within_budget:
         blockers.append(
-            f"Worst-case cost ${envelope.worst_case_usd:.2f} exceeds the "
-            f"authorised budget ${envelope.budget_usd:.2f}."
+            f"Modeled cost ${envelope.worst_case_usd:.2f} exceeds the "
+            f"planning threshold ${envelope.budget_usd:.2f}."
         )
     if not memory.fits:
         blockers.append(

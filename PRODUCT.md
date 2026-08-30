@@ -86,7 +86,7 @@ composite score.
   provenance, coefficient of variation, pass rate, context tier, decode mode, speculative.
 - **Runtime dependency floor.** The optimizer package is standard library only. Report rendering
   must not add a runtime dependency.
-- Python 3.10+, GPL-3.0-only, formatted with Black and isort, linted with Ruff, typed with mypy.
+- Python 3.10+, Apache-2.0, formatted with Black and isort, linted with Ruff, typed with mypy.
 
 ## Brand Commitments
 

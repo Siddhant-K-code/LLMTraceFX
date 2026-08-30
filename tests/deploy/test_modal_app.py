@@ -156,7 +156,7 @@ def test_importing_an_over_budget_configuration_fails() -> None:
     environ = valid_environ(
         LLMTRACEFX_GLM_MAX_USD="0.01", LLMTRACEFX_GLM_USD_PER_GPU_HOUR="50"
     )
-    with pytest.raises(DeploymentPlanError, match="exceeds the authorised budget"):
+    with pytest.raises(DeploymentPlanError, match="exceeds the planning threshold"):
         with imported_app(environ):
             pass
 

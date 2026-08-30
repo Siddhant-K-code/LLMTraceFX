@@ -189,8 +189,13 @@ Install and authenticate Modal only at this point:
 
 ```bash
 uv sync --locked --extra modal
+source .venv/bin/activate
 modal setup
 ```
+
+The generated lifecycle uses the `modal` and `llmtracefx-optimizer`
+executables directly, so keep this virtual environment active through
+teardown. Alternatively, prefix each generated command with `uv run`.
 
 Keep the reviewed `LLMTRACEFX_GLM_*` variables in the shell used for
 deployment. If deployment happens in a new shell, re-export the same reviewed
@@ -263,7 +268,7 @@ server:
 uv run llmtracefx-optimizer collect-api \
   --run-id glm53flash-selfhost \
   --provider modal-selfhost \
-  --endpoint "$URL/v1/chat/completions" \
+  --endpoint "$LLMTRACEFX_GLM_ENDPOINT_BASE_URL/v1/chat/completions" \
   --model-id zai-org/GLM-5.3-Flash \
   --model-revision <40-character-model-sha> \
   --prompt-file examples/optimizer/api-smoke-prompt.txt \
