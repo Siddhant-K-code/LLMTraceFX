@@ -250,6 +250,100 @@ def test_matrix_manifest_rejects_malformed_nested_entry_and_prompt() -> None:
 
 
 @pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("workload_id", []),
+        ("workload_version", {}),
+        ("context_tier", []),
+        ("target_context_tokens", 1.5),
+        ("approx_chars_per_token", "4"),
+        ("filler_segments_used", True),
+        ("prompt_hash", []),
+    ],
+)
+def test_matrix_manifest_rejects_malformed_prompt_fields(
+    field: str, value: object
+) -> None:
+    prompt = {
+        "workload_id": "workload-1",
+        "workload_version": "1",
+        "context_tier": "2k",
+        "target_context_tokens": 2_048,
+        "approx_chars_per_token": 4,
+        "filler_segments_used": 1,
+        "prompt_hash": "sha256:abc",
+    }
+    prompt[field] = value
+    entry = {
+        "run_id": "run-1",
+        "workload_id": "workload-1",
+        "workload_version": "1",
+        "category": "structured_json",
+        "context_tier": "2k",
+        "decode_mode": "autoregressive",
+        "configured_depth": None,
+        "prompt": prompt,
+        "prompt_path": "prompt.txt",
+        "runner_results_dir": "runner",
+        "collector_output_dir": "collector",
+        "runnable": True,
+        "unsupported_reason": None,
+        "command_argv": ["runner"],
+        "max_tokens": 1,
+    }
+    manifest = {
+        "schema_version": "1",
+        "model_id": "model-1",
+        "model_family": "family-1",
+        "output_dir": "matrix",
+        "entries": [entry],
+    }
+
+    with pytest.raises(MatrixSchemaError, match=field):
+        MatrixManifest.from_dict(manifest)
+
+
+def test_matrix_manifest_wraps_exponent_overflow_in_prompt_integer() -> None:
+    prompt = {
+        "workload_id": "workload-1",
+        "workload_version": "1",
+        "context_tier": "2k",
+        "target_context_tokens": "NON_FINITE",
+        "approx_chars_per_token": 4,
+        "filler_segments_used": 1,
+        "prompt_hash": "sha256:abc",
+    }
+    entry = {
+        "run_id": "run-1",
+        "workload_id": "workload-1",
+        "workload_version": "1",
+        "category": "structured_json",
+        "context_tier": "2k",
+        "decode_mode": "autoregressive",
+        "configured_depth": None,
+        "prompt": prompt,
+        "prompt_path": "prompt.txt",
+        "runner_results_dir": "runner",
+        "collector_output_dir": "collector",
+        "runnable": True,
+        "unsupported_reason": None,
+        "command_argv": ["runner"],
+        "max_tokens": 1,
+    }
+    manifest = {
+        "schema_version": "1",
+        "model_id": "model-1",
+        "model_family": "family-1",
+        "output_dir": "matrix",
+        "entries": [entry],
+    }
+    payload = json.dumps(manifest).replace('"NON_FINITE"', "1e400")
+
+    with pytest.raises(MatrixSchemaError, match="target_context_tokens"):
+        MatrixManifest.from_json(payload)
+
+
+@pytest.mark.parametrize(
     ("reader", "error_type", "limit_owner", "limit_name"),
     [
         (
