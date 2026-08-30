@@ -29,6 +29,7 @@ from llmtracefx.optimizer.instruments.capability import (
     XctraceCapability,
     detect_xctrace_capability,
 )
+from llmtracefx.optimizer.instruments.commands import InstrumentsCommandError
 from llmtracefx.optimizer.instruments.evidence import (
     TraceEvidenceInputs,
     build_instruments_evidence,
@@ -1563,6 +1564,163 @@ def test_any_export_failure_replaces_stale_evidence(tmp_path, error):
 
     assert collection.export_failed is True
     assert collection.succeeded is False
+    evidence = json.loads((out / "instruments_evidence.json").read_text("utf-8"))
+    assert evidence["metrics"] == {}
+    assert evidence["trace_bundle_name"] == "run2.trace"
+
+
+def test_the_promoted_toc_carries_no_identity(tmp_path):
+    """The file written to disk, not just the parsed object."""
+    trace = tmp_path / "run.trace"
+    trace.mkdir()
+    out = tmp_path / "artifacts"
+    import_trace(runner=exporting_runner(), trace_path=trace, output_dir=out)
+
+    promoted = (out / "trace_toc.xml").read_text("utf-8")
+    assert "Example Mac" not in promoted
+    assert "00000000-0000-0000-0000-000000000000" not in promoted
+    assert "arguments=" not in promoted
+    assert "Metal System Trace" in promoted
+
+
+def test_a_failed_run_clears_a_previous_run_exported_tables(tmp_path):
+    """Replacing only the evidence still leaves a stale GPU table.
+
+    A directory holding run 2's metadata beside run 1's exported
+    intervals invites exactly the misattribution this project exists to
+    prevent.
+    """
+    out = tmp_path / "artifacts"
+    first = tmp_path / "run1.trace"
+    record_trace(
+        runner=exporting_runner(),
+        launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=first),
+        command=("/bin/infer",),
+        output_trace=first,
+        output_dir=out,
+    )
+    for name in ("trace_toc.xml", "trace_toc.json", "trace_table.xml"):
+        assert (out / name).exists(), name
+
+    second = tmp_path / "run2.trace"
+    record_trace(
+        runner=exporting_runner(**{"toc": fail((), returncode=1)}),
+        launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=second),
+        command=("/bin/infer",),
+        output_trace=second,
+        output_dir=out,
+    )
+
+    for name in ("trace_toc.xml", "trace_toc.json", "trace_table.xml"):
+        assert not (out / name).exists(), f"{name} survived from the earlier run"
+
+
+def test_an_invalid_request_writes_nothing(tmp_path):
+    """Validation must precede the first byte written.
+
+    capability_report.json used to land before the plan was built, so a
+    bad time limit left an artifact describing a run that never started.
+    """
+    out = tmp_path / "artifacts"
+    with pytest.raises(InstrumentsCommandError, match="time-limit"):
+        record_trace(
+            runner=exporting_runner(),
+            launcher=FakeLauncher(FakeProcess(returncode=0)),
+            command=("/bin/infer",),
+            output_trace=tmp_path / "run.trace",
+            output_dir=out,
+            time_limit="not-a-duration",
+        )
+    assert not out.exists() or list(out.iterdir()) == []
+
+
+def test_two_runs_cannot_share_an_artifact_directory(tmp_path):
+    """Different traces, same --output-dir, still race on the metadata."""
+    from llmtracefx.optimizer.instruments.recorder import reserve_output_dir
+
+    out = tmp_path / "artifacts"
+    with reserve_output_dir(out):
+        launcher = FakeLauncher(FakeProcess(returncode=0))
+        collection = record_trace(
+            runner=exporting_runner(),
+            launcher=launcher,
+            command=("/bin/infer",),
+            output_trace=tmp_path / "other.trace",
+            output_dir=out,
+        )
+
+    assert collection.succeeded is False
+    assert collection.wrote_artifacts is False
+    assert "already reserved the artifact directory" in collection.message
+    assert launcher.spawned == []
+
+
+def test_a_leaked_descendant_makes_the_run_unsuccessful(tmp_path):
+    """A run that left processes running did not fully succeed.
+
+    The trace is valid and the recording completed, both of which stay
+    true in the metadata, but the exit code must not say success.
+    """
+    trace = tmp_path / "run.trace"
+    collection = record_trace(
+        runner=exporting_runner(),
+        launcher=FakeLauncher(
+            FakeProcess(returncode=0, group_dies_on=None), creates_trace=trace
+        ),
+        command=("/bin/infer",),
+        output_trace=trace,
+        output_dir=tmp_path / "artifacts",
+        # The group never dies, so this bounds the full escalation.
+        stop_grace_seconds=0.05,
+    )
+
+    assert collection.record.status is RecordStatus.COMPLETED
+    assert collection.record.cleanup_failed is True
+    assert collection.succeeded is False
+    assert "could NOT be stopped" in collection.record.message
+
+
+def test_a_clean_run_is_not_marked_as_leaking(tmp_path):
+    trace = tmp_path / "run.trace"
+    collection = record_trace(
+        runner=exporting_runner(),
+        launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=trace),
+        command=("/bin/infer",),
+        output_trace=trace,
+        output_dir=tmp_path / "artifacts",
+    )
+    assert collection.record.cleanup_failed is False
+    assert collection.succeeded is True
+
+
+def test_a_bad_run_number_in_the_toc_does_not_mix_runs(tmp_path):
+    """Trace-derived input is validated, and that raises a command error.
+
+    It escaped the handler, leaving this run's metadata beside the
+    previous run's live GPU metrics.
+    """
+    out = tmp_path / "artifacts"
+    first = tmp_path / "run1.trace"
+    record_trace(
+        runner=exporting_runner(),
+        launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=first),
+        command=("/bin/infer",),
+        output_trace=first,
+        output_dir=out,
+    )
+    assert json.loads((out / "instruments_evidence.json").read_text("utf-8"))["metrics"]
+
+    bad_toc = read_fixture(TOC).replace('<run number="1">', '<run number="0">')
+    second = tmp_path / "run2.trace"
+    collection = record_trace(
+        runner=exporting_runner(**{"toc": ok((), bad_toc)}),
+        launcher=FakeLauncher(FakeProcess(returncode=0), creates_trace=second),
+        command=("/bin/infer",),
+        output_trace=second,
+        output_dir=out,
+    )
+
+    assert collection.export_failed is True
     evidence = json.loads((out / "instruments_evidence.json").read_text("utf-8"))
     assert evidence["metrics"] == {}
     assert evidence["trace_bundle_name"] == "run2.trace"

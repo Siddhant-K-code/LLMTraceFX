@@ -87,7 +87,6 @@ _CREDENTIAL_SEGMENTS: frozenset[str] = frozenset(
         "pw",
         "pwd",
         "pass",
-        "netrc",
     }
 )
 
@@ -133,6 +132,14 @@ _CREDENTIAL_PHRASES: tuple[str, ...] = (
     # Connection strings and DSNs routinely embed the password inline.
     "connection_string",
     "dsn",
+)
+
+#: Names whose value is a `user:password` pair rather than a bare
+#: secret. curl's `--user` and `--proxy-user` are the common ones. They
+#: are listed explicitly because `user` on its own is a username, which
+#: is not a secret and must stay readable.
+_USER_CREDENTIAL_NAMES: frozenset[str] = frozenset(
+    {"user", "proxy_user", "proxy_credential", "u"}
 )
 
 #: Segments that mark a ``token`` name as a *quantity* rather than a
@@ -245,6 +252,11 @@ def _is_credential_name(name: str) -> bool:
     if any(phrase in normalized for phrase in _CREDENTIAL_PHRASES):
         return True
     if normalized in {"key", "token", "pat", "auth"}:
+        return True
+    if normalized in _USER_CREDENTIAL_NAMES:
+        # `--user alice:hunter2`. The username half is not a secret, but
+        # the pair cannot be split without knowing the target program's
+        # grammar, so the whole value goes.
         return True
     if tail == "key":
         # `ssh_key`, `deploy_key`, `session_key`. Default to treating an

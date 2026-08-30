@@ -108,10 +108,17 @@ class RecordResult:
     trace_exists: bool = False
     failure_capability: XctraceCapability | None = None
     """Set when a failure's output identified a specific cause."""
+    cleanup_failed: bool = False
+    """True when processes this run started are still running.
+
+    Kept separate from ``status``, which describes the recording. A
+    recording can complete while the program it launched survives every
+    stop signal, and a run that leaked a process is not a success even
+    though its trace is valid."""
 
     @property
     def succeeded(self) -> bool:
-        return self.status is RecordStatus.COMPLETED
+        return self.status is RecordStatus.COMPLETED and not self.cleanup_failed
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -136,6 +143,7 @@ class RecordResult:
                 if self.failure_capability is None
                 else self.failure_capability.value
             ),
+            "cleanup_failed": self.cleanup_failed,
         }
 
     def to_json(self, *, indent: int | None = 2) -> str:
@@ -172,6 +180,38 @@ def check_output_collision(output_trace: Path) -> Path:
 def reservation_path_for(resolved_trace: Path) -> Path:
     """Where the exclusive claim for ``resolved_trace`` lives."""
     return resolved_trace.with_name(f".{resolved_trace.name}.reservation")
+
+
+@contextmanager
+def reserve_output_dir(output_dir: Path) -> Iterator[Path]:
+    """Claim an artifact directory exclusively for one run.
+
+    Reserving only the trace path is not enough: two runs writing
+    different traces into the same ``--output-dir`` would still race on
+    the shared metadata and on the export staging directory, and the
+    loser could overwrite the winner's evidence. The claim is the same
+    atomic ``O_CREAT | O_EXCL`` primitive.
+    """
+    resolved = output_dir.expanduser().resolve()
+    resolved.mkdir(parents=True, exist_ok=True)
+    marker = resolved / ".llmtracefx-run.reservation"
+    try:
+        descriptor = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError as exc:
+        raise InstrumentsRecordError(
+            f"another run already reserved the artifact directory "
+            f"{resolved} ({marker.name}). Wait for it to finish, or "
+            "delete that marker if no run is active."
+        ) from exc
+    except OSError as exc:
+        raise InstrumentsRecordError(f"could not reserve {resolved}: {exc}") from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(f"pid={os.getpid()} started_at={utc_now_iso()}\n")
+        yield resolved
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            marker.unlink()
 
 
 @contextmanager
@@ -390,6 +430,7 @@ def _run_record_reserved(
                 returncode, group_empty = _stop_process_group(
                     process, grace_seconds=plan.stop_grace_seconds
                 )
+                survivors_cleared_ok = group_empty
                 outcome = (
                     "the process group was stopped"
                     if group_empty
@@ -473,6 +514,7 @@ def _run_record_reserved(
         stderr_path=stderr_path,
         trace_exists=trace_exists,
         failure_capability=failure_capability,
+        cleanup_failed=not survivors_cleared_ok,
     )
     result.write_json(artifacts / "xctrace_record.json")
     return result

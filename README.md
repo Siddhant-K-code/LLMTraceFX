@@ -1848,13 +1848,18 @@ measurement.
   --launch` starts the profiled program itself, and that program can outlive
   xctrace or ignore SIGINT.
 - **Failures are preserved,** not cleaned away: stdout, stderr, run metadata
-  and any partial bundle stay on disk. A trace path collision is resolved
-  before anything is written, so a refused rerun leaves an earlier run's
-  artifacts byte for byte intact rather than mixing the two, and the CLI says
-  plainly that nothing was written instead of naming an evidence file it did
-  not produce. Imports stage their exports and promote them together, so a
-  failed export cannot leave one run's table of contents beside another run's
-  evidence.
+  and any partial bundle stay on disk. The whole request is validated before
+  the first byte is written, so an invalid time limit or output path leaves
+  nothing behind, and a refused rerun leaves an earlier run's artifacts byte
+  for byte intact rather than mixing the two. The CLI says plainly that
+  nothing was written instead of naming an evidence file it did not produce.
+  Imports stage their exports and promote them together, and a run that fails
+  before promoting clears the exported files an earlier run left, so a
+  directory never holds one run's metadata beside another run's GPU table.
+- **A run that measured nothing does not exit 0.** `instruments record`
+  returns a nonzero status when the export failed, and when the profiled
+  program survived every stop signal, while still recording truthfully in the
+  metadata that the recording itself completed.
 - **No prompt or completion capture.** `--target-stdin` and `--target-stdout`
   are never constructed, so the profiled program's own input and output never
   flow through xctrace into captured logs. `--all-processes` is never used,
@@ -1880,12 +1885,23 @@ measurement.
   protection is not to put secrets on the command line at all: pass them
   through the profiled program's environment, or have it read them from a
   file.
-- **Identity is not ingested.** A trace's table of contents contains the
-  device's display name (routinely a person's name), its hardware UUID, and
-  the target's full argument list. None of these are read. Only the launched
-  process's own pid and name are, because attribution is impossible without
-  them, and records store the trace bundle's basename rather than an absolute
-  path.
+- **Identity is not ingested, and not copied.** A trace's table of contents
+  contains the device's display name (routinely a person's name), its hardware
+  UUID, and the target's full argument list. None are read, and the copy of
+  the table of contents written into your output directory has all three
+  stripped, since the raw file would otherwise carry them even though the
+  parser ignored them. Only the launched process's own pid and name are kept,
+  because attribution is impossible without them, and records store the trace
+  bundle's basename rather than an absolute path.
+- **The `.trace` bundle itself is sensitive.** It is raw evidence, so nothing
+  in it is sanitized: it contains the device name and UUID, the profiled
+  command's arguments, and the names of every other process that used the GPU
+  while it was recording. Treat a bundle like a memory dump. Do not attach one
+  to a public issue.
+- **One run per artifact directory.** The trace path and the output directory
+  are both claimed with atomic `O_CREAT | O_EXCL` reservations held for the
+  whole run, so two concurrent runs cannot interleave metadata or exports even
+  when their trace names differ.
 - **Malformed input is refused.** Exports declaring a `DOCTYPE` or `ENTITY`
   are rejected before parsing (entity expansion denial of service), oversized
   exports are refused with a suggestion to shorten `--time-limit`, and a row

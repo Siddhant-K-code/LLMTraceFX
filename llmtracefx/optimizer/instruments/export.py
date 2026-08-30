@@ -50,6 +50,11 @@ from xml.etree import ElementTree
 #: still bounding a runaway export.
 MAX_EXPORT_BYTES = 256 * 1024 * 1024
 
+#: Upper bound for a single interval's start or duration, in
+#: nanoseconds. One year, which no plausible trace approaches. Exists
+#: because a Python int is unbounded while a float is not.
+MAX_INTERVAL_NANOSECONDS = 365 * 24 * 60 * 60 * 1_000_000_000
+
 #: Metal System Trace table schemas this project knows how to summarize.
 #: Everything else found in a trace is reported as present but
 #: unsupported rather than guessed at.
@@ -203,6 +208,47 @@ def _text_or_none(parent: ElementTree.Element | None, path: str) -> str | None:
         return None
     stripped = found.text.strip()
     return stripped or None
+
+
+#: Attributes stripped from a trace's table of contents before it is
+#: written anywhere. Observed in real ``xctrace 16.0`` output:
+#: ``<device name="Jane's MacBook Pro" uuid="74656D9E-..."/>`` and
+#: ``<process arguments="--api-key sk-live ..."/>``. The parser never
+#: read these, but the raw XML was copied into the output directory
+#: verbatim, so the file itself carried them.
+TOC_SENSITIVE_ATTRIBUTES: tuple[tuple[str, str], ...] = (
+    ("device", "name"),
+    ("device", "uuid"),
+    ("process", "arguments"),
+)
+
+_XML_DECLARATION = '<?xml version="1.0"?>\n'
+
+_SANITIZED_NOTE = (
+    "<!-- Sanitized by llmtracefx: the device display name, the device "
+    "hardware UUID and the target process argument list were removed. "
+    "The .trace bundle this was exported from still contains them. -->\n"
+)
+
+
+def sanitize_table_of_contents(xml_text: str) -> str:
+    """Strip identifying attributes from a table of contents document.
+
+    A TOC names the machine's owner (macOS device names are routinely
+    "Jane's MacBook Pro"), its hardware UUID, and the full argument list
+    of the profiled process, which is the one place a credential passed
+    on the command line would survive redaction.
+
+    Everything else is kept, including the template, duration, schema
+    inventory and the target's pid and name, because attribution needs
+    them.
+    """
+    root = _parse_xml(xml_text, source="trace table of contents")
+    for tag, attribute in TOC_SENSITIVE_ATTRIBUTES:
+        for element in root.iter(tag):
+            element.attrib.pop(attribute, None)
+    body = ElementTree.tostring(root, encoding="unicode")
+    return _XML_DECLARATION + _SANITIZED_NOTE + body + "\n"
 
 
 def parse_table_of_contents(xml_text: str) -> TraceTableOfContents:
@@ -674,6 +720,16 @@ def summarize_metal_gpu_intervals(table: ExportedTable) -> MetalGpuIntervalSumma
         if duration < 0:
             raise InstrumentsExportError(
                 f"metal-gpu-intervals row has a negative duration: {duration}"
+            )
+        if duration > MAX_INTERVAL_NANOSECONDS or start > MAX_INTERVAL_NANOSECONDS:
+            # Python ints are unbounded, so a malformed cell can hold a
+            # value no float can represent. Converting it to
+            # milliseconds later would raise OverflowError from deep
+            # inside evidence building, far from the bad input.
+            raise InstrumentsExportError(
+                "metal-gpu-intervals row has an implausible timestamp or "
+                f"duration: start={start} duration={duration} exceeds "
+                f"{MAX_INTERVAL_NANOSECONDS} ns"
             )
         end = start + duration
 

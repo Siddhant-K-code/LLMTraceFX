@@ -639,7 +639,51 @@ def test_descriptors_about_a_secret_are_not_the_secret(flag, value):
     assert plan.to_redacted_argv()[-1] == value
 
 
-@pytest.mark.parametrize("flag", ["--pwd", "--pass-phrase", "--netrc"])
+@pytest.mark.parametrize("flag", ["--pwd", "--pass-phrase"])
 def test_further_password_spellings_are_redacted(flag):
     plan = make_plan(target=LaunchTarget(argv=("bench", flag, SENTINEL)))
     assert SENTINEL not in " ".join(plan.to_redacted_argv())
+
+
+@pytest.mark.parametrize("flag", ["--user", "--proxy-user", "-u"])
+def test_user_password_pairs_are_redacted(flag):
+    """curl's `--user alice:hunter2` carries the secret in the pair.
+
+    The username half is not a secret, but the pair cannot be split
+    without the target program's grammar, so the whole value goes.
+    """
+    plan = make_plan(
+        target=LaunchTarget(argv=("curl", flag, f"alice:{SENTINEL}", "https://h"))
+    )
+    redacted = plan.to_redacted_argv()
+    assert SENTINEL not in " ".join(redacted)
+    # The URL after it must survive.
+    assert redacted[-1] == "https://h"
+
+
+@pytest.mark.parametrize("flag", ["--netrc", "--netrc-optional"])
+def test_boolean_auth_flags_do_not_consume_the_next_argument(flag):
+    """`--netrc` takes no value; it names a file or is a switch.
+
+    Treating it as value-taking could never prevent a leak, and would
+    replace the next unrelated argument, so the persisted argv would
+    misstate the command that actually ran.
+    """
+    plan = make_plan(
+        target=LaunchTarget(argv=("curl", flag, "-o", "out.bin", "https://h"))
+    )
+    redacted = plan.to_redacted_argv()
+    assert REDACTED not in redacted
+    assert redacted[-3:] == ("-o", "out.bin", "https://h")
+
+
+def test_a_username_on_its_own_is_not_a_secret():
+    plan = make_plan(target=LaunchTarget(argv=("bench", "--username", "alice")))
+    assert plan.to_redacted_argv()[-1] == "alice"
+
+
+def test_netrc_file_paths_are_still_readable():
+    plan = make_plan(
+        target=LaunchTarget(argv=("curl", "--netrc-file", "/home/u/.netrc"))
+    )
+    assert plan.to_redacted_argv()[-1] == "/home/u/.netrc"

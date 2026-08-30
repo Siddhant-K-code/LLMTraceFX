@@ -19,6 +19,7 @@ from llmtracefx.optimizer.instruments.export import (
     parse_exported_table,
     parse_table_of_contents,
     read_export_text,
+    sanitize_table_of_contents,
     summarize_metal_gpu_intervals,
 )
 
@@ -550,3 +551,72 @@ def test_parsable_schema_lists_cannot_drift_apart():
     assert set(SUPPORTED_TABLE_SCHEMAS) == set(INSTRUMENT_PARSABLE_SCHEMAS)
     sources = {source for source, _, _ in INSTRUMENT_METRIC_SPECS.values()}
     assert sources <= set(SUPPORTED_TABLE_SCHEMAS)
+
+
+# --- Table of contents sanitization -----------------------------------
+
+
+def test_toc_sanitization_removes_identity_and_target_arguments():
+    """The parser never read these; the raw file still carried them.
+
+    A real macOS device name is routinely the owner's own name, and the
+    target argument list is the one place a credential passed on the
+    command line survives argv redaction.
+    """
+    raw = read_fixture(TOC)
+    assert "Example Mac" in raw and 'arguments="120"' in raw
+
+    clean = sanitize_table_of_contents(raw)
+    assert "Example Mac" not in clean
+    assert "00000000-0000-0000-0000-000000000000" not in clean
+    assert "arguments=" not in clean
+
+
+def test_toc_sanitization_keeps_everything_attribution_needs():
+    raw = read_fixture(TOC)
+    clean = sanitize_table_of_contents(raw)
+
+    parsed = parse_table_of_contents(clean)
+    run = parsed.runs[0]
+    assert run.template_name == "Metal System Trace"
+    assert run.instruments_version == "16.0 (17F113)"
+    assert run.target_pid == 4242
+    assert run.target_process_name == "probe"
+    assert run.schemas == parse_table_of_contents(raw).runs[0].schemas
+
+
+def test_toc_sanitization_says_what_it_did():
+    clean = sanitize_table_of_contents(read_fixture(TOC))
+    assert "Sanitized by llmtracefx" in clean
+    assert ".trace bundle" in clean
+
+
+def test_toc_sanitization_is_idempotent():
+    once = sanitize_table_of_contents(read_fixture(TOC))
+    assert sanitize_table_of_contents(once) == once
+
+
+def test_implausible_interval_values_are_refused_not_overflowed():
+    """Python ints are unbounded; floats are not.
+
+    A malformed cell used to raise OverflowError from deep inside
+    evidence building rather than being rejected as bad input.
+    """
+    huge = "9" * 400
+    payload = (
+        "<trace-query-result><node>"
+        '<schema name="metal-gpu-intervals">'
+        "<col><mnemonic>start</mnemonic>"
+        "<engineering-type>start-time</engineering-type></col>"
+        "<col><mnemonic>duration</mnemonic>"
+        "<engineering-type>duration</engineering-type></col>"
+        "<col><mnemonic>process</mnemonic>"
+        "<engineering-type>process</engineering-type></col>"
+        "</schema><row>"
+        '<start-time id="1">5</start-time>'
+        f'<duration id="2">{huge}</duration>'
+        '<process id="3" fmt="p (1)"><pid id="4">1</pid></process>'
+        "</row></node></trace-query-result>"
+    )
+    with pytest.raises(InstrumentsExportError, match="implausible"):
+        summarize_metal_gpu_intervals(parse_exported_table(payload))

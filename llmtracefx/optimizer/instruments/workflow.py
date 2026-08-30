@@ -17,6 +17,7 @@ The three workflows mirror the three CLI subcommands:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -55,6 +56,7 @@ from .export import (
     parse_exported_table,
     parse_table_of_contents,
     read_export_text,
+    sanitize_table_of_contents,
 )
 from .process import CommandRunner, InstrumentsProcessError, ProcessLauncher
 from .recorder import (
@@ -62,6 +64,7 @@ from .recorder import (
     RecordResult,
     RecordStatus,
     check_output_collision,
+    reserve_output_dir,
     reserve_trace_path,
     run_record,
 )
@@ -69,6 +72,10 @@ from .recorder import (
 #: Default table exported after a recording. The only Metal schema this
 #: project has a strict summarizer for.
 DEFAULT_TABLE_SCHEMA = "metal-gpu-intervals"
+
+#: Seconds allowed after each stop signal before escalating. Mirrors
+#: RecordPlan's own default; exposed so a caller can tighten it.
+DEFAULT_STOP_GRACE_SECONDS = 30.0
 
 #: Scratch directory used while exporting, removed on every exit.
 STAGING_DIR_NAME = ".import-staging"
@@ -133,6 +140,7 @@ def plan_trace(
     output_dir: Path,
     template: str = METAL_SYSTEM_TRACE_TEMPLATE,
     time_limit: str = "60s",
+    stop_grace_seconds: float = DEFAULT_STOP_GRACE_SECONDS,
 ) -> TracePlan:
     """Validate a recording without executing anything.
 
@@ -166,6 +174,7 @@ def plan_trace(
             output_trace=output_trace,
             target=LaunchTarget(argv=command),
             time_limit=time_limit,
+            stop_grace_seconds=stop_grace_seconds,
         )
     except InstrumentsCommandError as exc:
         error = str(exc)
@@ -217,6 +226,7 @@ def record_trace(
     template: str = METAL_SYSTEM_TRACE_TEMPLATE,
     time_limit: str = "60s",
     table_schema: str | None = DEFAULT_TABLE_SCHEMA,
+    stop_grace_seconds: float = DEFAULT_STOP_GRACE_SECONDS,
 ) -> TraceCollection:
     """Record a trace, then import it into canonical evidence.
 
@@ -233,7 +243,13 @@ def record_trace(
     # run's metadata. A bare check would also still race a concurrent
     # writer, so the claim is atomic and outlives the check.
     try:
-        with reserve_trace_path(output_trace) as reserved_trace:
+        # Trace first, then the artifact directory. A trace collision is
+        # the common refusal and must not create the artifact directory
+        # on its way to being refused.
+        with (
+            reserve_trace_path(output_trace) as reserved_trace,
+            reserve_output_dir(output_dir),
+        ):
             return _record_reserved(
                 runner=runner,
                 launcher=launcher,
@@ -243,6 +259,7 @@ def record_trace(
                 template=template,
                 time_limit=time_limit,
                 table_schema=table_schema,
+                stop_grace_seconds=stop_grace_seconds,
             )
     except InstrumentsRecordError as exc:
         capability = detect_xctrace_capability(runner=runner, template=template)
@@ -274,15 +291,34 @@ def _record_reserved(
     template: str,
     time_limit: str,
     table_schema: str | None,
+    stop_grace_seconds: float = DEFAULT_STOP_GRACE_SECONDS,
 ) -> TraceCollection:
     """Record into a trace path whose reservation is already held."""
     output_trace = reserved_trace
-    output_dir.mkdir(parents=True, exist_ok=True)
     capability = detect_xctrace_capability(runner=runner, template=template)
+
+    # Everything that can be rejected is rejected before the first byte
+    # is written. Building the plan validates the trace suffix, the time
+    # limit and the target command, and it used to happen after
+    # capability_report.json had already landed, so an invalid request
+    # left an artifact behind describing a run that never started.
+    plan: RecordPlan | None = None
+    if capability.supported:
+        plan = RecordPlan(
+            xctrace_path=capability.xctrace_path or "xctrace",
+            template=template,
+            output_trace=output_trace,
+            target=LaunchTarget(argv=command),
+            time_limit=time_limit,
+            stop_grace_seconds=stop_grace_seconds,
+        )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
     capability.write_json(output_dir / "capability_report.json")
 
-    if not capability.supported:
+    if not capability.supported or plan is None:
         evidence = unsupported_evidence(capability, template=template)
+        _clear_stale_exports(output_dir)
         _write_evidence(output_dir, evidence)
         return TraceCollection(
             capability=capability,
@@ -294,13 +330,6 @@ def _record_reserved(
             ),
         )
 
-    plan = RecordPlan(
-        xctrace_path=capability.xctrace_path or "xctrace",
-        template=template,
-        output_trace=output_trace,
-        target=LaunchTarget(argv=command),
-        time_limit=time_limit,
-    )
     result = run_record(
         plan,
         launcher=launcher,
@@ -312,6 +341,7 @@ def _record_reserved(
         evidence = failed_recording_evidence(
             capability, template=template, reason=result.message
         )
+        _clear_stale_exports(output_dir)
         _write_evidence(output_dir, evidence)
         return TraceCollection(
             capability=capability,
@@ -331,7 +361,9 @@ def _record_reserved(
         )
     except (
         InstrumentsExportError,
+        InstrumentsCommandError,
         InstrumentsProcessError,
+        ArithmeticError,
         OSError,
     ) as exc:
         # The recording succeeded, so this run has already written its
@@ -352,6 +384,7 @@ def _record_reserved(
             trace_bundle_name=result.trace_path.name,
             reason=str(exc),
         )
+        _clear_stale_exports(output_dir)
         _write_evidence(output_dir, evidence)
         return TraceCollection(
             capability=capability,
@@ -412,6 +445,22 @@ def _promote_staged(staging: Path, output_dir: Path) -> None:
                 f"unexpected directory in the export staging set: " f"{staged.name}"
             )
         os.replace(staged, output_dir / staged.name)
+
+
+#: The set _promote_staged writes. A run that fails before promoting
+#: must clear these, or its metadata sits beside a previous run's.
+EXPORT_ARTIFACT_NAMES: tuple[str, ...] = (
+    "trace_toc.xml",
+    "trace_toc.json",
+    "trace_table.xml",
+)
+
+
+def _clear_stale_exports(output_dir: Path) -> None:
+    """Remove exported artifacts left by an earlier run."""
+    for name in EXPORT_ARTIFACT_NAMES:
+        with contextlib.suppress(FileNotFoundError, IsADirectoryError):
+            (output_dir / name).unlink()
 
 
 def _write_evidence(output_dir: Path, evidence: InstrumentsEvidence) -> None:
@@ -498,7 +547,14 @@ def _export_and_build(
             f"{trace_path.name}"
         )
 
-    toc = parse_table_of_contents(read_export_text(toc_path))
+    # xctrace wrote the raw TOC into the staging directory. Read it,
+    # then immediately replace it with a sanitized copy: the raw file
+    # names the machine's owner, its hardware UUID and the profiled
+    # command's full argument list, and only the sanitized version is
+    # ever promoted into the output directory.
+    raw_toc = read_export_text(toc_path)
+    toc = parse_table_of_contents(raw_toc)
+    atomic_write_text(toc_path, sanitize_table_of_contents(raw_toc))
     run = toc.runs[0]
 
     table: ExportedTable | None = None
