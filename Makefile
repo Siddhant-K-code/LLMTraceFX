@@ -3,7 +3,7 @@
 .PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan test-deploy
 
 help:  ## Show this help message
-	@echo "LLMTraceFX - GPU-level LLM inference profiler"
+	@echo "LLMTraceFX - evidence-first inference toolkit"
 	@echo ""
 	@echo "Available commands:"
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-15s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -55,13 +55,13 @@ format-check:  ## Check formatting (repository wide, matching the CI ratchet sco
 	uv run isort --check-only .
 
 # Running
-run-sample:  ## Run analysis on sample trace
+run-sample:  ## Run the legacy analyzer on a sample trace
 	uv run llmtracefx --trace sample
 
-run-server:  ## Run FastAPI server
+run-server:  ## Run the legacy analyzer API
 	uv run llmtracefx-serve
 
-run-dashboard:  ## Run Real-Time Dashboard
+run-dashboard:  ## Run the legacy Streamlit dashboard
 	uv run streamlit run llmtracefx/realtime_dashboard.py --server.port=8501 --server.address=0.0.0.0
 
 create-sample:  ## Create sample trace file
@@ -77,13 +77,13 @@ generate-traces:  ## Generate various example trace files
 install-modal:  ## Install the optional Modal SDK extra
 	uv sync --extra modal
 
-deploy-modal:  ## Deploy to Modal
+deploy-modal:  ## Deploy the legacy analyzer to Modal (paid)
 	uv run --extra modal modal deploy llmtracefx/modal_app.py
 
-serve-modal:  ## Serve on Modal
+serve-modal:  ## Serve the legacy analyzer on Modal (can incur charges)
 	uv run --extra modal modal serve llmtracefx/modal_app.py::run_server
 
-test-modal:  ## Test Modal functions
+test-modal:  ## Run legacy Modal functions (can incur charges)
 	uv run --extra modal modal run llmtracefx/modal_app.py
 
 # GLM-5.3-Flash self-hosting harness. `glm-recipe`, `glm-budget` and
