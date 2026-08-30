@@ -512,3 +512,24 @@ def test_location_names_are_not_secrets(flag):
     plan = make_plan(target=LaunchTarget(argv=("bench", flag, "/some/value")))
     assert REDACTED not in plan.to_redacted_argv()
     assert plan.to_redacted_argv()[-1] == "/some/value"
+
+
+@pytest.mark.parametrize(
+    "flag", ["--jwt", "--ssh-key", "--deploy-key", "--session-key", "--signing-key"]
+)
+def test_unrecognized_key_style_options_default_to_secret(flag):
+    """An unfamiliar `*-key` option is treated as sensitive.
+
+    Redacting a lookup key costs a little reproducibility; persisting a
+    private one is unrecoverable, so the default leans the safe way.
+    """
+    plan = make_plan(target=LaunchTarget(argv=("bench", flag, SENTINEL)))
+    assert SENTINEL not in " ".join(plan.to_redacted_argv())
+
+
+@pytest.mark.parametrize(
+    "flag", ["--sort-key", "--cache-key", "--partition-key", "--primary-key"]
+)
+def test_lookup_keys_are_still_readable(flag):
+    plan = make_plan(target=LaunchTarget(argv=("bench", flag, "user_id")))
+    assert plan.to_redacted_argv()[-1] == "user_id"

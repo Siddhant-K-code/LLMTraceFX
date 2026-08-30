@@ -80,6 +80,33 @@ _CREDENTIAL_SEGMENTS: frozenset[str] = frozenset(
         "apikey",
         "bearer",
         "authorization",
+        "jwt",
+    }
+)
+
+#: Segments that make a trailing ``key`` a lookup key rather than a
+#: cryptographic one. ``--sort-key name`` is not a secret; ``--ssh-key``
+#: is. Listing the benign qualifiers rather than the credential ones
+#: means an unrecognized ``*-key`` option is treated as sensitive.
+_BENIGN_KEY_QUALIFIERS: frozenset[str] = frozenset(
+    {
+        "sort",
+        "cache",
+        "group",
+        "partition",
+        "primary",
+        "foreign",
+        "index",
+        "map",
+        "lookup",
+        "shard",
+        "route",
+        "order",
+        "id",
+        "column",
+        "row",
+        "object",
+        "hash",
     }
 )
 
@@ -177,6 +204,12 @@ def _is_credential_name(name: str) -> bool:
         return True
     if normalized in {"key", "token", "pat", "auth"}:
         return True
+    if tail == "key":
+        # `ssh_key`, `deploy_key`, `session_key`. Default to treating an
+        # unrecognized `*-key` as sensitive, since the cost of redacting
+        # a lookup key is far lower than the cost of persisting a
+        # private one.
+        return len(segments) < 2 or segments[-2] not in _BENIGN_KEY_QUALIFIERS
     if "token" in segment_set and not (segment_set & _TOKEN_QUANTITY_SEGMENTS):
         # `hf_token`, `service_token`. Plural `tokens` is a count, and
         # so is anything carrying a quantity qualifier.

@@ -34,6 +34,7 @@ from llmtracefx.optimizer.instruments.evidence import (
 )
 from llmtracefx.optimizer.instruments.export import (
     FORBIDDEN_METRIC_NAMES,
+    InstrumentsExportError,
     parse_exported_table,
 )
 from llmtracefx.optimizer.instruments.workflow import (
@@ -1178,3 +1179,120 @@ def test_non_finite_metrics_are_rejected(bad):
     )
     with pytest.raises(SchemaValidationError, match="finite number|must be >= 0"):
         base_record(instruments=evidence).validate()
+
+
+# --- Failures must not leave two runs' artifacts mixed ----------------
+
+
+def test_a_failed_import_leaves_every_previous_artifact_intact(tmp_path):
+    """xctrace writes the TOC and the table itself, mid-flight.
+
+    Exporting straight into the output directory meant a failure between
+    the two left this run's trace_toc.xml sitting beside a previous
+    run's evidence, table and toc json.
+    """
+    trace = tmp_path / "run.trace"
+    trace.mkdir()
+    out = tmp_path / "artifacts"
+    out.mkdir()
+
+    seeded = {
+        out / "trace_toc.xml": b"PREVIOUS toc xml",
+        out / "trace_toc.json": b"PREVIOUS toc json",
+        out / "trace_table.xml": b"PREVIOUS table",
+        out / "instruments_evidence.json": b"PREVIOUS evidence",
+    }
+    for path, payload in seeded.items():
+        path.write_bytes(payload)
+
+    # The TOC export succeeds; the table export fails.
+    runner = exporting_runner(**{"metal-gpu-intervals": fail((), returncode=1)})
+    with pytest.raises(InstrumentsExportError, match="failed"):
+        import_trace(runner=runner, trace_path=trace, output_dir=out)
+
+    for path, payload in seeded.items():
+        assert path.read_bytes() == payload, f"{path.name} was overwritten"
+
+
+def test_a_successful_import_replaces_every_artifact_together(tmp_path):
+    trace = tmp_path / "run.trace"
+    trace.mkdir()
+    out = tmp_path / "artifacts"
+    out.mkdir()
+    for name in ("trace_toc.xml", "trace_toc.json", "instruments_evidence.json"):
+        (out / name).write_bytes(b"PREVIOUS")
+
+    import_trace(runner=exporting_runner(), trace_path=trace, output_dir=out)
+
+    for name in ("trace_toc.xml", "trace_toc.json", "instruments_evidence.json"):
+        assert (out / name).read_bytes() != b"PREVIOUS", name
+    assert not (out / ".import-staging").exists()
+
+
+def test_import_staging_is_cleaned_up_on_success(tmp_path):
+    trace = tmp_path / "run.trace"
+    trace.mkdir()
+    out = tmp_path / "artifacts"
+    import_trace(runner=exporting_runner(), trace_path=trace, output_dir=out)
+    assert sorted(p.name for p in out.iterdir()) == [
+        "instruments_evidence.json",
+        "trace_table.xml",
+        "trace_toc.json",
+        "trace_toc.xml",
+    ]
+
+
+def test_cli_does_not_announce_evidence_it_did_not_write(
+    tmp_path, capsys, cli_command_runner
+):
+    """A refusal must not point the reader at an earlier run's metrics.
+
+    The filesystem was already correct, but the CLI still printed
+    "Instruments evidence written to ...", naming a file that either did
+    not exist or belonged to a different run.
+    """
+    out = tmp_path / "artifacts"
+    out.mkdir()
+    stale = out / "instruments_evidence.json"
+    stale.write_bytes(b"EVIDENCE FROM AN EARLIER RUN")
+    trace = out / "run.trace"
+    trace.mkdir()
+
+    code = run_cli(
+        [
+            "instruments",
+            "record",
+            "--output-trace",
+            str(trace),
+            "--output-dir",
+            str(out),
+            "--",
+            "/bin/infer",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert "evidence written to" not in captured.out.casefold()
+    assert "Nothing was written" in captured.err
+    assert stale.read_bytes() == b"EVIDENCE FROM AN EARLIER RUN"
+
+
+def test_cli_still_announces_evidence_on_a_real_run(
+    tmp_path, capsys, cli_command_runner
+):
+    out = tmp_path / "artifacts"
+    code = run_cli(
+        [
+            "instruments",
+            "plan",
+            "--output-trace",
+            str(tmp_path / "run.trace"),
+            "--output-dir",
+            str(out),
+            "--",
+            "/bin/infer",
+        ]
+    )
+    assert code == 0
+    assert "instruments_evidence.json" in capsys.readouterr().out

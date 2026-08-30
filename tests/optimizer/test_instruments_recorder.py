@@ -639,3 +639,54 @@ def test_a_clean_exit_with_an_empty_group_signals_nothing(tmp_path):
     assert result.status is RecordStatus.COMPLETED
     assert process.signals == []
     assert "process group was stopped" not in result.message
+
+
+def test_message_does_not_claim_a_stop_that_did_not_happen(tmp_path):
+    """A group that survives SIGKILL must not be reported as stopped.
+
+    The truth was already computed and then discarded, so the persisted
+    artifact asserted a cleanup that demonstrably had not occurred.
+    """
+    trace = tmp_path / "run.trace"
+    artifacts = tmp_path / "artifacts"
+    process = FakeProcess(returncode=0, timeout_waits=1, group_dies_on=None)
+
+    result = run_record(
+        make_plan(trace),
+        launcher=FakeLauncher(process),
+        artifacts_dir=artifacts,
+    )
+
+    assert result.status is RecordStatus.TIMED_OUT
+    assert "could NOT be stopped" in result.message
+    assert str(process.pgid) in result.message
+    persisted = json.loads(
+        (artifacts / "xctrace_record.json").read_text(encoding="utf-8")
+    )
+    assert "could NOT be stopped" in persisted["message"]
+
+
+def test_message_reports_a_real_stop_as_a_stop(tmp_path):
+    trace = tmp_path / "run.trace"
+    result = run_record(
+        make_plan(trace),
+        launcher=FakeLauncher(FakeProcess(returncode=0, timeout_waits=1)),
+        artifacts_dir=tmp_path / "artifacts",
+    )
+    assert "the process group was stopped" in result.message
+    assert "could NOT" not in result.message
+
+
+def test_unsignalable_group_is_not_reported_as_stopped(tmp_path):
+    trace = tmp_path / "run.trace"
+    process = FakeProcess(
+        timeout_waits=5,
+        signal_error=InstrumentsProcessError("not permitted"),
+        group_dies_on=None,
+    )
+    result = run_record(
+        make_plan(trace),
+        launcher=FakeLauncher(process),
+        artifacts_dir=tmp_path / "artifacts",
+    )
+    assert "could NOT be stopped" in result.message

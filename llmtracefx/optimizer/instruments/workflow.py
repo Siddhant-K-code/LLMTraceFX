@@ -18,6 +18,8 @@ The three workflows mirror the three CLI subcommands:
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -289,6 +291,18 @@ def record_trace(
     )
 
 
+def _promote_staged(staging: Path, output_dir: Path) -> None:
+    """Move a completed staging set into place, then remove staging.
+
+    Every file is written before any is promoted, so output_dir never
+    holds a half-updated mixture of two runs. Each individual move is an
+    atomic replace within the same directory tree.
+    """
+    for staged in sorted(staging.iterdir()):
+        os.replace(staged, output_dir / staged.name)
+    shutil.rmtree(staging, ignore_errors=True)
+
+
 def _write_evidence(output_dir: Path, evidence: InstrumentsEvidence) -> None:
     atomic_write_text(
         output_dir / "instruments_evidence.json",
@@ -326,8 +340,17 @@ def import_trace(
     if not trace_path.exists():
         raise InstrumentsExportError(f"trace bundle does not exist: {trace_path}")
 
+    # Exports land in a staging directory and are promoted together
+    # only once evidence has been built. xctrace writes trace_toc.xml
+    # and trace_table.xml itself, mid-flight, so exporting straight into
+    # output_dir meant a failure between the two left this run's TOC
+    # sitting beside a previous run's evidence.
     xctrace = resolved_capability.xctrace_path or "xctrace"
-    toc_path = output_dir / "trace_toc.xml"
+    staging = output_dir / ".import-staging"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    toc_path = staging / "trace_toc.xml"
     toc_plan = ExportPlan(
         xctrace_path=xctrace,
         input_trace=trace_path,
@@ -356,7 +379,7 @@ def import_trace(
                 "so no metric was derived"
             )
         else:
-            table_path = output_dir / "trace_table.xml"
+            table_path = staging / "trace_table.xml"
             table_plan = ExportPlan(
                 xctrace_path=xctrace,
                 input_trace=trace_path,
@@ -391,10 +414,14 @@ def import_trace(
             target_pid=run.target_pid,
         )
     )
-    _write_evidence(output_dir, evidence)
     atomic_write_text(
-        output_dir / "trace_toc.json", json.dumps(toc.to_dict(), indent=2) + "\n"
+        staging / "instruments_evidence.json",
+        json.dumps(evidence.to_dict(), indent=2) + "\n",
     )
+    atomic_write_text(
+        staging / "trace_toc.json", json.dumps(toc.to_dict(), indent=2) + "\n"
+    )
+    _promote_staged(staging, output_dir)
     return TraceCollection(
         capability=resolved_capability,
         record=None,

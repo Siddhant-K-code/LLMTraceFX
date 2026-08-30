@@ -115,6 +115,15 @@ class FakeCommandRunner:
         result = self.exports.get(key)
         if result is None:
             return fail(argv, returncode=1, stderr=f"no such table: {key}")
+        if result.returncode != 0 or result.timed_out:
+            # A failing export writes no output file, like the real tool.
+            return CommandResult(
+                argv=argv,
+                returncode=result.returncode,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                timed_out=result.timed_out,
+            )
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(result.stdout, encoding="utf-8")
         self.written.append(output)

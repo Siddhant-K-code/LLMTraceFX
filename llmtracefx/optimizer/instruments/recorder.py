@@ -185,8 +185,15 @@ def _wait_for_group_exit(process: ManagedProcess, deadline_seconds: float) -> bo
         time.sleep(GROUP_POLL_INTERVAL_SECONDS)
 
 
-def _stop_process_group(process: ManagedProcess, *, grace_seconds: float) -> int | None:
+def _stop_process_group(
+    process: ManagedProcess, *, grace_seconds: float
+) -> tuple[int | None, bool]:
     """Escalate signals until the whole group is gone.
+
+    Returns the leader's exit status and whether the group actually
+    emptied. That second value is not cosmetic: a group that survives
+    SIGKILL, or one this process is not permitted to signal, must not be
+    described in a persisted artifact as having been stopped.
 
     The leader exiting is deliberately *not* the stop condition.
     ``xctrace record --launch`` starts the profiled program itself, and
@@ -203,7 +210,7 @@ def _stop_process_group(process: ManagedProcess, *, grace_seconds: float) -> int
         except InstrumentsProcessError:
             # Not permitted to signal the group. Escalation cannot help,
             # so stop trying rather than looping on the same refusal.
-            return returncode
+            return returncode, not process.group_alive()
 
         # Reap the leader if it has not been reaped yet, so its exit
         # status is available, then wait on the group as a whole.
@@ -213,8 +220,8 @@ def _stop_process_group(process: ManagedProcess, *, grace_seconds: float) -> int
             pass
 
         if _wait_for_group_exit(process, grace_seconds):
-            return returncode
-    return returncode
+            return returncode, True
+    return returncode, False
 
 
 def run_record(
@@ -251,6 +258,7 @@ def run_record(
     message = ""
     spawn_failed = False
     survivors_stopped = False
+    survivors_cleared_ok = True
 
     with (
         stdout_path.open("wb") as stdout_handle,
@@ -277,14 +285,22 @@ def run_record(
                 returncode = process.wait(plan.timeout_seconds)
             except subprocess.TimeoutExpired:
                 status = RecordStatus.TIMED_OUT
-                returncode = _stop_process_group(
+                returncode, group_empty = _stop_process_group(
                     process, grace_seconds=plan.stop_grace_seconds
+                )
+                outcome = (
+                    "the process group was stopped"
+                    if group_empty
+                    else (
+                        "the process group could NOT be stopped and may "
+                        f"still be running (pgid {process.pgid})"
+                    )
                 )
                 message = (
                     f"recording exceeded its {plan.timeout_seconds:g}s host "
                     f"deadline (--time-limit {plan.time_limit} plus "
-                    f"{plan.grace_seconds:g}s finalization grace) and the "
-                    "process group was stopped. Artifacts are preserved."
+                    f"{plan.grace_seconds:g}s finalization grace) and "
+                    f"{outcome}. Artifacts are preserved."
                 )
             except BaseException:
                 # Anything other than a timeout (an unexpected error, or
@@ -334,9 +350,10 @@ def run_record(
         failure_capability = _classify_failure_tail(stderr_path)
 
     if survivors_stopped:
-        message += (
-            " xctrace exited while the program it launched was still "
+        message += " xctrace exited while the program it launched was still " + (
             "running; that process group was stopped."
+            if survivors_cleared_ok
+            else "running, and that process group could NOT be stopped."
         )
 
     result = RecordResult(

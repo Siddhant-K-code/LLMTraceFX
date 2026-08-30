@@ -633,13 +633,28 @@ def _cmd_instruments_record(args: argparse.Namespace) -> int:
         return 1
 
     output_dir = Path(args.output_dir)
-    print(f"Instruments evidence written to {output_dir / 'instruments_evidence.json'}")
+    if collection.wrote_artifacts:
+        print(
+            "Instruments evidence written to "
+            f"{output_dir / 'instruments_evidence.json'}"
+        )
     if collection.succeeded:
         if collection.message:
             print(collection.message)
         return 0
     print(f"Recording did not complete: {collection.message}", file=sys.stderr)
-    print(f"Artifacts preserved in {output_dir}", file=sys.stderr)
+    if collection.wrote_artifacts:
+        print(f"Artifacts preserved in {output_dir}", file=sys.stderr)
+    else:
+        # Saying "evidence written" here would point the reader at a
+        # previous run's metrics as though this run had produced them,
+        # which is exactly what refusing to write was protecting.
+        print(
+            "Nothing was written. Any files already in "
+            f"{output_dir} belong to an earlier run and were left "
+            "untouched.",
+            file=sys.stderr,
+        )
     return 1
 
 
