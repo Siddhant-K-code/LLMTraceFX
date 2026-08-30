@@ -1209,7 +1209,6 @@ source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "fastapi" },
-    { name = "modal" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pandas" },
@@ -1239,6 +1238,9 @@ mlx = [
     { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "mlx-lm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
 ]
+modal = [
+    { name = "modal" },
+]
 test = [
     { name = "httpx" },
     { name = "pytest" },
@@ -1259,7 +1261,7 @@ requires-dist = [
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.22.0" },
     { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'mlx'", specifier = ">=0.25.0" },
     { name = "mlx-lm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'mlx'", specifier = ">=0.31.0" },
-    { name = "modal", specifier = ">=0.57.0" },
+    { name = "modal", marker = "extra == 'modal'", specifier = ">=1.0.5" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.5.0" },
     { name = "numpy", specifier = ">=1.25.2" },
     { name = "pandas", specifier = ">=2.1.3" },
@@ -1275,7 +1277,7 @@ requires-dist = [
     { name = "streamlit", specifier = ">=1.28.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.24.0" },
 ]
-provides-extras = ["dev", "test", "mlx", "docs"]
+provides-extras = ["modal", "dev", "test", "mlx", "docs"]
 
 [[package]]
 name = "markdown"

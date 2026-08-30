@@ -604,6 +604,11 @@ patterns. This is causing the GPU to wait for memory operations.
 
 ## 🚀 Modal Deployment
 
+> **Modal is an optional extra.** It is no longer a runtime dependency of
+> `llmtracefx`, because nothing in the library imports it at module scope.
+> Install it with `uv sync --extra modal` (or `make install-modal`) before
+> running any `modal` command below.
+
 ### **🌐 Live Deployment**
 - **Web API**: https://siddhant-k-code--llmtracefx-web-app.modal.run
 - **Modal Dashboard**: https://modal.com/apps/siddhant-k-code/main/deployed/llmtracefx
@@ -642,6 +647,38 @@ uv run modal app logs llmtracefx
 # Stop deployment
 uv run modal app stop llmtracefx
 ```
+
+### Self-hosting GLM-5.3-Flash
+
+A separate, budget-guarded harness deploys the 320B-A18B FP8
+GLM-5.3-Flash checkpoint on rented accelerators for long enough to
+measure it with `collect-api`, then tears it down. Full sequence:
+[SELF_HOST_GLM_RUNBOOK.md](SELF_HOST_GLM_RUNBOOK.md).
+
+Start with the offline commands. They need no Modal account, make no
+network request and cannot spend anything:
+
+```bash
+# The pinned model facts and where each one came from
+uv run llmtracefx-deploy recipe
+
+# A conservative session cap that leaves a retry reserve
+uv run llmtracefx-deploy budget --credit-usd 30
+
+# Adjudicate a full deployment: worst-case cost, capacity check,
+# pinning, and every command it would take to run it
+uv run llmtracefx-deploy plan --help
+```
+
+`deploy plan` refuses and withholds every money-spending command unless
+you supply an explicit budget, GPU type and count, maximum runtime, and a
+GPU price with the date you read it. There are no defaults for any of
+those, so an incomplete invocation fails rather than assuming.
+
+Note that self-hosting is the *expensive* way to get GLM-5.3-Flash
+tokens. For anything about the model rather than about serving it, use
+the hosted `z-ai/glm-5.3-flash` endpoint on OpenRouter with `collect-api`
+instead; the runbook explains when each is appropriate.
 
 ## 🧪 Testing
 
