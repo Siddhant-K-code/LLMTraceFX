@@ -566,6 +566,42 @@ def test_event_cap_high_enough_does_not_interfere(tmp_path):
     assert result.verification.status is RowStatus.COMPLETED
 
 
+def test_a_fully_delivered_stream_is_not_failed_at_the_exact_cap(tmp_path):
+    """Reaching the cap is not the same as being cut short by it.
+
+    A provider may end with a terminal ``finish_reason`` and no ``[DONE]``
+    sentinel, which this project documents as supported. The collector
+    keeps pulling after the final chunk, so a cap equal to the number of
+    events the stream actually sent used to trip on a stream where every
+    byte had already been delivered, and a clean measurement was
+    published as a truncation.
+    """
+    chunks = answer_stream(GOOD_JSON_ANSWER)[:-1]
+    transport = FakeTransport(FakeResponse(chunks))
+    result = run_one(
+        tmp_path,
+        transport=transport,
+        binding=make_binding(max_stream_events=len(chunks)),
+    )
+
+    assert result.verification.status is RowStatus.COMPLETED
+    assert result.verification.outcome_success is True
+
+
+def test_a_stream_one_event_past_the_cap_still_fails(tmp_path):
+    """The boundary moved by one; it did not disappear."""
+    chunks = answer_stream(GOOD_JSON_ANSWER)[:-1]
+    transport = FakeTransport(FakeResponse(chunks))
+    result = run_one(
+        tmp_path,
+        transport=transport,
+        binding=make_binding(max_stream_events=len(chunks) - 1),
+    )
+
+    assert result.verification.status is RowStatus.FAILED
+    assert f"{len(chunks) - 1}-event cap" in (result.verification.reason or "")
+
+
 # --- Credential pre-flight ---------------------------------------------------
 
 

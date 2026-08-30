@@ -646,9 +646,16 @@ def test_an_innocuous_query_key_holding_the_key_is_also_refused(
     assert any("refusing to run" in blocker for blocker in row["blockers"])
 
 
-def test_an_innocuous_endpoint_query_still_records_only_its_keys(
+def test_an_innocuous_endpoint_query_records_neither_key_nor_value(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """The plan keeps the shape of the query and none of its content.
+
+    The collector redacts the key alongside the value, so only the number
+    of parameters survives. A key is provider- or user-chosen and can name
+    a tenant, a deployment or an account, which is worth as little in an
+    artifact as the value beside it.
+    """
     monkeypatch.setenv(ENV_VAR, API_KEY)
     code = invoke(
         base_argv(
@@ -666,8 +673,12 @@ def test_an_innocuous_endpoint_query_still_records_only_its_keys(
     )
     assert code == 0
     plan = json.loads(capsys.readouterr().out)["rows"][0]["request_plan"]
-    assert plan["endpoint_query_keys"] == ["deployment"]
-    assert "prod-eu" not in json.dumps(plan)
+
+    # One parameter was present, and that is the whole of what is recorded.
+    assert len(plan["endpoint_query_keys"]) == 1
+    rendered = json.dumps(plan)
+    assert "deployment" not in rendered
+    assert "prod-eu" not in rendered
 
 
 def test_an_invalid_provider_extension_is_reported_not_raised(
@@ -994,22 +1005,34 @@ def test_a_sentinel_in_the_output_dir_is_not_echoed_by_the_write_error(
     assert _SENTINEL not in out + err
 
 
-def test_the_credential_is_scrubbed_even_when_the_env_name_came_from_a_profile(
+def test_the_credential_value_is_scrubbed_using_the_profile_resolved_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Scrubbing against the raw flag misses the profile-supplied default.
+    """The env var name is resolved from the profile, not read off the flag.
 
     ``--api-key-env`` is left unset here, so reading the flag alone yields
-    ``None`` and scrubs nothing. The resolved name is what matters.
+    ``None`` and the credential redactor is handed nothing to look for.
+    Only the profile-resolved name makes it fire.
+
+    The sentinel has to reach the diagnostic from somewhere other than
+    argv, or the argv scrub would remove it regardless and the test would
+    pass without the resolution ever mattering. So the manifest read is
+    made to raise an error carrying the environment value, which is the
+    shape of a library that echoes what it was handed.
     """
     monkeypatch.setenv("OPENROUTER_API_KEY", _SENTINEL)
+
+    def exploding_read(path: Any) -> Any:
+        raise OSError(f"upstream library echoed the value {_SENTINEL} back")
+
+    monkeypatch.setattr(cli.MatrixManifest, "read_json", staticmethod(exploding_read))
 
     code, out, err = run_main(
         [
             "workloads",
             "run-api",
             "--matrix",
-            str(tmp_path / f"{_SENTINEL}.json"),
+            str(tmp_path / "manifest.json"),
             "--output-dir",
             str(tmp_path / "results"),
             "--profile",
@@ -1020,4 +1043,38 @@ def test_the_credential_is_scrubbed_even_when_the_env_name_came_from_a_profile(
     )
 
     assert code == 1
+    assert "Failed to load matrix manifest" in err
     assert _SENTINEL not in out + err
+
+
+@pytest.mark.parametrize(
+    ("argv_extra", "expected"),
+    [
+        (["--api-key-env", "EXPLICIT_VAR"], "EXPLICIT_VAR"),
+        (["--profile", "openrouter"], "OPENROUTER_API_KEY"),
+        (["--profile", "z.ai"], "ZAI_API_KEY"),
+        # An explicit flag beats the profile default.
+        (["--profile", "openrouter", "--api-key-env", "EXPLICIT_VAR"], "EXPLICIT_VAR"),
+        # Neither given: there is no name to resolve, and that is not an error.
+        ([], None),
+    ],
+)
+def test_effective_api_key_env_resolves_every_combination(
+    tmp_path: Path, argv_extra: list[str], expected: str | None
+) -> None:
+    """Unit coverage for the resolution itself, including the empty case."""
+    args = cli.build_parser().parse_args(
+        [
+            "workloads",
+            "run-api",
+            "--matrix",
+            str(tmp_path / "manifest.json"),
+            "--output-dir",
+            str(tmp_path / "results"),
+            "--model-id",
+            "z-ai/glm-5.3",
+            *argv_extra,
+        ]
+    )
+
+    assert cli._effective_api_key_env(args) == expected

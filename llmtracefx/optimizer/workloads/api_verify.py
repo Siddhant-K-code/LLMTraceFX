@@ -151,7 +151,7 @@ class APIVerifyError(VerifyError):
 
 
 class _EventCappedResponse:
-    """A streaming response that stops after ``limit`` dispatched events.
+    """A streaming response that stops once ``limit`` events are exceeded.
 
     The byte chunks are handed to the collector exactly as the transport
     produced them. Counting is done by feeding a second copy of each
@@ -163,6 +163,22 @@ class _EventCappedResponse:
     stream the collector's own decoder is about to reject with the
     authoritative diagnostic, so a decode error here only stops counting
     and lets the bytes through untouched.
+
+    The cap trips only when the stream genuinely had more events than the
+    limit allows, never merely on reaching it. Those are different facts
+    and conflating them condemns clean measurements: a provider may close
+    with a terminal ``finish_reason`` and no ``[DONE]`` sentinel, which
+    this project supports, and the collector keeps pulling after the final
+    chunk. Tripping the moment the count reached the limit therefore
+    failed streams that had already delivered every byte they were ever
+    going to send, discarding a valid answer as a truncation.
+
+    Telling the two apart needs one chunk of lookahead, because "the count
+    reached the limit" and "there was more to read" are only distinguished
+    by trying to read. The lookahead chunk is deliberately not yielded:
+    once the limit is known to be exceeded the row fails, so forwarding it
+    would only grow the answer this class has already decided not to
+    trust.
     """
 
     def __init__(self, inner: StreamingResponse, *, limit: int) -> None:
@@ -182,7 +198,12 @@ class _EventCappedResponse:
         return self._inner.headers
 
     def iter_bytes(self) -> Iterator[bytes]:
-        for chunk in self._inner.iter_bytes():
+        iterator = iter(self._inner.iter_bytes())
+        while True:
+            try:
+                chunk = next(iterator)
+            except StopIteration:
+                return
             yield chunk
             if not self._counting:
                 continue
@@ -192,6 +213,12 @@ class _EventCappedResponse:
                 self._counting = False
                 continue
             if self.events_seen >= self._limit:
+                try:
+                    next(iterator)
+                except StopIteration:
+                    # The stream ended exactly at the limit. Nothing was
+                    # abandoned, so nothing was truncated.
+                    return
                 self.cap_tripped = True
                 return
 
