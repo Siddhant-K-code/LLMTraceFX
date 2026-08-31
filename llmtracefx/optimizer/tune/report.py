@@ -557,7 +557,13 @@ class TuneReport:
     def from_json(cls, payload: str) -> TuneReport:
         try:
             data = json.loads(payload)
-        except json.JSONDecodeError as exc:
+        # ``json`` raises past its own limits with exceptions that are not
+        # ``JSONDecodeError``: an integer literal over the interpreter's
+        # digit cap raises a plain ``ValueError``, and deep nesting raises
+        # ``RecursionError``. Neither is caught by any caller, so both
+        # escaped as a traceback from a merely malformed file.
+        # ``CompareReport.from_json`` already handles both this way.
+        except (ValueError, RecursionError) as exc:
             raise TuneReportValidationError(
                 f"invalid JSON for tune report: {exc}"
             ) from exc

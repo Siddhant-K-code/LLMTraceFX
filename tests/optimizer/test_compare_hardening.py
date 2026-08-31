@@ -2396,13 +2396,10 @@ def test_a_non_finite_quality_score_is_rejected(tmp_path: Path) -> None:
         results_dirs=(tmp_path,), policy=ComparePolicy.from_dict(COMPARE_POLICY)
     )
     stratum = report.strata[0]
-    assert (
-        any(
-            "non-finite" in reason
-            for entry in stratum.rejected
-            for reason in entry.reasons
-        )
-        or not stratum.ranked
+    assert any(
+        "outcome.quality_score is non-finite" in reason
+        for entry in stratum.rejected
+        for reason in entry.reasons
     )
 
 

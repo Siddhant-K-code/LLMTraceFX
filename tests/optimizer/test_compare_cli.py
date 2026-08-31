@@ -430,3 +430,46 @@ def test_compare_report_reports_a_missing_input(
     )
     assert code == 1
     assert "Could not read compare report input" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("label", "payload"),
+    [
+        ("integer past the digit cap", '{"x": ' + "9" * 4400 + "}"),
+        ("array nested past the recursion limit", "[" * 200_000 + "]" * 200_000),
+    ],
+)
+def test_compare_refuses_a_tune_report_json_past_the_parser_limits(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    label: str,
+    payload: str,
+) -> None:
+    """``json`` exceeds its own limits with exceptions that are not decode errors.
+
+    An integer literal over the interpreter's digit cap raises a plain
+    ``ValueError`` and deep nesting raises ``RecursionError``. Neither is a
+    ``JSONDecodeError``, so both escaped as a stack trace from a merely
+    malformed provenance file -- on the one input that had not been hardened
+    the way the compare report, the policy and the pricing manifest already
+    were.
+    """
+    results = tmp_path / "results"
+    _three_systems(results)
+    policy = write_json(tmp_path / "policy.json", COMPARE_POLICY)
+    bad = tmp_path / "bad.json"
+    bad.write_text(payload, encoding="utf-8")
+
+    code = _run(
+        [
+            "compare",
+            "--results",
+            str(results),
+            "--policy",
+            str(policy),
+            "--tune-report",
+            str(bad),
+        ]
+    )
+    assert code == 1, label
+    assert "Invalid tune report" in capsys.readouterr().err
