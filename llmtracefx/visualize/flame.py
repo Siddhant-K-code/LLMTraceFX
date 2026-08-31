@@ -1,6 +1,13 @@
 """
 Flame graph visualization for token-level GPU performance
 """
+
+import json
+from typing import Any
+
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
 from ..brand import (
     CHART_SEQUENCE,
     HEATMAP_SCALE,
@@ -9,22 +16,13 @@ from ..brand import (
     PLOT_LAYOUT,
     TOKENS_CSS,
 )
-import plotly.graph_objects as go
-import plotly.express as px
-from plotly.subplots import make_subplots
-import pandas as pd
-from typing import Dict, List, Any, Optional
-import colorsys
-import json
-
 from ..profiler.gpu_analyzer import TokenAnalysis
-from ..profiler.trace_parser import TokenTrace
 
 
 class FlameGraphGenerator:
     """Generate flame graphs and performance visualizations"""
-    
-    def __init__(self):
+
+    def __init__(self) -> None:
         # Operations are keyed to the brand series so the same operation is
         # the same colour in every chart, and so nothing drifts off-palette.
         self.color_map = dict(
@@ -42,9 +40,10 @@ class FlameGraphGenerator:
                     "embedding",
                 ),
                 CHART_SEQUENCE,
+                strict=True,
             )
         )
-    
+
     def _themed(self, fig: Any, div_id: str) -> str:
         """Put a figure on the sheet and render it.
 
@@ -62,261 +61,252 @@ class FlameGraphGenerator:
         # the container instead keeps type at its intended size.
         html: str = fig.to_html(
             include_plotlyjs="cdn",
+            full_html=False,
             div_id=div_id,
-            config={"responsive": True},
+            config={"responsive": True, "showSendToCloud": False},
         )
         return html
 
-    def generate_token_flame_graph(self, analyses: List[TokenAnalysis]) -> str:
+    def generate_token_flame_graph(self, analyses: list[TokenAnalysis]) -> str:
         """Generate flame graph showing token vs operations timeline"""
-        fig = make_subplots(
-            rows=1, cols=1,
-            specs=[[{"secondary_y": False}]]
-        )
-        
-        # Create timeline data
-        timeline_data = []
-        y_position = 0
-        
+        fig = make_subplots(rows=1, cols=1, specs=[[{"secondary_y": False}]])
+
         for analysis in analyses:
-            current_time = 0
-            
             for op in analysis.operations:
                 color = self.color_map.get(op.name, "#4a5157")
-                
+
                 # Add operation bar
-                fig.add_trace(go.Bar(
-                    x=[op.duration],
-                    y=[f"Token {analysis.token_id}"],
-                    name=op.name,
-                    orientation='h',
-                    marker_color=color,
-                    text=f"{op.name}: {op.duration:.1f}ms",
-                    textposition="inside",
-                    hovertemplate=f"<b>{op.name}</b><br>" +
-                                f"Duration: {op.duration:.1f}ms<br>" +
-                                f"Token: {analysis.token_id}<br>" +
-                                f"Performance Score: {analysis.performance_score:.1f}<extra></extra>",
-                    showlegend=True if analysis.token_id == 0 else False
-                ))
-                
-                current_time += op.duration
-        
+                fig.add_trace(
+                    go.Bar(
+                        x=[op.duration],
+                        y=[f"Token {analysis.token_id}"],
+                        name=op.name,
+                        orientation="h",
+                        marker_color=color,
+                        text=f"{op.name}: {op.duration:.1f}ms",
+                        textposition="inside",
+                        hovertemplate=f"<b>{op.name}</b><br>"
+                        + f"Duration: {op.duration:.1f}ms<br>"
+                        + f"Token: {analysis.token_id}<br>"
+                        + f"Performance Score: {analysis.performance_score:.1f}<extra></extra>",
+                        showlegend=True if analysis.token_id == 0 else False,
+                    )
+                )
+
         # Update layout
         fig.update_layout(
             xaxis_title="Time (ms)",
             yaxis_title="Tokens",
-            barmode='stack',
+            barmode="stack",
             height=max(400, len(analyses) * 40),
             showlegend=True,
         )
-        
+
         return self._themed(fig, "flame-graph")
-    
-    def generate_bottleneck_distribution(self, analyses: List[TokenAnalysis]) -> str:
+
+    def generate_bottleneck_distribution(self, analyses: list[TokenAnalysis]) -> str:
         """Generate bottleneck distribution chart"""
-        bottleneck_counts = {}
+        bottleneck_counts: dict[str, int] = {}
         for analysis in analyses:
-            bottleneck_counts[analysis.bottleneck_type] = bottleneck_counts.get(analysis.bottleneck_type, 0) + 1
-        
-        fig = go.Figure(data=[
-            go.Bar(
-                x=list(bottleneck_counts.keys()),
-                y=list(bottleneck_counts.values()),
-                marker_color=list(CHART_SEQUENCE[:6])
+            bottleneck_counts[analysis.bottleneck_type] = (
+                bottleneck_counts.get(analysis.bottleneck_type, 0) + 1
             )
-        ])
-        
-        fig.update_layout(
-            xaxis_title="Bottleneck Type",
-            yaxis_title="Number of Tokens",
-            height=400
+
+        fig = go.Figure(
+            data=[
+                go.Bar(
+                    x=list(bottleneck_counts.keys()),
+                    y=list(bottleneck_counts.values()),
+                    marker_color=list(CHART_SEQUENCE[:6]),
+                )
+            ]
         )
-        
-        
+
+        fig.update_layout(
+            xaxis_title="Bottleneck Type", yaxis_title="Number of Tokens", height=400
+        )
+
         return self._themed(fig, "bottleneck-chart")
-    
-    def generate_performance_heatmap(self, analyses: List[TokenAnalysis]) -> str:
+
+    def generate_performance_heatmap(self, analyses: list[TokenAnalysis]) -> str:
         """Generate performance heatmap"""
         # Create matrix data
-        operations = set()
-        for analysis in analyses:
-            for op in analysis.operations:
-                operations.add(op.name)
-        
-        operations = sorted(list(operations))
-        
+        operations = sorted(
+            {op.name for analysis in analyses for op in analysis.operations}
+        )
+
         # Create matrix
-        matrix = []
-        token_ids = []
-        
+        matrix: list[list[float]] = []
+        token_ids: list[str] = []
+
         for analysis in analyses:
-            row = []
+            row: list[float] = []
             token_ids.append(f"Token {analysis.token_id}")
-            
+
             for op_name in operations:
                 # Find operation duration
-                duration = 0
+                duration = 0.0
                 for op in analysis.operations:
                     if op.name == op_name:
                         duration = op.duration
                         break
                 row.append(duration)
             matrix.append(row)
-        
-        fig = go.Figure(data=go.Heatmap(
-            z=matrix,
-            x=operations,
-            y=token_ids,
-            colorscale=[list(stop) for stop in HEATMAP_SCALE],
-            hovertemplate='<b>%{x}</b><br>%{y}<br>Duration: %{z:.1f}ms<extra></extra>'
-        ))
-        
+
+        fig = go.Figure(
+            data=go.Heatmap(
+                z=matrix,
+                x=operations,
+                y=token_ids,
+                colorscale=[list(stop) for stop in HEATMAP_SCALE],
+                hovertemplate="<b>%{x}</b><br>%{y}<br>Duration: %{z:.1f}ms<extra></extra>",
+            )
+        )
+
         fig.update_layout(
             xaxis_title="GPU Operations",
             yaxis_title="Tokens",
-            height=max(400, len(analyses) * 20)
+            height=max(400, len(analyses) * 20),
         )
-        
+
         return self._themed(fig, "heatmap")
-    
-    def generate_latency_trend(self, analyses: List[TokenAnalysis]) -> str:
+
+    def generate_latency_trend(self, analyses: list[TokenAnalysis]) -> str:
         """Generate latency trend chart"""
         token_ids = [analysis.token_id for analysis in analyses]
         latencies = [analysis.total_latency_ms for analysis in analyses]
         performance_scores = [analysis.performance_score for analysis in analyses]
-        
+
         fig = make_subplots(
-            rows=2, cols=1,
+            rows=2,
+            cols=1,
             subplot_titles=["TOKEN LATENCY TREND", "PERFORMANCE SCORE TREND"],
-            vertical_spacing=0.1
+            vertical_spacing=0.1,
         )
-        
+
         # Latency trend
         fig.add_trace(
             go.Scatter(
-                x=token_ids, 
+                x=token_ids,
                 y=latencies,
-                mode='lines+markers',
-                name='Latency (ms)',
-                line=dict(color=CHART_SEQUENCE[0], width=2),
-                marker=dict(size=6)
+                mode="lines+markers",
+                name="Latency (ms)",
+                line={"color": CHART_SEQUENCE[0], "width": 2},
+                marker={"size": 6},
             ),
-            row=1, col=1
+            row=1,
+            col=1,
         )
-        
+
         # Performance score trend
         fig.add_trace(
             go.Scatter(
-                x=token_ids, 
+                x=token_ids,
                 y=performance_scores,
-                mode='lines+markers',
-                name='Performance Score',
-                line=dict(color=CHART_SEQUENCE[1], width=2),
-                marker=dict(size=6)
+                mode="lines+markers",
+                name="Performance Score",
+                line={"color": CHART_SEQUENCE[1], "width": 2},
+                marker={"size": 6},
             ),
-            row=2, col=1
+            row=2,
+            col=1,
         )
-        
-        fig.update_layout(
-            height=600,
-            showlegend=True
-        )
-        
-        
+
+        fig.update_layout(height=600, showlegend=True)
+
         fig.update_xaxes(title_text="Token ID", row=2, col=1)
         fig.update_yaxes(title_text="Latency (ms)", row=1, col=1)
         fig.update_yaxes(title_text="Score (0-100)", row=2, col=1)
-        
+
         return self._themed(fig, "trend-chart")
-    
+
     def generate_gpu_metrics_radar(self, analysis: TokenAnalysis) -> str:
         """Generate radar chart for GPU metrics"""
         metrics = analysis.gpu_metrics
-        
+
         categories = [
-            f'{metrics.occupancy_label} %',
-            'Cache Hit Rate %', 
-            'Compute Utilization %',
-            'Memory Efficiency %',
-            'Launch Efficiency %'
+            f"{metrics.occupancy_label} %",
+            "Cache Hit Rate %",
+            "Compute Utilization %",
+            "Memory Efficiency %",
+            "Launch Efficiency %",
         ]
-        
+
         values = [
             metrics.sm_occupancy_pct,
             metrics.cache_hit_rate,
             metrics.compute_utilization,
             100 - (metrics.stall_pct),  # Memory efficiency
-            100 - min(metrics.launch_delay_ms * 10, 100)  # Launch efficiency
+            100 - min(metrics.launch_delay_ms * 10, 100),  # Launch efficiency
         ]
-        
+
         fig = go.Figure()
-        
-        fig.add_trace(go.Scatterpolar(
-            r=values,
-            theta=categories,
-            fill='toself',
-            name=f'Token {analysis.token_id}',
-            line_color=CHART_SEQUENCE[1]
-        ))
-        
+
+        fig.add_trace(
+            go.Scatterpolar(
+                r=values,
+                theta=categories,
+                fill="toself",
+                name=f"Token {analysis.token_id}",
+                line_color=CHART_SEQUENCE[1],
+            )
+        )
+
         fig.update_layout(
-            polar=dict(
-                radialaxis=dict(
-                    visible=True,
-                    range=[0, 100]
-                )),
+            polar={"radialaxis": {"visible": True, "range": [0, 100]}},
             showlegend=True,
             title=f"GPU Metrics Profile - Token {analysis.token_id}",
-            height=500
+            height=500,
         )
-        
+
         return self._themed(fig, "radar-chart")
-    
+
     def generate_operation_breakdown(self, analysis: TokenAnalysis) -> str:
         """Generate pie chart for operation breakdown"""
         op_names = [op.name for op in analysis.operations]
         op_durations = [op.duration for op in analysis.operations]
-        
+
         colors = [self.color_map.get(name, "#95A5A6") for name in op_names]
-        
-        fig = go.Figure(data=[go.Pie(
-            labels=op_names,
-            values=op_durations,
-            hole=0.3,
-            marker_colors=colors,
-            textinfo='label+percent+value',
-            texttemplate='%{label}<br>%{percent}<br>%{value:.1f}ms'
-        )])
-        
-        fig.update_layout(
-            title=f"Operation Breakdown - Token {analysis.token_id}",
-            height=400
+
+        fig = go.Figure(
+            data=[
+                go.Pie(
+                    labels=op_names,
+                    values=op_durations,
+                    hole=0.3,
+                    marker_colors=colors,
+                    textinfo="label+percent+value",
+                    texttemplate="%{label}<br>%{percent}<br>%{value:.1f}ms",
+                )
+            ]
         )
-        
-        
+
+        fig.update_layout(
+            title=f"Operation Breakdown - Token {analysis.token_id}", height=400
+        )
+
         return self._themed(fig, "breakdown-chart")
-    
-    def generate_comprehensive_dashboard(self, analyses: List[TokenAnalysis]) -> str:
+
+    def generate_comprehensive_dashboard(self, analyses: list[TokenAnalysis]) -> str:
         """Generate comprehensive HTML dashboard"""
         if not analyses:
             return "<html><body><h1>No data to display</h1></body></html>"
-        
+
         # Generate all charts
         flame_graph = self.generate_token_flame_graph(analyses)
         bottleneck_dist = self.generate_bottleneck_distribution(analyses)
         heatmap = self.generate_performance_heatmap(analyses)
         trend_chart = self.generate_latency_trend(analyses)
-        
+
         # Sample detailed analysis for first token
         sample_radar = self.generate_gpu_metrics_radar(analyses[0])
         sample_breakdown = self.generate_operation_breakdown(analyses[0])
-        
+
         # Generate summary stats
         total_latency = sum(a.total_latency_ms for a in analyses)
         avg_latency = total_latency / len(analyses)
         avg_performance = sum(a.performance_score for a in analyses) / len(analyses)
-        
+
         html_template = f"""
         <!DOCTYPE html>
         <html lang="en">
@@ -532,41 +522,45 @@ class FlameGraphGenerator:
         </body>
         </html>
         """
-        
+
         return html_template
-    
-    def export_data_json(self, analyses: List[TokenAnalysis]) -> str:
+
+    def export_data_json(self, analyses: list[TokenAnalysis]) -> str:
         """Export analysis data as JSON"""
         data = []
-        
+
         for analysis in analyses:
             ops_data = []
             for op in analysis.operations:
-                ops_data.append({
-                    "name": op.name,
-                    "duration": op.duration,
-                    "start_time": op.start_time
-                })
-            
-            data.append({
-                "token_id": analysis.token_id,
-                "token_text": analysis.token_text,
-                "total_latency_ms": analysis.total_latency_ms,
-                "performance_score": analysis.performance_score,
-                "bottleneck_type": analysis.bottleneck_type,
-                "optimization_flags": analysis.optimization_flags,
-                "operations": ops_data,
-                "gpu_metrics": {
-                    "stall_pct": analysis.gpu_metrics.stall_pct,
-                    "launch_delay_ms": analysis.gpu_metrics.launch_delay_ms,
-                    "memory_latency_ms": analysis.gpu_metrics.memory_latency_ms,
-                    "sm_occupancy_pct": analysis.gpu_metrics.sm_occupancy_pct,
-                    "cache_hit_rate": analysis.gpu_metrics.cache_hit_rate,
-                    "memory_bandwidth_gb_s": analysis.gpu_metrics.memory_bandwidth_gb_s,
-                    "compute_utilization": analysis.gpu_metrics.compute_utilization,
-                    "occupancy_label": analysis.gpu_metrics.occupancy_label,
-                    "metrics_source": analysis.gpu_metrics.metrics_source
+                ops_data.append(
+                    {
+                        "name": op.name,
+                        "duration": op.duration,
+                        "start_time": op.start_time,
+                    }
+                )
+
+            data.append(
+                {
+                    "token_id": analysis.token_id,
+                    "token_text": analysis.token_text,
+                    "total_latency_ms": analysis.total_latency_ms,
+                    "performance_score": analysis.performance_score,
+                    "bottleneck_type": analysis.bottleneck_type,
+                    "optimization_flags": analysis.optimization_flags,
+                    "operations": ops_data,
+                    "gpu_metrics": {
+                        "stall_pct": analysis.gpu_metrics.stall_pct,
+                        "launch_delay_ms": analysis.gpu_metrics.launch_delay_ms,
+                        "memory_latency_ms": analysis.gpu_metrics.memory_latency_ms,
+                        "sm_occupancy_pct": analysis.gpu_metrics.sm_occupancy_pct,
+                        "cache_hit_rate": analysis.gpu_metrics.cache_hit_rate,
+                        "memory_bandwidth_gb_s": analysis.gpu_metrics.memory_bandwidth_gb_s,
+                        "compute_utilization": analysis.gpu_metrics.compute_utilization,
+                        "occupancy_label": analysis.gpu_metrics.occupancy_label,
+                        "metrics_source": analysis.gpu_metrics.metrics_source,
+                    },
                 }
-            })
-        
+            )
+
         return json.dumps(data, indent=2)

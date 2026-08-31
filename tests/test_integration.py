@@ -48,6 +48,9 @@ def test_mlx_trace_parser_analyzer_and_visualizer_pipeline():
     assert exported[0]["gpu_metrics"]["occupancy_label"] == "GPU occupancy"
     assert exported[0]["gpu_metrics"]["metrics_source"] == "estimated"
     assert "GPU occupancy" in dashboard
+    assert dashboard.lower().count("<!doctype html>") == 1
+    assert dashboard.lower().count("<html") == 1
+    assert '"showSendToCloud": false' in dashboard
 
 
 @pytest.mark.parametrize(

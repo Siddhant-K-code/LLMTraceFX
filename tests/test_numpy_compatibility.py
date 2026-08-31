@@ -6,6 +6,7 @@ import pandas as pd
 import plotly
 import plotly.express as px
 import pyarrow as pa
+import streamlit
 from packaging.version import Version
 
 
@@ -13,6 +14,7 @@ def test_numpy_2_dataframe_arrow_and_plotly_interoperability() -> None:
     assert Version(np.__version__) >= Version("2.2.6")
     assert Version(pd.__version__) >= Version("2.2.2")
     assert Version(plotly.__version__) >= Version("7.0.0")
+    assert Version(streamlit.__version__) >= Version("1.34.0")
 
     latencies = np.asarray([1.25, 2.5, 5.0], dtype=np.float64)
     frame = pd.DataFrame(
