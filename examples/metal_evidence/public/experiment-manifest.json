@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "captured_at": "2026-08-31T09:48:55+00:00",
+  "environment": {
+    "hardware": "Apple M5 Pro",
+    "architecture": "arm64",
+    "macos": "26.6.2",
+    "macos_build": "25G83",
+    "xcode": "Xcode 26.6",
+    "xcode_build": "17F113",
+    "instruments": "26.6",
+    "xctrace": "xctrace version 16.0 (17F113)"
+  },
+  "collection": {
+    "template": "Metal System Trace",
+    "table_schema": "metal-gpu-intervals",
+    "time_limit": "10s",
+    "capture_boundary": "xctrace launched one local workload process; each trace ended when that process exited, with the time limit as a hard upper bound",
+    "raw_artifacts_committed": false
+  },
+  "workload": {
+    "name": "metal-evidence-workload",
+    "source": "metal_workload.swift",
+    "source_sha256": "cfd5b480c1513224502a67ca4ed32a6aafa0e0fff11e0dd43d90953a4a5eb3b1",
+    "dispatch_counts": [
+      400,
+      250,
+      120,
+      77,
+      133
+    ],
+    "threads_per_grid": 262144,
+    "command_buffers_per_dispatch": 1
+  },
+  "commands": [
+    "uv run python examples/metal_evidence/evidence_demo.py capability",
+    "make metal-evidence OUTPUT_DIR=<OUTPUT_DIR>",
+    "uv run python examples/metal_evidence/evidence_demo.py verify --public-dir <OUTPUT_DIR>/public"
+  ],
+  "approved_metrics": {
+    "measured_native": [
+      "metal_gpu_interval_count",
+      "metal_gpu_interval_count_all_processes",
+      "window_server_interval_count"
+    ],
+    "derived": [
+      "unrelated_interval_count",
+      "unrelated_interval_share_percent"
+    ]
+  },
+  "unsupported_metrics": [
+    "GPU utilization",
+    "GPU busy percentage",
+    "kernel time",
+    "memory bandwidth",
+    "occupancy",
+    "GPU power",
+    "GPU energy",
+    "GPU memory footprint"
+  ]
+}

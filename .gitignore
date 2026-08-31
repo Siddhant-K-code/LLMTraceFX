@@ -148,6 +148,12 @@ cython_debug/
 # flame_graph.html
 # analysis_data.json
 
+# Private Apple Instruments capture artifacts. Public examples commit only
+# sanitized derived JSON/CSV/SVG files.
+*.trace/
+trace_toc.xml
+trace_table.xml
+
 # Modal cache
 .modal_cache/
 

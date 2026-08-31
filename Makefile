@@ -1,6 +1,6 @@
 # LLMTraceFX Makefile
 
-.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan test-deploy
+.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan test-deploy metal-evidence
 
 help:  ## Show this help message
 	@echo "LLMTraceFX - evidence-first inference toolkit"
@@ -101,6 +101,10 @@ glm-plan:  ## Adjudicate a deployment plan (make glm-plan ARGS="--max-usd 10 ...
 
 test-deploy:  ## Run the offline deployment harness tests
 	uv run pytest tests/deploy
+
+metal-evidence:  ## Capture privacy-safe Metal evidence (requires OUTPUT_DIR)
+	@test -n "$(OUTPUT_DIR)" || { echo "OUTPUT_DIR is required" >&2; exit 2; }
+	uv run python examples/metal_evidence/evidence_demo.py capture --output-dir "$(OUTPUT_DIR)"
 
 # Documentation
 docs:  ## Build documentation

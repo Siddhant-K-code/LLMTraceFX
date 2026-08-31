@@ -217,6 +217,40 @@ def test_engineering_type_mismatch_is_refused():
         parse_exported_table(payload)
 
 
+def test_optional_sentinel_preserves_column_position():
+    payload = (
+        "<trace-query-result><node>"
+        '<schema name="t">'
+        "<col><mnemonic>frame</mnemonic>"
+        "<engineering-type>gpu-frame-number</engineering-type></col>"
+        "</schema>"
+        "<row><sentinel/></row>"
+        "</node></trace-query-result>"
+    )
+    table = parse_exported_table(payload)
+    assert table.rows[0].require("frame").tag == "sentinel"
+    assert table.rows[0].require("frame").text is None
+
+
+def test_required_numeric_sentinel_is_not_treated_as_zero():
+    payload = (
+        "<trace-query-result><node>"
+        '<schema name="metal-gpu-intervals">'
+        "<col><mnemonic>start</mnemonic>"
+        "<engineering-type>start-time</engineering-type></col>"
+        "<col><mnemonic>duration</mnemonic>"
+        "<engineering-type>duration</engineering-type></col>"
+        "<col><mnemonic>process</mnemonic>"
+        "<engineering-type>process</engineering-type></col>"
+        "</schema>"
+        '<row><sentinel/><duration>7</duration><process fmt="p (1)"/></row>'
+        "</node></trace-query-result>"
+    )
+    table = parse_exported_table(payload)
+    with pytest.raises(InstrumentsExportError, match="has no text content"):
+        summarize_metal_gpu_intervals(table)
+
+
 def test_requesting_a_different_schema_than_returned_is_refused():
     with pytest.raises(
         InstrumentsExportError, match="but 'time-profile' was requested"

@@ -330,6 +330,11 @@ recording path uses `record` in place of `plan`. Current parsing supports the
 wall spans. It does not infer GPU utilization, occupancy, bandwidth, power, or
 energy from those intervals.
 
+A public, reproducible Apple Silicon example with a deterministic Metal
+workload, sanitized measured evidence, integrity hashes, and charts lives in
+[`examples/metal_evidence/`](examples/metal_evidence/README.md). Raw trace
+bundles and XML exports are excluded by design.
+
 ## Verify, tune, and optimize
 
 Generate a matrix for an existing model:

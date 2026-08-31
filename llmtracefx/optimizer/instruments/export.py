@@ -596,7 +596,12 @@ def parse_exported_table(
                 (child.tag, "value"),
                 (resolved.tag, "referenced value"),
             ):
-                if tag != column.engineering_type:
+                # Real xctrace 16.0 exports optional values such as an
+                # absent frame number as <sentinel/>. It still occupies
+                # the column's positional slot but has no typed value.
+                # Required summary fields fail later when their value is
+                # requested, so accepting a sentinel cannot invent data.
+                if tag not in {column.engineering_type, "sentinel"}:
                     raise InstrumentsExportError(
                         f"row {row_number} of table {schema_name!r} has a "
                         f"{source} <{tag}> where column "
