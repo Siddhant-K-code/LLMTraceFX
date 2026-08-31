@@ -21,6 +21,7 @@ def test_legacy_image_copies_the_local_package_into_the_image() -> None:
     with imported_app({}, app_module="llmtracefx.modal_app") as (_, fake):
         image = fake._fake_images[0]
 
+        assert "plotly==7.0.0" in image.pip_packages[0]
         assert image.local_dirs == [("./llmtracefx", "/app/llmtracefx")]
         assert image.local_dir_options == [{"copy": True}]
         assert image.working_directory == "/app"

@@ -18,7 +18,7 @@ image = (
             "fastapi==0.104.1",
             "uvicorn[standard]==0.24.0",
             "aiohttp==3.9.0",
-            "plotly==5.17.0",
+            "plotly==7.0.0",
             "pandas==2.1.3",
             "numpy==1.25.2",
             "python-multipart==0.0.6",
