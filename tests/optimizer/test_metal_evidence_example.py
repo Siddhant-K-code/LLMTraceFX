@@ -54,6 +54,20 @@ def test_summary_marks_a_dispatch_mismatch_without_relabelling_it():
     assert summary.dispatch_count_matches is False
 
 
+def test_summary_refuses_unattributed_process_rows():
+    table = _fixture("table_metal_gpu_intervals.xml").replace(
+        '<process id="12" fmt="WindowServer (77)">'
+        '<pid id="13" fmt="77">77</pid><device-session ref="6"/></process>',
+        '<process id="12" fmt="unattributed"/>',
+    )
+    with pytest.raises(ValueError, match="no parseable PID"):
+        DEMO.summarize_exports(
+            _fixture("toc_metal_system_trace.xml"),
+            table,
+            expected_dispatch_count=3,
+        )
+
+
 def test_output_directory_must_be_empty(tmp_path):
     output = tmp_path / "capture"
     output.mkdir()

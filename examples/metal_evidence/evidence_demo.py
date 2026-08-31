@@ -120,6 +120,14 @@ def summarize_exports(
     target = summary.for_process(run.target_pid)
     if target is None:
         raise ValueError("target PID has no attributed Metal intervals")
+    unattributed = sum(
+        entry.interval_count for entry in summary.per_process if entry.pid is None
+    )
+    if unattributed:
+        raise ValueError(
+            f"{unattributed} Metal intervals have no parseable PID; refusing "
+            "to classify them as unrelated"
+        )
 
     unrelated = summary.total_interval_count - target.interval_count
     window_server = sum(

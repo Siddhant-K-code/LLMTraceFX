@@ -251,6 +251,25 @@ def test_required_numeric_sentinel_is_not_treated_as_zero():
         summarize_metal_gpu_intervals(table)
 
 
+def test_required_process_sentinel_is_not_counted_as_unknown():
+    payload = (
+        "<trace-query-result><node>"
+        '<schema name="metal-gpu-intervals">'
+        "<col><mnemonic>start</mnemonic>"
+        "<engineering-type>start-time</engineering-type></col>"
+        "<col><mnemonic>duration</mnemonic>"
+        "<engineering-type>duration</engineering-type></col>"
+        "<col><mnemonic>process</mnemonic>"
+        "<engineering-type>process</engineering-type></col>"
+        "</schema>"
+        "<row><start-time>5</start-time><duration>7</duration><sentinel/></row>"
+        "</node></trace-query-result>"
+    )
+    table = parse_exported_table(payload)
+    with pytest.raises(InstrumentsExportError, match="no process value"):
+        summarize_metal_gpu_intervals(table)
+
+
 def test_requesting_a_different_schema_than_returned_is_refused():
     with pytest.raises(
         InstrumentsExportError, match="but 'time-profile' was requested"
