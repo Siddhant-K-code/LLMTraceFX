@@ -58,7 +58,7 @@ def test_a_refused_plan_raises_rather_than_being_returned() -> None:
     environ = valid_environ(
         LLMTRACEFX_GLM_MAX_USD="0.01", LLMTRACEFX_GLM_USD_PER_GPU_HOUR="50"
     )
-    with pytest.raises(DeploymentPlanError, match="exceeds the authorised budget"):
+    with pytest.raises(DeploymentPlanError, match="exceeds the planning threshold"):
         plan_from_environ(environ, as_of=AS_OF)
 
 
@@ -126,7 +126,7 @@ def test_extra_containers_multiply_the_serving_terms() -> None:
         single = next(line for line in one.envelope.lines if line.name == name).usd
         quadruple = next(line for line in four.envelope.lines if line.name == name).usd
         assert quadruple == pytest.approx(single * 4)
-    with pytest.raises(DeploymentPlanError, match="exceeds the authorised budget"):
+    with pytest.raises(DeploymentPlanError, match="exceeds the planning threshold"):
         plan_from_environ(
             valid_environ(
                 LLMTRACEFX_GLM_MAX_CONTAINERS="8", LLMTRACEFX_GLM_MAX_USD="10.00"

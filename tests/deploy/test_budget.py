@@ -181,7 +181,7 @@ def test_over_budget_is_reported_and_then_refused() -> None:
     )
     assert envelope.within_budget is False
     assert envelope.headroom_usd < 0
-    with pytest.raises(DeploymentPlanError, match="exceeds the authorised budget"):
+    with pytest.raises(DeploymentPlanError, match="exceeds the planning threshold"):
         assert_within_budget(envelope)
 
 

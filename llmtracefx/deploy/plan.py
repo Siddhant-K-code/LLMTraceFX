@@ -221,7 +221,7 @@ def build_plan(
     volume_name: str = commands.DEFAULT_VOLUME_NAME,
     smoke_max_output_tokens: int = 32,
     collector_run_id: str = "glm53flash-selfhost-smoke",
-    collector_prompt_file: str = "prompts/smoke.txt",
+    collector_prompt_file: str = "examples/optimizer/api-smoke-prompt.txt",
     collector_output_dir: str = "output/glm53flash-selfhost",
     max_price_age_days: int = DEFAULT_MAX_PRICE_AGE_DAYS,
     accept_stale_price: bool = False,
@@ -270,8 +270,8 @@ def build_plan(
 
     if not envelope.within_budget:
         blockers.append(
-            f"Worst-case cost ${envelope.worst_case_usd:.2f} exceeds the "
-            f"authorised budget ${envelope.budget_usd:.2f}."
+            f"Modeled cost ${envelope.worst_case_usd:.2f} exceeds the "
+            f"planning threshold ${envelope.budget_usd:.2f}."
         )
     if not memory.fits:
         blockers.append(

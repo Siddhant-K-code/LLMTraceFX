@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pytest
 from _fakes import PINNED_IMAGE, TAG_ONLY_IMAGE, VALID_REVISION
@@ -117,10 +118,17 @@ def test_the_plan_asserts_it_touched_nothing() -> None:
     assert payload["modal_authentication_used"] is False
 
 
+def test_default_collect_step_uses_a_committed_prompt() -> None:
+    collect = next(step for step in make_plan().steps if step.name == "collect")
+    prompt = collect.argv[collect.argv.index("--prompt-file") + 1]
+    assert isinstance(prompt, str)
+    assert Path(prompt).is_file()
+
+
 def test_over_budget_withholds_every_paid_step() -> None:
     plan = make_plan(max_usd=1.0, rate=10.0)
     assert plan.approved is False
-    assert any("exceeds the authorised budget" in b for b in plan.blockers)
+    assert any("exceeds the planning threshold" in b for b in plan.blockers)
 
     withheld = {step.name for step in plan.steps} - {
         step.name for step in plan.executable_steps

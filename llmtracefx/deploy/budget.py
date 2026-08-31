@@ -1,11 +1,10 @@
-"""Worst-case cost arithmetic and the fail-closed budget gate.
+"""Conservative cost-model arithmetic and the fail-closed planning gate.
 
-Every number here is an upper bound, never an expectation. A plan is
-approved on the basis of what the deployment costs if it runs the whole
-way to its own timeout on every container it is allowed to start, because
-that is the only figure an operator can be held to: an average-case
-estimate approves a deployment that can still overspend, and the moment
-it does the money is already gone.
+The model assumes the deployment runs the whole way to its own timeout on
+every container it is allowed to start. That makes the result conservative
+for the declared terms, but it is still an estimate rather than a provider
+billing cap. Provider scheduling, billing granularity, failed starts and
+resources outside these inputs can change the final charge.
 
 Nothing in this module has a default that spends money. There is no
 default budget, no default GPU count, no default runtime and no default
@@ -242,7 +241,7 @@ class CostLine:
 
 @dataclass(frozen=True)
 class CostEnvelope:
-    """The upper bound on what a plan can cost, and how it was reached.
+    """The modeled cost of a plan and how it was reached.
 
     Every input is carried through to the output so the number can be
     re-derived by hand from the record alone, without re-running the
@@ -326,7 +325,7 @@ class CostEnvelope:
 
 
 def evaluate_budget(request: BudgetRequest) -> CostEnvelope:
-    """Price the worst case for ``request``. Pure arithmetic, no I/O.
+    """Build a conservative model for ``request``. Pure arithmetic, no I/O.
 
     The serving term assumes every allowed container is occupied for the
     whole deployment window, plus one container timeout, because a
@@ -480,12 +479,12 @@ def evaluate_budget(request: BudgetRequest) -> CostEnvelope:
 
 
 def assert_within_budget(envelope: CostEnvelope) -> None:
-    """Refuse an envelope whose worst case exceeds the stated budget."""
+    """Refuse a modeled envelope that exceeds the planning threshold."""
     if envelope.within_budget:
         return
     raise DeploymentPlanError(
-        f"worst-case cost ${envelope.worst_case_usd:.2f} exceeds the "
-        f"authorised budget ${envelope.budget_usd:.2f} "
+        f"modeled cost ${envelope.worst_case_usd:.2f} exceeds the "
+        f"planning threshold ${envelope.budget_usd:.2f} "
         f"({envelope.gpu_count} x {envelope.gpu_type} x "
         f"{envelope.max_containers} container(s) for "
         f"{envelope.max_runtime_seconds}s at "
