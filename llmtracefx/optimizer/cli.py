@@ -19,6 +19,11 @@ Subcommands:
                      verified configuration for a workload/hardware target.
     tune-report      Render a `tune` JSON report as a self-contained, portable
                      HTML file for offline inspection (no Streamlit needed).
+    compare          Offline cross-system comparison of already-collected
+                     evidence (local MLX vs hosted APIs), stratified by
+                     comparable unit and priced from an explicit manifest.
+    compare-report   Render a `compare` JSON report as a self-contained,
+                     portable HTML file.
     optimize         End-to-end: execute selected matrix rows, tune the
                      resulting evidence, and render the JSON/HTML report,
                      composing the above primitives without duplicating any
@@ -67,6 +72,16 @@ from .collectors.openai_api import (
     collect_openai_stream,
     redact_text_for_dry_run,
 )
+from .compare.compare import compare
+from .compare.evidence import CompareEvidenceError
+from .compare.explain import format_compare_report_text
+from .compare.policy import ComparePolicy, ComparePolicyError
+from .compare.pricing import PricingError, PricingManifest
+from .compare.report import (
+    CompareReport,
+    CompareReportValidationError,
+)
+from .compare.report_html import render_compare_report_html
 from .doctor.speculative import diagnose_speculative_regression
 from .instruments import (
     METAL_SYSTEM_TRACE_TEMPLATE,
@@ -1260,6 +1275,126 @@ def _cmd_tune_report(args: argparse.Namespace) -> int:
         print(
             "Local artifact paths were redacted to basenames/stable labels; "
             "rerun with --include-paths to include full paths."
+        )
+    return 0
+
+
+def _cmd_compare(args: argparse.Namespace) -> int:
+    try:
+        policy = ComparePolicy.from_file(args.policy)
+    except (OSError, UnicodeError, ComparePolicyError) as exc:
+        print(f"Invalid compare policy: {exc}", file=sys.stderr)
+        return 1
+
+    pricing: PricingManifest | None = None
+    pricing_path: str | None = None
+    if args.pricing:
+        try:
+            pricing = PricingManifest.from_file(args.pricing)
+        except (OSError, UnicodeError, PricingError) as exc:
+            print(f"Invalid pricing manifest: {exc}", file=sys.stderr)
+            return 1
+        pricing_path = str(args.pricing)
+
+    # A tune report is published under "Corroborating tune reports" in the
+    # provenance section, so an unreadable or malformed one would assert
+    # corroboration that does not exist. It is validated for the same reason
+    # the pricing manifest is hashed: provenance has to be true. Nothing from
+    # it is merged into the comparison.
+    for raw_tune_report in args.tune_report or ():
+        tune_report_path = Path(raw_tune_report)
+        try:
+            TuneReport.read_json(tune_report_path)
+        except (OSError, UnicodeError) as exc:
+            print(
+                f"Could not read tune report {tune_report_path}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        except TuneReportValidationError as exc:
+            print(
+                f"Invalid tune report in {tune_report_path}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+
+    try:
+        report = compare(
+            results_dirs=tuple(Path(path) for path in args.results),
+            policy=policy,
+            pricing=pricing,
+            pricing_manifest_path=pricing_path,
+            tune_report_paths=tuple(args.tune_report or ()),
+        )
+    except CompareEvidenceError as exc:
+        print(f"Invalid comparison input: {exc}", file=sys.stderr)
+        return 1
+
+    print(format_compare_report_text(report, verbose=args.explain))
+
+    if args.output:
+        output_path = Path(args.output)
+        try:
+            atomic_write_text(output_path, report.to_json() + "\n")
+        except OSError as exc:
+            # The comparison already succeeded; losing all of it behind a
+            # stack trace because the destination is unwritable is the one
+            # failure here that costs the user real work.
+            print(
+                f"Could not write compare report JSON to {output_path}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"\nCompare report written to {args.output}")
+
+    if not report.strata:
+        print(
+            "\nNo comparable units were found across the given results " "directories.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0 if report.has_recommendation else 2
+
+
+def _cmd_compare_report(args: argparse.Namespace) -> int:
+    input_path = Path(args.input)
+    try:
+        report = CompareReport.read_json(input_path)
+    except (OSError, UnicodeError) as exc:
+        print(
+            f"Could not read compare report input {input_path}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    except CompareReportValidationError as exc:
+        print(f"Invalid compare report in {input_path}: {exc}", file=sys.stderr)
+        return 1
+
+    html_document = render_compare_report_html(
+        report, redact_paths=not args.include_paths
+    )
+    output_path = Path(args.output)
+    try:
+        atomic_write_text(output_path, html_document)
+    except OSError as exc:
+        print(
+            f"Could not write compare report HTML to {output_path}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"Compare report HTML written to {output_path}")
+    if args.include_paths:
+        print("Full local artifact paths are included (--include-paths was set).")
+    else:
+        print(
+            "Local artifact paths were redacted to basenames/stable labels; "
+            "rerun with --include-paths to include full paths."
+        )
+    if report.pricing is not None and report.pricing.rates_are_illustrative:
+        print(
+            "The pricing manifest declares illustrative rates, so every "
+            "monetary figure in the report is an example, not a price."
         )
     return 0
 
@@ -3137,6 +3272,94 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     tune_report_parser.set_defaults(func=_cmd_tune_report)
+
+    compare_parser = subparsers.add_parser(
+        "compare",
+        help=(
+            "Offline cross-system comparison of already-collected evidence "
+            "(for example a local MLX model against hosted API models). Reads "
+            "`workloads run --output-dir` results directories; never loads a "
+            "model, calls an API, or executes a benchmark. Systems are only "
+            "compared within a comparable unit: identical workload, version, "
+            "prompt hash, context tier, evaluator, output cap and sampling."
+        ),
+    )
+    compare_parser.add_argument(
+        "--results",
+        nargs="+",
+        required=True,
+        help="One or more `workloads run --output-dir` results directories",
+    )
+    compare_parser.add_argument(
+        "--policy",
+        required=True,
+        help=(
+            "Path to a compare policy JSON/YAML file (one objective plus the "
+            "constraints a system must clear before it is ranked)"
+        ),
+    )
+    compare_parser.add_argument(
+        "--pricing",
+        default=None,
+        help=(
+            "Path to a versioned pricing manifest JSON/YAML file. Required for "
+            "any cost objective. Without it the report contains no monetary "
+            "values at all rather than guessed ones."
+        ),
+    )
+    compare_parser.add_argument(
+        "--tune-report",
+        nargs="+",
+        default=None,
+        help=(
+            "Optional paths to `tune --output` reports to record as "
+            "corroborating evidence in the report's provenance. They are "
+            "recorded, never merged into the comparison."
+        ),
+    )
+    compare_parser.add_argument(
+        "--output",
+        default=None,
+        help="Atomically write the full compare report JSON to this path",
+    )
+    compare_parser.add_argument(
+        "--explain",
+        action="store_true",
+        help=(
+            "Print every ranked system, every dominated frontier entry and "
+            "every rejection reason (default: a concise summary)"
+        ),
+    )
+    compare_parser.set_defaults(func=_cmd_compare)
+
+    compare_report_parser = subparsers.add_parser(
+        "compare-report",
+        help=(
+            "Render a `compare` JSON report as a single, self-contained, "
+            "portable HTML file (inline CSS, no JavaScript, no CDN, works "
+            "offline). Never re-scores or re-computes anything."
+        ),
+    )
+    compare_report_parser.add_argument(
+        "--input",
+        required=True,
+        help="Path to a `compare --output` JSON report",
+    )
+    compare_report_parser.add_argument(
+        "--output",
+        required=True,
+        help="Path to atomically write the rendered HTML report to",
+    )
+    compare_report_parser.add_argument(
+        "--include-paths",
+        action="store_true",
+        help=(
+            "Include full local artifact paths as plain text. Default: redact "
+            "every path to a basename/stable `runs/<run_id>/<file>` label so "
+            "the report is safe to share."
+        ),
+    )
+    compare_report_parser.set_defaults(func=_cmd_compare_report)
 
     optimize_parser = subparsers.add_parser(
         "optimize",

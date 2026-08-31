@@ -1,0 +1,17 @@
+{
+  "schema_version": "1",
+  "name": "local vs frontier vs flash, lowest mean latency",
+  "description": "One objective, constraints first. A system is only ranked once it has cleared every constraint below; nothing is blended into an overall score. Swap the objective for `max_correct_cases_per_minute`, `min_cost_per_correct_case` or `max_correct_cases_per_currency_unit` to ask a different question of the same evidence.",
+  "objective": "min_mean_total_latency_ms",
+  "constraints": {
+    "required_statuses": [
+      "completed",
+      "skipped"
+    ],
+    "min_pass_rate": 0.75,
+    "required_quality_metric": "structured_json_exact_field_match",
+    "min_quality_score": 0.75,
+    "min_measured_repetitions": 2,
+    "max_coefficient_of_variation": 0.35
+  }
+}

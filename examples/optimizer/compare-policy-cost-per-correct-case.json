@@ -1,0 +1,16 @@
+{
+  "schema_version": "1",
+  "name": "cheapest correct answer at an acceptable quality floor",
+  "description": "Requires a pricing manifest. Cost is derived from provider-reported token usage, so a system whose provider reported no usage is simply not ranked here rather than being treated as free.",
+  "objective": "min_cost_per_correct_case",
+  "constraints": {
+    "required_statuses": [
+      "completed",
+      "skipped"
+    ],
+    "min_pass_rate": 0.75,
+    "required_quality_metric": "structured_json_exact_field_match",
+    "min_quality_score": 0.75,
+    "min_measured_repetitions": 2
+  }
+}

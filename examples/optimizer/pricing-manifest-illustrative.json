@@ -1,0 +1,38 @@
+{
+  "schema_version": "1",
+  "name": "illustrative-example-rates",
+  "description": "ILLUSTRATIVE EXAMPLE RATES. Every number below is invented to demonstrate the cost arithmetic on real provider-reported usage. None of it is a published price, none of it was fetched from a provider, and none of it should be used to budget anything. Replace this file with rates you have sourced yourself, set `rates_are_illustrative` to false, and put the page you took them from in `source` with the date in `effective_at`.",
+  "currency": "USD",
+  "entries": [
+    {
+      "entry_id": "example-frontier-api",
+      "provider": "example-provider",
+      "model_id": "example-frontier-model",
+      "model_revision": null,
+      "currency": "USD",
+      "effective_at": "2026-01-01",
+      "source": "illustrative example, not a published price list",
+      "rates_are_illustrative": true,
+      "input_per_million": 0.6,
+      "output_per_million": 2.2,
+      "cached_input_per_million": 0.11,
+      "reasoning_per_million": null,
+      "notes": "No separate reasoning rate is declared, so reasoning tokens are billed at the output rate, which is the usual OpenAI-compatible behaviour."
+    },
+    {
+      "entry_id": "example-flash-api",
+      "provider": "example-provider",
+      "model_id": "example-flash-model",
+      "model_revision": null,
+      "currency": "USD",
+      "effective_at": "2026-01-01",
+      "source": "illustrative example, not a published price list",
+      "rates_are_illustrative": true,
+      "input_per_million": 0.1,
+      "output_per_million": 0.3,
+      "cached_input_per_million": 0.02,
+      "reasoning_per_million": null,
+      "notes": null
+    }
+  ]
+}
