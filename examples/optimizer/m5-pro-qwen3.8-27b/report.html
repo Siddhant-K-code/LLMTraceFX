@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>M5 Pro Qwen3.8 local inference lab</title>
+<style>
+:root{--ink:#17202a;--muted:#5d6670;--paper:#f7f3ea;--panel:#fffdf8;--accent:#f05d23;}
+*{box-sizing:border-box} body{margin:0;background:var(--paper);color:var(--ink);
+font:15px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace} main{max-width:1120px;
+margin:auto;padding:40px 24px} h1{font-size:clamp(28px,5vw,54px);line-height:1.02}
+.stamp{color:var(--muted)} .card,.chart{background:var(--panel);border:1px solid #d9d1c3;
+padding:20px;margin:20px 0;overflow:auto} table{width:100%;border-collapse:collapse;
+min-width:900px} th,td{text-align:right;padding:10px;border-bottom:1px solid #ddd5c8}
+th:first-child,td:first-child{text-align:left} svg{width:100%;min-width:560px}
+.bar{fill:var(--accent)} .axis,.value{font:14px ui-monospace,SFMono-Regular,Menlo,monospace;
+fill:var(--ink)} code{overflow-wrap:anywhere} .warning{border-left:5px solid var(--accent)}
+</style>
+</head>
+<body><main>
+<p class="stamp">LLMTraceFX / local evidence / no external references</p>
+<h1>M5 Pro × Qwen3.8-27B</h1>
+<p>Measured evidence for <code>mlx-community/Qwen3.8-27B-4bit@3e6447f082e89cc7f0bc6e5441afd38dfce760ff</code>,
+MLX affine 4-bit, group size 64, under the pinned workloads and constraints below. This
+is not a universal fastest-model claim.</p>
+<section class="card"><h2>Run contract</h2>
+<p>Official model: <code>Qwen/Qwen3.8-27B@1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0</code><br>
+License: Apache-2.0<br>Converter: mlx-vlm 0.6.8 at
+<code>61990c9054f2bc7bb8f32541e3238b4a58fe64e5</code><br>Generated:
+2026-08-31T14:57:58.660151Z</p></section>
+<section class="card"><h2>Environment</h2><p>
+Accelerator: Apple M5 Pro<br>
+Memory: 24.0 GiB<br>
+OS: Darwin
+25.6.0 / arm64<br>
+Python: 3.13.15<br>
+Runtime: mlx-vlm 0.6.8,
+MLX 0.32.2
+</p></section>
+<section class="card"><h2>Safety observations</h2><p>
+Preflight free memory: 36.0%,
+swap used: 8472494080 bytes.<br>
+Postflight free memory: 4.0%,
+swap used: 20151795712 bytes.<br>
+Provenance: macOS memory_pressure and sysctl.
+</p></section>
+<section class="card"><h2>Measured outcomes</h2><table><thead><tr>
+<th>Tier</th><th>Runs</th><th>Pass rate</th><th>Mean quality</th>
+<th>Total ms</th><th>Prefill ms</th><th>Decode ms</th><th>Decode tok/s</th>
+<th>Correct/min</th></tr></thead><tbody></tbody></table></section>
+<section class="card warning"><h2>Stopped attempts</h2><table><thead><tr>
+<th>Tier</th><th>Phase</th><th>Status</th><th>Input tokens</th><th>Reason</th>
+</tr></thead><tbody><tr><td>2k</td><td>warmup</td><td>failed</td><td>1657</td><td>[METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory).</td></tr></tbody></table></section>
+<section class="chart"><h2>Mean total latency by safe context tier</h2><svg viewBox="0 0 620 64" role="img" aria-label="Mean total latency by safe context tier"></svg></section><section class="chart"><h2>Deterministic evaluator pass rate</h2><svg viewBox="0 0 620 64" role="img" aria-label="Deterministic evaluator pass rate"></svg></section><section class="chart"><h2>Correct cases per minute</h2><svg viewBox="0 0 620 64" role="img" aria-label="Correct cases per minute"></svg></section><section class="chart"><h2>Observed MLX peak memory</h2><svg viewBox="0 0 620 64" role="img" aria-label="Observed MLX peak memory"></svg></section>
+<section class="card warning"><h2>Limits and provenance</h2><ul><li>Results apply only to the pinned model, runtime, workloads, context tiers, and this 24 GB M5 Pro configuration.</li><li>Total, prefill, and decode durations are host wall-clock boundaries; they are not kernel timings.</li><li>Peak memory is MLX allocator peak memory when available, not whole-system resident memory.</li><li>Decode token rate is derived from measured generated tokens and decode wall time.</li><li>The configured timeout is cooperative and cannot preempt a blocked native model-load or prefill call.</li><li>No GPU utilization, bandwidth, power, energy, or kernel timing is measured or inferred.</li><li>The 4-bit conversion card names the upstream model but does not cryptographically bind its source revision.</li></ul>
+<p>Stop point: 2k / warmup. Requested maximum:
+2k. Not executed:
+8k, 16k.</p></section>
+</main></body></html>

@@ -1,0 +1,180 @@
+{
+  "schema_version": "1",
+  "lab_id": "m5-pro-qwen3.8-27b-v1",
+  "model": {
+    "official_id": "Qwen/Qwen3.8-27B",
+    "official_revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+    "repository_id": "mlx-community/Qwen3.8-27B-4bit",
+    "revision": "3e6447f082e89cc7f0bc6e5441afd38dfce760ff",
+    "license": "Apache-2.0",
+    "quantization": "MLX affine 4-bit, group size 64",
+    "converter": "mlx-vlm 0.6.8",
+    "converter_revision": "61990c9054f2bc7bb8f32541e3238b4a58fe64e5",
+    "expected_download_bytes": 16081490933,
+    "files": [
+      {
+        "path": ".gitattributes",
+        "size_bytes": 1570,
+        "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930"
+      },
+      {
+        "path": "README.md",
+        "size_bytes": 632,
+        "sha256": "860ff845b4746d0b3e1d1afa4f13aac691ef49c7165054cedfb199371568c4c2"
+      },
+      {
+        "path": "chat_template.jinja",
+        "size_bytes": 8952,
+        "sha256": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041"
+      },
+      {
+        "path": "config.json",
+        "size_bytes": 4932,
+        "sha256": "14b65a0ee06517060a6bbd979bb1a8ff54e7b304b1a1f01d54344b88b8285e85"
+      },
+      {
+        "path": "generation_config.json",
+        "size_bytes": 202,
+        "sha256": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e"
+      },
+      {
+        "path": "model-00001-of-00003.safetensors",
+        "size_bytes": 5343268662,
+        "sha256": "6cc1508e96fb5d0865dfd5753a79f4ec60651bf3e2a82844a7e8ae9c60528c0d"
+      },
+      {
+        "path": "model-00002-of-00003.safetensors",
+        "size_bytes": 5354185130,
+        "sha256": "83f2a20ca8058f486a3634a27faf99587f4cd3c156a83dee34fb99e6ac178670"
+      },
+      {
+        "path": "model-00003-of-00003.safetensors",
+        "size_bytes": 5357087557,
+        "sha256": "31b8c91ef899f79efaaa69e3d2c096f6e2ebeb2ff20e29222abbd9ebc79e560a"
+      },
+      {
+        "path": "model.safetensors.index.json",
+        "size_bytes": 218281,
+        "sha256": "13b840162b4cb35c66fef7df072f7dbb4717908204364f5e5d9f9655a2758fa8"
+      },
+      {
+        "path": "preprocessor_config.json",
+        "size_bytes": 390,
+        "sha256": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516"
+      },
+      {
+        "path": "processor_config.json",
+        "size_bytes": 991,
+        "sha256": "45fc17c8dd2474af6b493b52483c26c0584b0082d368c480f9fa611e73070040"
+      },
+      {
+        "path": "tokenizer.json",
+        "size_bytes": 19989325,
+        "sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523"
+      },
+      {
+        "path": "tokenizer_config.json",
+        "size_bytes": 1165,
+        "sha256": "792fa3f0cb88b111e54ef3134c873531008c4df471d108da17903426e308aa7b"
+      },
+      {
+        "path": "video_preprocessor_config.json",
+        "size_bytes": 385,
+        "sha256": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13"
+      },
+      {
+        "path": "vocab.json",
+        "size_bytes": 6722759,
+        "sha256": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003"
+      }
+    ],
+    "sources": [
+      "https://huggingface.co/Qwen/Qwen3.8-27B/tree/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "https://huggingface.co/mlx-community/Qwen3.8-27B-4bit/tree/3e6447f082e89cc7f0bc6e5441afd38dfce760ff",
+      "https://github.com/Blaizzy/mlx-vlm/tree/61990c9054f2bc7bb8f32541e3238b4a58fe64e5"
+    ]
+  },
+  "runtime": {
+    "name": "mlx-vlm",
+    "version": "0.6.8",
+    "mlx_version": "0.32.2",
+    "mlx_lm_version": "0.31.3",
+    "transformers_version": "5.16.1",
+    "prefill_step_size": 2048
+  },
+  "generation": {
+    "max_output_tokens": 96,
+    "seed": 20260831,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "enable_thinking": false
+  },
+  "repetitions": {
+    "warmup_per_tier": 1,
+    "measured_per_workload": 2
+  },
+  "cooperative_timeout_seconds": 1800,
+  "safety": {
+    "required_chip": "Apple M5 Pro",
+    "required_total_memory_bytes": 25769803776,
+    "minimum_free_disk_after_download_bytes": 107374182400,
+    "minimum_memory_free_percent": 25,
+    "maximum_peak_memory_bytes": 21474836480,
+    "maximum_swap_used_bytes": 12884901888,
+    "stop_on_any_failed_row": true
+  },
+  "artifacts": {
+    "workspace": ".cache/llmtracefx/m5-pro-qwen3.8-27b-v1",
+    "model_cache": ".cache/models/qwen3.8-27b-4bit-3e6447f",
+    "shareable_example_dir": "examples/optimizer/m5-pro-qwen3.8-27b",
+    "commit_raw_artifacts": false
+  },
+  "environment_capture": [
+    "os_name",
+    "os_release",
+    "architecture",
+    "python_implementation",
+    "python_version",
+    "cpu_count",
+    "total_memory_gb",
+    "accelerator",
+    "package_versions"
+  ],
+  "context_tiers": [
+    {
+      "name": "2k",
+      "target_tokens": 2048,
+      "order": 1
+    },
+    {
+      "name": "8k",
+      "target_tokens": 8192,
+      "order": 2
+    },
+    {
+      "name": "16k",
+      "target_tokens": 16384,
+      "order": 3
+    }
+  ],
+  "workloads": [
+    {
+      "workload_id": "structured-json-profile-extraction",
+      "version": "1",
+      "prompt_hashes": {
+        "2k": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd",
+        "8k": "sha256:5efe059227fd5eeeb07884207aaad68780b53c2198f4dc1bbfb03f409bb152dd",
+        "16k": "sha256:837d22b5c550cf616ea86e7d64a637c2d387b2b9fd00577f64186ae621804f99"
+      }
+    },
+    {
+      "workload_id": "prose-reasoning-two-train-gap",
+      "version": "1",
+      "prompt_hashes": {
+        "2k": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568",
+        "8k": "sha256:954c0e8c1e0060c34e954e107c8b812926fcbfb5d3f5ca7e8904f0dba2d0e3c9",
+        "16k": "sha256:4ddc616d1772e3ead314a5247729778b21bec55376465a276ab805bcde29ce41"
+      }
+    }
+  ]
+}

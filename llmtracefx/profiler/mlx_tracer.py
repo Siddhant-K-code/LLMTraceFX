@@ -63,7 +63,7 @@ class MLXTraceRecorder:
     @staticmethod
     def _load_mlx() -> Any:
         try:
-            import mlx.core as mx  # type: ignore[import-not-found]
+            import mlx.core as mx
         except ImportError as exc:
             raise RuntimeError(
                 "MLX tracing requires MLX. On Apple Silicon run "

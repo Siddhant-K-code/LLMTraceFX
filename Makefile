@@ -1,6 +1,6 @@
 # LLMTraceFX Makefile
 
-.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan test-deploy metal-evidence
+.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan test-deploy metal-evidence m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report
 
 help:  ## Show this help message
 	@echo "LLMTraceFX - evidence-first inference toolkit"
@@ -101,6 +101,27 @@ glm-plan:  ## Adjudicate a deployment plan (make glm-plan ARGS="--max-usd 10 ...
 
 test-deploy:  ## Run the offline deployment harness tests
 	uv run pytest tests/deploy
+
+# Pinned M5 Pro / Qwen3.8-27B local evidence lab. The default target is an
+# offline, no-download plan. Acquisition and inference are explicit.
+M5_LAB_MANIFEST ?= llmtracefx/optimizer/lab/data/lab-manifest-v1.json
+M5_LAB_WORKSPACE ?= .cache/llmtracefx/m5-pro-qwen3.8-27b-v1
+MAX_TIER ?= 2k
+
+m5-lab:  ## Plan the M5 lab without downloading or loading a model
+	uv run --offline --no-sync --extra mlx llmtracefx-m5-lab plan --manifest $(M5_LAB_MANIFEST) --workspace $(M5_LAB_WORKSPACE)
+
+m5-lab-acquire:  ## Download and SHA-256 verify the pinned public MLX model
+	uv run --extra mlx llmtracefx-m5-lab acquire --manifest $(M5_LAB_MANIFEST) --workspace $(M5_LAB_WORKSPACE)
+
+m5-lab-run:  ## Acquire if absent, then resume the safety-gated local lab
+	uv run --extra mlx llmtracefx-m5-lab run --acquire --max-tier $(MAX_TIER) --manifest $(M5_LAB_MANIFEST) --workspace $(M5_LAB_WORKSPACE)
+
+m5-lab-verify:  ## Verify pinned model files and evidence bindings
+	uv run --extra mlx llmtracefx-m5-lab verify --manifest $(M5_LAB_MANIFEST) --workspace $(M5_LAB_WORKSPACE)
+
+m5-lab-report:  ## Rebuild self-contained local lab/tune/compare reports
+	uv run --extra mlx llmtracefx-m5-lab report --manifest $(M5_LAB_MANIFEST) --workspace $(M5_LAB_WORKSPACE)
 
 metal-evidence:  ## Capture privacy-safe Metal evidence (requires OUTPUT_DIR)
 	@test -n "$(OUTPUT_DIR)" || { echo "OUTPUT_DIR is required" >&2; exit 2; }

@@ -65,6 +65,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
@@ -258,6 +259,19 @@ class RunBinding:
     draft_model_path: Path | None = None
     seed: int = 0
     num_draft_tokens: int = 2
+    temperature: float = 0.0
+    top_p: float = 1.0
+    enable_thinking: bool = False
+    prefill_step_size: int | None = None
+    model_revision: str | None = None
+    tokenizer_revision: str | None = None
+    quantization: str | None = None
+    model_family: str | None = None
+    timeout_seconds: float | None = None
+    warmup_repetitions: int = 0
+    measured_repetitions: int = 1
+    repetition_index: int = 0
+    hardware_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -278,6 +292,53 @@ class RunBinding:
                 "Provide an existing local model path; models are never "
                 "downloaded by this pipeline."
             )
+        if self.timeout_seconds is not None and (
+            isinstance(self.timeout_seconds, bool)
+            or not isinstance(self.timeout_seconds, (int, float))
+            or self.timeout_seconds <= 0
+        ):
+            raise VerifyError("timeout_seconds must be positive when set")
+        if (
+            isinstance(self.temperature, bool)
+            or not isinstance(self.temperature, (int, float))
+            or not math.isfinite(self.temperature)
+            or not 0 <= self.temperature
+        ):
+            raise VerifyError("temperature must be non-negative")
+        if (
+            isinstance(self.top_p, bool)
+            or not isinstance(self.top_p, (int, float))
+            or not math.isfinite(self.top_p)
+            or not 0 < self.top_p <= 1
+        ):
+            raise VerifyError("top_p must be within (0, 1]")
+        if not isinstance(self.enable_thinking, bool):
+            raise VerifyError("enable_thinking must be a boolean")
+        if self.prefill_step_size is not None and (
+            isinstance(self.prefill_step_size, bool)
+            or not isinstance(self.prefill_step_size, int)
+            or self.prefill_step_size < 1
+        ):
+            raise VerifyError("prefill_step_size must be positive when set")
+        if (
+            isinstance(self.warmup_repetitions, bool)
+            or not isinstance(self.warmup_repetitions, int)
+            or self.warmup_repetitions < 0
+        ):
+            raise VerifyError("warmup_repetitions must be a non-negative integer")
+        if (
+            isinstance(self.measured_repetitions, bool)
+            or not isinstance(self.measured_repetitions, int)
+            or self.measured_repetitions < 1
+        ):
+            raise VerifyError("measured_repetitions must be a positive integer")
+        if (
+            isinstance(self.repetition_index, bool)
+            or not isinstance(self.repetition_index, int)
+            or self.repetition_index < 0
+            or self.repetition_index >= self.measured_repetitions
+        ):
+            raise VerifyError("repetition_index must identify a measured repetition")
 
     def hash_payload(self, *, max_tokens: int) -> dict[str, Any]:
         return {
@@ -290,6 +351,19 @@ class RunBinding:
             "seed": self.seed,
             "num_draft_tokens": self.num_draft_tokens,
             "max_tokens": max_tokens,
+            "temperature": self.temperature,
+            "top_p": self.top_p,
+            "enable_thinking": self.enable_thinking,
+            "prefill_step_size": self.prefill_step_size,
+            "model_revision": self.model_revision,
+            "tokenizer_revision": self.tokenizer_revision,
+            "quantization": self.quantization,
+            "model_family": self.model_family,
+            "timeout_seconds": self.timeout_seconds,
+            "warmup_repetitions": self.warmup_repetitions,
+            "measured_repetitions": self.measured_repetitions,
+            "repetition_index": self.repetition_index,
+            "hardware_fingerprint": self.hardware_fingerprint,
         }
 
     def run_binding_hash(self, *, max_tokens: int) -> str:
@@ -601,6 +675,10 @@ def _build_command_argv(
         str(entry.max_tokens),
         "--seed",
         str(binding.seed),
+        "--temperature",
+        str(binding.temperature),
+        "--top-p",
+        str(binding.top_p),
     ]
     if binding.draft_model_path is not None:
         argv.extend(
@@ -611,6 +689,13 @@ def _build_command_argv(
                 str(binding.num_draft_tokens),
             )
         )
+    for flag, value in (
+        ("--model-revision", binding.model_revision),
+        ("--tokenizer-revision", binding.tokenizer_revision),
+        ("--quantization", binding.quantization),
+    ):
+        if value is not None:
+            argv.extend((flag, value))
     return tuple(argv)
 
 
@@ -806,8 +891,20 @@ def execute_row(
             command_argv=_build_command_argv(entry, binding=binding, model_id=model_id),
             max_tokens=entry.max_tokens,
             seed=binding.seed,
+            temperature=binding.temperature,
+            top_p=binding.top_p,
+            enable_thinking=binding.enable_thinking,
+            prefill_step_size=binding.prefill_step_size,
+            model_revision=binding.model_revision,
+            tokenizer_revision=binding.tokenizer_revision,
+            quantization=binding.quantization,
+            model_family=binding.model_family,
             draft_model_path=binding.draft_model_path,
             num_draft_tokens=binding.num_draft_tokens,
+            timeout_seconds=binding.timeout_seconds,
+            warmup_repetitions=binding.warmup_repetitions,
+            measured_repetitions=binding.measured_repetitions,
+            repetition_index=binding.repetition_index,
         )
     except MLXCollectorError as exc:
         return _finish(

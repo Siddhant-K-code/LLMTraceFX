@@ -218,3 +218,17 @@ jobs:
           print('imported llmtracefx from', llmtracefx.__file__)
           print('version', md.version('llmtracefx'))
           "
+          "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-lab" --help
+          set +e
+          "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-lab" plan > m5-plan.json
+          plan_status="$?"
+          set -e
+          test "$plan_status" -eq 2
+          "$GITHUB_WORKSPACE/.wheel-check/bin/python" -c "
+          import json
+          from pathlib import Path
+          plan = json.loads(Path('m5-plan.json').read_text())
+          assert plan['manifest'].startswith('package:')
+          assert plan['model']['repository_id'] == 'mlx-community/Qwen3.8-27B-4bit'
+          assert plan['downloads_performed'] is False
+          "

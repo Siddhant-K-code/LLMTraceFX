@@ -1,0 +1,120 @@
+{
+  "schema_version": "1",
+  "lab_id": "m5-pro-qwen3.8-27b-v1",
+  "generated_at": "2026-08-31T14:57:58.660151Z",
+  "model": {
+    "official_id": "Qwen/Qwen3.8-27B",
+    "official_revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+    "repository_id": "mlx-community/Qwen3.8-27B-4bit",
+    "revision": "3e6447f082e89cc7f0bc6e5441afd38dfce760ff",
+    "license": "Apache-2.0",
+    "quantization": "MLX affine 4-bit, group size 64",
+    "converter": "mlx-vlm 0.6.8",
+    "converter_revision": "61990c9054f2bc7bb8f32541e3238b4a58fe64e5",
+    "download_bytes": 16081490933,
+    "sources": [
+      "https://huggingface.co/Qwen/Qwen3.8-27B/tree/1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "https://huggingface.co/mlx-community/Qwen3.8-27B-4bit/tree/3e6447f082e89cc7f0bc6e5441afd38dfce760ff",
+      "https://github.com/Blaizzy/mlx-vlm/tree/61990c9054f2bc7bb8f32541e3238b4a58fe64e5"
+    ]
+  },
+  "environment": {
+    "os_name": "Darwin",
+    "os_release": "25.6.0",
+    "architecture": "arm64",
+    "python_implementation": "CPython",
+    "python_version": "3.13.15",
+    "cpu_count": 18,
+    "total_memory_gb": 24.0,
+    "accelerator": "Apple M5 Pro",
+    "package_versions": {
+      "aiohttp": "3.14.3",
+      "fastapi": "0.141.1",
+      "huggingface-hub": "1.13.0",
+      "llmtracefx": "1.0.0",
+      "mlx": "0.32.2",
+      "mlx-lm": "0.31.3",
+      "mlx-vlm": "0.6.8",
+      "numpy": "2.2.6",
+      "pandas": "2.3.3",
+      "plotly": "6.2.0",
+      "streamlit": "1.62.0",
+      "transformers": "5.16.1",
+      "uvicorn": "0.35.0"
+    }
+  },
+  "runtime_contract": {
+    "name": "mlx-vlm",
+    "version": "0.6.8",
+    "mlx_version": "0.32.2",
+    "mlx_lm_version": "0.31.3",
+    "transformers_version": "5.16.1",
+    "prefill_step_size": 2048
+  },
+  "generation": {
+    "max_output_tokens": 96,
+    "seed": 20260831,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "enable_thinking": false
+  },
+  "repetitions": {
+    "warmup_per_tier": 1,
+    "measured_per_workload": 2
+  },
+  "cooperative_timeout_seconds": 1800.0,
+  "safety": {
+    "required_chip": "Apple M5 Pro",
+    "required_total_memory_bytes": 25769803776,
+    "minimum_free_disk_after_download_bytes": 107374182400,
+    "minimum_memory_free_percent": 25.0,
+    "maximum_peak_memory_bytes": 21474836480,
+    "maximum_swap_used_bytes": 12884901888,
+    "stop_on_any_failed_row": true
+  },
+  "safety_observations": {
+    "provenance": "macOS memory_pressure and sysctl",
+    "preflight_memory_free_percent": 36.0,
+    "preflight_swap_used_bytes": 8472494080,
+    "postflight_memory_free_percent": 4.0,
+    "postflight_swap_used_bytes": 20151795712
+  },
+  "tiers": [],
+  "failed_attempts": [
+    {
+      "run_id": "structured-json-profile-extraction-2k-warmup-01",
+      "tier": "2k",
+      "phase": "warmup",
+      "status": "failed",
+      "reason": "[METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory).",
+      "input_tokens": 1657,
+      "total_ms": 22730.868291997467,
+      "prefill_ms": null,
+      "decode_ms": null,
+      "peak_memory_bytes": null
+    }
+  ],
+  "stopped_before_tier": null,
+  "stopped_during": {
+    "tier": "2k",
+    "phase": "warmup"
+  },
+  "requested_max_tier": "2k",
+  "unattempted_tiers": [],
+  "not_executed_tiers": [
+    "8k",
+    "16k"
+  ],
+  "stop_reasons": [
+    "[METAL] Command buffer execution failed: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)."
+  ],
+  "limitations": [
+    "Results apply only to the pinned model, runtime, workloads, context tiers, and this 24 GB M5 Pro configuration.",
+    "Total, prefill, and decode durations are host wall-clock boundaries; they are not kernel timings.",
+    "Peak memory is MLX allocator peak memory when available, not whole-system resident memory.",
+    "Decode token rate is derived from measured generated tokens and decode wall time.",
+    "The configured timeout is cooperative and cannot preempt a blocked native model-load or prefill call.",
+    "No GPU utilization, bandwidth, power, energy, or kernel timing is measured or inferred.",
+    "The 4-bit conversion card names the upstream model but does not cryptographically bind its source revision."
+  ]
+}

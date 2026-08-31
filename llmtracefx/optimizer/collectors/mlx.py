@@ -8,13 +8,14 @@ collector's scope.
 
 from __future__ import annotations
 
+import math
 import platform
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from importlib import metadata as importlib_metadata
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from ...profiler.mlx_tracer import mlx_memory_snapshot
 from ..manifest import collect_environment_manifest
@@ -74,6 +75,12 @@ class MLXRuntime(Protocol):
     @property
     def mlx_lm_version(self) -> str | None: ...
 
+    @property
+    def runtime_name(self) -> str: ...
+
+    @property
+    def runtime_version(self) -> str | None: ...
+
     def load_model(self, path: Path) -> tuple[Any, Any]: ...
 
     def encode(self, tokenizer: Any, prompt: str) -> list[int]: ...
@@ -110,14 +117,15 @@ def _installed_version(distribution: str) -> str | None:
 class MLXLMRuntime:
     """Production adapter for MLX-LM on Apple Silicon."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, temperature: float = 0.0, top_p: float = 1.0) -> None:
         if platform.system() != "Darwin" or platform.machine() != "arm64":
             raise MLXCollectorError(
                 "MLX collection requires Apple Silicon running macOS"
             )
         try:
-            import mlx.core as mx  # type: ignore[import-not-found]
+            import mlx.core as mx
             from mlx_lm import load, stream_generate
+            from mlx_lm.sample_utils import make_sampler
         except ImportError as exc:
             raise MLXCollectorError(
                 "MLX collection requires the optional runtime dependencies. "
@@ -128,6 +136,11 @@ class MLXLMRuntime:
         self._mx = mx
         self._load = load
         self._stream_generate = stream_generate
+        self._make_sampler = make_sampler
+        self.configure_sampling(temperature=temperature, top_p=top_p)
+
+    def configure_sampling(self, *, temperature: float, top_p: float) -> None:
+        self._sampler = self._make_sampler(temp=temperature, top_p=top_p)
 
     @property
     def mlx_version(self) -> str | None:
@@ -136,6 +149,14 @@ class MLXLMRuntime:
     @property
     def mlx_lm_version(self) -> str | None:
         return _installed_version("mlx-lm")
+
+    @property
+    def runtime_name(self) -> str:
+        return "mlx-lm"
+
+    @property
+    def runtime_version(self) -> str | None:
+        return self.mlx_lm_version
 
     def load_model(self, path: Path) -> tuple[Any, Any]:
         loaded = self._load(str(path), lazy=False, return_config=False)
@@ -202,11 +223,192 @@ class MLXLMRuntime:
         draft_model: Any | None,
         num_draft_tokens: int,
     ) -> Iterator[MLXGenerationResponse]:
-        kwargs: dict[str, Any] = {"max_tokens": max_tokens}
+        kwargs: dict[str, Any] = {
+            "max_tokens": max_tokens,
+            "sampler": self._sampler,
+        }
         if draft_model is not None:
             kwargs["draft_model"] = draft_model
             kwargs["num_draft_tokens"] = num_draft_tokens
-        return self._stream_generate(model, tokenizer, prompt_tokens, **kwargs)
+        return cast(
+            Iterator[MLXGenerationResponse],
+            self._stream_generate(model, tokenizer, prompt_tokens, **kwargs),
+        )
+
+
+@dataclass
+class _MLXVLMGenerationResponse:
+    text: str
+    from_draft: bool
+    prompt_tokens: int
+    generation_tokens: int
+    finish_reason: str | None
+
+
+class MLXVLMRuntime:
+    """Text-only adapter for MLX-VLM checkpoints such as Qwen3.8.
+
+    The adapter deliberately requires an existing local checkpoint path. It
+    applies the checkpoint's chat template with no image/audio/video inputs,
+    tokenizes before the collector's generation phase, and passes those exact
+    token IDs to ``mlx_vlm.stream_generate``. This keeps prompt-token counts
+    measured by the model's own processor and avoids an implicit second
+    tokenization inside the timed prefill boundary.
+    """
+
+    def __init__(
+        self,
+        *,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        enable_thinking: bool = False,
+        prefill_step_size: int = 2048,
+    ) -> None:
+        if temperature < 0:
+            raise MLXCollectorError("temperature must be non-negative")
+        if not 0 < top_p <= 1:
+            raise MLXCollectorError("top_p must be within (0, 1]")
+        if prefill_step_size < 1:
+            raise MLXCollectorError("prefill_step_size must be positive")
+        if platform.system() != "Darwin" or platform.machine() != "arm64":
+            raise MLXCollectorError(
+                "MLX-VLM collection requires Apple Silicon running macOS"
+            )
+        try:
+            import mlx.core as mx
+            from mlx_vlm import load, stream_generate
+            from mlx_vlm.prompt_utils import apply_chat_template
+        except ImportError as exc:
+            raise MLXCollectorError(
+                "MLX-VLM collection requires the optional runtime dependencies. "
+                "Install them with `uv sync --extra mlx`."
+            ) from exc
+
+        self._mx = mx
+        self._load = load
+        self._stream_generate = stream_generate
+        self._apply_chat_template = apply_chat_template
+        self._temperature = temperature
+        self._top_p = top_p
+        self._enable_thinking = enable_thinking
+        self._prefill_step_size = prefill_step_size
+        self._loaded: dict[Path, tuple[Any, Any]] = {}
+        self._active_config: Any | None = None
+
+    @property
+    def mlx_version(self) -> str | None:
+        return _installed_version("mlx")
+
+    @property
+    def mlx_lm_version(self) -> str | None:
+        return _installed_version("mlx-vlm")
+
+    @property
+    def runtime_name(self) -> str:
+        return "mlx-vlm"
+
+    @property
+    def runtime_version(self) -> str | None:
+        return _installed_version("mlx-vlm")
+
+    def load_model(self, path: Path) -> tuple[Any, Any]:
+        resolved = path.resolve()
+        loaded = self._loaded.get(resolved)
+        if loaded is None:
+            loaded = self._load(str(resolved), lazy=False)
+            if len(loaded) != 2:
+                raise MLXCollectorError(
+                    "mlx_vlm.load returned an unexpected result shape"
+                )
+            self._loaded[resolved] = (loaded[0], loaded[1])
+        model, processor = self._loaded[resolved]
+        self._active_config = model.config
+        return model, processor
+
+    def encode(self, processor: Any, prompt: str) -> list[int]:
+        if self._active_config is None:
+            raise MLXCollectorError("MLX-VLM model must be loaded before tokenization")
+        formatted = self._apply_chat_template(
+            processor,
+            self._active_config,
+            prompt,
+            num_images=0,
+            num_audios=0,
+            enable_thinking=self._enable_thinking,
+        )
+        if not isinstance(formatted, str):
+            raise MLXCollectorError(
+                "MLX-VLM chat template returned a non-text prompt for a text-only run"
+            )
+        tokenizer = (
+            processor.tokenizer if hasattr(processor, "tokenizer") else processor
+        )
+        encoded = tokenizer.encode(formatted, add_special_tokens=True)
+        return [int(token) for token in encoded]
+
+    def seed(self, seed: int) -> None:
+        self._mx.random.seed(seed)
+
+    def synchronize(self) -> None:
+        self._mx.synchronize()
+
+    def reset_peak_memory(self) -> None:
+        reset = getattr(self._mx, "reset_peak_memory", None)
+        if reset is not None:
+            reset()
+
+    def memory_snapshot(self) -> MLXMemorySnapshot:
+        snapshot = mlx_memory_snapshot(self._mx)
+        return MLXMemorySnapshot(
+            active_bytes=snapshot.get("active_memory_bytes"),
+            cache_bytes=snapshot.get("cache_memory_bytes"),
+            peak_bytes=snapshot.get("peak_memory_bytes"),
+        )
+
+    def accelerator_name(self) -> str | None:
+        device_info = cast(Any, self._mx.device_info())
+        if not isinstance(device_info, dict):
+            return None
+        for key in ("device_name", "architecture"):
+            value = device_info.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    def stream_generate(
+        self,
+        model: Any,
+        processor: Any,
+        prompt_tokens: list[int],
+        *,
+        max_tokens: int,
+        draft_model: Any | None,
+        num_draft_tokens: int,
+    ) -> Iterator[MLXGenerationResponse]:
+        if draft_model is not None:
+            raise MLXCollectorError(
+                "generic MLX-LM draft models are not accepted by MLX-VLM runs"
+            )
+        input_ids = self._mx.array([prompt_tokens])
+        for response in self._stream_generate(
+            model,
+            processor,
+            "",
+            input_ids=input_ids,
+            max_tokens=max_tokens,
+            temperature=self._temperature,
+            top_p=self._top_p,
+            enable_thinking=self._enable_thinking,
+            prefill_step_size=self._prefill_step_size,
+            verbose=False,
+        ):
+            yield _MLXVLMGenerationResponse(
+                text=response.text,
+                from_draft=bool(getattr(response, "is_draft", False)),
+                prompt_tokens=int(response.prompt_tokens),
+                generation_tokens=int(response.generation_tokens),
+                finish_reason=response.finish_reason,
+            )
 
 
 @dataclass(frozen=True)
@@ -221,12 +423,21 @@ class MLXCollectionConfig:
     command_argv: tuple[str, ...]
     max_tokens: int = 128
     seed: int = 0
+    temperature: float = 0.0
+    top_p: float = 1.0
+    enable_thinking: bool = False
+    prefill_step_size: int | None = None
     model_revision: str | None = None
     tokenizer_revision: str | None = None
     quantization: str | None = None
+    model_family: str | None = None
     accelerator: str | None = None
     draft_model_path: Path | None = None
     num_draft_tokens: int = 2
+    timeout_seconds: float | None = None
+    warmup_repetitions: int = 0
+    measured_repetitions: int = 1
+    repetition_index: int = 0
 
     def __post_init__(self) -> None:
         if not self.run_id:
@@ -255,11 +466,60 @@ class MLXCollectionConfig:
         if isinstance(self.seed, bool) or not isinstance(self.seed, int):
             raise MLXCollectorError("seed must be an integer")
         if (
+            isinstance(self.temperature, bool)
+            or not isinstance(self.temperature, (int, float))
+            or not math.isfinite(self.temperature)
+            or not 0 <= self.temperature
+        ):
+            raise MLXCollectorError("temperature must be non-negative")
+        if (
+            isinstance(self.top_p, bool)
+            or not isinstance(self.top_p, (int, float))
+            or not math.isfinite(self.top_p)
+            or not 0 < self.top_p <= 1
+        ):
+            raise MLXCollectorError("top_p must be within (0, 1]")
+        if not isinstance(self.enable_thinking, bool):
+            raise MLXCollectorError("enable_thinking must be a boolean")
+        if self.prefill_step_size is not None and (
+            isinstance(self.prefill_step_size, bool)
+            or not isinstance(self.prefill_step_size, int)
+            or self.prefill_step_size < 1
+        ):
+            raise MLXCollectorError("prefill_step_size must be positive when set")
+        if (
             isinstance(self.num_draft_tokens, bool)
             or not isinstance(self.num_draft_tokens, int)
             or self.num_draft_tokens < 1
         ):
             raise MLXCollectorError("num_draft_tokens must be a positive integer")
+        if self.timeout_seconds is not None and (
+            isinstance(self.timeout_seconds, bool)
+            or not isinstance(self.timeout_seconds, (int, float))
+            or self.timeout_seconds <= 0
+        ):
+            raise MLXCollectorError("timeout_seconds must be positive when set")
+        if (
+            isinstance(self.warmup_repetitions, bool)
+            or not isinstance(self.warmup_repetitions, int)
+            or self.warmup_repetitions < 0
+        ):
+            raise MLXCollectorError("warmup_repetitions must be a non-negative integer")
+        if (
+            isinstance(self.measured_repetitions, bool)
+            or not isinstance(self.measured_repetitions, int)
+            or self.measured_repetitions < 1
+        ):
+            raise MLXCollectorError("measured_repetitions must be a positive integer")
+        if (
+            isinstance(self.repetition_index, bool)
+            or not isinstance(self.repetition_index, int)
+            or self.repetition_index < 0
+            or self.repetition_index >= self.measured_repetitions
+        ):
+            raise MLXCollectorError(
+                "repetition_index must identify a measured repetition"
+            )
 
 
 @dataclass(frozen=True)
@@ -270,18 +530,60 @@ class MLXCollectionResult:
     response_text: str
 
 
-def _config_hash(config: MLXCollectionConfig) -> str:
+def mlx_collection_contract_hash(
+    *,
+    model_id: str,
+    model_revision: str | None,
+    tokenizer_revision: str | None,
+    quantization: str | None,
+    model_family: str | None,
+    max_tokens: int,
+    seed: int,
+    temperature: float,
+    top_p: float,
+    enable_thinking: bool,
+    prefill_step_size: int | None,
+    draft_enabled: bool,
+    num_draft_tokens: int,
+    timeout_seconds: float | None,
+) -> str:
+    """Hash every semantic collector setting, excluding paths and repetition."""
     payload = {
-        "model_id": config.model_id,
-        "model_revision": config.model_revision,
-        "tokenizer_revision": config.tokenizer_revision,
-        "quantization": config.quantization,
-        "max_tokens": config.max_tokens,
-        "seed": config.seed,
-        "draft_enabled": config.draft_model_path is not None,
-        "num_draft_tokens": config.num_draft_tokens,
+        "model_id": model_id,
+        "model_revision": model_revision,
+        "tokenizer_revision": tokenizer_revision,
+        "quantization": quantization,
+        "model_family": model_family,
+        "max_tokens": max_tokens,
+        "seed": seed,
+        "temperature": temperature,
+        "top_p": top_p,
+        "enable_thinking": enable_thinking,
+        "prefill_step_size": prefill_step_size,
+        "draft_enabled": draft_enabled,
+        "num_draft_tokens": num_draft_tokens,
+        "timeout_seconds": timeout_seconds,
     }
     return config_hash(payload)
+
+
+def _config_hash(config: MLXCollectionConfig) -> str:
+    return mlx_collection_contract_hash(
+        model_id=config.model_id,
+        model_revision=config.model_revision,
+        tokenizer_revision=config.tokenizer_revision,
+        quantization=config.quantization,
+        model_family=config.model_family,
+        max_tokens=config.max_tokens,
+        seed=config.seed,
+        temperature=config.temperature,
+        top_p=config.top_p,
+        enable_thinking=config.enable_thinking,
+        prefill_step_size=config.prefill_step_size,
+        draft_enabled=config.draft_model_path is not None,
+        num_draft_tokens=config.num_draft_tokens,
+        timeout_seconds=config.timeout_seconds,
+    )
 
 
 def collect_mlx(
@@ -313,6 +615,16 @@ def collect_mlx(
     memory = MLXMemorySnapshot()
     error: ErrorInfo | None = None
 
+    def check_timeout(stage: str) -> None:
+        if (
+            config.timeout_seconds is not None
+            and clock() - total_started > config.timeout_seconds
+        ):
+            raise TimeoutError(
+                f"MLX collection exceeded {config.timeout_seconds:g}s "
+                f"timeout during {stage}"
+            )
+
     try:
         load_started = clock()
         model, tokenizer = runtime.load_model(config.model_path)
@@ -323,11 +635,13 @@ def collect_mlx(
         )
         runtime.synchronize()
         load_ended = clock()
+        check_timeout("model load")
 
         runtime.reset_peak_memory()
         tokenize_started = clock()
         prompt_tokens = runtime.encode(tokenizer, config.prompt)
         tokenize_ended = clock()
+        check_timeout("tokenization")
         runtime.seed(config.seed)
         runtime.synchronize()
 
@@ -342,6 +656,7 @@ def collect_mlx(
             num_draft_tokens=config.num_draft_tokens,
         ):
             observed_at = clock()
+            check_timeout("generation")
             if first_token_at is None:
                 first_token_at = observed_at
             response_parts.append(response.text)
@@ -358,7 +673,14 @@ def collect_mlx(
         runtime.synchronize()
         generation_ended = clock()
         memory = runtime.memory_snapshot()
-    except (KeyError, RuntimeError, ValueError, OSError, MemoryError) as exc:
+    except (
+        KeyError,
+        RuntimeError,
+        ValueError,
+        OSError,
+        MemoryError,
+        TimeoutError,
+    ) as exc:
         generation_ended = clock()
         error = ErrorInfo(category=type(exc).__name__, message=str(exc))
 
@@ -375,10 +697,11 @@ def collect_mlx(
             model_revision=config.model_revision,
             tokenizer_revision=config.tokenizer_revision,
             quantization=config.quantization,
+            model_family=config.model_family,
         ),
         runtime=RuntimeInfo(
-            name="mlx-lm",
-            version=runtime.mlx_lm_version,
+            name=getattr(runtime, "runtime_name", "mlx-lm"),
+            version=getattr(runtime, "runtime_version", runtime.mlx_lm_version),
             backend="Metal",
             git_revision=None,
         ),
@@ -388,9 +711,9 @@ def collect_mlx(
             workload_hash=sha256_text(config.prompt),
         ),
         repetition=RepetitionInfo(
-            warmup_repetitions=0,
-            measured_repetitions=1,
-            repetition_index=0,
+            warmup_repetitions=config.warmup_repetitions,
+            measured_repetitions=config.measured_repetitions,
+            repetition_index=config.repetition_index,
             seed=config.seed,
         ),
         tokens=TokenCounts(
@@ -432,6 +755,14 @@ def collect_mlx(
     config.output_dir.mkdir(parents=True, exist_ok=True)
     record.write_json(config.output_dir / "record.json")
     atomic_write_text(config.output_dir / "response.txt", response_text)
-    manifest = collect_environment_manifest(extra_packages=("mlx", "mlx-lm"))
+    manifest = collect_environment_manifest(
+        extra_packages=(
+            "mlx",
+            "mlx-lm",
+            "mlx-vlm",
+            "transformers",
+            "huggingface-hub",
+        )
+    )
     atomic_write_text(config.output_dir / "environment.json", manifest.to_json() + "\n")
     return MLXCollectionResult(record=record, response_text=response_text)

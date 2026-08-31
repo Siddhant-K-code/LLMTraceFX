@@ -229,6 +229,10 @@ def _collect_mlx_argv(args: argparse.Namespace) -> tuple[str, ...]:
         str(args.max_tokens),
         "--seed",
         str(args.seed),
+        "--temperature",
+        str(args.temperature),
+        "--top-p",
+        str(args.top_p),
         "--num-draft-tokens",
         str(args.num_draft_tokens),
     ]
@@ -256,6 +260,8 @@ def _cmd_collect_mlx(args: argparse.Namespace) -> int:
             command_argv=_collect_mlx_argv(args),
             max_tokens=args.max_tokens,
             seed=args.seed,
+            temperature=args.temperature,
+            top_p=args.top_p,
             model_revision=args.model_revision,
             tokenizer_revision=args.tokenizer_revision,
             quantization=args.quantization,
@@ -265,7 +271,18 @@ def _cmd_collect_mlx(args: argparse.Namespace) -> int:
             ),
             num_draft_tokens=args.num_draft_tokens,
         )
-        result = collect_mlx(config, runtime=MLXLMRuntime())
+        runtime = MLXLMRuntime()
+        configure_sampling = getattr(runtime, "configure_sampling", None)
+        if configure_sampling is not None:
+            configure_sampling(
+                temperature=args.temperature,
+                top_p=args.top_p,
+            )
+        elif args.temperature != 0.0 or args.top_p != 1.0:
+            raise MLXCollectorError(
+                "the selected MLX runtime cannot apply non-default sampling"
+            )
+        result = collect_mlx(config, runtime=runtime)
     except (OSError, UnicodeError, MLXCollectorError) as exc:
         print(f"Failed to collect MLX evidence: {exc}", file=sys.stderr)
         return 1
@@ -2482,6 +2499,8 @@ def build_parser() -> argparse.ArgumentParser:
     collect_mlx_parser.add_argument("--output-dir", required=True)
     collect_mlx_parser.add_argument("--max-tokens", type=int, default=128)
     collect_mlx_parser.add_argument("--seed", type=int, default=0)
+    collect_mlx_parser.add_argument("--temperature", type=float, default=0.0)
+    collect_mlx_parser.add_argument("--top-p", type=float, default=1.0)
     collect_mlx_parser.add_argument(
         "--accelerator",
         default=None,
