@@ -164,7 +164,7 @@ ignore_missing_imports = true
 # from a package the type checker was not given, and the rest of the
 # strict settings still apply here.
 [[tool.mypy.overrides]]
-module = ["llmtracefx.deploy.modal_glm_app"]
+module = ["llmtracefx.deploy.modal_glm_app", "llmtracefx.modal_app"]
 disallow_untyped_decorators = false
 
 # Pytest configuration
