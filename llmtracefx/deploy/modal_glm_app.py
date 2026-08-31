@@ -504,7 +504,6 @@ def _log_startup_when_ready(port: int, started: float, deadline_seconds: int) ->
     scaledown_window=CONTROLS.scaledown_window_seconds,
     max_containers=CONTROLS.max_containers,
     min_containers=CONTROLS.min_containers,
-    retries=0,
 )
 @modal.concurrent(max_inputs=CONTROLS.max_concurrent_inputs)
 @modal.web_server(
@@ -574,13 +573,10 @@ def serve() -> None:
     # a refusal rather than a degraded mode.
     #
     # Both frameworks install their authentication middleware only when a
-    # non-empty key is supplied, and this endpoint has no platform-level
-    # auth in front of it: `@modal.web_server` defaults to
-    # requires_proxy_auth=False, and turning it on is not an option
-    # because Modal's proxy expects its own headers while this endpoint
-    # has to stay OpenAI-compatible for the collector's bearer token. So
-    # an empty value would not weaken authentication, it would remove it,
-    # and publish four accelerators to the internet.
+    # non-empty key is supplied. Modal proxy auth prevents an unauthenticated
+    # request from scheduling this container; framework auth is the second
+    # layer once a request reaches it. The runbook uses the proxy token pair
+    # as this key so one OpenAI-compatible bearer value satisfies both layers.
     #
     # Modal's `required_keys` does not cover this: it asserts that the
     # variable is present, not that it holds anything, and `modal secret

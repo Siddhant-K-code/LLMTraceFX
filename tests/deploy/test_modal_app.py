@@ -82,6 +82,7 @@ def test_serving_does_not_scale_or_stay_warm_by_default() -> None:
         assert serve.function_kwargs["max_containers"] == 1
         assert serve.function_kwargs["min_containers"] == 0
         assert serve.function_kwargs["scaledown_window"] == 300
+        assert "retries" not in serve.function_kwargs
         assert serve.concurrent_kwargs == {"max_inputs": 1}
 
 

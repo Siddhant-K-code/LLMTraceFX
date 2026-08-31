@@ -62,6 +62,8 @@ class FakeImage:
         self.pip_packages: list[str] = []
         self.env_vars: dict[str, str] = {}
         self.local_dirs: list[tuple[str, str]] = []
+        self.local_dir_options: list[dict[str, Any]] = []
+        self.working_directory: str | None = None
 
     def pip_install(self, *packages: str, **_: Any) -> FakeImage:
         self.pip_packages.extend(packages)
@@ -72,9 +74,14 @@ class FakeImage:
         return self
 
     def add_local_dir(
-        self, local_path: str, *, remote_path: str, **_: Any
+        self, local_path: str, *, remote_path: str, **kwargs: Any
     ) -> FakeImage:
         self.local_dirs.append((local_path, remote_path))
+        self.local_dir_options.append(kwargs)
+        return self
+
+    def workdir(self, path: str) -> FakeImage:
+        self.working_directory = path
         return self
 
 
@@ -101,6 +108,7 @@ class FakeRegistration:
         self.name = name
         self.function_kwargs: dict[str, Any] = {}
         self.concurrent_kwargs: dict[str, Any] = {}
+        self.asgi_app_kwargs: dict[str, Any] = {}
         self.web_server_args: tuple[Any, ...] = ()
         self.web_server_kwargs: dict[str, Any] = {}
 
@@ -119,6 +127,12 @@ class FakeApp:
             registration = self._registration(func)
             registration.function_kwargs = kwargs
             func._fake_name = registration.name
+            return func
+
+        return decorator
+
+    def local_entrypoint(self, **_: Any) -> Any:
+        def decorator(func: Any) -> Any:
             return func
 
         return decorator
@@ -175,6 +189,17 @@ def build_fake_modal() -> types.ModuleType:
 
         return decorator
 
+    def asgi_app(**kwargs: Any) -> Any:
+        def decorator(func: Any) -> Any:
+            name = getattr(func, "_fake_name", None) or func.__name__
+            for app in apps:
+                app.registrations.setdefault(name, FakeRegistration(name))
+                app.registrations[name].asgi_app_kwargs = kwargs
+            func._fake_name = name
+            return func
+
+        return decorator
+
     def web_server(*args: Any, **kwargs: Any) -> Any:
         def decorator(func: Any) -> Any:
             name = getattr(func, "_fake_name", None) or func.__name__
@@ -191,6 +216,7 @@ def build_fake_modal() -> types.ModuleType:
     module.Image = Image  # type: ignore[attr-defined]
     module.Volume = Volume  # type: ignore[attr-defined]
     module.Secret = Secret  # type: ignore[attr-defined]
+    module.asgi_app = asgi_app  # type: ignore[attr-defined]
     module.concurrent = concurrent  # type: ignore[attr-defined]
     module.web_server = web_server  # type: ignore[attr-defined]
     module.__version__ = "1.0.5-fake"  # type: ignore[attr-defined]
@@ -205,7 +231,9 @@ APP_MODULE = "llmtracefx.deploy.modal_glm_app"
 
 
 @contextmanager
-def imported_app(environ: Mapping[str, str]) -> Iterator[tuple[Any, types.ModuleType]]:
+def imported_app(
+    environ: Mapping[str, str], *, app_module: str = APP_MODULE
+) -> Iterator[tuple[Any, types.ModuleType]]:
     """Import the Modal entrypoint against a fake SDK and a given environment.
 
     Both the fake module and the imported entrypoint are removed
@@ -217,18 +245,18 @@ def imported_app(environ: Mapping[str, str]) -> Iterator[tuple[Any, types.Module
 
     fake = build_fake_modal()
     saved_modal = sys.modules.get("modal")
-    saved_app = sys.modules.pop(APP_MODULE, None)
+    saved_app = sys.modules.pop(app_module, None)
     saved_environ = dict(os.environ)
     sys.modules["modal"] = fake
     os.environ.clear()
     os.environ.update(environ)
     try:
-        module = importlib.import_module(APP_MODULE)
+        module = importlib.import_module(app_module)
         yield module, fake
     finally:
-        sys.modules.pop(APP_MODULE, None)
+        sys.modules.pop(app_module, None)
         if saved_app is not None:
-            sys.modules[APP_MODULE] = saved_app
+            sys.modules[app_module] = saved_app
         if saved_modal is not None:
             sys.modules["modal"] = saved_modal
         else:
