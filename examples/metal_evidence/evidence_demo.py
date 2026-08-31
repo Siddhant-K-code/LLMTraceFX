@@ -68,9 +68,12 @@ class CaptureSummary:
     expected_dispatch_count: int
     attributed_interval_count: int
     all_process_interval_count: int
-    unrelated_interval_count: int
-    unrelated_interval_share_percent: float
+    known_unrelated_interval_count: int
+    known_unrelated_interval_share_percent: float
+    unattributed_interval_count: int
+    unattributed_interval_share_percent: float
     window_server_interval_count: int
+    window_server_interval_share_percent: float
     schema_count: int
     exported_rows: int
     exported_columns: int
@@ -120,16 +123,10 @@ def summarize_exports(
     target = summary.for_process(run.target_pid)
     if target is None:
         raise ValueError("target PID has no attributed Metal intervals")
-    unattributed = sum(
-        entry.interval_count for entry in summary.per_process if entry.pid is None
+    unattributed = summary.unattributed_interval_count
+    known_unrelated = (
+        summary.total_interval_count - target.interval_count - unattributed
     )
-    if unattributed:
-        raise ValueError(
-            f"{unattributed} Metal intervals have no parseable PID; refusing "
-            "to classify them as unrelated"
-        )
-
-    unrelated = summary.total_interval_count - target.interval_count
     window_server = sum(
         entry.interval_count
         for entry in summary.per_process
@@ -149,11 +146,18 @@ def summarize_exports(
         expected_dispatch_count=expected_dispatch_count,
         attributed_interval_count=target.interval_count,
         all_process_interval_count=summary.total_interval_count,
-        unrelated_interval_count=unrelated,
-        unrelated_interval_share_percent=round(
-            unrelated * 100.0 / summary.total_interval_count, 1
+        known_unrelated_interval_count=known_unrelated,
+        known_unrelated_interval_share_percent=round(
+            known_unrelated * 100.0 / summary.total_interval_count, 1
+        ),
+        unattributed_interval_count=unattributed,
+        unattributed_interval_share_percent=round(
+            unattributed * 100.0 / summary.total_interval_count, 1
         ),
         window_server_interval_count=window_server,
+        window_server_interval_share_percent=round(
+            window_server * 100.0 / summary.total_interval_count, 1
+        ),
         schema_count=len(run.schemas),
         exported_rows=table.row_count,
         exported_columns=len(table.columns),
@@ -360,14 +364,30 @@ def generate_charts(public_dir: Path, captures: Sequence[CaptureSummary]) -> Non
                     "target PID share",
                     "#c23d16",
                     [
-                        round(100.0 - capture.unrelated_interval_share_percent, 1)
+                        round(
+                            100.0
+                            - capture.known_unrelated_interval_share_percent
+                            - capture.unattributed_interval_share_percent,
+                            1,
+                        )
                         for capture in captures
                     ],
                 ),
                 (
-                    "unrelated share",
+                    "known unrelated share",
                     "#4a5157",
-                    [capture.unrelated_interval_share_percent for capture in captures],
+                    [
+                        capture.known_unrelated_interval_share_percent
+                        for capture in captures
+                    ],
+                ),
+                (
+                    "unattributed share",
+                    "#6f6230",
+                    [
+                        capture.unattributed_interval_share_percent
+                        for capture in captures
+                    ],
                 ),
             ),
             y_label="percent of trace intervals",
@@ -395,7 +415,16 @@ def verify_public_bundle(public_dir: Path) -> None:
         "measured_native"
     ):
         raise ValueError("attributed interval provenance is not measured_native")
-    for name in ("unrelated_interval_count", "unrelated_interval_share_percent"):
+    if not str(provenance.get("unattributed_interval_count", "")).startswith(
+        "measured_native"
+    ):
+        raise ValueError("unattributed interval provenance is not measured_native")
+    for name in (
+        "known_unrelated_interval_count",
+        "known_unrelated_interval_share_percent",
+        "unattributed_interval_share_percent",
+        "window_server_interval_share_percent",
+    ):
         if not str(provenance.get(name, "")).startswith("derived:"):
             raise ValueError(f"{name} provenance is not derived")
     if not captures or not all(item["dispatch_count_matches"] for item in captures):
@@ -404,11 +433,14 @@ def verify_public_bundle(public_dir: Path) -> None:
         )
     for item in captures:
         if (
-            item["attributed_interval_count"] + item["unrelated_interval_count"]
+            item["attributed_interval_count"]
+            + item["known_unrelated_interval_count"]
+            + item["unattributed_interval_count"]
             != item["all_process_interval_count"]
         ):
             raise ValueError(
-                "target and unrelated counts do not reconstruct trace total"
+                "target, known unrelated, and unattributed counts do not "
+                "reconstruct trace total"
             )
         if item["reference_cells"] > item["exported_cells"]:
             raise ValueError("reference cell count exceeds exported cell count")
@@ -442,14 +474,24 @@ def _summary_document(captures: Sequence[CaptureSummary]) -> dict[str, Any]:
             "expected_dispatch_count": "controlled workload input",
             "attributed_interval_count": "measured_native, grouped by TOC target PID",
             "all_process_interval_count": "measured_native",
-            "unrelated_interval_count": (
-                "derived: all_process_interval_count - attributed_interval_count"
+            "known_unrelated_interval_count": (
+                "derived: all_process_interval_count - attributed_interval_count "
+                "- unattributed_interval_count"
             ),
-            "unrelated_interval_share_percent": (
-                "derived: unrelated_interval_count / all_process_interval_count"
+            "known_unrelated_interval_share_percent": (
+                "derived: known_unrelated_interval_count / all_process_interval_count"
+            ),
+            "unattributed_interval_count": (
+                "measured_native rows with no parseable process PID"
+            ),
+            "unattributed_interval_share_percent": (
+                "derived: unattributed_interval_count / all_process_interval_count"
             ),
             "window_server_interval_count": (
                 "measured_native, grouped by the standard macOS service label"
+            ),
+            "window_server_interval_share_percent": (
+                "derived: window_server_interval_count / all_process_interval_count"
             ),
             "schema_count": "measured_native from sanitized TOC",
             "exported_rows": "measured_native table shape",
@@ -506,11 +548,14 @@ def _write_public_bundle(
             "measured_native": [
                 "metal_gpu_interval_count",
                 "metal_gpu_interval_count_all_processes",
+                "unattributed_interval_count",
                 "window_server_interval_count",
             ],
             "derived": [
-                "unrelated_interval_count",
-                "unrelated_interval_share_percent",
+                "known_unrelated_interval_count",
+                "known_unrelated_interval_share_percent",
+                "unattributed_interval_share_percent",
+                "window_server_interval_share_percent",
             ],
         },
         "unsupported_metrics": [
@@ -630,7 +675,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     for item in summary["captures"]:
         print(
             "dispatches={expected_dispatch_count} attributed={attributed_interval_count} "
-            "all_processes={all_process_interval_count} unrelated={unrelated_interval_count} "
+            "all_processes={all_process_interval_count} "
+            "known_unrelated={known_unrelated_interval_count} "
+            "unattributed={unattributed_interval_count} "
             "match={dispatch_count_matches}".format(**item)
         )
     print("verification=passed")

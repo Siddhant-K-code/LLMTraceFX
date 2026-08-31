@@ -52,7 +52,7 @@ verification=passed
 - `dispatch-attribution.svg` compares known dispatches with measured,
   PID-attributed intervals.
 - `unrelated-interval-share.svg` contrasts target-PID intervals with the
-  derived unrelated count (`all_processes - target_pid`).
+  derived known-unrelated count and the explicitly measured unattributed count.
 - `SHA256SUMS` covers every generated public evidence file.
 
 ## Verified capture
@@ -60,26 +60,26 @@ verification=passed
 The committed capture was recorded on 2026-08-31. Every run advertised 82
 schemas and exported an 18-column `metal-gpu-intervals` table.
 
-| Known dispatches | PID-attributed | All processes | Unrelated | Unrelated share | WindowServer | Cells | References |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 400 | 400 | 839 | 439 | 52.3% | 330 | 15,102 | 8,902 |
-| 250 | 250 | 464 | 214 | 46.1% | 164 | 8,352 | 4,832 |
-| 120 | 120 | 442 | 322 | 72.9% | 278 | 7,956 | 4,774 |
-| 77 | 77 | 337 | 260 | 77.2% | 198 | 6,066 | 3,658 |
-| 133 | 133 | 519 | 386 | 74.4% | 318 | 9,342 | 5,662 |
+| Dispatches | PID-attributed | All processes | Known unrelated | Share | Unattributed | WindowServer | Share | Cells | References |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 400 | 400 | 726 | 326 | 44.9% | 0 | 199 | 27.4% | 13,068 | 7,585 |
+| 250 | 250 | 394 | 144 | 36.5% | 0 | 108 | 27.4% | 7,092 | 4,035 |
+| 120 | 120 | 230 | 110 | 47.8% | 0 | 84 | 36.5% | 4,140 | 2,384 |
+| 77 | 77 | 181 | 104 | 57.5% | 0 | 78 | 43.1% | 3,258 | 1,884 |
+| 133 | 133 | 253 | 120 | 47.4% | 0 | 90 | 35.6% | 4,554 | 2,630 |
 
 The target count matched the known dispatch count in all five captures.
-Unrelated share is the derived ratio
-`(all_process_interval_count - attributed_interval_count) /
-all_process_interval_count`, rounded to one decimal place. `WindowServer` is
-reported as an aggregate count for that standard macOS service; no other
-unrelated process labels are retained. `capture-summary.json` distinguishes
-controlled workload inputs, native measurements, and derived arithmetic for
-every field.
+Known-unrelated share is the derived ratio
+`known_unrelated_interval_count / all_process_interval_count`, rounded to one
+decimal place. Known-unrelated count excludes any row without a parseable PID;
+this capture had zero such rows. `WindowServer` is reported as an aggregate
+count and derived share for that standard macOS service; no other unrelated
+process labels are retained. `capture-summary.json` distinguishes controlled
+workload inputs, native measurements, and derived arithmetic for every field.
 
 ![Known dispatches match PID-attributed Metal intervals](public/dispatch-attribution.svg)
 
-![Unrelated processes account for 46.1% to 77.2% of trace-wide Metal intervals](public/unrelated-interval-share.svg)
+![Known unrelated processes account for 36.5% to 57.5% of trace-wide Metal intervals; no rows are unattributed](public/unrelated-interval-share.svg)
 
 ## Interpretation limits
 
@@ -92,7 +92,8 @@ energy, or GPU memory footprint. Results are specific to the recorded host,
 toolchain, foreground activity, and capture boundary; unrelated-process counts
 can vary between reproductions.
 
-Earlier local development observed a larger reference-heavy export and an
-approximately 81% `WindowServer` share, but its raw capture was not retained.
-Those exact historical values are therefore not claims of this public bundle;
-the table above supersedes them with fresh, reproducible captures.
+**NON-PUBLISHABLE historical observations:** an earlier local run was described
+as 2,460 rows, 44,280 cells, 43,818 reference cells, and approximately 81%
+`WindowServer` intervals. Its raw capture was not retained, so none of those
+values is evidence or a claim of this public bundle. The table above supersedes
+them with fresh, reproducible captures.

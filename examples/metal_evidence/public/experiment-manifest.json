@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "captured_at": "2026-08-31T09:48:55+00:00",
+  "captured_at": "2026-08-31T13:18:34+00:00",
   "environment": {
     "hardware": "Apple M5 Pro",
     "architecture": "arm64",
@@ -41,11 +41,14 @@
     "measured_native": [
       "metal_gpu_interval_count",
       "metal_gpu_interval_count_all_processes",
+      "unattributed_interval_count",
       "window_server_interval_count"
     ],
     "derived": [
-      "unrelated_interval_count",
-      "unrelated_interval_share_percent"
+      "known_unrelated_interval_count",
+      "known_unrelated_interval_share_percent",
+      "unattributed_interval_share_percent",
+      "window_server_interval_share_percent"
     ]
   },
   "unsupported_metrics": [

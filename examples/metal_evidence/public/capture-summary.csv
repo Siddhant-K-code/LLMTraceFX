@@ -1,6 +1,6 @@
-expected_dispatch_count,attributed_interval_count,all_process_interval_count,unrelated_interval_count,unrelated_interval_share_percent,window_server_interval_count,schema_count,exported_rows,exported_columns,exported_cells,reference_cells,dispatch_count_matches,attribution
-400,400,839,439,52.3,330,82,839,18,15102,8902,True,TOC target PID
-250,250,464,214,46.1,164,82,464,18,8352,4832,True,TOC target PID
-120,120,442,322,72.9,278,82,442,18,7956,4774,True,TOC target PID
-77,77,337,260,77.2,198,82,337,18,6066,3658,True,TOC target PID
-133,133,519,386,74.4,318,82,519,18,9342,5662,True,TOC target PID
+expected_dispatch_count,attributed_interval_count,all_process_interval_count,known_unrelated_interval_count,known_unrelated_interval_share_percent,unattributed_interval_count,unattributed_interval_share_percent,window_server_interval_count,window_server_interval_share_percent,schema_count,exported_rows,exported_columns,exported_cells,reference_cells,dispatch_count_matches,attribution
+400,400,726,326,44.9,0,0.0,199,27.4,82,726,18,13068,7585,True,TOC target PID
+250,250,394,144,36.5,0,0.0,108,27.4,82,394,18,7092,4035,True,TOC target PID
+120,120,230,110,47.8,0,0.0,84,36.5,82,230,18,4140,2384,True,TOC target PID
+77,77,181,104,57.5,0,0.0,78,43.1,82,181,18,3258,1884,True,TOC target PID
+133,133,253,120,47.4,0,0.0,90,35.6,82,253,18,4554,2630,True,TOC target PID

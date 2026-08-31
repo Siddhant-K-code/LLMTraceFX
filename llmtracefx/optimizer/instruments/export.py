@@ -309,8 +309,7 @@ def parse_table_of_contents(xml_text: str) -> TraceTableOfContents:
                     target_pid = int(raw_pid)
                 except ValueError as exc:
                     raise InstrumentsExportError(
-                        f"trace TOC target process @pid is not an integer: "
-                        f"{raw_pid!r}"
+                        f"trace TOC target process @pid is not an integer: {raw_pid!r}"
                     ) from exc
             target_process_name = target_process.get("name")
 
@@ -382,8 +381,7 @@ class CellValue:
             return int(self.text.strip())
         except ValueError as exc:
             raise InstrumentsExportError(
-                f"exported value for {field_name!r} is not an integer: "
-                f"{self.text!r}"
+                f"exported value for {field_name!r} is not an integer: {self.text!r}"
             ) from exc
 
 
@@ -469,7 +467,7 @@ def _parse_columns(schema_element: ElementTree.Element) -> tuple[TableColumn, ..
         engineering_type = _text_or_none(col, "engineering-type")
         if mnemonic is None or engineering_type is None:
             raise InstrumentsExportError(
-                "exported table column is missing <mnemonic> or " "<engineering-type>"
+                "exported table column is missing <mnemonic> or <engineering-type>"
             )
         columns.append(
             TableColumn(
@@ -656,6 +654,13 @@ class MetalGpuIntervalSummary:
     total_interval_count: int
     per_process: tuple[ProcessGpuIntervals, ...]
 
+    @property
+    def unattributed_interval_count(self) -> int:
+        """Intervals whose process cell did not provide a parseable PID."""
+        return sum(
+            entry.interval_count for entry in self.per_process if entry.pid is None
+        )
+
     def for_process(self, pid: int) -> ProcessGpuIntervals | None:
         """The single entry for ``pid``, or ``None`` if it has none.
 
@@ -677,6 +682,7 @@ class MetalGpuIntervalSummary:
     def to_dict(self) -> dict[str, Any]:
         return {
             "total_interval_count": self.total_interval_count,
+            "unattributed_interval_count": self.unattributed_interval_count,
             "per_process": [
                 {
                     "process_label": entry.process_label,
@@ -719,7 +725,7 @@ def summarize_metal_gpu_intervals(table: ExportedTable) -> MetalGpuIntervalSumma
     """Aggregate a parsed ``metal-gpu-intervals`` table by process."""
     if table.schema_name != "metal-gpu-intervals":
         raise InstrumentsExportError(
-            f"expected a 'metal-gpu-intervals' table, got " f"{table.schema_name!r}"
+            f"expected a 'metal-gpu-intervals' table, got {table.schema_name!r}"
         )
     required = {"start", "duration", "process"}
     missing = required.difference(table.column_mnemonics)
@@ -742,11 +748,6 @@ def summarize_metal_gpu_intervals(table: ExportedTable) -> MetalGpuIntervalSumma
 
     for row in table.rows:
         process = row.require("process")
-        if process.tag == "sentinel":
-            raise InstrumentsExportError(
-                "metal-gpu-intervals row has no process value; refusing to "
-                "attribute an unidentified interval"
-            )
         key: Key = (_process_pid(process), process.fmt or "<unknown process>")
         start = row.require("start").as_int(field_name="start")
         duration = row.require("duration").as_int(field_name="duration")

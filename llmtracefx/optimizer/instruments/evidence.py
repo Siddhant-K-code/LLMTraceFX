@@ -109,6 +109,11 @@ def build_instruments_evidence(inputs: TraceEvidenceInputs) -> InstrumentsEviden
         else:
             parsed_schemas = (table.schema_name,)
             summary = summarize_metal_gpu_intervals(table)
+            if summary.unattributed_interval_count:
+                notes.append(
+                    f"{summary.unattributed_interval_count} parsed GPU intervals "
+                    "had no parseable pid and remain explicitly unattributed."
+                )
             if inputs.target_pid is None:
                 notes.append(
                     "no target pid was supplied, so the "

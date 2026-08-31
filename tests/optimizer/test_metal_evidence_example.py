@@ -35,9 +35,12 @@ def test_summary_is_pid_scoped_and_counts_reference_cells():
 
     assert summary.attributed_interval_count == 3
     assert summary.all_process_interval_count == 5
-    assert summary.unrelated_interval_count == 2
-    assert summary.unrelated_interval_share_percent == 40.0
+    assert summary.known_unrelated_interval_count == 2
+    assert summary.known_unrelated_interval_share_percent == 40.0
+    assert summary.unattributed_interval_count == 0
+    assert summary.unattributed_interval_share_percent == 0.0
     assert summary.window_server_interval_count == 2
+    assert summary.window_server_interval_share_percent == 40.0
     assert summary.exported_rows == 5
     assert summary.exported_cells == 20
     assert summary.reference_cells == 7
@@ -54,18 +57,19 @@ def test_summary_marks_a_dispatch_mismatch_without_relabelling_it():
     assert summary.dispatch_count_matches is False
 
 
-def test_summary_refuses_unattributed_process_rows():
+def test_summary_keeps_unattributed_rows_out_of_known_unrelated():
     table = _fixture("table_metal_gpu_intervals.xml").replace(
         '<process id="12" fmt="WindowServer (77)">'
         '<pid id="13" fmt="77">77</pid><device-session ref="6"/></process>',
         '<process id="12" fmt="unattributed"/>',
     )
-    with pytest.raises(ValueError, match="no parseable PID"):
-        DEMO.summarize_exports(
-            _fixture("toc_metal_system_trace.xml"),
-            table,
-            expected_dispatch_count=3,
-        )
+    summary = DEMO.summarize_exports(
+        _fixture("toc_metal_system_trace.xml"),
+        table,
+        expected_dispatch_count=3,
+    )
+    assert summary.known_unrelated_interval_count == 0
+    assert summary.unattributed_interval_count == 2
 
 
 def test_output_directory_must_be_empty(tmp_path):
@@ -85,14 +89,18 @@ def test_public_bundle_privacy_scan_rejects_private_data(tmp_path):
             {
                 "provenance": {
                     "attributed_interval_count": "measured_native",
-                    "unrelated_interval_count": "derived: subtraction",
-                    "unrelated_interval_share_percent": "derived: ratio",
+                    "unattributed_interval_count": "measured_native",
+                    "known_unrelated_interval_count": "derived: subtraction",
+                    "known_unrelated_interval_share_percent": "derived: ratio",
+                    "unattributed_interval_share_percent": "derived: ratio",
+                    "window_server_interval_share_percent": "derived: ratio",
                 },
                 "captures": [
                     {
                         "dispatch_count_matches": True,
                         "attributed_interval_count": 1,
-                        "unrelated_interval_count": 0,
+                        "known_unrelated_interval_count": 0,
+                        "unattributed_interval_count": 0,
                         "all_process_interval_count": 1,
                         "reference_cells": 0,
                         "exported_cells": 1,
@@ -129,7 +137,9 @@ def test_committed_bundle_is_private_data_free_and_self_consistent():
     assert summary["provenance"]["attributed_interval_count"].startswith(
         "measured_native"
     )
-    assert summary["provenance"]["unrelated_interval_count"].startswith("derived:")
-    assert summary["provenance"]["unrelated_interval_share_percent"].startswith(
+    assert summary["provenance"]["known_unrelated_interval_count"].startswith(
+        "derived:"
+    )
+    assert summary["provenance"]["known_unrelated_interval_share_percent"].startswith(
         "derived:"
     )

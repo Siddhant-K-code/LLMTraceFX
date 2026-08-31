@@ -251,7 +251,7 @@ def test_required_numeric_sentinel_is_not_treated_as_zero():
         summarize_metal_gpu_intervals(table)
 
 
-def test_required_process_sentinel_is_not_counted_as_unknown():
+def test_required_process_sentinel_is_explicitly_unattributed():
     payload = (
         "<trace-query-result><node>"
         '<schema name="metal-gpu-intervals">'
@@ -266,8 +266,10 @@ def test_required_process_sentinel_is_not_counted_as_unknown():
         "</node></trace-query-result>"
     )
     table = parse_exported_table(payload)
-    with pytest.raises(InstrumentsExportError, match="no process value"):
-        summarize_metal_gpu_intervals(table)
+    summary = summarize_metal_gpu_intervals(table)
+    assert summary.total_interval_count == 1
+    assert summary.unattributed_interval_count == 1
+    assert summary.per_process[0].pid is None
 
 
 def test_requesting_a_different_schema_than_returned_is_refused():
@@ -440,6 +442,7 @@ def test_unparsable_process_label_yields_no_pid_rather_than_a_wrong_one():
     )
     summary = summarize_metal_gpu_intervals(parse_exported_table(payload))
     assert summary.per_process[0].pid is None
+    assert summary.unattributed_interval_count == 1
 
 
 # --- No overclaiming --------------------------------------------------
