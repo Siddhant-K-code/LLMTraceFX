@@ -34,7 +34,7 @@
   },
   "commands": [
     "uv run python examples/metal_evidence/evidence_demo.py capability",
-    "make metal-evidence OUTPUT_DIR=<OUTPUT_DIR>",
+    "uv run python examples/metal_evidence/evidence_demo.py capture --output-dir '<OUTPUT_DIR>' --dispatches 400 250 120 77 133 --time-limit 10s",
     "uv run python examples/metal_evidence/evidence_demo.py verify --public-dir <OUTPUT_DIR>/public"
   ],
   "approved_metrics": {

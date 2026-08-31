@@ -9,6 +9,7 @@ import hashlib
 import json
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 from collections.abc import Sequence
@@ -41,13 +42,14 @@ PUBLIC_DIR_NAME = "public"
 PRIVATE_DIR_NAME = "private"
 WORKLOAD_NAME = "metal-evidence-workload"
 TABLE_SCHEMA = "metal-gpu-intervals"
-PUBLIC_FILES = (
+PUBLIC_CONTENT_FILES = (
     "capture-summary.csv",
     "capture-summary.json",
     "dispatch-attribution.svg",
     "experiment-manifest.json",
     "unrelated-interval-share.svg",
 )
+PUBLIC_FILES = (*PUBLIC_CONTENT_FILES, "SHA256SUMS")
 FORBIDDEN_PUBLIC_PATTERNS = (
     (re.compile(r"/Users/", re.IGNORECASE), "absolute macOS home path"),
     (
@@ -205,6 +207,12 @@ def _prepare_output(output_dir: Path) -> tuple[Path, Path]:
     private_dir.mkdir()
     public_dir.mkdir()
     return private_dir, public_dir
+
+
+def _remove_private_artifacts(private_dir: Path) -> None:
+    shutil.rmtree(private_dir)
+    if private_dir.exists():
+        raise RuntimeError(f"private capture artifacts remain at {private_dir}")
 
 
 def _compile_workload(source: Path, binary: Path) -> None:
@@ -396,8 +404,10 @@ def generate_charts(public_dir: Path, captures: Sequence[CaptureSummary]) -> Non
     )
 
 
-def verify_public_bundle(public_dir: Path) -> None:
-    missing = [name for name in PUBLIC_FILES if not (public_dir / name).is_file()]
+def _verify_public_contents(public_dir: Path) -> None:
+    missing = [
+        name for name in PUBLIC_CONTENT_FILES if not (public_dir / name).is_file()
+    ]
     if missing:
         raise ValueError(f"public bundle is missing files: {', '.join(missing)}")
 
@@ -445,21 +455,25 @@ def verify_public_bundle(public_dir: Path) -> None:
         if item["reference_cells"] > item["exported_cells"]:
             raise ValueError("reference cell count exceeds exported cell count")
 
-    for name in PUBLIC_FILES:
+    for name in PUBLIC_CONTENT_FILES:
         text = (public_dir / name).read_text(encoding="utf-8")
         for pattern, description in FORBIDDEN_PUBLIC_PATTERNS:
             if pattern.search(text):
                 raise ValueError(f"{name} contains forbidden {description}")
 
+
+def verify_public_bundle(public_dir: Path) -> None:
+    _verify_public_contents(public_dir)
     sums_path = public_dir / "SHA256SUMS"
-    if sums_path.exists():
-        expected = {}
-        for line in sums_path.read_text(encoding="utf-8").splitlines():
-            digest, name = line.split("  ", maxsplit=1)
-            expected[name] = digest
-        actual = {name: _sha256(public_dir / name) for name in PUBLIC_FILES}
-        if expected != actual:
-            raise ValueError("SHA256SUMS does not match the public evidence files")
+    if not sums_path.is_file():
+        raise ValueError("public bundle is missing files: SHA256SUMS")
+    expected = {}
+    for line in sums_path.read_text(encoding="utf-8").splitlines():
+        digest, name = line.split("  ", maxsplit=1)
+        expected[name] = digest
+    actual = {name: _sha256(public_dir / name) for name in PUBLIC_CONTENT_FILES}
+    if expected != actual:
+        raise ValueError("SHA256SUMS does not match the public evidence files")
 
 
 def _summary_document(captures: Sequence[CaptureSummary]) -> dict[str, Any]:
@@ -515,6 +529,21 @@ def _write_public_bundle(
     time_limit: str,
 ) -> None:
     host = _safe_host_metadata()
+    capture_command = shlex.join(
+        (
+            "uv",
+            "run",
+            "python",
+            "examples/metal_evidence/evidence_demo.py",
+            "capture",
+            "--output-dir",
+            "<OUTPUT_DIR>",
+            "--dispatches",
+            *(str(capture.expected_dispatch_count) for capture in captures),
+            "--time-limit",
+            time_limit,
+        )
+    )
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "captured_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
@@ -541,7 +570,7 @@ def _write_public_bundle(
         },
         "commands": [
             "uv run python examples/metal_evidence/evidence_demo.py capability",
-            "make metal-evidence OUTPUT_DIR=<OUTPUT_DIR>",
+            capture_command,
             "uv run python examples/metal_evidence/evidence_demo.py verify --public-dir <OUTPUT_DIR>/public",
         ],
         "approved_metrics": {
@@ -574,9 +603,10 @@ def _write_public_bundle(
     _write_json(public_dir / "capture-summary.json", summary)
     _write_csv(public_dir / "capture-summary.csv", captures)
     generate_charts(public_dir, captures)
-    verify_public_bundle(public_dir)
+    _verify_public_contents(public_dir)
     sums = "".join(
-        f"{_sha256(public_dir / name)}  {name}\n" for name in sorted(PUBLIC_FILES)
+        f"{_sha256(public_dir / name)}  {name}\n"
+        for name in sorted(PUBLIC_CONTENT_FILES)
     )
     (public_dir / "SHA256SUMS").write_text(sums, encoding="utf-8")
     verify_public_bundle(public_dir)
@@ -620,7 +650,7 @@ def capture(
         _write_public_bundle(public_dir, captures, source=source, time_limit=time_limit)
     finally:
         if not retain_private:
-            shutil.rmtree(private_dir, ignore_errors=True)
+            _remove_private_artifacts(private_dir)
     return public_dir
 
 

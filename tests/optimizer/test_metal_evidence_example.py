@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -81,8 +82,18 @@ def test_output_directory_must_be_empty(tmp_path):
         DEMO._prepare_output(output)
 
 
+def test_private_artifact_cleanup_fails_closed(monkeypatch, tmp_path):
+    private = tmp_path / "private"
+    private.mkdir()
+    (private / "capture.trace").write_text("private")
+    monkeypatch.setattr(DEMO.shutil, "rmtree", lambda path: None)
+
+    with pytest.raises(RuntimeError, match="private capture artifacts remain"):
+        DEMO._remove_private_artifacts(private)
+
+
 def test_public_bundle_privacy_scan_rejects_private_data(tmp_path):
-    for name in DEMO.PUBLIC_FILES:
+    for name in DEMO.PUBLIC_CONTENT_FILES:
         (tmp_path / name).write_text("safe", encoding="utf-8")
     (tmp_path / "capture-summary.json").write_text(
         json.dumps(
@@ -125,6 +136,57 @@ def test_public_bundle_privacy_scan_rejects_private_data(tmp_path):
 
     with pytest.raises(ValueError, match="absolute macOS home path"):
         DEMO.verify_public_bundle(tmp_path)
+
+
+def test_public_bundle_requires_checksum_manifest(tmp_path):
+    shutil.copytree(EXAMPLE / "public", tmp_path / "public")
+    (tmp_path / "public" / "SHA256SUMS").unlink()
+
+    with pytest.raises(ValueError, match="missing files: SHA256SUMS"):
+        DEMO.verify_public_bundle(tmp_path / "public")
+
+
+def test_manifest_capture_command_records_custom_parameters(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        DEMO,
+        "_safe_host_metadata",
+        lambda: {"hardware": "Apple Silicon", "architecture": "arm64"},
+    )
+    captures = [
+        DEMO.CaptureSummary(
+            expected_dispatch_count=17,
+            attributed_interval_count=17,
+            all_process_interval_count=17,
+            known_unrelated_interval_count=0,
+            known_unrelated_interval_share_percent=0.0,
+            unattributed_interval_count=0,
+            unattributed_interval_share_percent=0.0,
+            window_server_interval_count=0,
+            window_server_interval_share_percent=0.0,
+            schema_count=82,
+            exported_rows=17,
+            exported_columns=18,
+            exported_cells=306,
+            reference_cells=0,
+            dispatch_count_matches=True,
+        )
+    ]
+    public = tmp_path / "public"
+    public.mkdir()
+
+    DEMO._write_public_bundle(
+        public,
+        captures,
+        source=EXAMPLE / "metal_workload.swift",
+        time_limit="3s",
+    )
+
+    manifest = json.loads((public / "experiment-manifest.json").read_text())
+    assert (
+        manifest["commands"][1]
+        == "uv run python examples/metal_evidence/evidence_demo.py capture "
+        "--output-dir '<OUTPUT_DIR>' --dispatches 17 --time-limit 3s"
+    )
 
 
 def test_committed_bundle_is_private_data_free_and_self_consistent():
