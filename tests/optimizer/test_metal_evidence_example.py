@@ -146,6 +146,25 @@ def test_public_bundle_requires_checksum_manifest(tmp_path):
         DEMO.verify_public_bundle(tmp_path / "public")
 
 
+def test_public_bundle_rejects_unexpected_entries(tmp_path):
+    shutil.copytree(EXAMPLE / "public", tmp_path / "public")
+    (tmp_path / "public" / "raw.trace").mkdir()
+
+    with pytest.raises(ValueError, match="unexpected entries: raw.trace"):
+        DEMO.verify_public_bundle(tmp_path / "public")
+
+
+def test_public_bundle_rejects_symlinks(tmp_path):
+    shutil.copytree(EXAMPLE / "public", tmp_path / "public")
+    summary = tmp_path / "public" / "capture-summary.csv"
+    target = tmp_path / "summary.csv"
+    summary.replace(target)
+    summary.symlink_to(target)
+
+    with pytest.raises(ValueError, match="contains symlinks: capture-summary.csv"):
+        DEMO.verify_public_bundle(tmp_path / "public")
+
+
 def test_manifest_capture_command_records_custom_parameters(monkeypatch, tmp_path):
     monkeypatch.setattr(
         DEMO,

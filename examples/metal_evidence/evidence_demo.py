@@ -405,6 +405,17 @@ def generate_charts(public_dir: Path, captures: Sequence[CaptureSummary]) -> Non
 
 
 def _verify_public_contents(public_dir: Path) -> None:
+    entries = tuple(public_dir.iterdir())
+    unexpected = sorted(
+        entry.name for entry in entries if entry.name not in PUBLIC_FILES
+    )
+    if unexpected:
+        raise ValueError(
+            f"public bundle contains unexpected entries: {', '.join(unexpected)}"
+        )
+    symlinks = sorted(entry.name for entry in entries if entry.is_symlink())
+    if symlinks:
+        raise ValueError(f"public bundle contains symlinks: {', '.join(symlinks)}")
     missing = [
         name for name in PUBLIC_CONTENT_FILES if not (public_dir / name).is_file()
     ]
