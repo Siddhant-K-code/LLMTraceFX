@@ -1343,7 +1343,7 @@ requires-dist = [
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.5.0" },
     { name = "numpy", specifier = ">=2.2.6" },
     { name = "pandas", specifier = ">=2.2.2" },
-    { name = "plotly", specifier = ">=5.17.0" },
+    { name = "plotly", specifier = ">=7.0.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.3.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.0.0" },
