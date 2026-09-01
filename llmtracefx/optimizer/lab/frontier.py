@@ -426,7 +426,8 @@ def _measurement(record: ExperimentRecord, field: str) -> float | None:
 def _classify_error(category: str | None, message: str | None) -> tuple[str, str]:
     text = f"{category or ''} {message or ''}".lower()
     if (
-        "outofmemory" in text
+        category == "MemoryError"
+        or "outofmemory" in text
         or "out of memory" in text
         or "insufficient memory" in text
     ):

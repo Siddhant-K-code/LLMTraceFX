@@ -183,6 +183,21 @@ def test_fit_prompt_separates_requested_and_actual_token_counts() -> None:
     assert len(tokens) != 2048
 
 
+@pytest.mark.parametrize(
+    ("category", "message"),
+    [
+        ("MemoryError", ""),
+        ("RuntimeError", "out of memory"),
+        ("RuntimeError", "Insufficient Memory"),
+    ],
+)
+def test_memory_exhaustion_is_classified_as_oom(category, message) -> None:
+    assert frontier._classify_error(category, message) == (
+        "oom",
+        "MLX/Metal reported insufficient memory",
+    )
+
+
 def test_subprocess_launcher_uses_new_session_and_hidden_child(
     tmp_path, monkeypatch
 ) -> None:
