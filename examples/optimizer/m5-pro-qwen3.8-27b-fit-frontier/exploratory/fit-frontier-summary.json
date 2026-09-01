@@ -1,0 +1,98 @@
+{
+  "schema_version": "1",
+  "frontier_id": "m5-pro-qwen3.8-27b-fit-frontier-v1",
+  "generated_at": "2026-09-01T05:30:24.941062Z",
+  "run_mode": "exploratory",
+  "clean_boot_confirmed": false,
+  "model": {
+    "repository_id": "mlx-community/Qwen3.8-27B-4bit",
+    "revision": "3e6447f082e89cc7f0bc6e5441afd38dfce760ff"
+  },
+  "pre_run_machine_state": {
+    "collected_at": "2026-09-01T05:29:37.514203Z",
+    "os_name": "Darwin",
+    "os_release": "25.6.0",
+    "architecture": "arm64",
+    "chip": "Apple M5 Pro",
+    "physical_memory_bytes": 25769803776,
+    "available_memory_estimate_bytes": 10823317585,
+    "available_memory_estimate_provenance": "derived from macOS memory_pressure free percentage multiplied by physical memory; approximate system headroom, not free GPU memory",
+    "memory_free_percent": 42.0,
+    "memory_free_percent_provenance": "macOS memory_pressure",
+    "swap_used_bytes": 9049473024,
+    "swap_provenance": "sysctl vm.swapusage",
+    "package_versions": {
+      "mlx": "0.32.2",
+      "mlx-lm": "0.31.3",
+      "mlx-vlm": "0.6.8",
+      "transformers": "5.16.1"
+    }
+  },
+  "rows": [
+    {
+      "tier": "t256",
+      "requested_tokens": 256,
+      "actual_tokens": 256,
+      "outcome": "oom",
+      "total_ms": 30402.76504099893,
+      "prefill_ms": null,
+      "decode_ms": null,
+      "quality_success": null,
+      "quality_score": null
+    },
+    {
+      "tier": "t512",
+      "requested_tokens": 512,
+      "actual_tokens": null,
+      "outcome": "skipped",
+      "total_ms": null,
+      "prefill_ms": null,
+      "decode_ms": null,
+      "quality_success": null,
+      "quality_score": null
+    },
+    {
+      "tier": "t1024",
+      "requested_tokens": 1024,
+      "actual_tokens": null,
+      "outcome": "skipped",
+      "total_ms": null,
+      "prefill_ms": null,
+      "decode_ms": null,
+      "quality_success": null,
+      "quality_score": null
+    },
+    {
+      "tier": "t1536",
+      "requested_tokens": 1536,
+      "actual_tokens": null,
+      "outcome": "skipped",
+      "total_ms": null,
+      "prefill_ms": null,
+      "decode_ms": null,
+      "quality_success": null,
+      "quality_score": null
+    },
+    {
+      "tier": "t2048",
+      "requested_tokens": 2048,
+      "actual_tokens": null,
+      "outcome": "skipped",
+      "total_ms": null,
+      "prefill_ms": null,
+      "decode_ms": null,
+      "quality_success": null,
+      "quality_score": null
+    }
+  ],
+  "maximum_completed": null,
+  "stop_reason": "MLX/Metal reported insufficient memory",
+  "limitations": [
+    "This is bounded evidence for one recorded machine state, exact checkpoint, runtime, prompt construction, and run mode; it is not a universal memory-capacity claim.",
+    "Requested tokens are targets; actual_tokens is the model tokenizer observation and is never relabeled as the requested tier.",
+    "Available memory is an approximate system-headroom estimate derived from macOS memory_pressure, not precise free unified GPU memory.",
+    "Total, prefill, and decode values are supported host wall-clock boundaries; missing measurements remain null.",
+    "No GPU utilization, peak system memory, bandwidth, power, energy, or kernel time is measured or inferred.",
+    "Clean-boot confirmation is an operator assertion and is never inferred."
+  ]
+}

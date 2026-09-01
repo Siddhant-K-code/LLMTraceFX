@@ -96,6 +96,7 @@ llmtracefx-dashboard = "llmtracefx.realtime_dashboard:main"
 llmtracefx-optimizer = "llmtracefx.optimizer.cli:main"
 llmtracefx-deploy = "llmtracefx.deploy.cli:main"
 llmtracefx-m5-lab = "llmtracefx.optimizer.lab.cli:main"
+llmtracefx-m5-frontier = "llmtracefx.optimizer.lab.frontier:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

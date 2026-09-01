@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Qwen3.8-27B fit frontier</title>
+<style>
+body{margin:0;background:#f7f3ea;color:#17202a;font:15px/1.5 ui-monospace,monospace}
+main{max-width:980px;margin:auto;padding:36px 20px}section{background:#fffdf8;border:1px
+solid #d9d1c3;padding:18px;margin:18px 0;overflow:auto}table{width:100%;
+border-collapse:collapse}th,td{padding:9px;text-align:right;border-bottom:1px solid
+#ddd5c8}th:first-child,td:first-child{text-align:left}.bar-row{display:grid;
+grid-template-columns:55px 1fr 90px;gap:10px;align-items:center;margin:8px 0}
+.bar-row i{display:block;height:18px;background:#f05d23;min-width:1px}
+</style></head><body><main><p>LLMTraceFX / exploratory evidence</p>
+<h1>Context-fit frontier</h1><p><code>mlx-community/Qwen3.8-27B-4bit@
+3e6447f082e89cc7f0bc6e5441afd38dfce760ff</code></p><section><h2>Sanitized outcomes</h2>
+<table><thead><tr><th>Tier</th><th>Requested</th><th>Actual</th><th>Outcome</th>
+<th>Total ms</th><th>Prefill ms</th><th>Quality</th></tr></thead><tbody><tr><td>t256</td><td>256</td><td>256</td><td>oom</td><td>30402.76504099893</td><td>n/a</td><td>n/a</td></tr><tr><td>t512</td><td>512</td><td>n/a</td><td>skipped</td><td>n/a</td><td>n/a</td><td>n/a</td></tr><tr><td>t1024</td><td>1024</td><td>n/a</td><td>skipped</td><td>n/a</td><td>n/a</td><td>n/a</td></tr><tr><td>t1536</td><td>1536</td><td>n/a</td><td>skipped</td><td>n/a</td><td>n/a</td><td>n/a</td></tr><tr><td>t2048</td><td>2048</td><td>n/a</td><td>skipped</td><td>n/a</td><td>n/a</td><td>n/a</td></tr>
+</tbody></table></section><section><h2>Actual token counts</h2><div class="bar-row"><span>256</span><i style="width:12.50%"></i><b>oom</b></div><div class="bar-row"><span>0</span><i style="width:0.00%"></i><b>skipped</b></div><div class="bar-row"><span>0</span><i style="width:0.00%"></i><b>skipped</b></div><div class="bar-row"><span>0</span><i style="width:0.00%"></i><b>skipped</b></div><div class="bar-row"><span>0</span><i style="width:0.00%"></i><b>skipped</b></div></section>
+<section><h2>Limits</h2><ul><li>This is bounded evidence for one recorded machine state, exact checkpoint, runtime, prompt construction, and run mode; it is not a universal memory-capacity claim.</li><li>Requested tokens are targets; actual_tokens is the model tokenizer observation and is never relabeled as the requested tier.</li><li>Available memory is an approximate system-headroom estimate derived from macOS memory_pressure, not precise free unified GPU memory.</li><li>Total, prefill, and decode values are supported host wall-clock boundaries; missing measurements remain null.</li><li>No GPU utilization, peak system memory, bandwidth, power, energy, or kernel time is measured or inferred.</li><li>Clean-boot confirmation is an operator assertion and is never inferred.</li></ul></section></main></body></html>

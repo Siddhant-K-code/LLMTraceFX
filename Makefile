@@ -1,6 +1,6 @@
 # LLMTraceFX Makefile
 
-.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan test-deploy metal-evidence m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report
+.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan test-deploy metal-evidence m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication
 
 help:  ## Show this help message
 	@echo "LLMTraceFX - evidence-first inference toolkit"
@@ -122,6 +122,21 @@ m5-lab-verify:  ## Verify pinned model files and evidence bindings
 
 m5-lab-report:  ## Rebuild self-contained local lab/tune/compare reports
 	uv run --extra mlx llmtracefx-m5-lab report --manifest $(M5_LAB_MANIFEST) --workspace $(M5_LAB_WORKSPACE)
+
+# Process-isolated fit frontier. Planning is offline and never loads weights.
+M5_FRONTIER_MANIFEST ?= llmtracefx/optimizer/lab/data/fit-frontier-manifest-v1.json
+M5_FRONTIER_WORKSPACE ?= .cache/llmtracefx/m5-pro-qwen3.8-27b-fit-frontier-v1
+M5_FRONTIER_MODEL ?= .cache/models/qwen3.8-27b-4bit-3e6447f
+FRONTIER_MAX_TIER ?= t2048
+
+m5-frontier:  ## Plan the fit frontier without loading weights
+	uv run --offline --no-sync --extra mlx llmtracefx-m5-frontier plan --manifest $(M5_FRONTIER_MANIFEST) --workspace $(M5_FRONTIER_WORKSPACE) --model-path $(M5_FRONTIER_MODEL)
+
+m5-frontier-run:  ## Run/resume an exploratory process-isolated frontier
+	uv run --offline --no-sync --extra mlx llmtracefx-m5-frontier run --manifest $(M5_FRONTIER_MANIFEST) --workspace $(M5_FRONTIER_WORKSPACE) --model-path $(M5_FRONTIER_MODEL) --max-tier $(FRONTIER_MAX_TIER)
+
+m5-frontier-publication:  ## Run publication mode after an operator-confirmed clean boot
+	uv run --offline --no-sync --extra mlx llmtracefx-m5-frontier run --mode publication --confirm-clean-boot --manifest $(M5_FRONTIER_MANIFEST) --workspace $(M5_FRONTIER_WORKSPACE) --model-path $(M5_FRONTIER_MODEL) --max-tier $(FRONTIER_MAX_TIER)
 
 metal-evidence:  ## Capture privacy-safe Metal evidence (requires OUTPUT_DIR)
 	@test -n "$(OUTPUT_DIR)" || { echo "OUTPUT_DIR is required" >&2; exit 2; }

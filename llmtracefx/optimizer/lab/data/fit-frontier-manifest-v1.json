@@ -1,0 +1,55 @@
+{
+  "schema_version": "1",
+  "frontier_id": "m5-pro-qwen3.8-27b-fit-frontier-v1",
+  "base_manifest_resource": "data/lab-manifest-v1.json",
+  "base_manifest_sha256": "dc5106d47014ba6a3972d5999c3a7dfd65ab6ad8fe1efdad163b96359feda673",
+  "base_lab_id": "m5-pro-qwen3.8-27b-v1",
+  "model": {
+    "repository_id": "mlx-community/Qwen3.8-27B-4bit",
+    "revision": "3e6447f082e89cc7f0bc6e5441afd38dfce760ff",
+    "expected_download_bytes": 16081490933
+  },
+  "workload": {
+    "workload_id": "structured-json-profile-extraction",
+    "version": "1",
+    "prompt_construction": "deterministic-filler-before-verbatim-base-v1",
+    "maximum_token_shortfall": 8
+  },
+  "tiers": [
+    {
+      "name": "t256",
+      "requested_tokens": 256,
+      "order": 1
+    },
+    {
+      "name": "t512",
+      "requested_tokens": 512,
+      "order": 2
+    },
+    {
+      "name": "t1024",
+      "requested_tokens": 1024,
+      "order": 3
+    },
+    {
+      "name": "t1536",
+      "requested_tokens": 1536,
+      "order": 4
+    },
+    {
+      "name": "t2048",
+      "requested_tokens": 2048,
+      "order": 5
+    }
+  ],
+  "generation": {
+    "max_output_tokens": 48
+  },
+  "tier_timeout_seconds": 600,
+  "process_cleanup_grace_seconds": 5,
+  "artifacts": {
+    "workspace": ".cache/llmtracefx/m5-pro-qwen3.8-27b-fit-frontier-v1",
+    "shareable_example_dir": "examples/optimizer/m5-pro-qwen3.8-27b-fit-frontier",
+    "commit_raw_artifacts": false
+  }
+}
