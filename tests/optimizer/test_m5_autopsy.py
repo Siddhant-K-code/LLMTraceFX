@@ -7,6 +7,7 @@ import io
 import json
 import time
 import types
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -859,6 +860,7 @@ def test_journal_byte_size_bound_is_enforced(tmp_path: Path) -> None:
     journal = _new_journal(tmp_path, max_bytes=16)
     with pytest.raises(LabError, match="maximum artifact size"):
         journal.checkpoint("child_start", None)
+    assert journal.checkpoints == []
 
 
 def test_journal_never_records_pids_paths_or_hostnames(tmp_path: Path) -> None:
@@ -1120,6 +1122,30 @@ def test_execute_autopsy_child_seeds_and_synchronizes_at_correct_points_never_re
     assert runtime.seed_calls == [base.generation.seed]
     assert runtime.synchronize_calls == 3
     assert runtime.reset_peak_memory_calls == 0
+
+
+def test_cleanup_bound_failure_does_not_prevent_terminal_finalization(
+    tmp_path: Path,
+) -> None:
+    manifest, frontier_manifest, base = _load()
+    manifest = replace(manifest, journal_max_checkpoints=7)
+    output_dir = tmp_path / "output"
+    result = execute_autopsy_child(
+        manifest,
+        frontier_manifest,
+        base,
+        model_path=tmp_path / "model",
+        output_dir=output_dir,
+        run_mode="exploratory",
+        clean_boot_confirmed=False,
+        runtime_factory=lambda: _FakeRuntime(mode="completed"),
+        mlx_module_factory=lambda: None,
+    )
+    journal = json.loads((output_dir / "journal.json").read_text(encoding="utf-8"))
+    assert result["status"] == "completed"
+    assert journal["complete"] is True
+    assert journal["terminal"] == "completed"
+    assert journal["checkpoints"][-1]["stage"] == "completion"
 
 
 # ---------------------------------------------------------------------------

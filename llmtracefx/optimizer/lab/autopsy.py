@@ -735,7 +735,11 @@ class AutopsyJournal:
             extra=extra,
         )
         self.checkpoints.append(entry)
-        self._persist()
+        try:
+            self._persist()
+        except (LabError, MemoryError, OSError):
+            self.checkpoints.pop()
+            raise
 
     def finalize(self, *, complete: bool, terminal: str) -> None:
         self.complete = complete
@@ -1239,7 +1243,11 @@ def execute_autopsy_child(
             journal.checkpoint("caught_oom", mlx_module)
         status, reason = classified_status, classified_reason
     finally:
-        journal.checkpoint("cleanup", mlx_module)
+        try:
+            journal.checkpoint("cleanup", mlx_module)
+        except (LabError, MemoryError, OSError):
+            # Finalization can still bind the preceding valid checkpoints.
+            pass
         journal.finalize(complete=True, terminal=status)
 
     result = {
