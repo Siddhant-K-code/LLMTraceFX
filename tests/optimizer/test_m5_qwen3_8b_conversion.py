@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sys
+import types
 from dataclasses import replace
 from pathlib import Path
 
@@ -90,14 +91,15 @@ def _patch_source_hash(
 def _forbid_network_download(monkeypatch) -> None:
     """Any test that reaches this guard while expecting an offline path
     has a bug in its fixture, not a legitimate reason to download."""
-    import huggingface_hub
 
     def fail(*args, **kwargs):
         raise AssertionError(
             "snapshot_download must never be called in an offline test"
         )
 
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", fail)
+    module = types.ModuleType("huggingface_hub")
+    module.snapshot_download = fail
+    monkeypatch.setitem(sys.modules, "huggingface_hub", module)
 
 
 def test_packaged_conversion_manifest_pins_exact_provenance() -> None:
@@ -260,9 +262,9 @@ def test_acquire_source_downloads_only_when_cache_is_absent(
         _populate_sparse_source(manifest, Path(local_dir))
         return str(local_dir)
 
-    import huggingface_hub
-
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_download)
+    module = types.ModuleType("huggingface_hub")
+    module.snapshot_download = fake_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", module)
     _patch_source_hash(monkeypatch, manifest, source_path)
 
     result = conv.acquire_source(manifest, source_path=source_path, workspace=workspace)
