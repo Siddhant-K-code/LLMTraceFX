@@ -31,7 +31,12 @@ from llmtracefx.optimizer.lab.autopsy import (
     run_autopsy,
     verify_autopsy_evidence,
 )
-from llmtracefx.optimizer.lab.core import HostSnapshot, LabError, SafetyDecision
+from llmtracefx.optimizer.lab.core import (
+    HostSnapshot,
+    LabError,
+    SafetyDecision,
+    assert_shareable,
+)
 from llmtracefx.optimizer.lab.frontier import frontier_manifest_hash
 
 AUTOPSY_MANIFEST_PATH = Path("llmtracefx/optimizer/lab/data/autopsy-manifest-v1.json")
@@ -774,6 +779,20 @@ def test_host_swap_bytes_linux_parses_meminfo(tmp_path: Path) -> None:
     assert total == 2048 * 1024
     assert used == (2048 - 512) * 1024
     assert "meminfo" in provenance
+
+
+def test_linux_procfs_provenance_is_precise_but_shareable(tmp_path: Path) -> None:
+    status = tmp_path / "status"
+    status.write_text("VmRSS: 1024 kB\n", encoding="utf-8")
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("SwapTotal: 2048 kB\nSwapFree: 1024 kB\n", encoding="utf-8")
+    _, rss_provenance = host_process_rss_bytes(system="Linux", linux_status_path=status)
+    _, _, swap_provenance = host_swap_bytes(system="Linux", linux_meminfo_path=meminfo)
+    assert "procfs" in rss_provenance
+    assert "procfs" in swap_provenance
+    assert_shareable(
+        {"rss_provenance": rss_provenance, "swap_provenance": swap_provenance}
+    )
 
 
 def test_host_swap_bytes_unknown_platform_is_null() -> None:

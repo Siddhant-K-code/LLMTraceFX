@@ -517,7 +517,7 @@ def host_process_rss_bytes(
                         return None, None
                     return (
                         kibibytes * 1024,
-                        "/proc/self/status VmRSS (kB, current process RSS)",
+                        "Linux procfs self status VmRSS (kB, current process RSS)",
                     )
         return None, None
     return None, None
@@ -599,7 +599,7 @@ def host_swap_bytes(
         total = values.get("SwapTotal")
         free = values.get("SwapFree")
         used = None if total is None or free is None else total - free
-        return total, used, "/proc/meminfo SwapTotal/SwapFree (Linux)"
+        return total, used, "Linux procfs meminfo SwapTotal/SwapFree"
     return None, None, None
 
 
@@ -806,14 +806,17 @@ def _record_signal_checkpoint(
             "signal_received", mlx_module, extra={"signal_received": name}
         )
     except (LabError, MemoryError, OSError):
+        # Preserve any earlier checkpoint and continue the best-effort sequence.
         pass
     try:
         journal.checkpoint("cleanup", mlx_module)
     except (LabError, MemoryError, OSError):
+        # A signal must still terminate even when cleanup evidence cannot persist.
         pass
     try:
         journal.finalize(complete=False, terminal="signal")
     except (LabError, MemoryError, OSError):
+        # The last valid atomic journal remains usable if finalization fails.
         pass
 
 
@@ -1205,7 +1208,7 @@ def execute_autopsy_child(
         runtime.synchronize()
         journal.checkpoint("immediately_before_prefill_generation", mlx_module)
         first_token_seen = False
-        for _response in runtime.stream_generate(
+        for response in runtime.stream_generate(
             model,
             processor,
             prompt_tokens,
@@ -1213,6 +1216,8 @@ def execute_autopsy_child(
             draft_model=None,
             num_draft_tokens=0,
         ):
+            if response is None:
+                raise LabError("MLX-VLM generation yielded an invalid response")
             if not first_token_seen:
                 journal.checkpoint("after_first_token", mlx_module)
                 first_token_seen = True
