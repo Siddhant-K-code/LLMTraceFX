@@ -158,9 +158,7 @@ class SourceFilePin:
         return cls(
             path=path,
             size_bytes=_integer(data, "size_bytes", context, minimum=1),
-            sha256=_sha256(
-                _string(data, "sha256", context), f"{context}.sha256"
-            ),
+            sha256=_sha256(_string(data, "sha256", context), f"{context}.sha256"),
         )
 
 
