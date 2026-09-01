@@ -122,6 +122,13 @@ class ModelPin:
     expected_download_bytes: int
     files: tuple[ModelFilePin, ...]
     sources: tuple[str, ...]
+    model_family: str = "qwen3_5"
+    """The mlx-lm/mlx-vlm model-family identifier this pin's checkpoint
+    loads as (for example ``mlx_lm/models/qwen3_5.py``'s ``qwen3_5``, or
+    plain ``qwen3`` for a dense non-MTP mlx-lm checkpoint such as a
+    self-converted Qwen3-8B). Optional and defaulted to the historical
+    ``"qwen3_5"`` so every manifest packaged before this field existed
+    keeps parsing to the exact identity it always resolved to."""
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ModelPin:
@@ -162,6 +169,9 @@ class ModelPin:
             raise LabManifestError(
                 "model.expected_download_bytes must equal the pinned file sizes"
             )
+        model_family_raw = data.get("model_family", "qwen3_5")
+        if not isinstance(model_family_raw, str) or not model_family_raw:
+            raise LabManifestError("model.model_family must be a non-empty string")
         return cls(
             official_id=_string(data, "official_id", context),
             official_revision=_git_revision(
@@ -182,6 +192,7 @@ class ModelPin:
             expected_download_bytes=expected_download_bytes,
             files=files,
             sources=tuple(sources_raw),
+            model_family=model_family_raw,
         )
 
 

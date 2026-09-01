@@ -1,0 +1,36 @@
+{
+  "artifact_type": "conversion_preflight_refusal",
+  "schema_version": "1",
+  "conversion_id": "qwen3-8b-mlx-q4g64-self-convert-v1",
+  "phase": "pre_conversion_safety",
+  "status": "safety_blocked",
+  "downloads_performed": false,
+  "conversion_process_started": false,
+  "retried": false,
+  "cache_modified": false,
+  "blockers": [
+    "memory free 39% is below 40%"
+  ],
+  "safety_thresholds": {
+    "required_chip": "Apple M5 Pro",
+    "required_total_memory_bytes": 25769803776,
+    "minimum_memory_free_percent": 40.0,
+    "maximum_swap_used_bytes": 12884901888,
+    "required_free_disk_bytes": 128395428637
+  },
+  "observed": {
+    "chip": "Apple M5 Pro",
+    "os_name": "Darwin",
+    "architecture": "arm64",
+    "total_memory_bytes": 25769803776,
+    "memory_free_percent": 39.0,
+    "swap_used_bytes": 10148705730,
+    "disk_free_bytes": 721039908864
+  },
+  "limitations": [
+    "This is a refusal artifact produced by the pre-conversion safety gate before any download, conversion, or benchmark ran; it is not benchmark evidence and contains no performance measurement.",
+    "memory_free_percent and swap_used_bytes are derived from macOS memory_pressure/sysctl host memory headroom, not free GPU memory or MLX allocator state.",
+    "This reflects only the host state observed at one point in time on one machine and is not a claim about any other machine, or about this machine at a different time.",
+    "No model weights were downloaded, no conversion subprocess was started, no retry was attempted, and no existing cache was created, deleted, or modified."
+  ]
+}

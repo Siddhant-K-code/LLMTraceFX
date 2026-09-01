@@ -1,0 +1,101 @@
+{
+  "schema_version": "1",
+  "lab_id": "qwen3-8b-m5-control-v1",
+  "model": {
+    "official_id": "Qwen/Qwen3-8B",
+    "official_revision": "b968826d9c46dd6066d109eabc6255188de91218",
+    "repository_id": "local-self-converted/qwen3-8b-mlx-q4g64",
+    "license": "Apache-2.0",
+    "quantization": "MLX affine 4-bit, group size 64 (self-converted, not byte-equivalent to any third-party conversion)",
+    "converter": "mlx-lm",
+    "converter_revision": "ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd",
+    "model_family": "qwen3",
+    "sources": [
+      "https://huggingface.co/Qwen/Qwen3-8B/tree/b968826d9c46dd6066d109eabc6255188de91218",
+      "https://github.com/ml-explore/mlx-lm/tree/ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd"
+    ]
+  },
+  "runtime": {
+    "name": "mlx-lm",
+    "version": "0.31.3",
+    "mlx_version": "0.32.2",
+    "mlx_lm_version": "0.31.3",
+    "transformers_version": "5.16.1",
+    "prefill_step_size": 2048
+  },
+  "generation": {
+    "max_output_tokens": 96,
+    "seed": 20260831,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "enable_thinking": false
+  },
+  "repetitions": {
+    "warmup_per_tier": 1,
+    "measured_per_workload": 2
+  },
+  "cooperative_timeout_seconds": 600,
+  "safety": {
+    "required_chip": "Apple M5 Pro",
+    "required_total_memory_bytes": 25769803776,
+    "minimum_free_disk_after_download_bytes": 21474836480,
+    "minimum_memory_free_percent": 25,
+    "maximum_peak_memory_bytes": 8589934592,
+    "maximum_swap_used_bytes": 12884901888,
+    "stop_on_any_failed_row": true
+  },
+  "artifacts": {
+    "workspace": ".cache/llmtracefx/qwen3-8b-m5-control-v1",
+    "model_cache": ".cache/models/qwen3-8b-mlx-q4g64-b968826",
+    "shareable_example_dir": "examples/optimizer/qwen3-8b-m5-control",
+    "commit_raw_artifacts": false
+  },
+  "environment_capture": [
+    "os_name",
+    "os_release",
+    "architecture",
+    "python_implementation",
+    "python_version",
+    "cpu_count",
+    "total_memory_gb",
+    "accelerator",
+    "package_versions"
+  ],
+  "context_tiers": [
+    {
+      "name": "2k",
+      "target_tokens": 2048,
+      "order": 1
+    },
+    {
+      "name": "8k",
+      "target_tokens": 8192,
+      "order": 2
+    },
+    {
+      "name": "16k",
+      "target_tokens": 16384,
+      "order": 3
+    }
+  ],
+  "workloads": [
+    {
+      "workload_id": "structured-json-profile-extraction",
+      "version": "1",
+      "prompt_hashes": {
+        "2k": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd",
+        "8k": "sha256:5efe059227fd5eeeb07884207aaad68780b53c2198f4dc1bbfb03f409bb152dd",
+        "16k": "sha256:837d22b5c550cf616ea86e7d64a637c2d387b2b9fd00577f64186ae621804f99"
+      }
+    },
+    {
+      "workload_id": "prose-reasoning-two-train-gap",
+      "version": "1",
+      "prompt_hashes": {
+        "2k": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568",
+        "8k": "sha256:954c0e8c1e0060c34e954e107c8b812926fcbfb5d3f5ca7e8904f0dba2d0e3c9",
+        "16k": "sha256:4ddc616d1772e3ead314a5247729778b21bec55376465a276ab805bcde29ce41"
+      }
+    }
+  ]
+}

@@ -1,0 +1,125 @@
+{
+  "schema_version": "1",
+  "conversion_id": "qwen3-8b-mlx-q4g64-self-convert-v1",
+  "source": {
+    "official_id": "Qwen/Qwen3-8B",
+    "official_revision": "b968826d9c46dd6066d109eabc6255188de91218",
+    "repository_id": "Qwen/Qwen3-8B",
+    "license": "Apache-2.0",
+    "expected_source_bytes": 16397461266,
+    "files": [
+      {
+        "path": ".gitattributes",
+        "size_bytes": 1570,
+        "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930"
+      },
+      {
+        "path": "LICENSE",
+        "size_bytes": 11343,
+        "sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+      },
+      {
+        "path": "README.md",
+        "size_bytes": 16660,
+        "sha256": "0f36caaff9c2516411a7738db384606263ba653c1e63e61d72f511606164d5a6"
+      },
+      {
+        "path": "config.json",
+        "size_bytes": 728,
+        "sha256": "f7c4eadfbbf522470667b797a3c89be2524832d2d599797248dc304fff447c30"
+      },
+      {
+        "path": "generation_config.json",
+        "size_bytes": 239,
+        "sha256": "2325da0f15bb848e018c5ae071b7943332e9f871d6b60e2ed22ca97d4cb993d2"
+      },
+      {
+        "path": "merges.txt",
+        "size_bytes": 1671853,
+        "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+      },
+      {
+        "path": "model-00001-of-00005.safetensors",
+        "size_bytes": 3996250744,
+        "sha256": "31d6a825ae35f11fb85b195b4c42c146c051e446433125a215336abdf95cbf5f"
+      },
+      {
+        "path": "model-00002-of-00005.safetensors",
+        "size_bytes": 3993160032,
+        "sha256": "5991236cea6fe21f3d43cab0f0e84448734fbbe0789816202989f2ddc9d18282"
+      },
+      {
+        "path": "model-00003-of-00005.safetensors",
+        "size_bytes": 3959604768,
+        "sha256": "c5185c4794be2d8a9784d5753c9922db38df478ce11f9ed0b415b7304d896836"
+      },
+      {
+        "path": "model-00004-of-00005.safetensors",
+        "size_bytes": 3187841392,
+        "sha256": "b5ee7de71fbf17db3d5704e0c8f2bc7d005ca9e1d7ca2aeb19827b0cfcaa917a"
+      },
+      {
+        "path": "model-00005-of-00005.safetensors",
+        "size_bytes": 1244659840,
+        "sha256": "20c2d6366ab85c90786ccdd829cd2b9e7d30ef3b2ebbb998280e7e4014b542ff"
+      },
+      {
+        "path": "model.safetensors.index.json",
+        "size_bytes": 32878,
+        "sha256": "f9fdbcb91c23971c13ec5d5f2573d2349e8f61f2f049371ec699281748fdb1bc"
+      },
+      {
+        "path": "tokenizer.json",
+        "size_bytes": 11422654,
+        "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+      },
+      {
+        "path": "tokenizer_config.json",
+        "size_bytes": 9732,
+        "sha256": "d5d09f07b48c3086c508b30d1c9114bd1189145b74e982a265350c923acd8101"
+      },
+      {
+        "path": "vocab.json",
+        "size_bytes": 2776833,
+        "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+      }
+    ],
+    "sources": [
+      "https://huggingface.co/Qwen/Qwen3-8B/tree/b968826d9c46dd6066d109eabc6255188de91218"
+    ]
+  },
+  "converter": {
+    "package": "mlx-lm",
+    "version": "0.31.3",
+    "git_repository": "https://github.com/ml-explore/mlx-lm",
+    "git_revision": "ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd",
+    "entrypoint": "python -m mlx_lm convert"
+  },
+  "parameters": {
+    "quantize": true,
+    "q_group_size": 64,
+    "q_bits": 4,
+    "q_mode": "affine",
+    "dtype": null,
+    "quant_predicate": null,
+    "dequantize": false,
+    "trust_remote_code": false,
+    "upload_repo": null
+  },
+  "expected_output_bytes": 4623784971,
+  "safety": {
+    "required_chip": "Apple M5 Pro",
+    "required_total_memory_bytes": 25769803776,
+    "minimum_residual_free_disk_bytes": 107374182400,
+    "minimum_memory_free_percent": 40,
+    "maximum_swap_used_bytes": 12884901888
+  },
+  "timeout_seconds": 5400,
+  "cleanup_grace_seconds": 30,
+  "max_journal_bytes": 262144,
+  "artifacts": {
+    "source_cache": ".cache/models/qwen3-8b-source-b968826",
+    "output_cache": ".cache/models/qwen3-8b-mlx-q4g64-b968826",
+    "workspace": ".cache/llmtracefx/qwen3-8b-conversion-v1"
+  }
+}

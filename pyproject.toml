@@ -97,6 +97,7 @@ llmtracefx-optimizer = "llmtracefx.optimizer.cli:main"
 llmtracefx-deploy = "llmtracefx.deploy.cli:main"
 llmtracefx-m5-lab = "llmtracefx.optimizer.lab.cli:main"
 llmtracefx-m5-frontier = "llmtracefx.optimizer.lab.frontier:main"
+llmtracefx-m5-control = "llmtracefx.optimizer.lab.qwen3_8b.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -108,6 +109,7 @@ llmtracefx = [
     "test_traces/*.json",
     "*.md",
     "optimizer/lab/data/*.json",
+    "optimizer/lab/qwen3_8b/data/*.json",
 ]
 
 # Black configuration

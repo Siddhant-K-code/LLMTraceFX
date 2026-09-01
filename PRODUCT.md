@@ -109,6 +109,14 @@ composite score.
 - `tests/optimizer/_tune_fixtures.py`: builds `workloads run`-shaped artifact trees for tests.
 - **No real Qwen3.8-27B benchmark results exist.** No performance number may be presented as
   measured. There are no customers, no pricing, and no third-party endorsements to cite.
+- **No real Qwen3-8B M5 Pro self-conversion or benchmark results exist.** The planned, preparatory
+  self-conversion control (`llmtracefx-m5-control`, `llmtracefx/optimizer/lab/qwen3_8b/`) ships its
+  conversion/benchmark manifests, subprocess-isolated runner, and offline tests; the packaged
+  benchmark manifest is a template only (deliberately missing the output file hashes) until a real
+  conversion produces a receipt to bind it from -- no fabricated hash may ever be committed to fill
+  that gap. The one real attempt so far was refused by the pre-conversion safety gate before any
+  download (see the committed refusal artifact in `examples/optimizer/qwen3-8b-m5-control/`);
+  execution remains blocked pending a clean reboot and a passing safe preflight.
 - The older public Modal analyzer endpoint and video-led synthetic dashboard walkthrough have been
   removed from the current README. Legacy analyzer code remains for compatibility but is not the
   primary product path.

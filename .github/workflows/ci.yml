@@ -221,6 +221,7 @@ jobs:
           "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-lab" --help
           "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-lab" autopsy --help
           "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-frontier" --help
+          "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-control" --help
           set +e
           "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-lab" plan > m5-plan.json
           plan_status="$?"
@@ -261,4 +262,26 @@ jobs:
           assert plan['downloads_performed'] is False
           assert plan['model']['repository_id'] == 'mlx-community/Qwen3.8-27B-4bit'
           assert plan['model']['revision'] == '3e6447f082e89cc7f0bc6e5441afd38dfce760ff'
+          "
+          set +e
+          "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-control" plan > m5-control-plan.json
+          control_status="$?"
+          set -e
+          test "$control_status" -eq 2
+          "$GITHUB_WORKSPACE/.wheel-check/bin/python" -c "
+          import json
+          from pathlib import Path
+          plan = json.loads(Path('m5-control-plan.json').read_text())
+          assert plan['conversion_manifest'].startswith(
+              'package:llmtracefx.optimizer.lab.qwen3_8b/'
+          )
+          assert plan['downloads_performed'] is False
+          assert plan['model']['official_id'] == 'Qwen/Qwen3-8B'
+          assert plan['model']['official_revision'] == (
+              'b968826d9c46dd6066d109eabc6255188de91218'
+          )
+          assert plan['model']['expected_source_bytes'] == 16397461266
+          # Fully namespace-separated from the packaged 27B lab: never the
+          # same repository ID as the mlx-community Qwen3.8-27B checkpoint.
+          assert plan['model']['official_id'] != 'Qwen/Qwen3.8-27B'
           "

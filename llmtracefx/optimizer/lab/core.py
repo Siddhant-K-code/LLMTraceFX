@@ -403,7 +403,7 @@ def _binding(
         model_revision=manifest.model.revision,
         tokenizer_revision=manifest.model.revision,
         quantization=manifest.model.quantization,
-        model_family="qwen3_5",
+        model_family=manifest.model.model_family,
         timeout_seconds=manifest.cooperative_timeout_seconds,
         warmup_repetitions=manifest.repetitions.warmup_per_tier,
         measured_repetitions=(
@@ -887,7 +887,7 @@ def _record_matches_manifest(
         model_revision=manifest.model.revision,
         tokenizer_revision=manifest.model.revision,
         quantization=manifest.model.quantization,
-        model_family="qwen3_5",
+        model_family=manifest.model.model_family,
         max_tokens=manifest.generation.max_output_tokens,
         seed=manifest.generation.seed,
         temperature=manifest.generation.temperature,
@@ -903,7 +903,7 @@ def _record_matches_manifest(
         and record.model.model_revision == manifest.model.revision
         and record.model.tokenizer_revision == manifest.model.revision
         and record.model.quantization == manifest.model.quantization
-        and record.model.model_family == "qwen3_5"
+        and record.model.model_family == manifest.model.model_family
         and record.runtime.name == manifest.runtime.name
         and record.runtime.version == manifest.runtime.version
         and record.platform.accelerator == manifest.safety.required_chip
@@ -931,9 +931,13 @@ def _environment_errors(
     expected = {
         "mlx": manifest.runtime.mlx_version,
         "mlx-lm": manifest.runtime.mlx_lm_version,
-        "mlx-vlm": manifest.runtime.version,
         "transformers": manifest.runtime.transformers_version,
     }
+    # The runtime's own package (``manifest.runtime.name``, e.g. "mlx-vlm"
+    # for the VLM-based 27B lab or "mlx-lm" for a plain mlx-lm control) is
+    # keyed dynamically so this check generalizes to any pinned runtime
+    # package instead of assuming "mlx-vlm" is always present.
+    expected[manifest.runtime.name] = manifest.runtime.version
     errors = [
         f"{package} recorded as {versions.get(package)!r}, expected {version!r}"
         for package, version in expected.items()

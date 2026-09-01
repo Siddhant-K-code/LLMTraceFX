@@ -1,6 +1,6 @@
 # LLMTraceFX Makefile
 
-.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan test-deploy metal-evidence m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication m5-autopsy m5-autopsy-run m5-autopsy-publication
+.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan test-deploy metal-evidence m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication m5-autopsy m5-autopsy-run m5-autopsy-publication m5-control-plan m5-control-convert m5-control-bind m5-control-run m5-control-verify m5-control-report
 
 help:  ## Show this help message
 	@echo "LLMTraceFX - evidence-first inference toolkit"
@@ -153,6 +153,40 @@ m5-autopsy-run:  ## Run/resume an exploratory process-isolated OOM autopsy at t2
 
 m5-autopsy-publication:  ## Run publication mode after an operator-confirmed clean boot
 	uv run --offline --no-sync --extra mlx llmtracefx-m5-lab autopsy run --mode publication --confirm-clean-boot --manifest $(M5_AUTOPSY_MANIFEST) --workspace $(M5_AUTOPSY_WORKSPACE) --model-path $(M5_AUTOPSY_MODEL)
+
+# Planned, preparatory Qwen3-8B M5 Pro self-conversion control (no
+# conversion or benchmark has run yet). Fully namespace-separated from the
+# pinned 27B lab above: separate manifests, caches, and workspace. Planning
+# is offline; `convert` self-converts with the repository's pinned mlx-lm,
+# behind a live pre-conversion safety gate, and is never automatically
+# retried; `run` requires a bound manifest (see `bind`) and the converted
+# checkpoint already present on disk.
+M5_CONTROL_CONVERSION_MANIFEST ?= llmtracefx/optimizer/lab/qwen3_8b/data/qwen3-8b-conversion-manifest-v1.json
+M5_CONTROL_TEMPLATE ?= llmtracefx/optimizer/lab/qwen3_8b/data/qwen3-8b-control-manifest-template-v1.json
+M5_CONTROL_SOURCE ?= .cache/models/qwen3-8b-source-b968826
+M5_CONTROL_OUTPUT ?= .cache/models/qwen3-8b-mlx-q4g64-b968826
+M5_CONTROL_CONVERSION_WORKSPACE ?= .cache/llmtracefx/qwen3-8b-conversion-v1
+M5_CONTROL_MANIFEST ?= .cache/llmtracefx/qwen3-8b-conversion-v1/control-manifest.bound.json
+M5_CONTROL_WORKSPACE ?= .cache/llmtracefx/qwen3-8b-m5-control-v1
+CONTROL_MAX_TIER ?= 2k
+
+m5-control-plan:  ## Plan the Qwen3-8B self-conversion without downloading or converting
+	uv run --offline --no-sync --extra mlx llmtracefx-m5-control plan --conversion-manifest $(M5_CONTROL_CONVERSION_MANIFEST) --source-path $(M5_CONTROL_SOURCE) --output-path $(M5_CONTROL_OUTPUT) --conversion-workspace $(M5_CONTROL_CONVERSION_WORKSPACE)
+
+m5-control-convert:  ## Download the official Qwen3-8B source and self-convert it once (no retry)
+	uv run --extra mlx llmtracefx-m5-control convert --conversion-manifest $(M5_CONTROL_CONVERSION_MANIFEST) --source-path $(M5_CONTROL_SOURCE) --output-path $(M5_CONTROL_OUTPUT) --conversion-workspace $(M5_CONTROL_CONVERSION_WORKSPACE)
+
+m5-control-bind:  ## Materialize a bound control manifest from a completed conversion receipt
+	uv run --extra mlx llmtracefx-m5-control bind --control-template $(M5_CONTROL_TEMPLATE) --receipt $(M5_CONTROL_CONVERSION_WORKSPACE)/conversion-receipt.json --output $(M5_CONTROL_MANIFEST)
+
+m5-control-run:  ## Resume the subprocess-isolated benchmark against the bound manifest
+	uv run --extra mlx llmtracefx-m5-control run --manifest $(M5_CONTROL_MANIFEST) --workspace $(M5_CONTROL_WORKSPACE) --model-path $(M5_CONTROL_OUTPUT) --max-tier $(CONTROL_MAX_TIER)
+
+m5-control-verify:  ## Verify pinned model files and evidence bindings
+	uv run --extra mlx llmtracefx-m5-control verify --manifest $(M5_CONTROL_MANIFEST) --workspace $(M5_CONTROL_WORKSPACE) --model-path $(M5_CONTROL_OUTPUT)
+
+m5-control-report:  ## Rebuild self-contained control/tune/compare reports
+	uv run --extra mlx llmtracefx-m5-control report --manifest $(M5_CONTROL_MANIFEST) --workspace $(M5_CONTROL_WORKSPACE)
 
 metal-evidence:  ## Capture privacy-safe Metal evidence (requires OUTPUT_DIR)
 	@test -n "$(OUTPUT_DIR)" || { echo "OUTPUT_DIR is required" >&2; exit 2; }
