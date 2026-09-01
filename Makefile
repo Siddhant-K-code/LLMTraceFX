@@ -1,6 +1,6 @@
 # LLMTraceFX Makefile
 
-.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan test-deploy metal-evidence m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication m5-autopsy m5-autopsy-run m5-autopsy-publication m5-control-plan m5-control-convert m5-control-bind m5-control-run m5-control-verify m5-control-report
+.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan test-deploy metal-evidence m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication m5-autopsy m5-autopsy-run m5-autopsy-publication m5-autopsy-evidence-verify m5-control-plan m5-control-convert m5-control-bind m5-control-run m5-control-verify m5-control-report
 
 help:  ## Show this help message
 	@echo "LLMTraceFX - evidence-first inference toolkit"
@@ -153,6 +153,9 @@ m5-autopsy-run:  ## Run/resume an exploratory process-isolated OOM autopsy at t2
 
 m5-autopsy-publication:  ## Run publication mode after an operator-confirmed clean boot
 	uv run --offline --no-sync --extra mlx llmtracefx-m5-lab autopsy run --mode publication --confirm-clean-boot --manifest $(M5_AUTOPSY_MANIFEST) --workspace $(M5_AUTOPSY_WORKSPACE) --model-path $(M5_AUTOPSY_MODEL)
+
+m5-autopsy-evidence-verify:  ## Verify the committed OOM evidence bundle without loading a model
+	uv run --offline python examples/optimizer/m5-pro-qwen3.8-27b-oom-autopsy/evidence_bundle.py verify
 
 # Planned, preparatory Qwen3-8B M5 Pro self-conversion control (no
 # conversion or benchmark has run yet). Fully namespace-separated from the

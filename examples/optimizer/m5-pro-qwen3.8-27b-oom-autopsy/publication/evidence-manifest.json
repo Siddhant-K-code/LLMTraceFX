@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "evidence_id": "m5-pro-qwen3.8-27b-clean-boot-oom-autopsy-20260901",
+  "run": {
+    "completed_at_utc": "2026-09-01T17:45:36.921331Z",
+    "code_checkout_commit": "2519bc8da309656d2e2ce2a7063f19b0dfb4c9ed",
+    "mode": "publication",
+    "clean_boot_operator_assertion": true,
+    "terminal_outcome": "oom",
+    "reason": "MLX/Metal reported insufficient memory",
+    "child_exit_code": 2,
+    "timed_out": false,
+    "descendants_cleaned": true,
+    "journal_complete": true,
+    "journal_terminal": "oom"
+  },
+  "model": {
+    "repository_id": "mlx-community/Qwen3.8-27B-4bit",
+    "revision": "3e6447f082e89cc7f0bc6e5441afd38dfce760ff",
+    "checkpoint_bytes": 16081490933,
+    "checkpoint_file_count": 15
+  },
+  "workload": {
+    "tier": "t256",
+    "requested_prompt_tokens": 256,
+    "actual_prompt_tokens": 256,
+    "first_token_observed": false,
+    "generation_completion_observed": false,
+    "evaluator_result_available": false,
+    "quality_metrics_available": false,
+    "throughput_metrics_available": false
+  },
+  "source_plan": {
+    "file": "autopsy-plan.json",
+    "sha256": "91c5b983ec1c039f0af8c2abf74dabb844998e20a0adc48363974018e76ed830"
+  },
+  "source_reports": {
+    "oom-autopsy-checkpoints.csv": "325bc7aa37a2e1d92edd6305e5a8bc0cd343bffe20d5202f06b9194631644515",
+    "oom-autopsy-report.html": "d3408cf9220c9c168630374035cccd97b5a2edf4d1c0184f3214cf7ea20fcc39",
+    "oom-autopsy-summary.json": "2cb09a3e1e743cd70c7289388f00b92e5405ebba6027fe61d7005cc6965454c0"
+  },
+  "scope_contract": {
+    "mlx_active_cache_peak": "MLX allocator counters; bytes",
+    "rss": "host process current/max RSS; bytes",
+    "swap": "host system swap total/used; bytes",
+    "available_memory_estimate": "approximate system headroom from macOS memory_pressure; not GPU memory",
+    "combination_rule": "Scopes are non-additive and must not be summed or relabeled as GPU memory"
+  },
+  "limitations": [
+    "This is bounded evidence for one recorded machine state, exact checkpoint, runtime, and t256 workload.",
+    "It is not a universal memory-capacity boundary and not a universal 24 GB boundary.",
+    "Checkpoint deltas are observations, not causal allocation attribution.",
+    "No first-token, completion, evaluator, quality, or throughput measurement exists.",
+    "No GPU utilization, free GPU memory, bandwidth, power, energy, or kernel time is measured or inferred.",
+    "Observer overhead from stage probes was not separately measured or subtracted.",
+    "Periodic sampling was disabled; only discrete stage-boundary checkpoints were recorded."
+  ]
+}

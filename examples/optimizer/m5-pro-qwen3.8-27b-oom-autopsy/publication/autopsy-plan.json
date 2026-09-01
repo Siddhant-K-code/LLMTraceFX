@@ -1,0 +1,69 @@
+{
+  "action": "plan",
+  "weights_loaded": false,
+  "downloads_performed": false,
+  "manifest": "package:llmtracefx.optimizer.lab/data/autopsy-manifest-v1.json",
+  "autopsy_id": "m5-pro-qwen3.8-27b-oom-autopsy-v1",
+  "autopsy_manifest_hash": "sha256:a2c33bdbbbf7f16675f3e458d4317ca6da0d8688e6d92d94a6c21ed792e1854a",
+  "frontier_id": "m5-pro-qwen3.8-27b-fit-frontier-v1",
+  "run_mode": "publication",
+  "clean_boot_confirmed": true,
+  "publication_ready": true,
+  "model_present_by_size": true,
+  "model": {
+    "repository_id": "mlx-community/Qwen3.8-27B-4bit",
+    "revision": "3e6447f082e89cc7f0bc6e5441afd38dfce760ff"
+  },
+  "tier": {
+    "name": "t256",
+    "requested_tokens": 256
+  },
+  "mlx_counter_apis": {
+    "active_bytes": {
+      "api": "mlx.core.get_active_memory",
+      "value": 0,
+      "unit": "bytes",
+      "error_category": null
+    },
+    "cache_bytes": {
+      "api": "mlx.core.get_cache_memory",
+      "value": 0,
+      "unit": "bytes",
+      "error_category": null
+    },
+    "peak_bytes": {
+      "api": "mlx.core.get_peak_memory",
+      "value": 0,
+      "unit": "bytes",
+      "error_category": null
+    }
+  },
+  "mlx_reset_peak_memory_api": "mlx.core.reset_peak_memory",
+  "sampling": {
+    "periodic_sampling_enabled": false
+  },
+  "machine_state": {
+    "collected_at": "2026-09-01T17:44:45.935350Z",
+    "os_name": "Darwin",
+    "os_release": "25.6.0",
+    "architecture": "arm64",
+    "chip": "Apple M5 Pro",
+    "physical_memory_bytes": 25769803776,
+    "available_memory_estimate_bytes": 21131239096,
+    "available_memory_estimate_provenance": "derived from macOS memory_pressure free percentage multiplied by physical memory; approximate system headroom, not free GPU memory",
+    "memory_free_percent": 82.0,
+    "memory_free_percent_provenance": "macOS memory_pressure",
+    "swap_used_bytes": 0,
+    "swap_provenance": "sysctl vm.swapusage",
+    "package_versions": {
+      "mlx": "0.32.2",
+      "mlx-lm": "0.31.3",
+      "mlx-vlm": "0.6.8",
+      "transformers": "5.16.1"
+    }
+  },
+  "safety": {
+    "safe": true,
+    "blockers": []
+  }
+}

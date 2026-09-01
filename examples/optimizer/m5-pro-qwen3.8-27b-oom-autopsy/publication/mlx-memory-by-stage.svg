@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="920" viewBox="0 0 1200 920" role="img" aria-labelledby="title desc">
+<title id="title">Qwen3.8-27B clean-boot OOM autopsy</title>
+<desc id="desc">Stage checkpoints shown on three independent axes: MLX allocator counters, host process RSS, and host system swap. Missing values are omitted, never converted to zero.</desc>
+<rect width="1200" height="920" fill="#f7f3ea"/>
+<text x="48" y="48" fill="#17202a" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="24" font-weight="700">Qwen3.8-27B clean-boot OOM autopsy</text>
+<text x="48" y="76" fill="#5b6167" font-family="ui-monospace,monospace" font-size="13">Exact bytes are embedded per point; GiB labels are binary conversions.</text>
+<text x="150.0" y="106.0" fill="#17202a" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="17" font-weight="600">MLX allocator counters</text>
+<text x="1155.0" y="106.0" text-anchor="end" fill="#5b6167" font-family="ui-monospace,monospace" font-size="12">scope: mlx_allocator; independent axis; bytes / 2^30</text>
+<rect x="150.0" y="130.0" width="1005.0" height="170.0" fill="#fffdf8" stroke="#d9d1c3"/>
+<text x="138.0" y="135.0" text-anchor="end" fill="#5b6167" font-family="ui-monospace,monospace" font-size="11">17.597 GiB</text>
+<text x="138.0" y="300.0" text-anchor="end" fill="#5b6167" font-family="ui-monospace,monospace" font-size="11">0</text>
+<line x1="987.5" y1="130.0" x2="987.5" y2="300.0" stroke="#9b2c2c" stroke-width="1.5" stroke-dasharray="5 4"/>
+<text x="993.5" y="146.0" fill="#9b2c2c" font-family="ui-monospace,monospace" font-size="11">OOM boundary</text>
+<polyline points="150.0,300.0 317.5,300.0 485.0,155.5 652.5,155.5 820.0,155.5 987.5,131.5 1155.0,135.0" fill="none" stroke="#c0392b" stroke-width="2"/>
+<circle cx="150.0" cy="300.0" r="3.5" fill="#c0392b" data-series="MLX active" data-stage="child_start" data-bytes="0"><title>MLX active at child_start: 0 bytes (0.000000 GiB)</title></circle>
+<circle cx="317.5" cy="300.0" r="3.5" fill="#c0392b" data-series="MLX active" data-stage="before_model_load" data-bytes="1032"><title>MLX active at before_model_load: 1032 bytes (0.000001 GiB)</title></circle>
+<circle cx="485.0" cy="155.5" r="3.5" fill="#c0392b" data-series="MLX active" data-stage="after_model_load" data-bytes="16055717352"><title>MLX active at after_model_load: 16055717352 bytes (14.953052 GiB)</title></circle>
+<circle cx="652.5" cy="155.5" r="3.5" fill="#c0392b" data-series="MLX active" data-stage="after_prompt_tokenization" data-bytes="16055717352"><title>MLX active at after_prompt_tokenization: 16055717352 bytes (14.953052 GiB)</title></circle>
+<circle cx="820.0" cy="155.5" r="3.5" fill="#c0392b" data-series="MLX active" data-stage="immediately_before_prefill_generation" data-bytes="16055717352"><title>MLX active at immediately_before_prefill_generation: 16055717352 bytes (14.953052 GiB)</title></circle>
+<circle cx="987.5" cy="131.5" r="3.5" fill="#c0392b" data-series="MLX active" data-stage="caught_oom" data-bytes="18727905294"><title>MLX active at caught_oom: 18727905294 bytes (17.441721 GiB)</title></circle>
+<circle cx="1155.0" cy="135.0" r="3.5" fill="#c0392b" data-series="MLX active" data-stage="cleanup" data-bytes="18341875182"><title>MLX active at cleanup: 18341875182 bytes (17.082202 GiB)</title></circle>
+<polyline points="150.0,300.0 317.5,300.0 485.0,300.0 652.5,300.0 820.0,300.0 987.5,299.3 1155.0,295.8" fill="none" stroke="#d68910" stroke-width="2"/>
+<circle cx="150.0" cy="300.0" r="3.5" fill="#d68910" data-series="MLX cache" data-stage="child_start" data-bytes="0"><title>MLX cache at child_start: 0 bytes (0.000000 GiB)</title></circle>
+<circle cx="317.5" cy="300.0" r="3.5" fill="#d68910" data-series="MLX cache" data-stage="before_model_load" data-bytes="0"><title>MLX cache at before_model_load: 0 bytes (0.000000 GiB)</title></circle>
+<circle cx="485.0" cy="300.0" r="3.5" fill="#d68910" data-series="MLX cache" data-stage="after_model_load" data-bytes="18548"><title>MLX cache at after_model_load: 18548 bytes (0.000017 GiB)</title></circle>
+<circle cx="652.5" cy="300.0" r="3.5" fill="#d68910" data-series="MLX cache" data-stage="after_prompt_tokenization" data-bytes="18548"><title>MLX cache at after_prompt_tokenization: 18548 bytes (0.000017 GiB)</title></circle>
+<circle cx="820.0" cy="300.0" r="3.5" fill="#d68910" data-series="MLX cache" data-stage="immediately_before_prefill_generation" data-bytes="18556"><title>MLX cache at immediately_before_prefill_generation: 18556 bytes (0.000017 GiB)</title></circle>
+<circle cx="987.5" cy="299.3" r="3.5" fill="#d68910" data-series="MLX cache" data-stage="caught_oom" data-bytes="76438712"><title>MLX cache at caught_oom: 76438712 bytes (0.071189 GiB)</title></circle>
+<circle cx="1155.0" cy="295.8" r="3.5" fill="#d68910" data-series="MLX cache" data-stage="cleanup" data-bytes="462468824"><title>MLX cache at cleanup: 462468824 bytes (0.430708 GiB)</title></circle>
+<polyline points="150.0,300.0 317.5,300.0 485.0,155.5 652.5,155.5 820.0,155.5 987.5,130.0 1155.0,130.0" fill="none" stroke="#7d3c98" stroke-width="2"/>
+<circle cx="150.0" cy="300.0" r="3.5" fill="#7d3c98" data-series="MLX peak" data-stage="child_start" data-bytes="0"><title>MLX peak at child_start: 0 bytes (0.000000 GiB)</title></circle>
+<circle cx="317.5" cy="300.0" r="3.5" fill="#7d3c98" data-series="MLX peak" data-stage="before_model_load" data-bytes="1032"><title>MLX peak at before_model_load: 1032 bytes (0.000001 GiB)</title></circle>
+<circle cx="485.0" cy="155.5" r="3.5" fill="#7d3c98" data-series="MLX peak" data-stage="after_model_load" data-bytes="16055717352"><title>MLX peak at after_model_load: 16055717352 bytes (14.953052 GiB)</title></circle>
+<circle cx="652.5" cy="155.5" r="3.5" fill="#7d3c98" data-series="MLX peak" data-stage="after_prompt_tokenization" data-bytes="16055717352"><title>MLX peak at after_prompt_tokenization: 16055717352 bytes (14.953052 GiB)</title></circle>
+<circle cx="820.0" cy="155.5" r="3.5" fill="#7d3c98" data-series="MLX peak" data-stage="immediately_before_prefill_generation" data-bytes="16055717360"><title>MLX peak at immediately_before_prefill_generation: 16055717360 bytes (14.953052 GiB)</title></circle>
+<circle cx="987.5" cy="130.0" r="3.5" fill="#7d3c98" data-series="MLX peak" data-stage="caught_oom" data-bytes="18894739574"><title>MLX peak at caught_oom: 18894739574 bytes (17.597098 GiB)</title></circle>
+<circle cx="1155.0" cy="130.0" r="3.5" fill="#7d3c98" data-series="MLX peak" data-stage="cleanup" data-bytes="18894739574"><title>MLX peak at cleanup: 18894739574 bytes (17.597098 GiB)</title></circle>
+<rect x="150.0" y="312.0" width="11" height="11" fill="#c0392b"/>
+<text x="167.0" y="322.0" fill="#17202a" font-family="ui-monospace,monospace" font-size="11">MLX active</text>
+<rect x="320.0" y="312.0" width="11" height="11" fill="#d68910"/>
+<text x="337.0" y="322.0" fill="#17202a" font-family="ui-monospace,monospace" font-size="11">MLX cache</text>
+<rect x="490.0" y="312.0" width="11" height="11" fill="#7d3c98"/>
+<text x="507.0" y="322.0" fill="#17202a" font-family="ui-monospace,monospace" font-size="11">MLX peak</text>
+<text x="150.0" y="361.0" fill="#17202a" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="17" font-weight="600">Host process memory</text>
+<text x="1155.0" y="361.0" text-anchor="end" fill="#5b6167" font-family="ui-monospace,monospace" font-size="12">scope: host_process; independent axis; bytes / 2^30</text>
+<rect x="150.0" y="385.0" width="1005.0" height="170.0" fill="#fffdf8" stroke="#d9d1c3"/>
+<text x="138.0" y="390.0" text-anchor="end" fill="#5b6167" font-family="ui-monospace,monospace" font-size="11">1.777 GiB</text>
+<text x="138.0" y="555.0" text-anchor="end" fill="#5b6167" font-family="ui-monospace,monospace" font-size="11">0</text>
+<line x1="987.5" y1="385.0" x2="987.5" y2="555.0" stroke="#9b2c2c" stroke-width="1.5" stroke-dasharray="5 4"/>
+<text x="993.5" y="401.0" fill="#9b2c2c" font-family="ui-monospace,monospace" font-size="11">OOM boundary</text>
+<polyline points="150.0,550.8 317.5,543.9 485.0,454.6 652.5,472.8 820.0,472.2 987.5,508.0 1155.0,507.7" fill="none" stroke="#2471a3" stroke-width="2"/>
+<circle cx="150.0" cy="550.8" r="3.5" fill="#2471a3" data-series="current RSS" data-stage="child_start" data-bytes="46956544"><title>current RSS at child_start: 46956544 bytes (0.043732 GiB)</title></circle>
+<circle cx="317.5" cy="543.9" r="3.5" fill="#2471a3" data-series="current RSS" data-stage="before_model_load" data-bytes="124731392"><title>current RSS at before_model_load: 124731392 bytes (0.116165 GiB)</title></circle>
+<circle cx="485.0" cy="454.6" r="3.5" fill="#2471a3" data-series="current RSS" data-stage="after_model_load" data-bytes="1127120896"><title>current RSS at after_model_load: 1127120896 bytes (1.049713 GiB)</title></circle>
+<circle cx="652.5" cy="472.8" r="3.5" fill="#2471a3" data-series="current RSS" data-stage="after_prompt_tokenization" data-bytes="922681344"><title>current RSS at after_prompt_tokenization: 922681344 bytes (0.859314 GiB)</title></circle>
+<circle cx="820.0" cy="472.2" r="3.5" fill="#2471a3" data-series="current RSS" data-stage="immediately_before_prefill_generation" data-bytes="929824768"><title>current RSS at immediately_before_prefill_generation: 929824768 bytes (0.865967 GiB)</title></circle>
+<circle cx="987.5" cy="508.0" r="3.5" fill="#2471a3" data-series="current RSS" data-stage="caught_oom" data-bytes="527089664"><title>current RSS at caught_oom: 527089664 bytes (0.490891 GiB)</title></circle>
+<circle cx="1155.0" cy="507.7" r="3.5" fill="#2471a3" data-series="current RSS" data-stage="cleanup" data-bytes="531005440"><title>current RSS at cleanup: 531005440 bytes (0.494537 GiB)</title></circle>
+<polyline points="150.0,550.8 317.5,543.9 485.0,385.0 652.5,385.0 820.0,385.0 987.5,385.0 1155.0,385.0" fill="none" stroke="#148f77" stroke-width="2"/>
+<circle cx="150.0" cy="550.8" r="3.5" fill="#148f77" data-series="max RSS" data-stage="child_start" data-bytes="46972928"><title>max RSS at child_start: 46972928 bytes (0.043747 GiB)</title></circle>
+<circle cx="317.5" cy="543.9" r="3.5" fill="#148f77" data-series="max RSS" data-stage="before_model_load" data-bytes="124731392"><title>max RSS at before_model_load: 124731392 bytes (0.116165 GiB)</title></circle>
+<circle cx="485.0" cy="385.0" r="3.5" fill="#148f77" data-series="max RSS" data-stage="after_model_load" data-bytes="1908129792"><title>max RSS at after_model_load: 1908129792 bytes (1.777084 GiB)</title></circle>
+<circle cx="652.5" cy="385.0" r="3.5" fill="#148f77" data-series="max RSS" data-stage="after_prompt_tokenization" data-bytes="1908129792"><title>max RSS at after_prompt_tokenization: 1908129792 bytes (1.777084 GiB)</title></circle>
+<circle cx="820.0" cy="385.0" r="3.5" fill="#148f77" data-series="max RSS" data-stage="immediately_before_prefill_generation" data-bytes="1908129792"><title>max RSS at immediately_before_prefill_generation: 1908129792 bytes (1.777084 GiB)</title></circle>
+<circle cx="987.5" cy="385.0" r="3.5" fill="#148f77" data-series="max RSS" data-stage="caught_oom" data-bytes="1908129792"><title>max RSS at caught_oom: 1908129792 bytes (1.777084 GiB)</title></circle>
+<circle cx="1155.0" cy="385.0" r="3.5" fill="#148f77" data-series="max RSS" data-stage="cleanup" data-bytes="1908129792"><title>max RSS at cleanup: 1908129792 bytes (1.777084 GiB)</title></circle>
+<rect x="150.0" y="567.0" width="11" height="11" fill="#2471a3"/>
+<text x="167.0" y="577.0" fill="#17202a" font-family="ui-monospace,monospace" font-size="11">current RSS</text>
+<rect x="320.0" y="567.0" width="11" height="11" fill="#148f77"/>
+<text x="337.0" y="577.0" fill="#17202a" font-family="ui-monospace,monospace" font-size="11">max RSS</text>
+<text x="150.0" y="616.0" fill="#17202a" font-family="-apple-system,BlinkMacSystemFont,sans-serif" font-size="17" font-weight="600">Host system swap</text>
+<text x="1155.0" y="616.0" text-anchor="end" fill="#5b6167" font-family="ui-monospace,monospace" font-size="12">scope: host_system_swap; independent axis; bytes / 2^30</text>
+<rect x="150.0" y="640.0" width="1005.0" height="170.0" fill="#fffdf8" stroke="#d9d1c3"/>
+<text x="138.0" y="645.0" text-anchor="end" fill="#5b6167" font-family="ui-monospace,monospace" font-size="11">6.000 GiB</text>
+<text x="138.0" y="810.0" text-anchor="end" fill="#5b6167" font-family="ui-monospace,monospace" font-size="11">0</text>
+<line x1="987.5" y1="640.0" x2="987.5" y2="810.0" stroke="#9b2c2c" stroke-width="1.5" stroke-dasharray="5 4"/>
+<text x="993.5" y="656.0" fill="#9b2c2c" font-family="ui-monospace,monospace" font-size="11">OOM boundary</text>
+<polyline points="150.0,810.0 317.5,810.0 485.0,671.6 652.5,661.9 820.0,653.7 987.5,702.6 1155.0,702.6" fill="none" stroke="#7d6608" stroke-width="2"/>
+<circle cx="150.0" cy="810.0" r="3.5" fill="#7d6608" data-series="swap used" data-stage="child_start" data-bytes="0"><title>swap used at child_start: 0 bytes (0.000000 GiB)</title></circle>
+<circle cx="317.5" cy="810.0" r="3.5" fill="#7d6608" data-series="swap used" data-stage="before_model_load" data-bytes="0"><title>swap used at before_model_load: 0 bytes (0.000000 GiB)</title></circle>
+<circle cx="485.0" cy="671.6" r="3.5" fill="#7d6608" data-series="swap used" data-stage="after_model_load" data-bytes="5245627269"><title>swap used at after_model_load: 5245627269 bytes (4.885371 GiB)</title></circle>
+<circle cx="652.5" cy="661.9" r="3.5" fill="#7d6608" data-series="swap used" data-stage="after_prompt_tokenization" data-bytes="5611129405"><title>swap used at after_prompt_tokenization: 5611129405 bytes (5.225771 GiB)</title></circle>
+<circle cx="820.0" cy="653.7" r="3.5" fill="#7d6608" data-series="swap used" data-stage="immediately_before_prefill_generation" data-bytes="5923531653"><title>swap used at immediately_before_prefill_generation: 5923531653 bytes (5.516719 GiB)</title></circle>
+<circle cx="987.5" cy="702.6" r="3.5" fill="#7d6608" data-series="swap used" data-stage="caught_oom" data-bytes="4070372802"><title>swap used at caught_oom: 4070372802 bytes (3.790830 GiB)</title></circle>
+<circle cx="1155.0" cy="702.6" r="3.5" fill="#7d6608" data-series="swap used" data-stage="cleanup" data-bytes="4070372802"><title>swap used at cleanup: 4070372802 bytes (3.790830 GiB)</title></circle>
+<polyline points="150.0,810.0 317.5,810.0 485.0,640.0 652.5,640.0 820.0,640.0 987.5,668.3 1155.0,668.3" fill="none" stroke="#5d6d7e" stroke-width="2"/>
+<circle cx="150.0" cy="810.0" r="3.5" fill="#5d6d7e" data-series="swap total" data-stage="child_start" data-bytes="0"><title>swap total at child_start: 0 bytes (0.000000 GiB)</title></circle>
+<circle cx="317.5" cy="810.0" r="3.5" fill="#5d6d7e" data-series="swap total" data-stage="before_model_load" data-bytes="0"><title>swap total at before_model_load: 0 bytes (0.000000 GiB)</title></circle>
+<circle cx="485.0" cy="640.0" r="3.5" fill="#5d6d7e" data-series="swap total" data-stage="after_model_load" data-bytes="6442450944"><title>swap total at after_model_load: 6442450944 bytes (6.000000 GiB)</title></circle>
+<circle cx="652.5" cy="640.0" r="3.5" fill="#5d6d7e" data-series="swap total" data-stage="after_prompt_tokenization" data-bytes="6442450944"><title>swap total at after_prompt_tokenization: 6442450944 bytes (6.000000 GiB)</title></circle>
+<circle cx="820.0" cy="640.0" r="3.5" fill="#5d6d7e" data-series="swap total" data-stage="immediately_before_prefill_generation" data-bytes="6442450944"><title>swap total at immediately_before_prefill_generation: 6442450944 bytes (6.000000 GiB)</title></circle>
+<circle cx="987.5" cy="668.3" r="3.5" fill="#5d6d7e" data-series="swap total" data-stage="caught_oom" data-bytes="5368709120"><title>swap total at caught_oom: 5368709120 bytes (5.000000 GiB)</title></circle>
+<circle cx="1155.0" cy="668.3" r="3.5" fill="#5d6d7e" data-series="swap total" data-stage="cleanup" data-bytes="5368709120"><title>swap total at cleanup: 5368709120 bytes (5.000000 GiB)</title></circle>
+<rect x="150.0" y="822.0" width="11" height="11" fill="#7d6608"/>
+<text x="167.0" y="832.0" fill="#17202a" font-family="ui-monospace,monospace" font-size="11">swap used</text>
+<rect x="320.0" y="822.0" width="11" height="11" fill="#5d6d7e"/>
+<text x="337.0" y="832.0" fill="#17202a" font-family="ui-monospace,monospace" font-size="11">swap total</text>
+<text x="150.0" y="893" text-anchor="middle" fill="#17202a" font-family="ui-monospace,monospace" font-size="11">child start</text>
+<text x="317.5" y="893" text-anchor="middle" fill="#17202a" font-family="ui-monospace,monospace" font-size="11">before load</text>
+<text x="485.0" y="893" text-anchor="middle" fill="#17202a" font-family="ui-monospace,monospace" font-size="11">after load</text>
+<text x="652.5" y="893" text-anchor="middle" fill="#17202a" font-family="ui-monospace,monospace" font-size="11">tokenized</text>
+<text x="820.0" y="893" text-anchor="middle" fill="#17202a" font-family="ui-monospace,monospace" font-size="11">before prefill</text>
+<text x="987.5" y="893" text-anchor="middle" fill="#17202a" font-family="ui-monospace,monospace" font-size="11">caught OOM</text>
+<text x="1155.0" y="893" text-anchor="middle" fill="#17202a" font-family="ui-monospace,monospace" font-size="11">cleanup</text>
+</svg>

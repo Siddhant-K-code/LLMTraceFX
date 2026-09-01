@@ -1,90 +1,102 @@
-# Qwen3.8-27B OOM autopsy
+# Qwen3.8-27B clean-boot OOM autopsy
 
-This directory is reserved for sanitized reports from the separately
-namespaced `m5-pro-qwen3.8-27b-oom-autopsy-v1` autopsy. It binds by SHA-256
-and identity to the packaged `m5-pro-qwen3.8-27b-fit-frontier-v1` manifest and
-runs only the exact pinned `t256` tier (256 requested tokens, 48 max output
-tokens) that the fit-frontier exploratory evidence in
-`../m5-pro-qwen3.8-27b-fit-frontier/exploratory/` already showed failing with
-insufficient memory before a first token. It never modifies or reinterprets
-that existing #51/#52 evidence.
+This namespace now contains real, sanitized publication evidence from the
+separately namespaced `m5-pro-qwen3.8-27b-oom-autopsy-v1` run. The implementation
+and contract existed previously, but that implementation-only state contained no
+real publication checkpoints. The files under [`publication/`](publication/)
+are the first clean-boot publication bundle and do not alter or reinterpret the
+earlier exploratory or PR #51/#52 evidence.
 
-The no-load exploratory plan passed the current host safety gates, but the
-pinned checkpoint was not present in this worktree's cache. The model run was
-therefore refused without a download, and this change contains no invented
-checkpoint values or synthetic stand-in. This README documents the evidence
-contract a later real run must satisfy; `oom-autopsy-summary.json`,
-`oom-autopsy-checkpoints.csv`, and `oom-autopsy-report.html` land here only once
-an operator runs the autopsy on the pinned hardware and copies the sanitized
-output over.
+The run used code checkout
+`2519bc8da309656d2e2ce2a7063f19b0dfb4c9ed`, completed at
+`2026-09-01T17:45:36.921331Z`, and recorded the operator's explicit clean-boot
+assertion. It used publication mode and the exact 15-file,
+16,081,490,933-byte (14.977056 GiB) checkpoint
+`mlx-community/Qwen3.8-27B-4bit@3e6447f082e89cc7f0bc6e5441afd38dfce760ff`.
 
-## What the autopsy adds beyond the fit frontier
+## Public bundle
 
-The fit frontier records only pass/fail per tier. The autopsy instruments the
-exact same `t256` request with privacy-safe *stage checkpoints* (no periodic
-sampling) so a failure can be read as a sequence of allocator/process/system
-observations instead of a single opaque error:
+- [`autopsy-plan.json`](publication/autopsy-plan.json) - reviewed no-load plan;
+  `weights_loaded=false`, `downloads_performed=false`,
+  `publication_ready=true`, `model_present_by_size=true`, and no safety blockers.
+- [`oom-autopsy-summary.json`](publication/oom-autopsy-summary.json) - sanitized
+  report data and explicit measurement provenance.
+- [`oom-autopsy-checkpoints.csv`](publication/oom-autopsy-checkpoints.csv) -
+  checkpoint rows for independent analysis.
+- [`oom-autopsy-report.html`](publication/oom-autopsy-report.html) -
+  self-contained source report with no external resources.
+- [`mlx-memory-by-stage.svg`](publication/mlx-memory-by-stage.svg) - deterministic
+  chart generated only from the public summary JSON. MLX allocator, process RSS,
+  and system swap use separate panels and independent axes.
+- [`evidence-manifest.json`](publication/evidence-manifest.json) - run identity,
+  source hashes, outcome, scope contract, and limitations.
+- [`SHA256SUMS`](publication/SHA256SUMS) - complete content hashes for the public
+  bundle.
+
+The generator and fail-closed verifier are
+[`evidence_bundle.py`](evidence_bundle.py). They do not load a model:
+
+```bash
+make m5-autopsy-evidence-verify
+uv run --offline python \
+  examples/optimizer/m5-pro-qwen3.8-27b-oom-autopsy/evidence_bundle.py generate
+git diff --exit-code -- \
+  examples/optimizer/m5-pro-qwen3.8-27b-oom-autopsy/publication
+```
+
+## Recorded state and outcome
+
+The no-load plan observed 82% free memory pressure, approximately
+21,131,239,096 bytes (19.680000 GiB) of system headroom, and 0 bytes of swap in
+use. The run preflight observed 79% free, approximately 20,358,144,983 bytes
+(18.960000 GiB) of system headroom, and 0 bytes of swap in use. These available
+memory values are estimates derived from macOS `memory_pressure`; they are
+approximate system headroom, not GPU memory.
+
+The host was Apple M5 Pro arm64 with 25,769,803,776 physical bytes (24 GiB),
+Darwin 25.6.0, MLX 0.32.2, mlx-lm 0.31.3, mlx-vlm 0.6.8, and transformers
+5.16.1. The exact `t256` workload requested and actually tokenized 256 prompt
+tokens. The process ended OOM because `MLX/Metal reported insufficient memory`;
+the child exit code was 2, it did not time out, descendants were cleaned, and the
+terminal journal was complete. No first token, generation completion, evaluator,
+quality, or throughput measurement exists for this attempt.
+
+The complete observed stage order was:
 
 `child_start -> before_model_load -> after_model_load ->
 after_prompt_tokenization -> immediately_before_prefill_generation ->
-[after_first_token, if reached] -> completion or caught_oom -> cleanup`
+caught_oom -> cleanup`
 
-Each checkpoint records three independent scopes, each with explicit API
-provenance, and `null` (never `0` or an estimate) when a probe is unavailable
-or errors:
+Authoritative selected allocator values are:
 
-- **MLX allocator** - `mlx.core.get_active_memory` / `get_cache_memory` /
-  `get_peak_memory`, probed as callables on the installed MLX build rather
-  than assumed present.
-- **Host process** - current and max RSS in bytes, normalized from
-  platform-specific units and tools (macOS `ps -o rss=` in KiB plus
-  `getrusage().ru_maxrss` in bytes; Linux `/proc/self/status` `VmRSS` in kB
-  plus `getrusage().ru_maxrss` in KiB).
-- **Host system** - swap total/used in bytes (macOS `sysctl vm.swapusage`;
-  Linux `/proc/meminfo` `SwapTotal`/`SwapFree`).
+| Stage | MLX active bytes | MLX cache bytes | MLX peak bytes |
+|---|---:|---:|---:|
+| after model load | 16,055,717,352 (14.953052 GiB) | 18,548 (0.000017 GiB) | 16,055,717,352 (14.953052 GiB) |
+| immediately before prefill | 16,055,717,352 (14.953052 GiB) | 18,556 (0.000017 GiB) | 16,055,717,360 (14.953052 GiB) |
+| caught OOM | 18,727,905,294 (17.441721 GiB) | 76,438,712 (0.071189 GiB) | 18,894,739,574 (17.597098 GiB) |
+| cleanup | 18,341,875,182 (17.082202 GiB) | 462,468,824 (0.430708 GiB) | 18,894,739,574 (17.597098 GiB) |
 
-MLX allocator scope is not GPU capacity or free memory, and host process RSS
-is not GPU memory. No PIDs, paths, hostnames, usernames, prompts, or response
-text ever appear in the journal or the report.
+From the immediately-before-prefill checkpoint to the caught-OOM checkpoint,
+the observed deltas were active +2,672,187,942 bytes (2.488669 GiB), cache
++76,420,156 bytes (0.071172 GiB), and peak +2,839,022,214 bytes
+(2.644045 GiB). They are checkpoint-to-checkpoint differences, not causal
+allocation attribution.
 
-## Commands
+At the prefill boundary, process RSS was 929,824,768 bytes, process max RSS was
+1,908,129,792 bytes, and system swap used was 5,923,531,653 of
+6,442,450,944 bytes. At caught OOM, those values were 527,089,664 bytes,
+1,908,129,792 bytes, and 4,070,372,802 of 5,368,709,120 bytes. Swap grew after
+model load and changed dynamically; these are only the exact stage observations.
 
-```bash
-# Default: offline plan only. Probes MLX counter APIs, never constructs a
-# runtime or loads weights.
-make m5-autopsy
+## Scope and limitations
 
-# Resume (or start) the exploratory, process-isolated t256 autopsy. Refuses
-# unless the pinned model is already cached and verified, and unless the
-# existing safety gates pass. There is no acquire/download surface here; use
-# `make m5-lab-acquire` or `make m5-frontier` first.
-make m5-autopsy-run
+MLX active/cache/peak values are MLX allocator counters. Current/max RSS is host
+process scope. Swap is host system scope. They are not additive, must not be
+summed, and none is labeled as free GPU memory or GPU capacity. Bytes are
+authoritative; GiB values are only binary-unit conversions (`bytes / 2^30`).
 
-# After an operator-confirmed clean boot only:
-make m5-autopsy-publication
-```
-
-Passing `--confirm-clean-boot` (wired through `m5-autopsy-publication`) is an
-operator assertion; the autopsy never infers clean-boot status, and
-exploratory mode refuses the flag outright. Raw journals, per-attempt working
-directories, and any path- or host-bearing artifacts stay under
-`.cache/llmtracefx/m5-pro-qwen3.8-27b-oom-autopsy-v1/` and are ignored by Git.
-Only the sanitized `oom-autopsy-summary.json` / `oom-autopsy-checkpoints.csv` /
-`oom-autopsy-report.html` produced by `llmtracefx-m5-lab autopsy report` are
-suitable to copy into this example directory.
-
-## Strict limitations that carry into every report
-
-- No unified-memory free-space or GPU capacity precision; process RSS is not
-  GPU memory.
-- No GPU utilization, free GPU memory, memory bandwidth, power, energy, or
-  kernel time.
-- Stage deltas are observed checkpoint-to-checkpoint changes, not a causal
-  explanation of what allocated the memory in between.
-- Not evidence of a universal 24 GB boundary; this is one pinned model,
-  runtime, and request on one machine.
-- A committed report's `synthetic` field is `false` only for real evidence
-  from an actual run; synthetic reports (used only in tests) are always
-  `synthetic: true` and are never placed in this directory.
-- Observer overhead is limited to the stage-boundary probes themselves and is
-  not separately measured or subtracted.
+This is bounded evidence for one recorded machine state, exact checkpoint,
+runtime, and `t256` workload. It is not a universal memory-capacity or 24 GB
+boundary. It measures no GPU utilization, free GPU memory, bandwidth, power,
+energy, occupancy, or kernel time. The stage probes add observer overhead that
+was not separately measured or subtracted, and periodic sampling was disabled.
