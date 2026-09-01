@@ -1,0 +1,28 @@
+{
+  "schema_version": "1",
+  "autopsy_id": "m5-pro-qwen3.8-27b-oom-autopsy-v1",
+  "frontier_manifest_resource": "data/fit-frontier-manifest-v1.json",
+  "frontier_manifest_sha256": "47ec7cdc11baedf3bdcc803502a584aeaa8d79fc57bdbc49f4a3e773294b5b00",
+  "frontier_id": "m5-pro-qwen3.8-27b-fit-frontier-v1",
+  "base_lab_id": "m5-pro-qwen3.8-27b-v1",
+  "model": {
+    "repository_id": "mlx-community/Qwen3.8-27B-4bit",
+    "revision": "3e6447f082e89cc7f0bc6e5441afd38dfce760ff",
+    "expected_download_bytes": 16081490933
+  },
+  "tier": {
+    "name": "t256",
+    "requested_tokens": 256
+  },
+  "child_timeout_seconds": 600,
+  "process_cleanup_grace_seconds": 5,
+  "journal": {
+    "max_checkpoints": 16,
+    "max_bytes": 65536
+  },
+  "artifacts": {
+    "workspace": ".cache/llmtracefx/m5-pro-qwen3.8-27b-oom-autopsy-v1",
+    "shareable_example_dir": "examples/optimizer/m5-pro-qwen3.8-27b-oom-autopsy",
+    "commit_raw_artifacts": false
+  }
+}

@@ -204,6 +204,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = sys.argv[1:] if argv is None else argv
+    if raw_argv[:1] == ["autopsy"]:
+        # Routed to the autopsy module's own self-contained argparse
+        # parser, mirroring the standalone `llmtracefx-m5-frontier`
+        # entrypoint, so the existing plan|acquire|run|report|verify
+        # actions and default action below are completely unaffected.
+        from . import autopsy
+
+        return autopsy.main(raw_argv[1:])
     args = build_parser().parse_args(argv)
     commands = {
         "plan": _cmd_plan,

@@ -219,6 +219,7 @@ jobs:
           print('version', md.version('llmtracefx'))
           "
           "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-lab" --help
+          "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-lab" autopsy --help
           "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-frontier" --help
           set +e
           "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-lab" plan > m5-plan.json
@@ -244,5 +245,20 @@ jobs:
           plan = json.loads(Path('frontier-plan.json').read_text())
           assert plan['manifest'].startswith('package:')
           assert plan['weights_loaded'] is False
+          assert plan['model']['revision'] == '3e6447f082e89cc7f0bc6e5441afd38dfce760ff'
+          "
+          set +e
+          "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-lab" autopsy plan > autopsy-plan.json
+          autopsy_status="$?"
+          set -e
+          test "$autopsy_status" -eq 2
+          "$GITHUB_WORKSPACE/.wheel-check/bin/python" -c "
+          import json
+          from pathlib import Path
+          plan = json.loads(Path('autopsy-plan.json').read_text())
+          assert plan['manifest'].startswith('package:')
+          assert plan['weights_loaded'] is False
+          assert plan['downloads_performed'] is False
+          assert plan['model']['repository_id'] == 'mlx-community/Qwen3.8-27B-4bit'
           assert plan['model']['revision'] == '3e6447f082e89cc7f0bc6e5441afd38dfce760ff'
           "

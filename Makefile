@@ -1,6 +1,6 @@
 # LLMTraceFX Makefile
 
-.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan test-deploy metal-evidence m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication
+.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan test-deploy metal-evidence m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication m5-autopsy m5-autopsy-run m5-autopsy-publication
 
 help:  ## Show this help message
 	@echo "LLMTraceFX - evidence-first inference toolkit"
@@ -137,6 +137,22 @@ m5-frontier-run:  ## Run/resume an exploratory process-isolated frontier
 
 m5-frontier-publication:  ## Run publication mode after an operator-confirmed clean boot
 	uv run --offline --no-sync --extra mlx llmtracefx-m5-frontier run --mode publication --confirm-clean-boot --manifest $(M5_FRONTIER_MANIFEST) --workspace $(M5_FRONTIER_WORKSPACE) --model-path $(M5_FRONTIER_MODEL) --max-tier $(FRONTIER_MAX_TIER)
+
+# Process-isolated OOM autopsy bound to the fit frontier manifest and its t256
+# tier. Planning is offline and never loads weights. Runs collect only stage
+# checkpoints (no periodic sampling) and refuse without the cached pinned model.
+M5_AUTOPSY_MANIFEST ?= llmtracefx/optimizer/lab/data/autopsy-manifest-v1.json
+M5_AUTOPSY_WORKSPACE ?= .cache/llmtracefx/m5-pro-qwen3.8-27b-oom-autopsy-v1
+M5_AUTOPSY_MODEL ?= .cache/models/qwen3.8-27b-4bit-3e6447f
+
+m5-autopsy:  ## Plan the OOM autopsy without loading weights
+	uv run --offline --no-sync --extra mlx llmtracefx-m5-lab autopsy plan --manifest $(M5_AUTOPSY_MANIFEST) --workspace $(M5_AUTOPSY_WORKSPACE) --model-path $(M5_AUTOPSY_MODEL)
+
+m5-autopsy-run:  ## Run/resume an exploratory process-isolated OOM autopsy at t256
+	uv run --offline --no-sync --extra mlx llmtracefx-m5-lab autopsy run --manifest $(M5_AUTOPSY_MANIFEST) --workspace $(M5_AUTOPSY_WORKSPACE) --model-path $(M5_AUTOPSY_MODEL)
+
+m5-autopsy-publication:  ## Run publication mode after an operator-confirmed clean boot
+	uv run --offline --no-sync --extra mlx llmtracefx-m5-lab autopsy run --mode publication --confirm-clean-boot --manifest $(M5_AUTOPSY_MANIFEST) --workspace $(M5_AUTOPSY_WORKSPACE) --model-path $(M5_AUTOPSY_MODEL)
 
 metal-evidence:  ## Capture privacy-safe Metal evidence (requires OUTPUT_DIR)
 	@test -n "$(OUTPUT_DIR)" || { echo "OUTPUT_DIR is required" >&2; exit 2; }

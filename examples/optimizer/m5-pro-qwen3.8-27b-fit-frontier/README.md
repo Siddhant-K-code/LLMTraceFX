@@ -22,3 +22,8 @@ Passing `--confirm-clean-boot` through that target is an operator assertion.
 The lab does not infer clean-boot status, and it still refuses publication mode
 if the pinned hardware, runtime, memory-headroom, swap, disk, model-hash, or
 artifact-integrity gates fail.
+
+A separately namespaced autopsy binds to this exact manifest and its `t256`
+tier to instrument the same failing request with privacy-safe stage
+checkpoints (MLX allocator, host process, and host swap memory scopes). See
+`../m5-pro-qwen3.8-27b-oom-autopsy/README.md`.
