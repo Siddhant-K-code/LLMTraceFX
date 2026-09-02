@@ -40,7 +40,11 @@ def test_refusal_preserves_zero_spend_and_exact_login_step() -> None:
     assert manifest["decision"]["status"] == "refused"
     assert manifest["decision"]["paid_execution_allowed"] is False
     assert manifest["authorization"]["hard_cap_usd"] == "10.000000"
-    assert manifest["authorization"]["actual_or_observed_credit_use_usd"] == "0.000000"
+    assert manifest["authorization"]["provider_reported_credit_use_usd"] is None
+    assert (
+        manifest["authorization"]["experiment_attributable_spend_usd_inferred"]
+        == "0.000000"
+    )
     assert manifest["authorization"]["modal_cli_authenticated"] is False
     assert manifest["authorization"]["exact_login_step"] == "uv run modal setup"
     assert manifest["provider_policy"]["modal_paid_commands_executed"] == 0
@@ -66,6 +70,9 @@ def test_model_inventory_and_provenance_limits_are_exact() -> None:
     assert inventory["total_bytes"] == 328366172318
     assert inventory["safetensors_shard_count"] == 62
     assert inventory["safetensors_shards_with_published_sha256"] == 62
+    assert len(inventory["files"]) == 72
+    assert sum(entry["size_bytes"] for entry in inventory["files"]) == 328366172318
+    assert sum(entry["sha256"] is not None for entry in inventory["files"]) == 63
     assert (
         manifest["serving_configuration"]["exact_framework_source_revision_verified"]
         is False

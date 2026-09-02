@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import math
 import re
 import sys
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -69,7 +71,7 @@ def _render_report() -> str:
             "Modeled complete envelope",
             f"${plan['cost_envelope']['worst_case_usd']:.2f}",
         ),
-        ("Observed Modal spend", "$0.00"),
+        ("Experiment-attributable spend", "$0.00 (inferred; not provider-reported)"),
         ("Modal CLI authenticated", "no"),
         ("Paid commands executed", "0"),
         ("Model revision", manifest["model"]["revision"]),
@@ -136,6 +138,28 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def refresh_inventory() -> None:
+    """Fetch the full published inventory for the already-pinned revision."""
+    existing = _load("inventory-summary.json")
+    with urllib.request.urlopen(existing["source"], timeout=60) as response:
+        remote = json.load(response)
+    if remote.get("sha") != existing["revision"]:
+        raise EvidenceError("inventory endpoint did not return the pinned revision")
+    files = [
+        {
+            "path": entry["rfilename"],
+            "size_bytes": entry["size"],
+            "sha256": (entry.get("lfs") or {}).get("sha256"),
+        }
+        for entry in remote.get("siblings") or ()
+    ]
+    files.sort(key=lambda entry: entry["path"])
+    existing["files"] = files
+    (ROOT / "inventory-summary.json").write_text(
+        _canonical_json(existing), encoding="utf-8"
+    )
+
+
 def render() -> None:
     (ROOT / "report.html").write_text(_render_report(), encoding="utf-8")
     lines = [f"{_digest(ROOT / name)}  {name}" for name in HASHED_FILES]
@@ -155,6 +179,8 @@ def verify() -> None:
         if normalized != _canonical_json(data):
             raise EvidenceError(f"{name} is not canonical deterministic JSON")
     manifest = _load("experiment-manifest.json")
+    inventory = _load("inventory-summary.json")
+    pricing = _load("pricing.json")
     plan = _load("budget-plan.json")
     if manifest["decision"]["paid_execution_allowed"]:
         raise EvidenceError("manifest must preserve the paid refusal")
@@ -163,8 +189,61 @@ def verify() -> None:
     paid = {step["name"] for step in plan["steps"] if step["spends_money"]}
     if paid.intersection(plan["executable_steps"]):
         raise EvidenceError("a paid step escaped the refused plan")
-    if manifest["authorization"]["actual_or_observed_credit_use_usd"] != "0.000000":
-        raise EvidenceError("preflight evidence must not claim provider spend")
+    authorization = manifest["authorization"]
+    if authorization["provider_reported_credit_use_usd"] is not None:
+        raise EvidenceError("provider spend was not available without authentication")
+    if authorization["experiment_attributable_spend_usd_inferred"] != "0.000000":
+        raise EvidenceError("preflight evidence must preserve inferred zero spend")
+    revision = manifest["model"]["revision"]
+    if not (revision == inventory["revision"] == plan["recipe"]["model_revision"]):
+        raise EvidenceError("model revision differs across evidence files")
+    files = inventory["files"]
+    if files != sorted(files, key=lambda entry: entry["path"]):
+        raise EvidenceError("published inventory is not path sorted")
+    if len({entry["path"] for entry in files}) != len(files):
+        raise EvidenceError("published inventory contains duplicate paths")
+    if len(files) != inventory["file_count"]:
+        raise EvidenceError("published file count does not match the inventory")
+    if sum(entry["size_bytes"] for entry in files) != inventory["total_bytes"]:
+        raise EvidenceError("published byte total does not match the inventory")
+    shards = [entry for entry in files if entry["path"].endswith(".safetensors")]
+    if len(shards) != inventory["safetensors_shard_count"]:
+        raise EvidenceError("safetensors shard count does not match the inventory")
+    if sum(entry["size_bytes"] for entry in shards) != inventory["safetensors_bytes"]:
+        raise EvidenceError("safetensors byte total does not match the inventory")
+    hashed = [entry for entry in files if entry["sha256"] is not None]
+    if len(hashed) != inventory["files_with_published_sha256"]:
+        raise EvidenceError("published SHA-256 count does not match the inventory")
+    if not all(
+        isinstance(entry["sha256"], str)
+        and re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])
+        for entry in hashed
+    ):
+        raise EvidenceError("published inventory contains a malformed SHA-256")
+    envelope = plan["cost_envelope"]
+    gpu_hour = float(pricing["gpu"]["usd_per_hour"])
+    cpu_hour = float(pricing["cpu"]["usd_per_core_hour"])
+    memory_hour = float(pricing["memory"]["usd_per_gib_hour"])
+    storage_month = float(pricing["volume"]["usd_per_gib_month_list_rate"])
+    if not math.isclose(envelope["usd_per_gpu_hour"], gpu_hour):
+        raise EvidenceError("GPU price differs between pricing and plan")
+    expected_rates = {
+        "serving-gpu": gpu_hour * envelope["gpu_count"] * envelope["max_containers"],
+        "serving-compute": 16 * cpu_hour + 64 * memory_hour,
+        "staging": 8 * cpu_hour + 32 * memory_hour,
+        "verification": 4 * cpu_hour + 16 * memory_hour,
+        "storage": envelope["stored_gib"] * storage_month / 30 / 24,
+    }
+    for line in envelope["lines"]:
+        if not math.isclose(line["usd_per_hour"], expected_rates[line["name"]]):
+            raise EvidenceError(f"{line['name']} rate does not match pricing")
+        if not math.isclose(line["usd"], line["hours"] * line["usd_per_hour"]):
+            raise EvidenceError(f"{line['name']} cost does not match rate and hours")
+    modeled_total = sum(line["usd"] for line in envelope["lines"])
+    if not math.isclose(envelope["worst_case_usd"], modeled_total):
+        raise EvidenceError("modeled total does not equal its cost lines")
+    if not math.isclose(envelope["budget_usd"], float(authorization["hard_cap_usd"])):
+        raise EvidenceError("planner threshold differs from the authorization")
     expected_report = _render_report()
     if (ROOT / "report.html").read_text(encoding="utf-8") != expected_report:
         raise EvidenceError("report.html is not the deterministic JSON rendering")
@@ -185,10 +264,13 @@ def main(argv: list[str]) -> int:
     if command == "render":
         render()
         return 0
+    if command == "refresh-inventory":
+        refresh_inventory()
+        return 0
     if command == "verify":
         verify()
         return 0
-    raise SystemExit("usage: evidence_bundle.py [render|verify]")
+    raise SystemExit("usage: evidence_bundle.py [refresh-inventory|render|verify]")
 
 
 if __name__ == "__main__":
