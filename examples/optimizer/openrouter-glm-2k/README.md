@@ -53,6 +53,14 @@ rewriting history; each measured request's own sealed plan still records the
 pinned route and provider-side price caps, and its final usage block records
 the actual charge.
 
+Schema v3's external anchor detects missing, moved, replaced, partially
+updated, or one-sided rolled-back state while those user-writable files remain
+authoritative. It cannot stop a malicious operator from deleting or restoring
+both ledger and anchor; only a provider-side limit or external monotonic
+service can provide that stronger guarantee. This experiment instead reports
+the actual sealed request charges and preserves the historical gate
+limitation.
+
 ## Verify
 
 ```bash

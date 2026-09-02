@@ -1,88 +1,30 @@
 {
-  "completion_correlation_status": "not_publicly_verifiable: authenticated lookups used each completion response ID, but raw provider identifiers were discarded before publication and cannot be reconstructed without another authenticated request",
-  "provider_identifiers_persisted": false,
-  "rows": [
+  "completion_correlation_status": "not_retained: only model-level aggregates are published because raw completion/generation identifiers were discarded",
+  "observations": [
     {
-      "model": "z-ai/glm-5.3-flash-20260826",
-      "native_tokens_cached": 0,
-      "native_tokens_completion": 23,
-      "native_tokens_prompt": 1535,
-      "native_tokens_reasoning": 0,
+      "native_tokens_cached_total": 1472,
+      "native_tokens_completion_total": 109,
+      "native_tokens_prompt_total": 6142,
+      "native_tokens_reasoning_total": 0,
+      "observation_count": 4,
       "provider_name": "Z.AI",
-      "service_tier": null,
-      "total_cost": 0.000120875
+      "requested_model_id": "z-ai/glm-5.3-flash",
+      "resolved_model_build": "z-ai/glm-5.3-flash-20260826",
+      "total_cost": 0.00039957999999999997
     },
     {
-      "model": "z-ai/glm-5.3-flash-20260826",
-      "native_tokens_cached": 0,
-      "native_tokens_completion": 30,
-      "native_tokens_prompt": 1536,
-      "native_tokens_reasoning": 0,
+      "native_tokens_cached_total": 2944,
+      "native_tokens_completion_total": 116,
+      "native_tokens_prompt_total": 6142,
+      "native_tokens_reasoning_total": 0,
+      "observation_count": 4,
       "provider_name": "Z.AI",
-      "service_tier": null,
-      "total_cost": 0.0001227
-    },
-    {
-      "model": "z-ai/glm-5.3-flash-20260826",
-      "native_tokens_cached": 1472,
-      "native_tokens_completion": 23,
-      "native_tokens_prompt": 1535,
-      "native_tokens_reasoning": 0,
-      "provider_name": "Z.AI",
-      "service_tier": null,
-      "total_cost": 3.2555e-05
-    },
-    {
-      "model": "z-ai/glm-5.3-flash-20260826",
-      "native_tokens_cached": 0,
-      "native_tokens_completion": 33,
-      "native_tokens_prompt": 1536,
-      "native_tokens_reasoning": 0,
-      "provider_name": "Z.AI",
-      "service_tier": null,
-      "total_cost": 0.00012345
-    },
-    {
-      "model": "z-ai/glm-5.3-20260816",
-      "native_tokens_cached": 0,
-      "native_tokens_completion": 23,
-      "native_tokens_prompt": 1535,
-      "native_tokens_reasoning": 0,
-      "provider_name": "Z.AI",
-      "service_tier": null,
-      "total_cost": 0.0022502
-    },
-    {
-      "model": "z-ai/glm-5.3-20260816",
-      "native_tokens_cached": 0,
-      "native_tokens_completion": 37,
-      "native_tokens_prompt": 1536,
-      "native_tokens_reasoning": 0,
-      "provider_name": "Z.AI",
-      "service_tier": null,
-      "total_cost": 0.0023132
-    },
-    {
-      "model": "z-ai/glm-5.3-20260816",
-      "native_tokens_cached": 1472,
-      "native_tokens_completion": 23,
-      "native_tokens_prompt": 1535,
-      "native_tokens_reasoning": 0,
-      "provider_name": "Z.AI",
-      "service_tier": null,
-      "total_cost": 0.00057212
-    },
-    {
-      "model": "z-ai/glm-5.3-20260816",
-      "native_tokens_cached": 1472,
-      "native_tokens_completion": 33,
-      "native_tokens_prompt": 1536,
-      "native_tokens_reasoning": 0,
-      "provider_name": "Z.AI",
-      "service_tier": null,
-      "total_cost": 0.00061752
+      "requested_model_id": "z-ai/glm-5.3",
+      "resolved_model_build": "z-ai/glm-5.3-20260816",
+      "total_cost": 0.00575304
     }
   ],
+  "provider_identifiers_persisted": false,
   "schema_version": "1",
   "source_url": "https://openrouter.ai/api/v1/generation"
 }

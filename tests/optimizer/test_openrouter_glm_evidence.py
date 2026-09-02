@@ -18,7 +18,12 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC is not None and SPEC.loader is not None
 BUNDLE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = BUNDLE
-SPEC.loader.exec_module(BUNDLE)
+_previous_dont_write_bytecode = sys.dont_write_bytecode
+sys.dont_write_bytecode = True
+try:
+    SPEC.loader.exec_module(BUNDLE)
+finally:
+    sys.dont_write_bytecode = _previous_dont_write_bytecode
 
 
 def load(name: str) -> dict:
@@ -95,13 +100,23 @@ def test_comparison_html_is_the_sanitized_json_rendering() -> None:
 
 def test_generation_metadata_discloses_missing_public_correlation() -> None:
     generation = load("generation-metadata.json")
-    assert generation["completion_correlation_status"].startswith(
-        "not_publicly_verifiable"
-    )
+    assert generation["completion_correlation_status"].startswith("not_retained")
+    assert len(generation["observations"]) == 2
+    assert all(item["observation_count"] == 4 for item in generation["observations"])
     observations = load("experiment-manifest.json")["systems"][
         "generation_metadata_observations"
     ]
     assert observations["row_level_public_correlation_available"] is False
+
+
+def test_closed_allowlist_rejects_an_unlisted_directory() -> None:
+    unexpected = PUBLIC / ".unexpected-test-directory"
+    unexpected.mkdir()
+    try:
+        with pytest.raises(BUNDLE.EvidenceError, match="unexpected"):
+            BUNDLE.verify()
+    finally:
+        unexpected.rmdir()
 
 
 @pytest.mark.parametrize(

@@ -1,6 +1,7 @@
 {
   "budget": {
     "account_delta_scope_limitation": "The single immediate post-run key-usage query reflected only 0.00039958 USD, equal to the Flash calls, while all eight final SSE usage blocks reported 0.00615262 USD. The account endpoint can lag and can include unrelated concurrent activity; its delta is separate corroborating evidence, not the experiment request total.",
+    "application_gate_threat_model": "Schema v3 detects missing, moved, replaced, one-sided rolled back, or partially updated state while its user-writable ledger and external anchor remain authoritative. It cannot defend against a malicious operator who deletes or restores both files; only a provider-side limit or external monotonic service can close that boundary.",
     "authorized_total_usd": "5.000000000000",
     "execution_ledger_schema": "1",
     "input_token_ceiling_method": "UTF-8 byte length of the exact rendered prompt plus a fixed 4,096-token reserve for provider chat framing and special tokens; every input token is then priced at the full prompt rate even when cache reads could be cheaper",
@@ -31,7 +32,8 @@
     "Prompt caching affected some second repetitions and is reported per row rather than normalized away.",
     "The local Qwen3-8B evidence is contextual only and was excluded from direct ranking.",
     "The historical execution used budget-ledger schema v1; its full-request binding limitations are disclosed in budget.post_run_gate_hardening rather than rewritten after the run.",
-    "Raw generation identifiers were intentionally discarded, so sanitized /generation build/provider observations cannot be independently correlated to individual completion rows."
+    "Raw generation identifiers were intentionally discarded, so sanitized /generation build/provider observations cannot be independently correlated to individual completion rows.",
+    "The local application gate is not a non-rollbackable provider-side spending control; its intact-state threat model is stated in budget.application_gate_threat_model."
   ],
   "local_qwen3_8b_context": {
     "correct_cases_per_minute": 23.115970638983462,

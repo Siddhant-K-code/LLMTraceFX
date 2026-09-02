@@ -379,28 +379,47 @@ def build(root: Path) -> None:
             "source_url": "https://openrouter.ai/api/v1/generation",
             "provider_identifiers_persisted": False,
             "completion_correlation_status": (
-                "not_publicly_verifiable: authenticated lookups used each "
-                "completion response ID, but raw provider identifiers were "
-                "discarded before publication and cannot be reconstructed "
-                "without another authenticated request"
+                "not_retained: only model-level aggregates are published "
+                "because raw completion/generation identifiers were discarded"
             ),
-            "rows": [
+            "observations": [
                 {
-                    **{
-                        key: generation[request_id][key]
-                        for key in (
-                            "model",
-                            "provider_name",
-                            "service_tier",
-                            "native_tokens_prompt",
-                            "native_tokens_completion",
-                            "native_tokens_cached",
-                            "native_tokens_reasoning",
-                            "total_cost",
-                        )
-                    },
+                    "requested_model_id": requested_model,
+                    "resolved_model_build": MODEL_BUILDS[requested_model],
+                    "provider_name": "Z.AI",
+                    "observation_count": len(items),
+                    "native_tokens_prompt_total": sum(
+                        int(item["native_tokens_prompt"]) for item in items
+                    ),
+                    "native_tokens_completion_total": sum(
+                        int(item["native_tokens_completion"]) for item in items
+                    ),
+                    "native_tokens_cached_total": sum(
+                        int(item["native_tokens_cached"]) for item in items
+                    ),
+                    "native_tokens_reasoning_total": sum(
+                        int(item["native_tokens_reasoning"]) for item in items
+                    ),
+                    "total_cost": sum(float(item["total_cost"]) for item in items),
                 }
-                for request_id, *_rest in REQUESTS
+                for requested_model, items in (
+                    (
+                        "z-ai/glm-5.3-flash",
+                        [
+                            generation[request_id]
+                            for request_id, model, *_rest in REQUESTS
+                            if model == "flash"
+                        ],
+                    ),
+                    (
+                        "z-ai/glm-5.3",
+                        [
+                            generation[request_id]
+                            for request_id, model, *_rest in REQUESTS
+                            if model == "glm"
+                        ],
+                    ),
+                )
             ],
         },
     )
@@ -522,6 +541,14 @@ def build(root: Path) -> None:
                 "unchanged; actual request plans and provider usage separately "
                 "show the pinned route, price caps, and charges used here."
             ),
+            "application_gate_threat_model": (
+                "Schema v3 detects missing, moved, replaced, one-sided rolled "
+                "back, or partially updated state while its user-writable "
+                "ledger and external anchor remain authoritative. It cannot "
+                "defend against a malicious operator who deletes or restores "
+                "both files; only a provider-side limit or external monotonic "
+                "service can close that boundary."
+            ),
             "provider_reported_request_total_usd": ledger["cumulative_accounted_usd"],
             "manifest_computed_request_total_usd": format(
                 sum(
@@ -579,6 +606,7 @@ def build(root: Path) -> None:
             "The local Qwen3-8B evidence is contextual only and was excluded from direct ranking.",
             "The historical execution used budget-ledger schema v1; its full-request binding limitations are disclosed in budget.post_run_gate_hardening rather than rewritten after the run.",
             "Raw generation identifiers were intentionally discarded, so sanitized /generation build/provider observations cannot be independently correlated to individual completion rows.",
+            "The local application gate is not a non-rollbackable provider-side spending control; its intact-state threat model is stated in budget.application_gate_threat_model.",
         ],
     }
     _write_json(PUBLIC_DIR / "experiment-manifest.json", manifest)
@@ -591,7 +619,7 @@ def build(root: Path) -> None:
 
 
 def verify() -> None:
-    actual = tuple(sorted(path.name for path in PUBLIC_DIR.iterdir() if path.is_file()))
+    actual = tuple(sorted(path.name for path in PUBLIC_DIR.iterdir()))
     if actual != tuple(sorted(PUBLIC_FILES)):
         raise EvidenceError("public evidence file set is incomplete or unexpected")
 
@@ -660,11 +688,21 @@ def verify() -> None:
             "comparison HTML is not the deterministic rendering of comparison JSON"
         )
     generation = _load_json(PUBLIC_DIR / "generation-metadata.json")
-    if not str(generation.get("completion_correlation_status", "")).startswith(
-        "not_publicly_verifiable"
+    if generation.get("completion_correlation_status") != (
+        "not_retained: only model-level aggregates are published because raw "
+        "completion/generation identifiers were discarded"
     ):
         raise EvidenceError(
             "generation metadata must disclose unavailable row correlation"
+        )
+    observations = generation.get("observations")
+    if not isinstance(observations, list) or len(observations) != 2:
+        raise EvidenceError(
+            "generation metadata must contain two model-level aggregates"
+        )
+    if {item.get("observation_count") for item in observations} != {4}:
+        raise EvidenceError(
+            "each generation metadata aggregate must contain four observations"
         )
 
 

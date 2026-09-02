@@ -3263,7 +3263,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Immutable whole-experiment budget plan. Execution is fail-closed "
-            "at a USD 5 lifetime cap."
+            "at a USD 5 application-state cap while the ledger and its external "
+            "anchor remain intact."
         ),
     )
     run_api_parser.add_argument(

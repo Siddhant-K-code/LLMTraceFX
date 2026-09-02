@@ -1,9 +1,15 @@
-"""Fail-closed lifetime budget accounting for hosted workload requests.
+"""Fail-closed application-state budget accounting for hosted API requests.
 
 The budget plan is an immutable input. The ledger records one irreversible
 claim before each network attempt and settles that claim only when provider
 usage proves a smaller charge. A failed or unaccounted request keeps its full
 planned ceiling, and the same request ID can never be claimed twice.
+
+The separate anchor detects accidental deletion, movement, partial writes and
+one-sided rollback. Like every user-writable local file, it is not a defense
+against a malicious operator who deletes or restores both ledger and anchor;
+that threat requires a provider-side spending limit or external monotonic
+service.
 """
 
 from __future__ import annotations
