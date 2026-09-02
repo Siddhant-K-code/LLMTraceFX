@@ -1,4 +1,5 @@
 {
+  "completion_correlation_status": "not_publicly_verifiable: authenticated lookups used each completion response ID, but raw provider identifiers were discarded before publication and cannot be reconstructed without another authenticated request",
   "provider_identifiers_persisted": false,
   "rows": [
     {
@@ -7,9 +8,8 @@
       "native_tokens_completion": 23,
       "native_tokens_prompt": 1535,
       "native_tokens_reasoning": 0,
-      "provider_generation_correlation_sha256": "sha256:7dfdf1b6d0f3e2b215d84c28a526e893e85ba1b5bf1f32eb284b1d8850eeba0f",
+      "operator_row_label": "flash-structured-r1",
       "provider_name": "Z.AI",
-      "request_id": "flash-structured-r1",
       "service_tier": null,
       "total_cost": 0.000120875
     },
@@ -19,9 +19,8 @@
       "native_tokens_completion": 30,
       "native_tokens_prompt": 1536,
       "native_tokens_reasoning": 0,
-      "provider_generation_correlation_sha256": "sha256:9f402ca4e1d22de447cbb04325f90f648f2941a4c186dfa155d6301e440613c1",
+      "operator_row_label": "flash-prose-r1",
       "provider_name": "Z.AI",
-      "request_id": "flash-prose-r1",
       "service_tier": null,
       "total_cost": 0.0001227
     },
@@ -31,9 +30,8 @@
       "native_tokens_completion": 23,
       "native_tokens_prompt": 1535,
       "native_tokens_reasoning": 0,
-      "provider_generation_correlation_sha256": "sha256:56203913db7059b62a3f7da03989e2e86219ca7de13f4506af3846e430e8031b",
+      "operator_row_label": "flash-structured-r2",
       "provider_name": "Z.AI",
-      "request_id": "flash-structured-r2",
       "service_tier": null,
       "total_cost": 3.2555e-05
     },
@@ -43,9 +41,8 @@
       "native_tokens_completion": 33,
       "native_tokens_prompt": 1536,
       "native_tokens_reasoning": 0,
-      "provider_generation_correlation_sha256": "sha256:fa29b8bac02756aa59e8d9c489a25412c46ccccb955cd61a37b8454fa299f247",
+      "operator_row_label": "flash-prose-r2",
       "provider_name": "Z.AI",
-      "request_id": "flash-prose-r2",
       "service_tier": null,
       "total_cost": 0.00012345
     },
@@ -55,9 +52,8 @@
       "native_tokens_completion": 23,
       "native_tokens_prompt": 1535,
       "native_tokens_reasoning": 0,
-      "provider_generation_correlation_sha256": "sha256:423eb957afad1bafb83ff45a148204af7efe3430eac0f47b9c32b051596992af",
+      "operator_row_label": "glm-structured-r1",
       "provider_name": "Z.AI",
-      "request_id": "glm-structured-r1",
       "service_tier": null,
       "total_cost": 0.0022502
     },
@@ -67,9 +63,8 @@
       "native_tokens_completion": 37,
       "native_tokens_prompt": 1536,
       "native_tokens_reasoning": 0,
-      "provider_generation_correlation_sha256": "sha256:653d96d9c3478e59ae5322fa583d93abf9fc0880994972dcff9159e4cfb504cc",
+      "operator_row_label": "glm-prose-r1",
       "provider_name": "Z.AI",
-      "request_id": "glm-prose-r1",
       "service_tier": null,
       "total_cost": 0.0023132
     },
@@ -79,9 +74,8 @@
       "native_tokens_completion": 23,
       "native_tokens_prompt": 1535,
       "native_tokens_reasoning": 0,
-      "provider_generation_correlation_sha256": "sha256:f2b7dd46cf52d9656fef2c34d7eaf586d0e5d058378165132fae2d4f52bc3dba",
+      "operator_row_label": "glm-structured-r2",
       "provider_name": "Z.AI",
-      "request_id": "glm-structured-r2",
       "service_tier": null,
       "total_cost": 0.00057212
     },
@@ -91,9 +85,8 @@
       "native_tokens_completion": 33,
       "native_tokens_prompt": 1536,
       "native_tokens_reasoning": 0,
-      "provider_generation_correlation_sha256": "sha256:d1ce3564874ab16a19ba7a8d1948ec1558acb2f9cfc961d978a85dcdf8289e95",
+      "operator_row_label": "glm-prose-r2",
       "provider_name": "Z.AI",
-      "request_id": "glm-prose-r2",
       "service_tier": null,
       "total_cost": 0.00061752
     }

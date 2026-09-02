@@ -4,8 +4,10 @@ This privacy-safe bundle records eight paid OpenRouter requests made on
 2026-09-02: two measured repetitions of the pinned 2K structured-JSON and
 prose-reasoning workloads for `z-ai/glm-5.3-flash` and `z-ai/glm-5.3`.
 No warmup or retry requests were made. Routing was fixed to OpenRouter's
-first-party `z-ai/fp8` endpoint, fallbacks were disabled, and generation
-metadata verified the resolved Z.AI builds.
+first-party `z-ai/fp8` endpoint and fallbacks were disabled. Authenticated
+generation lookups observed the expected Z.AI builds, but their raw
+correlation identifiers were intentionally discarded; the public bundle does
+not attribute those sanitized observations to individual completion rows.
 
 Both systems passed all four evaluated cases. Under the single objective of
 maximizing correct cases per minute after a 100% pass-rate gate, GLM-5.3 was
@@ -43,11 +45,13 @@ provider request identifier, or private path.
 
 An independent post-run review found that the historical budget-ledger schema
 v1 auto-initialized a missing ledger and did not bind each claim to the full
-request/routing/price configuration. The final schema v2 code refuses a
-missing ledger and binds those fields. This bundle preserves the executed v1
-ledger rather than rewriting history; each measured request's own sealed plan
-still records the pinned route and provider-side price caps, and its final
-usage block records the actual charge.
+request/routing/price configuration. The final schema v3 code seals the
+ledger identity and path into the plan, maintains a separate monotonic state
+anchor, refuses missing or rolled-back state, and binds the complete request
+configuration. This bundle preserves the executed v1 ledger rather than
+rewriting history; each measured request's own sealed plan still records the
+pinned route and provider-side price caps, and its final usage block records
+the actual charge.
 
 ## Verify
 

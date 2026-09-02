@@ -9,6 +9,7 @@ OpenRouter nor Z.ai is ever contacted; both appear only as configuration.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 from collections.abc import Iterator, Mapping
@@ -19,6 +20,7 @@ import pytest
 
 from llmtracefx.optimizer import cli
 from llmtracefx.optimizer.collectors.openai_api import HTTPRequest
+from llmtracefx.optimizer.workloads import api_budget
 from llmtracefx.optimizer.workloads.api_budget import BudgetGate
 from llmtracefx.optimizer.workloads.catalog import (
     STRUCTURED_JSON_PROFILE_EXTRACTION,
@@ -558,40 +560,59 @@ def test_budget_gate_prevents_a_second_attempt_for_the_same_request(
     request_plan = json.loads(capsys.readouterr().out)["rows"][0]["request_plan"]
     plan = tmp_path / "budget-plan.json"
     ledger = tmp_path / "budget-ledger.json"
-    plan.write_text(
-        json.dumps(
-            {
-                "schema_version": "2",
-                "experiment_id": "cli-budget-test",
-                "ledger_file_name": ledger.name,
-                "authorized_total_usd": "5.00",
-                "requests": [
-                    {
-                        "request_id": "only-attempt",
-                        "model_id": "z-ai/glm-5.3",
-                        "workload_id": entry["workload_id"],
-                        "workload_version": entry["workload_version"],
-                        "prompt_sha256": entry["prompt"]["prompt_hash"],
-                        "request_config_sha256": request_plan["config_hash"],
-                        "endpoint_origin": request_plan["endpoint_origin"],
-                        "endpoint_path": request_plan["endpoint_path"],
-                        "route_providers": ["z-ai/fp8"],
-                        "allow_fallbacks": False,
-                        "require_parameters": True,
-                        "max_provider_prompt_price_per_million": "1.4",
-                        "max_provider_completion_price_per_million": "4.4",
-                        "reasoning_effort": "low",
-                        "input_token_ceiling": 20_000,
-                        "max_output_tokens": entry["max_tokens"],
-                        "prompt_usd_per_token": "0.0000014",
-                        "completion_usd_per_token": "0.0000044",
-                        "cached_prompt_usd_per_token": "0.00000026",
-                        "cache_write_billing": ("included_in_uncached_prompt_rate"),
-                        "reasoning_billing": "included_in_completion_tokens",
-                    }
-                ],
-            }
+    monkeypatch.setattr(
+        api_budget,
+        "_default_authorization_state_dir",
+        lambda: tmp_path / "authorization-state",
+    )
+    plan_payload = {
+        "schema_version": "3",
+        "experiment_id": "cli-budget-test",
+        "ledger_identity": "cli-budget-test-ledger",
+        "ledger_file_name": ledger.name,
+        "ledger_path_sha256": (
+            "sha256:" + hashlib.sha256(str(ledger.resolve()).encode()).hexdigest()
         ),
+        "authorized_total_usd": "5.00",
+        "requests": [
+            {
+                "request_id": "only-attempt",
+                "model_id": "z-ai/glm-5.3",
+                "workload_id": entry["workload_id"],
+                "workload_version": entry["workload_version"],
+                "prompt_sha256": entry["prompt"]["prompt_hash"],
+                "request_config_sha256": request_plan["config_hash"],
+                "endpoint_origin": request_plan["endpoint_origin"],
+                "endpoint_path": request_plan["endpoint_path"],
+                "route_providers": ["z-ai/fp8"],
+                "allow_fallbacks": False,
+                "require_parameters": True,
+                "max_provider_prompt_price_per_million": "1.4",
+                "max_provider_completion_price_per_million": "4.4",
+                "reasoning_effort": "low",
+                "input_token_ceiling": 20_000,
+                "max_output_tokens": entry["max_tokens"],
+                "prompt_usd_per_token": "0.0000014",
+                "completion_usd_per_token": "0.0000044",
+                "cached_prompt_usd_per_token": "0.00000026",
+                "cache_write_billing": "included_in_uncached_prompt_rate",
+                "reasoning_billing": "included_in_completion_tokens",
+            }
+        ],
+    }
+    plan_payload["plan_sha256"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                plan_payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
+    )
+    plan.write_text(
+        json.dumps(plan_payload),
         encoding="utf-8",
     )
     BudgetGate.initialize(plan, ledger)

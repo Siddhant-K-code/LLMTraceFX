@@ -12,6 +12,9 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from llmtracefx.optimizer.compare.report import CompareReport
+from llmtracefx.optimizer.compare.report_html import render_compare_report_html
+
 PUBLIC_DIR = Path(__file__).resolve().parent
 MAX_PUBLIC_FILE_BYTES = 4 * 1024 * 1024
 MODEL_BUILDS = {
@@ -97,6 +100,7 @@ HASHED_FILES = (
     "compare-policy.json",
     "comparison.html",
     "comparison.json",
+    "evidence_bundle.py",
     "experiment-manifest.json",
     "generation-metadata.json",
     "measurements.json",
@@ -108,7 +112,6 @@ COPY_FILES = (
     "budget-ledger.json",
     "budget-plan.json",
     "compare-policy.json",
-    "comparison.html",
     "pricing-manifest.json",
     "pricing-snapshot.json",
 )
@@ -119,10 +122,6 @@ FORBIDDEN_PATTERNS = (
     (re.compile(r"\bsk-or-v1-[A-Za-z0-9_-]+\b"), "OpenRouter credential"),
     (re.compile(r"\b(?:gen|req)-[A-Za-z0-9_-]{8,}\b"), "provider identifier"),
     (re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}"), "email address"),
-    (
-        re.compile(r"siddhant-git-ai|siddhantkhare2694", re.IGNORECASE),
-        "private username",
-    ),
 )
 FORBIDDEN_JSON_KEYS = {
     "collection_dir",
@@ -243,22 +242,12 @@ def _measurement(
     repetition: int,
     workload: str,
     run_id: str,
-    generation: dict[str, Any],
 ) -> dict[str, Any]:
     paths = _source_paths(root, model, repetition, workload, run_id)
     verification = _load_json(paths["verification"])
     record = _load_json(paths["record"])
     api = _load_json(paths["api"])
     plan = api["plan"]
-    response_id = api.get("response_id")
-    if not isinstance(response_id, str) or not response_id:
-        raise EvidenceError("API evidence is missing its generation correlation ID")
-    correlation_sha256 = (
-        "sha256:"
-        + hashlib.sha256(
-            f"openrouter-generation-correlation-v1:{response_id}".encode()
-        ).hexdigest()
-    )
     routing = plan["provider_extensions"].get("provider")
     if (
         not isinstance(routing, dict)
@@ -271,7 +260,6 @@ def _measurement(
     quantization = route_slug.partition("/")[2] or None
     return {
         "request_id": request_id,
-        "provider_generation_correlation_sha256": correlation_sha256,
         "repetition": repetition,
         "workload": {
             "workload_id": verification["workload_id"],
@@ -283,9 +271,7 @@ def _measurement(
         },
         "system": {
             "requested_model_id": verification["api_model_id"],
-            "resolved_model_build": generation["model"],
             "gateway": verification["provider"],
-            "upstream_provider": generation["provider_name"],
             "route_slug": route_slug,
             "quantization": quantization,
             "runtime": record["runtime"],
@@ -351,19 +337,6 @@ def _measurement(
             "reasoning_text_persisted": api["reasoning_text_persisted"],
             "failure": api["failure"],
         },
-        "generation_metadata": {
-            key: generation[key]
-            for key in (
-                "model",
-                "provider_name",
-                "service_tier",
-                "native_tokens_prompt",
-                "native_tokens_completion",
-                "native_tokens_cached",
-                "native_tokens_reasoning",
-                "total_cost",
-            )
-        },
         "source_integrity": {
             f"{name}_sha256": _sha256(path) for name, path in paths.items()
         },
@@ -380,7 +353,6 @@ def build(root: Path) -> None:
             repetition,
             workload,
             run_id,
-            generation[request_id],
         )
         for request_id, model, repetition, workload, run_id in REQUESTS
     ]
@@ -394,14 +366,15 @@ def build(root: Path) -> None:
             "schema_version": "1",
             "source_url": "https://openrouter.ai/api/v1/generation",
             "provider_identifiers_persisted": False,
+            "completion_correlation_status": (
+                "not_publicly_verifiable: authenticated lookups used each "
+                "completion response ID, but raw provider identifiers were "
+                "discarded before publication and cannot be reconstructed "
+                "without another authenticated request"
+            ),
             "rows": [
                 {
-                    "request_id": request_id,
-                    "provider_generation_correlation_sha256": next(
-                        row["provider_generation_correlation_sha256"]
-                        for row in measurements
-                        if row["request_id"] == request_id
-                    ),
+                    "operator_row_label": request_id,
                     **{
                         key: generation[request_id][key]
                         for key in (
@@ -429,6 +402,11 @@ def build(root: Path) -> None:
     comparison["pricing"]["manifest_path"] = "pricing-manifest.json"
     _sanitize_comparison_paths(comparison)
     _write_json(PUBLIC_DIR / "comparison.json", comparison)
+    validated_comparison = CompareReport.read_json(PUBLIC_DIR / "comparison.json")
+    (PUBLIC_DIR / "comparison.html").write_text(
+        render_compare_report_html(validated_comparison, redact_paths=True),
+        encoding="utf-8",
+    )
 
     ledger = _load_json(root / "budget-ledger.json")
     starting = _load_json(root / "starting-account.json")
@@ -471,12 +449,22 @@ def build(root: Path) -> None:
         "systems": {
             "gateway": "OpenRouter",
             "requested_model_ids": list(MODEL_BUILDS),
-            "resolved_model_builds": MODEL_BUILDS,
-            "upstream_provider": "Z.AI",
             "route_slug": next(iter(route_slugs)),
             "quantization": next(iter(quantizations)),
             "fallbacks_allowed": False,
             "provider_parameter_support_required": True,
+            "generation_metadata_observations": {
+                "resolved_model_builds": MODEL_BUILDS,
+                "upstream_provider": "Z.AI",
+                "row_level_public_correlation_available": False,
+                "limitation": (
+                    "Authenticated /generation lookups were made by completion "
+                    "response ID, but those identifiers were discarded. The "
+                    "public bundle therefore treats build/provider metadata as "
+                    "an uncorrelated observation set rather than attributing "
+                    "it to individual measured rows."
+                ),
+            },
         },
         "matrix_contract": {
             "context_tier": "2k",
@@ -518,8 +506,9 @@ def build(root: Path) -> None:
                 "Independent review found that execution schema v1 "
                 "auto-initialized a missing ledger and did not bind its claim "
                 "to the complete request/routing/price configuration. The "
-                "committed schema v2 refuses missing ledgers and binds those "
-                "fields. The historical v1 plan and ledger are preserved "
+                "committed schema v3 uses a sealed path/identity plan plus an "
+                "external monotonic ledger anchor, refuses missing state, and "
+                "binds those fields. The historical v1 plan and ledger are preserved "
                 "unchanged; actual request plans and provider usage separately "
                 "show the pinned route, price caps, and charges used here."
             ),
@@ -579,6 +568,7 @@ def build(root: Path) -> None:
             "Prompt caching affected some second repetitions and is reported per row rather than normalized away.",
             "The local Qwen3-8B evidence is contextual only and was excluded from direct ranking.",
             "The historical execution used budget-ledger schema v1; its full-request binding limitations are disclosed in budget.post_run_gate_hardening rather than rewritten after the run.",
+            "Raw generation identifiers were intentionally discarded, so sanitized /generation build/provider observations cannot be independently correlated to individual completion rows.",
         ],
     }
     _write_json(PUBLIC_DIR / "experiment-manifest.json", manifest)
@@ -591,13 +581,7 @@ def build(root: Path) -> None:
 
 
 def verify() -> None:
-    actual = tuple(
-        sorted(
-            path.name
-            for path in PUBLIC_DIR.iterdir()
-            if path.is_file() and path.name != Path(__file__).name
-        )
-    )
+    actual = tuple(sorted(path.name for path in PUBLIC_DIR.iterdir() if path.is_file()))
     if actual != tuple(sorted(PUBLIC_FILES)):
         raise EvidenceError("public evidence file set is incomplete or unexpected")
 
@@ -632,14 +616,8 @@ def verify() -> None:
             raise EvidenceError("every published row must pass its evaluator")
         if row["api_evidence"]["reasoning_text_persisted"] is not False:
             raise EvidenceError("reasoning text must never be persisted")
-        requested = row["system"]["requested_model_id"]
-        if row["system"]["resolved_model_build"] != MODEL_BUILDS[requested]:
-            raise EvidenceError("resolved model build does not match the catalog pin")
-        if row["system"]["upstream_provider"] != "Z.AI":
-            raise EvidenceError("row did not resolve to the pinned Z.AI provider")
-        correlation = row.get("provider_generation_correlation_sha256")
-        if not isinstance(correlation, str) or not correlation.startswith("sha256:"):
-            raise EvidenceError("row is missing its private-ID correlation digest")
+        if row["system"]["requested_model_id"] not in MODEL_BUILDS:
+            raise EvidenceError("row requested an unpinned model")
 
     ledger = _load_json(PUBLIC_DIR / "budget-ledger.json")
     seal = ledger.pop("ledger_sha256", None)
@@ -666,17 +644,18 @@ def verify() -> None:
     comparison = _load_json(PUBLIC_DIR / "comparison.json")
     if comparison["results_dirs"] != ["measurements.json"]:
         raise EvidenceError("comparison report still carries private result paths")
-    generation = _load_json(PUBLIC_DIR / "generation-metadata.json")
-    generation_correlations = {
-        row["request_id"]: row["provider_generation_correlation_sha256"]
-        for row in generation["rows"]
-    }
-    measurement_correlations = {
-        row["request_id"]: row["provider_generation_correlation_sha256"] for row in rows
-    }
-    if generation_correlations != measurement_correlations:
+    validated_comparison = CompareReport.read_json(PUBLIC_DIR / "comparison.json")
+    expected_html = render_compare_report_html(validated_comparison, redact_paths=True)
+    if _read_text(PUBLIC_DIR / "comparison.html") != expected_html:
         raise EvidenceError(
-            "generation metadata is not correlated to the measured completions"
+            "comparison HTML is not the deterministic rendering of comparison JSON"
+        )
+    generation = _load_json(PUBLIC_DIR / "generation-metadata.json")
+    if not str(generation.get("completion_correlation_status", "")).startswith(
+        "not_publicly_verifiable"
+    ):
+        raise EvidenceError(
+            "generation metadata must disclose unavailable row correlation"
         )
 
 

@@ -2,18 +2,32 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from llmtracefx.optimizer.collectors.openai_api import ProviderUsage
+from llmtracefx.optimizer.workloads import api_budget
 from llmtracefx.optimizer.workloads.api_budget import (
     BudgetError,
     BudgetGate,
     BudgetPlan,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_authorization_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        api_budget,
+        "_default_authorization_state_dir",
+        lambda: tmp_path / "state",
+    )
 
 
 def request(
@@ -54,19 +68,39 @@ def write_plan(
     *,
     authorized: str = "5.00",
 ) -> Path:
-    path.write_text(
-        json.dumps(
-            {
-                "schema_version": "2",
-                "experiment_id": "hosted-budget-test",
-                "ledger_file_name": "ledger.json",
-                "authorized_total_usd": authorized,
-                "requests": requests,
-            }
+    ledger_path = (path.parent / "ledger.json").resolve()
+    payload = {
+        "schema_version": "3",
+        "experiment_id": "hosted-budget-test",
+        "ledger_identity": "hosted-budget-test-ledger",
+        "ledger_file_name": ledger_path.name,
+        "ledger_path_sha256": (
+            "sha256:" + hashlib.sha256(str(ledger_path).encode()).hexdigest()
         ),
+        "authorized_total_usd": authorized,
+        "requests": requests,
+    }
+    payload["plan_sha256"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+            ).encode()
+        ).hexdigest()
+    )
+    path.write_text(
+        json.dumps(payload),
         encoding="utf-8",
     )
     return path
+
+
+def initialize_gate(plan: Path, ledger: Path) -> BudgetGate:
+    return BudgetGate.initialize(plan, ledger)
+
+
+def open_gate(plan: Path, ledger: Path) -> BudgetGate:
+    return BudgetGate(plan, ledger)
 
 
 def claim(
@@ -129,7 +163,7 @@ def test_cumulative_request_ceilings_must_fit_authorization(tmp_path: Path) -> N
 def test_claim_is_atomic_sealed_and_cannot_be_retried(tmp_path: Path) -> None:
     plan = write_plan(tmp_path / "plan.json", [request("one")])
     ledger = tmp_path / "ledger.json"
-    gate = BudgetGate.initialize(plan, ledger)
+    gate = initialize_gate(plan, ledger)
 
     claim(gate, "one")
 
@@ -143,7 +177,7 @@ def test_claim_is_atomic_sealed_and_cannot_be_retried(tmp_path: Path) -> None:
 
 def test_failed_request_keeps_ceiling_and_stops_the_model(tmp_path: Path) -> None:
     requests = [request("first"), request("second")]
-    gate = BudgetGate.initialize(
+    gate = initialize_gate(
         write_plan(tmp_path / "plan.json", requests), tmp_path / "ledger.json"
     )
     claim(gate, "first")
@@ -188,7 +222,7 @@ def test_missing_or_ambiguous_billing_categories_refuse(
 def test_tampered_ledger_seal_refuses_before_another_claim(tmp_path: Path) -> None:
     plan = write_plan(tmp_path / "plan.json", [request("one"), request("two")])
     ledger = tmp_path / "ledger.json"
-    gate = BudgetGate.initialize(plan, ledger)
+    gate = initialize_gate(plan, ledger)
     claim(gate, "one")
     payload = json.loads(ledger.read_text(encoding="utf-8"))
     payload["remaining_authorized_usd"] = "5.000000000000"
@@ -199,7 +233,7 @@ def test_tampered_ledger_seal_refuses_before_another_claim(tmp_path: Path) -> No
 
 
 def test_request_binding_must_match_exactly(tmp_path: Path) -> None:
-    gate = BudgetGate.initialize(
+    gate = initialize_gate(
         write_plan(tmp_path / "plan.json", [request("one")]),
         tmp_path / "ledger.json",
     )
@@ -214,10 +248,33 @@ def test_request_binding_must_match_exactly(tmp_path: Path) -> None:
         claim(gate, "one", input_token_upper_bound=10_001)
 
 
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"route_providers": ()},
+        {"route_providers": ("z-ai",)},
+        {"allow_fallbacks": True},
+        {"endpoint_origin": "https://example.invalid"},
+        {"endpoint_path": "/different"},
+        {"reasoning_effort": "max"},
+        {"max_provider_prompt_price_per_million": Decimal("1.39")},
+        {"max_provider_completion_price_per_million": Decimal("4.39")},
+    ],
+)
+def test_pricing_critical_runtime_mutations_refuse(
+    tmp_path: Path, override: dict[str, Any]
+) -> None:
+    plan = write_plan(tmp_path / "plan.json", [request("one")])
+    gate = initialize_gate(plan, tmp_path / "ledger.json")
+
+    with pytest.raises(BudgetError, match="plan binding"):
+        claim(gate, "one", **override)
+
+
 def test_success_settles_to_provider_cost_but_keeps_computed_cost_separate(
     tmp_path: Path,
 ) -> None:
-    gate = BudgetGate.initialize(
+    gate = initialize_gate(
         write_plan(tmp_path / "plan.json", [request("one")]),
         tmp_path / "ledger.json",
     )
@@ -246,7 +303,7 @@ def test_success_settles_to_provider_cost_but_keeps_computed_cost_separate(
 def test_missing_cached_usage_makes_computed_cost_unavailable_not_zero(
     tmp_path: Path,
 ) -> None:
-    gate = BudgetGate.initialize(
+    gate = initialize_gate(
         write_plan(tmp_path / "plan.json", [request("one")]),
         tmp_path / "ledger.json",
     )
@@ -274,12 +331,73 @@ def test_execution_refuses_to_initialize_or_reset_a_missing_ledger(
     ledger = tmp_path / "ledger.json"
 
     with pytest.raises(BudgetError, match="never initializes or resets"):
-        BudgetGate(plan, ledger)
-    initialized = BudgetGate.initialize(plan, ledger)
+        open_gate(plan, ledger)
+    initialized = initialize_gate(plan, ledger)
     claim(initialized, "one")
     ledger.unlink()
     with pytest.raises(BudgetError, match="never initializes or resets"):
-        BudgetGate(plan, ledger)
+        open_gate(plan, ledger)
+    with pytest.raises(BudgetError, match="cannot be reset"):
+        initialize_gate(plan, ledger)
+
+
+def test_plan_seal_binds_the_only_ledger_path(tmp_path: Path) -> None:
+    plan = write_plan(tmp_path / "plan.json", [request("one")])
+    ledger = tmp_path / "ledger.json"
+    initialize_gate(plan, ledger)
+
+    alternate = tmp_path / "alternate" / "ledger.json"
+    with pytest.raises(BudgetError, match="path does not match"):
+        BudgetGate(plan, alternate)
+
+    copied_plan = tmp_path / "alternate" / "plan.json"
+    copied_plan.parent.mkdir()
+    copied_plan.write_bytes(plan.read_bytes())
+    with pytest.raises(BudgetError, match="path does not match"):
+        BudgetGate(copied_plan, alternate)
+
+
+def test_rollback_to_an_earlier_valid_ledger_is_refused(tmp_path: Path) -> None:
+    plan = write_plan(tmp_path / "plan.json", [request("one")])
+    ledger = tmp_path / "ledger.json"
+    gate = initialize_gate(plan, ledger)
+    initial = ledger.read_bytes()
+    claim(gate, "one")
+    ledger.write_bytes(initial)
+
+    with pytest.raises(BudgetError, match="monotonic anchor"):
+        open_gate(plan, ledger)
+
+
+def test_over_ceiling_charge_is_persisted_and_globally_terminal(
+    tmp_path: Path,
+) -> None:
+    plan = write_plan(tmp_path / "plan.json", [request("one"), request("two")])
+    ledger = tmp_path / "ledger.json"
+    gate = initialize_gate(plan, ledger)
+    claim(gate, "one")
+
+    with pytest.raises(BudgetError, match="provider-reported cost exceeded"):
+        gate.settle(
+            "one",
+            provider_success=True,
+            usage=ProviderUsage(
+                reported=True,
+                prompt_tokens=1,
+                completion_tokens=1,
+                cached_prompt_tokens=0,
+                reasoning_tokens=0,
+                cost_usd=6.0,
+            ),
+            failure=None,
+        )
+
+    snapshot = gate.snapshot()
+    assert snapshot["entries"][0]["status"] == "failed"
+    assert snapshot["terminal_failure"]["request_id"] == "one"
+    assert snapshot["remaining_authorized_usd"].startswith("-")
+    with pytest.raises(BudgetError, match="terminally failed"):
+        claim(gate, "two")
 
 
 @pytest.mark.parametrize(

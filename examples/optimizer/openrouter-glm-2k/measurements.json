@@ -250,17 +250,6 @@
           "provenance": "provider_reported"
         }
       },
-      "generation_metadata": {
-        "model": "z-ai/glm-5.3-flash-20260826",
-        "native_tokens_cached": 0,
-        "native_tokens_completion": 23,
-        "native_tokens_prompt": 1535,
-        "native_tokens_reasoning": 0,
-        "provider_name": "Z.AI",
-        "service_tier": null,
-        "total_cost": 0.000120875
-      },
-      "provider_generation_correlation_sha256": "sha256:7dfdf1b6d0f3e2b215d84c28a526e893e85ba1b5bf1f32eb284b1d8850eeba0f",
       "repetition": 1,
       "request_id": "flash-structured-r1",
       "request_plan": {
@@ -312,7 +301,6 @@
         "gateway": "openrouter",
         "quantization": "fp8",
         "requested_model_id": "z-ai/glm-5.3-flash",
-        "resolved_model_build": "z-ai/glm-5.3-flash-20260826",
         "route_slug": "z-ai/fp8",
         "runtime": {
           "backend": null,
@@ -320,8 +308,7 @@
           "name": "openai-compatible-api",
           "provider": "openrouter",
           "version": null
-        },
-        "upstream_provider": "Z.AI"
+        }
       },
       "verification": {
         "artifacts_verified": true,
@@ -646,17 +633,6 @@
           "provenance": "provider_reported"
         }
       },
-      "generation_metadata": {
-        "model": "z-ai/glm-5.3-flash-20260826",
-        "native_tokens_cached": 0,
-        "native_tokens_completion": 30,
-        "native_tokens_prompt": 1536,
-        "native_tokens_reasoning": 0,
-        "provider_name": "Z.AI",
-        "service_tier": null,
-        "total_cost": 0.0001227
-      },
-      "provider_generation_correlation_sha256": "sha256:9f402ca4e1d22de447cbb04325f90f648f2941a4c186dfa155d6301e440613c1",
       "repetition": 1,
       "request_id": "flash-prose-r1",
       "request_plan": {
@@ -708,7 +684,6 @@
         "gateway": "openrouter",
         "quantization": "fp8",
         "requested_model_id": "z-ai/glm-5.3-flash",
-        "resolved_model_build": "z-ai/glm-5.3-flash-20260826",
         "route_slug": "z-ai/fp8",
         "runtime": {
           "backend": null,
@@ -716,8 +691,7 @@
           "name": "openai-compatible-api",
           "provider": "openrouter",
           "version": null
-        },
-        "upstream_provider": "Z.AI"
+        }
       },
       "verification": {
         "artifacts_verified": true,
@@ -994,17 +968,6 @@
           "provenance": "provider_reported"
         }
       },
-      "generation_metadata": {
-        "model": "z-ai/glm-5.3-flash-20260826",
-        "native_tokens_cached": 1472,
-        "native_tokens_completion": 23,
-        "native_tokens_prompt": 1535,
-        "native_tokens_reasoning": 0,
-        "provider_name": "Z.AI",
-        "service_tier": null,
-        "total_cost": 3.2555e-05
-      },
-      "provider_generation_correlation_sha256": "sha256:56203913db7059b62a3f7da03989e2e86219ca7de13f4506af3846e430e8031b",
       "repetition": 2,
       "request_id": "flash-structured-r2",
       "request_plan": {
@@ -1056,7 +1019,6 @@
         "gateway": "openrouter",
         "quantization": "fp8",
         "requested_model_id": "z-ai/glm-5.3-flash",
-        "resolved_model_build": "z-ai/glm-5.3-flash-20260826",
         "route_slug": "z-ai/fp8",
         "runtime": {
           "backend": null,
@@ -1064,8 +1026,7 @@
           "name": "openai-compatible-api",
           "provider": "openrouter",
           "version": null
-        },
-        "upstream_provider": "Z.AI"
+        }
       },
       "verification": {
         "artifacts_verified": true,
@@ -1402,17 +1363,6 @@
           "provenance": "provider_reported"
         }
       },
-      "generation_metadata": {
-        "model": "z-ai/glm-5.3-flash-20260826",
-        "native_tokens_cached": 0,
-        "native_tokens_completion": 33,
-        "native_tokens_prompt": 1536,
-        "native_tokens_reasoning": 0,
-        "provider_name": "Z.AI",
-        "service_tier": null,
-        "total_cost": 0.00012345
-      },
-      "provider_generation_correlation_sha256": "sha256:fa29b8bac02756aa59e8d9c489a25412c46ccccb955cd61a37b8454fa299f247",
       "repetition": 2,
       "request_id": "flash-prose-r2",
       "request_plan": {
@@ -1464,7 +1414,6 @@
         "gateway": "openrouter",
         "quantization": "fp8",
         "requested_model_id": "z-ai/glm-5.3-flash",
-        "resolved_model_build": "z-ai/glm-5.3-flash-20260826",
         "route_slug": "z-ai/fp8",
         "runtime": {
           "backend": null,
@@ -1472,8 +1421,7 @@
           "name": "openai-compatible-api",
           "provider": "openrouter",
           "version": null
-        },
-        "upstream_provider": "Z.AI"
+        }
       },
       "verification": {
         "artifacts_verified": true,
@@ -1756,17 +1704,6 @@
           "provenance": "provider_reported"
         }
       },
-      "generation_metadata": {
-        "model": "z-ai/glm-5.3-20260816",
-        "native_tokens_cached": 0,
-        "native_tokens_completion": 23,
-        "native_tokens_prompt": 1535,
-        "native_tokens_reasoning": 0,
-        "provider_name": "Z.AI",
-        "service_tier": null,
-        "total_cost": 0.0022502
-      },
-      "provider_generation_correlation_sha256": "sha256:423eb957afad1bafb83ff45a148204af7efe3430eac0f47b9c32b051596992af",
       "repetition": 1,
       "request_id": "glm-structured-r1",
       "request_plan": {
@@ -1818,7 +1755,6 @@
         "gateway": "openrouter",
         "quantization": "fp8",
         "requested_model_id": "z-ai/glm-5.3",
-        "resolved_model_build": "z-ai/glm-5.3-20260816",
         "route_slug": "z-ai/fp8",
         "runtime": {
           "backend": null,
@@ -1826,8 +1762,7 @@
           "name": "openai-compatible-api",
           "provider": "openrouter",
           "version": null
-        },
-        "upstream_provider": "Z.AI"
+        }
       },
       "verification": {
         "artifacts_verified": true,
@@ -2176,17 +2111,6 @@
           "provenance": "provider_reported"
         }
       },
-      "generation_metadata": {
-        "model": "z-ai/glm-5.3-20260816",
-        "native_tokens_cached": 0,
-        "native_tokens_completion": 37,
-        "native_tokens_prompt": 1536,
-        "native_tokens_reasoning": 0,
-        "provider_name": "Z.AI",
-        "service_tier": null,
-        "total_cost": 0.0023132
-      },
-      "provider_generation_correlation_sha256": "sha256:653d96d9c3478e59ae5322fa583d93abf9fc0880994972dcff9159e4cfb504cc",
       "repetition": 1,
       "request_id": "glm-prose-r1",
       "request_plan": {
@@ -2238,7 +2162,6 @@
         "gateway": "openrouter",
         "quantization": "fp8",
         "requested_model_id": "z-ai/glm-5.3",
-        "resolved_model_build": "z-ai/glm-5.3-20260816",
         "route_slug": "z-ai/fp8",
         "runtime": {
           "backend": null,
@@ -2246,8 +2169,7 @@
           "name": "openai-compatible-api",
           "provider": "openrouter",
           "version": null
-        },
-        "upstream_provider": "Z.AI"
+        }
       },
       "verification": {
         "artifacts_verified": true,
@@ -2530,17 +2452,6 @@
           "provenance": "provider_reported"
         }
       },
-      "generation_metadata": {
-        "model": "z-ai/glm-5.3-20260816",
-        "native_tokens_cached": 1472,
-        "native_tokens_completion": 23,
-        "native_tokens_prompt": 1535,
-        "native_tokens_reasoning": 0,
-        "provider_name": "Z.AI",
-        "service_tier": null,
-        "total_cost": 0.00057212
-      },
-      "provider_generation_correlation_sha256": "sha256:f2b7dd46cf52d9656fef2c34d7eaf586d0e5d058378165132fae2d4f52bc3dba",
       "repetition": 2,
       "request_id": "glm-structured-r2",
       "request_plan": {
@@ -2592,7 +2503,6 @@
         "gateway": "openrouter",
         "quantization": "fp8",
         "requested_model_id": "z-ai/glm-5.3",
-        "resolved_model_build": "z-ai/glm-5.3-20260816",
         "route_slug": "z-ai/fp8",
         "runtime": {
           "backend": null,
@@ -2600,8 +2510,7 @@
           "name": "openai-compatible-api",
           "provider": "openrouter",
           "version": null
-        },
-        "upstream_provider": "Z.AI"
+        }
       },
       "verification": {
         "artifacts_verified": true,
@@ -2926,17 +2835,6 @@
           "provenance": "provider_reported"
         }
       },
-      "generation_metadata": {
-        "model": "z-ai/glm-5.3-20260816",
-        "native_tokens_cached": 1472,
-        "native_tokens_completion": 33,
-        "native_tokens_prompt": 1536,
-        "native_tokens_reasoning": 0,
-        "provider_name": "Z.AI",
-        "service_tier": null,
-        "total_cost": 0.00061752
-      },
-      "provider_generation_correlation_sha256": "sha256:d1ce3564874ab16a19ba7a8d1948ec1558acb2f9cfc961d978a85dcdf8289e95",
       "repetition": 2,
       "request_id": "glm-prose-r2",
       "request_plan": {
@@ -2988,7 +2886,6 @@
         "gateway": "openrouter",
         "quantization": "fp8",
         "requested_model_id": "z-ai/glm-5.3",
-        "resolved_model_build": "z-ai/glm-5.3-20260816",
         "route_slug": "z-ai/fp8",
         "runtime": {
           "backend": null,
@@ -2996,8 +2893,7 @@
           "name": "openai-compatible-api",
           "provider": "openrouter",
           "version": null
-        },
-        "upstream_provider": "Z.AI"
+        }
       },
       "verification": {
         "artifacts_verified": true,

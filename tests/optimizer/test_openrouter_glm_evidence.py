@@ -26,6 +26,7 @@ def load(name: str) -> dict:
 
 def test_committed_public_bundle_verifies() -> None:
     BUNDLE.verify()
+    assert "evidence_bundle.py" in (PUBLIC / "SHA256SUMS").read_text(encoding="utf-8")
 
 
 def test_manifest_records_exact_cap_request_count_spend_and_local_exclusion() -> None:
@@ -48,7 +49,6 @@ def test_all_rows_are_exact_pinned_passing_measurements() -> None:
     assert {row["system"]["requested_model_id"] for row in rows} == set(
         BUNDLE.MODEL_BUILDS
     )
-    assert all(row["system"]["upstream_provider"] == "Z.AI" for row in rows)
     assert all(row["system"]["route_slug"] == "z-ai/fp8" for row in rows)
     assert all(row["verification"]["status"] == "completed" for row in rows)
     assert all(row["verification"]["quality_score"] == 1.0 for row in rows)
@@ -69,6 +69,26 @@ def test_comparison_is_hosted_only_and_constraints_first() -> None:
         assert stratum["outcome"] == "recommended"
         assert stratum["recommended"]["system_key"]["model_id"] == "z-ai/glm-5.3"
         assert len(stratum["ranked"]) == 2
+
+
+def test_comparison_html_is_the_sanitized_json_rendering() -> None:
+    report = BUNDLE.CompareReport.read_json(PUBLIC / "comparison.json")
+    expected = BUNDLE.render_compare_report_html(report, redact_paths=True)
+
+    assert (PUBLIC / "comparison.html").read_text(encoding="utf-8") == expected
+    assert ".cache/" not in expected
+    assert "/Users/" not in expected
+
+
+def test_generation_metadata_discloses_missing_public_correlation() -> None:
+    generation = load("generation-metadata.json")
+    assert generation["completion_correlation_status"].startswith(
+        "not_publicly_verifiable"
+    )
+    observations = load("experiment-manifest.json")["systems"][
+        "generation_metadata_observations"
+    ]
+    assert observations["row_level_public_correlation_available"] is False
 
 
 @pytest.mark.parametrize(

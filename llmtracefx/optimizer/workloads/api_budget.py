@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import re
 from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -28,12 +29,16 @@ from ..collectors._shared import atomic_write_text, sha256_text
 from ..collectors.openai_api import ProviderUsage
 from ..schema import utc_now_iso
 
-BUDGET_PLAN_SCHEMA_VERSION = "2"
-BUDGET_LEDGER_SCHEMA_VERSION = "2"
+BUDGET_PLAN_SCHEMA_VERSION = "3"
+BUDGET_LEDGER_SCHEMA_VERSION = "3"
+BUDGET_ANCHOR_SCHEMA_VERSION = "1"
 DEFAULT_HARD_LIMIT_USD = Decimal("5.00")
 _MONEY_PLACES = Decimal("0.000000000001")
 _LEDGER_SEAL_FIELD = "ledger_sha256"
+_PLAN_SEAL_FIELD = "plan_sha256"
+_ANCHOR_SEAL_FIELD = "anchor_sha256"
 _REQUEST_STATUSES = frozenset({"planned", "attempted", "completed", "failed"})
+_LEDGER_IDENTITY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
 
 
 class BudgetError(ValueError):
@@ -240,7 +245,9 @@ class BudgetPlan:
     """Validated immutable authorization for an entire hosted experiment."""
 
     experiment_id: str
+    ledger_identity: str
     ledger_file_name: str
+    ledger_path_sha256: str
     authorized_total_usd: Decimal
     requests: tuple[BudgetRequest, ...]
     content_sha256: str
@@ -264,6 +271,12 @@ class BudgetPlan:
             raise BudgetError(
                 "budget plan has an unsupported or missing schema_version"
             )
+        expected_plan_seal = raw.get(_PLAN_SEAL_FIELD)
+        unsigned_plan = dict(raw)
+        unsigned_plan.pop(_PLAN_SEAL_FIELD, None)
+        actual_plan_seal = sha256_text(_canonical_json(unsigned_plan))
+        if expected_plan_seal != actual_plan_seal:
+            raise BudgetError("budget plan integrity seal does not verify")
         requests_raw = raw.get("requests")
         if not isinstance(requests_raw, list) or not requests_raw:
             raise BudgetError("budget plan.requests must be a non-empty list")
@@ -284,12 +297,23 @@ class BudgetPlan:
                 f"budget plan authorizes {_money(authorized)} USD, above the "
                 f"hard lifetime cap of {_money(hard_limit_usd)} USD"
             )
+        ledger_identity = _string(raw, "ledger_identity", context="budget plan")
+        if not _LEDGER_IDENTITY_PATTERN.fullmatch(ledger_identity):
+            raise BudgetError(
+                "budget plan.ledger_identity must be a stable 8-128 character "
+                "identifier"
+            )
+        ledger_path_sha256 = _string(raw, "ledger_path_sha256", context="budget plan")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", ledger_path_sha256):
+            raise BudgetError("budget plan.ledger_path_sha256 must be a sha256 digest")
         plan = cls(
             experiment_id=_string(raw, "experiment_id", context="budget plan"),
+            ledger_identity=ledger_identity,
             ledger_file_name=_string(raw, "ledger_file_name", context="budget plan"),
+            ledger_path_sha256=ledger_path_sha256,
             authorized_total_usd=authorized,
             requests=requests,
-            content_sha256=sha256_text(_canonical_json(raw)),
+            content_sha256=actual_plan_seal,
         )
         if plan.planned_ceiling_usd > authorized:
             raise BudgetError(
@@ -314,22 +338,30 @@ def conservative_input_token_upper_bound(prompt: str, system_prompt: str | None)
     )
 
 
-def _sealed(payload: dict[str, Any]) -> dict[str, Any]:
+def _sealed(
+    payload: dict[str, Any], *, seal_field: str = _LEDGER_SEAL_FIELD
+) -> dict[str, Any]:
     without_seal = dict(payload)
-    without_seal.pop(_LEDGER_SEAL_FIELD, None)
+    without_seal.pop(seal_field, None)
     return {
         **without_seal,
-        _LEDGER_SEAL_FIELD: sha256_text(_canonical_json(without_seal)),
+        seal_field: sha256_text(_canonical_json(without_seal)),
     }
 
 
-def _validate_seal(payload: dict[str, Any]) -> None:
-    expected = payload.get(_LEDGER_SEAL_FIELD)
+def _validate_seal(
+    payload: dict[str, Any], *, seal_field: str = _LEDGER_SEAL_FIELD
+) -> None:
+    expected = payload.get(seal_field)
     if not isinstance(expected, str):
-        raise BudgetError("budget ledger is missing its integrity seal")
-    actual = _sealed(payload)[_LEDGER_SEAL_FIELD]
+        raise BudgetError("budget state is missing its integrity seal")
+    actual = _sealed(payload, seal_field=seal_field)[seal_field]
     if expected != actual:
-        raise BudgetError("budget ledger integrity seal does not verify")
+        raise BudgetError("budget state integrity seal does not verify")
+
+
+def _default_authorization_state_dir() -> Path:
+    return Path.home() / ".llmtracefx" / "budget-authorizations"
 
 
 @contextmanager
@@ -353,12 +385,17 @@ class BudgetGate:
         *,
         hard_limit_usd: Decimal = DEFAULT_HARD_LIMIT_USD,
     ) -> None:
-        self._configure(plan_path, ledger_path, hard_limit_usd=hard_limit_usd)
+        self._configure(
+            plan_path,
+            ledger_path,
+            hard_limit_usd=hard_limit_usd,
+        )
         with _exclusive_lock(self.lock_path):
-            if not self.ledger_path.exists():
+            if not self.ledger_path.exists() or not self.anchor_path.exists():
                 raise BudgetError(
-                    "budget ledger does not exist; execution never initializes "
-                    "or resets lifetime authorization"
+                    "budget ledger or its monotonic authorization anchor does "
+                    "not exist; execution never initializes or resets lifetime "
+                    "authorization"
                 )
             self._read_ledger()
 
@@ -370,12 +407,19 @@ class BudgetGate:
         hard_limit_usd: Decimal,
     ) -> None:
         self.plan = BudgetPlan.read(plan_path, hard_limit_usd=hard_limit_usd)
-        if ledger_path.name != self.plan.ledger_file_name:
+        resolved_ledger = ledger_path.expanduser().resolve()
+        if resolved_ledger.name != self.plan.ledger_file_name:
             raise BudgetError(
                 "budget ledger file name does not match the immutable plan"
             )
-        self.ledger_path = ledger_path
-        self.lock_path = ledger_path.with_name(f".{ledger_path.name}.lock")
+        if sha256_text(str(resolved_ledger)) != self.plan.ledger_path_sha256:
+            raise BudgetError(
+                "budget ledger path does not match the sealed immutable plan"
+            )
+        self.ledger_path = resolved_ledger
+        state_dir = _default_authorization_state_dir()
+        self.anchor_path = state_dir / f"{self.plan.ledger_identity}.json"
+        self.lock_path = state_dir / f".{self.plan.ledger_identity}.lock"
         self._requests = {request.request_id: request for request in self.plan.requests}
 
     @classmethod
@@ -389,11 +433,18 @@ class BudgetGate:
         """Create the sole initial ledger before any execution is allowed."""
 
         gate = cls.__new__(cls)
-        gate._configure(plan_path, ledger_path, hard_limit_usd=hard_limit_usd)
+        gate._configure(
+            plan_path,
+            ledger_path,
+            hard_limit_usd=hard_limit_usd,
+        )
         with _exclusive_lock(gate.lock_path):
-            if gate.ledger_path.exists():
-                raise BudgetError("budget ledger already exists and cannot be reset")
-            gate._write_ledger(gate._initial_ledger())
+            if gate.ledger_path.exists() or gate.anchor_path.exists():
+                raise BudgetError(
+                    "budget ledger or authorization anchor already exists and "
+                    "cannot be reset"
+                )
+            gate._write_initial_state(gate._initial_ledger())
         return gate
 
     def _initial_ledger(self) -> dict[str, Any]:
@@ -416,7 +467,9 @@ class BudgetGate:
             )
         return {
             "schema_version": BUDGET_LEDGER_SCHEMA_VERSION,
+            "revision": 0,
             "experiment_id": self.plan.experiment_id,
+            "ledger_identity": self.plan.ledger_identity,
             "plan_sha256": self.plan.content_sha256,
             "authorized_total_usd": _money(self.plan.authorized_total_usd),
             "planned_request_count": len(self.plan.requests),
@@ -426,6 +479,7 @@ class BudgetGate:
             },
             "cumulative_accounted_usd": "0.000000000000",
             "remaining_authorized_usd": _money(self.plan.authorized_total_usd),
+            "terminal_failure": None,
             "entries": entries,
             "events": [],
         }
@@ -443,8 +497,13 @@ class BudgetGate:
         _validate_seal(payload)
         if payload.get("schema_version") != BUDGET_LEDGER_SCHEMA_VERSION:
             raise BudgetError("budget ledger schema_version does not match")
+        revision = payload.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise BudgetError("budget ledger revision must be a non-negative integer")
         if payload.get("experiment_id") != self.plan.experiment_id:
             raise BudgetError("budget ledger experiment_id does not match its plan")
+        if payload.get("ledger_identity") != self.plan.ledger_identity:
+            raise BudgetError("budget ledger identity does not match its plan")
         if payload.get("plan_sha256") != self.plan.content_sha256:
             raise BudgetError("budget ledger is bound to a different budget plan")
         entries = payload.get("entries")
@@ -466,13 +525,83 @@ class BudgetGate:
                 raise BudgetError("budget ledger request ceiling does not match")
             seen.add(request_id)
         self._recompute_totals(payload)
+        self._validate_anchor(payload)
         return payload
 
+    def _anchor_payload(self, sealed_ledger: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "schema_version": BUDGET_ANCHOR_SCHEMA_VERSION,
+            "ledger_identity": self.plan.ledger_identity,
+            "plan_sha256": self.plan.content_sha256,
+            "ledger_path_sha256": self.plan.ledger_path_sha256,
+            "revision": sealed_ledger["revision"],
+            "bound_ledger_sha256": sealed_ledger[_LEDGER_SEAL_FIELD],
+        }
+
+    def _write_initial_state(self, payload: dict[str, Any]) -> None:
+        sealed_ledger = _sealed(payload)
+        atomic_write_text(
+            self.ledger_path,
+            json.dumps(sealed_ledger, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        )
+        sealed_anchor = _sealed(
+            self._anchor_payload(sealed_ledger), seal_field=_ANCHOR_SEAL_FIELD
+        )
+        atomic_write_text(
+            self.anchor_path,
+            json.dumps(sealed_anchor, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        )
+
+    def _read_anchor(self) -> dict[str, Any]:
+        try:
+            text = read_bounded_regular_text(
+                self.anchor_path, MAX_EVIDENCE_ARTIFACT_BYTES
+            )
+            anchor = json.loads(text, parse_constant=reject_non_finite_json_constant)
+        except (OSError, ArtifactReadError, ValueError, RecursionError) as exc:
+            raise BudgetError(
+                f"failed to read budget authorization anchor: {exc}"
+            ) from exc
+        if not isinstance(anchor, dict):
+            raise BudgetError("budget authorization anchor must be an object")
+        _validate_seal(anchor, seal_field=_ANCHOR_SEAL_FIELD)
+        if anchor.get("schema_version") != BUDGET_ANCHOR_SCHEMA_VERSION:
+            raise BudgetError("budget authorization anchor schema does not match")
+        if anchor.get("ledger_identity") != self.plan.ledger_identity:
+            raise BudgetError("budget authorization anchor identity does not match")
+        if anchor.get("plan_sha256") != self.plan.content_sha256:
+            raise BudgetError("budget authorization anchor plan does not match")
+        if anchor.get("ledger_path_sha256") != self.plan.ledger_path_sha256:
+            raise BudgetError("budget authorization anchor path does not match")
+        return anchor
+
+    def _validate_anchor(self, ledger: dict[str, Any]) -> None:
+        anchor = self._read_anchor()
+        if anchor.get("revision") != ledger.get("revision"):
+            raise BudgetError(
+                "budget ledger revision does not match its monotonic anchor"
+            )
+        if anchor.get("bound_ledger_sha256") != ledger.get(_LEDGER_SEAL_FIELD):
+            raise BudgetError(
+                "budget ledger content does not match its monotonic anchor"
+            )
+
     def _write_ledger(self, payload: dict[str, Any]) -> None:
+        revision = payload.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int):
+            raise BudgetError("budget ledger revision is invalid")
+        payload["revision"] = revision + 1
         sealed = _sealed(payload)
         atomic_write_text(
             self.ledger_path,
             json.dumps(sealed, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        )
+        sealed_anchor = _sealed(
+            self._anchor_payload(sealed), seal_field=_ANCHOR_SEAL_FIELD
+        )
+        atomic_write_text(
+            self.anchor_path,
+            json.dumps(sealed_anchor, indent=2, sort_keys=True, allow_nan=False) + "\n",
         )
 
     @staticmethod
@@ -496,8 +625,6 @@ class BudgetGate:
         remaining = self.plan.authorized_total_usd - accounted
         payload["cumulative_accounted_usd"] = _money(accounted)
         payload["remaining_authorized_usd"] = _money(remaining)
-        if remaining < 0:
-            raise BudgetError("budget ledger records spending above authorization")
 
     def claim(
         self,
@@ -565,6 +692,10 @@ class BudgetGate:
 
         with _exclusive_lock(self.lock_path):
             payload = self._read_ledger()
+            if payload.get("terminal_failure") is not None:
+                raise BudgetError(
+                    "budget ledger is terminally failed; no later request is allowed"
+                )
             entry = self._entry(payload, request_id)
             if entry["status"] != "planned":
                 raise BudgetError(
@@ -644,7 +775,19 @@ class BudgetGate:
                         * planned.completion_usd_per_token
                     )
 
-            entry["status"] = "completed" if provider_success else "failed"
+            breaches: list[str] = []
+            if provider_cost is not None and provider_cost > planned.ceiling_usd:
+                breaches.append(
+                    "provider-reported cost exceeded the planned request ceiling"
+                )
+            if computed_cost is not None and computed_cost > planned.ceiling_usd:
+                breaches.append(
+                    "computed observed cost exceeded the planned request ceiling"
+                )
+
+            entry["status"] = (
+                "failed" if breaches or not provider_success else "completed"
+            )
             entry["settled_at"] = utc_now_iso()
             entry["provider_usage"] = usage_payload
             entry["computed_observed_cost_usd"] = (
@@ -653,12 +796,25 @@ class BudgetGate:
             entry["provider_reported_cost_usd_credits"] = (
                 None if provider_cost is None else _money(provider_cost)
             )
-            entry["failure"] = failure
+            entry["failure"] = "; ".join(breaches) if breaches else failure
 
             # A failed request or missing provider charge remains charged at its
             # entire ceiling. Only a successful response with an explicit cost
             # proves that reserving less is safe.
-            if provider_success and provider_cost is not None:
+            if breaches:
+                accounted = max(
+                    (
+                        planned.ceiling_usd,
+                        provider_cost or Decimal(),
+                        computed_cost or Decimal(),
+                    )
+                )
+                payload["terminal_failure"] = {
+                    "at": entry["settled_at"],
+                    "request_id": request_id,
+                    "reason": entry["failure"],
+                }
+            elif provider_success and provider_cost is not None:
                 accounted = provider_cost
             else:
                 accounted = planned.ceiling_usd
@@ -682,14 +838,8 @@ class BudgetGate:
             )
             self._write_ledger(payload)
 
-            if provider_cost is not None and provider_cost > planned.ceiling_usd:
-                raise BudgetError(
-                    "provider-reported cost exceeded the planned request ceiling"
-                )
-            if computed_cost is not None and computed_cost > planned.ceiling_usd:
-                raise BudgetError(
-                    "computed observed cost exceeded the planned request ceiling"
-                )
+            if breaches:
+                raise BudgetError("; ".join(breaches))
 
     def snapshot(self) -> dict[str, Any]:
         with _exclusive_lock(self.lock_path):
