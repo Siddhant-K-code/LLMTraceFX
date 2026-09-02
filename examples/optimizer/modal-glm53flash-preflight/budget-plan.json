@@ -1,0 +1,435 @@
+{
+  "schema_version": "1",
+  "kind": "llmtracefx.deploy.plan",
+  "approved": false,
+  "network_request_performed": false,
+  "gpu_allocated": false,
+  "modal_authentication_used": false,
+  "app_name": "llmtracefx-glm53flash",
+  "volume_name": "llmtracefx-glm53flash-weights",
+  "recipe": {
+    "framework": "vllm",
+    "framework_version": "0.1.dev20051+g487ecf187",
+    "credential_transport": "environment",
+    "image": {
+      "reference": "vllm/vllm-openai:glm53-flash-cu129@sha256:3b9ab05f137ed51afb08ee68929bc2244acd13d21612eb08b5f5573a89241f79",
+      "name": "vllm/vllm-openai",
+      "tag": "glm53-flash-cu129",
+      "digest": "sha256:3b9ab05f137ed51afb08ee68929bc2244acd13d21612eb08b5f5573a89241f79",
+      "digest_pinned": true
+    },
+    "model_repo_id": "zai-org/GLM-5.3-Flash",
+    "model_revision": "03eb5366286afd40d2221b1d9c63a6dd1ba4832e",
+    "model_facts": {
+      "repo_id": "zai-org/GLM-5.3-Flash",
+      "total_parameters_b": 320.0,
+      "active_parameters_b": 18.0,
+      "num_hidden_layers": 45,
+      "num_routed_experts": 288,
+      "num_experts_per_token": 8,
+      "max_position_embeddings": 1048576,
+      "quantization": "fp8",
+      "quantization_format": "e4m3",
+      "activation_scheme": "dynamic",
+      "multimodal": true,
+      "attention": "hybrid linear attention with periodic sparse attention layers",
+      "approximate_checkpoint_gib": 306.0,
+      "config_source": "https://huggingface.co/zai-org/GLM-5.3-Flash/raw/main/config.json",
+      "model_card": "https://huggingface.co/zai-org/GLM-5.3-Flash"
+    },
+    "gpu_type": "H200",
+    "gpu_count": 4,
+    "tensor_parallel_size": 4,
+    "context_length": 131072,
+    "served_model_name": "zai-org/GLM-5.3-Flash",
+    "port": 30000,
+    "weights_mount_path": "/weights",
+    "extra_server_args": []
+  },
+  "server_argv": [
+    "vllm",
+    "serve",
+    "/weights/03eb5366286afd40d2221b1d9c63a6dd1ba4832e",
+    "--served-model-name",
+    "zai-org/GLM-5.3-Flash",
+    "--host",
+    "0.0.0.0",
+    "--port",
+    "30000",
+    "--tensor-parallel-size",
+    "4",
+    "--max-model-len",
+    "131072"
+  ],
+  "runtime_controls": {
+    "timeout_seconds": 3600,
+    "deployment_seconds": 3600,
+    "scaledown_window_seconds": 300,
+    "startup_timeout_seconds": 3600,
+    "max_containers": 1,
+    "min_containers": 0,
+    "max_concurrent_inputs": 1,
+    "allow_warm_containers": false,
+    "require_proxy_auth": true
+  },
+  "cost_envelope": {
+    "gpu_type": "H200",
+    "gpu_count": 4,
+    "max_containers": 1,
+    "max_runtime_seconds": 3600,
+    "deployment_seconds": 3600,
+    "billable_seconds": 7200,
+    "usd_per_gpu_hour": 4.5396,
+    "price_effective_date": "2026-09-02",
+    "price_source": "https://modal.com/pricing",
+    "compute_effective_date": "2026-09-02",
+    "compute_source": "https://modal.com/pricing",
+    "storage_effective_date": "2026-09-02",
+    "storage_source": "https://modal.com/pricing",
+    "stored_gib": 306.0,
+    "storage_usd_per_gib_month": 0.09,
+    "storage_retention_days": 0.0,
+    "storage_billed_days": 4.0,
+    "lines": [
+      {
+        "name": "serving-gpu",
+        "detail": "4 x H200 x 1 container(s)",
+        "hours": 2.0,
+        "usd_per_hour": 18.1584,
+        "usd": 36.3168
+      },
+      {
+        "name": "serving-compute",
+        "detail": "16 cores + 64 GiB x 1 container(s)",
+        "hours": 2.0,
+        "usd_per_hour": 1.266048,
+        "usd": 2.532096
+      },
+      {
+        "name": "staging",
+        "detail": "8 cores + 32 GiB, CPU only, to its own timeout",
+        "hours": 6.0,
+        "usd_per_hour": 0.633024,
+        "usd": 3.798144
+      },
+      {
+        "name": "verification",
+        "detail": "4 cores + 16 GiB, CPU only, to its own timeout",
+        "hours": 6.0,
+        "usd_per_hour": 0.316512,
+        "usd": 1.899072
+      },
+      {
+        "name": "storage",
+        "detail": "306 GiB for 0 day(s) plus 4 billed after deletion",
+        "hours": 96.0,
+        "usd_per_hour": 0.03825,
+        "usd": 3.672
+      }
+    ],
+    "worst_case_usd": 48.218112,
+    "budget_usd": 10.0,
+    "headroom_usd": -38.218112,
+    "within_budget": false,
+    "bounded": true,
+    "covers": "Accelerators, the CPU and memory billed alongside them, the staging and verification containers, and volume storage including the period Modal bills after deletion.",
+    "does_not_cover": "Cold starts triggered by requests that reach the platform. A web server function is scheduled before any code in the container runs, so a request allocates accelerators first and is refused second, including after the deployment expiry. With proxy auth on, only a holder of a workspace token can do this and the refusal takes seconds. With a public endpoint anyone can, without limit, and no figure here bounds it.",
+    "notes": [
+      "The accelerator term is priced against the deployment window, not the container timeout, because a request arriving after a container exits simply starts another one. One container timeout is added so a container starting just before the expiry is still covered.",
+      "Volume storage keeps billing after the GPUs stop, and Modal bills deleted data for up to four days, so both are included."
+    ]
+  },
+  "memory_fit": {
+    "gpu_type": "H200",
+    "gpu_count": 4,
+    "vram_gib_per_gpu": 141.0,
+    "total_vram_gib": 564.0,
+    "weights_gib": 306.0,
+    "residual_gib": 258.0,
+    "residual_fraction": 0.4574,
+    "required_headroom_fraction": 0.2,
+    "fits": true,
+    "caveat": "Advertised VRAM against an approximate checkpoint size. Passing this check does not prove the model serves at the requested context length; no official hardware requirement for GLM-5.3-Flash was published on the model card or in https://github.com/zai-org/GLM-5 as of 2026-08-30."
+  },
+  "endpoint": {
+    "api_key_env_var": "GLM_SELFHOST_API_KEY",
+    "modal_secret_name": "glm-selfhost-api-key",
+    "served_model_name": "zai-org/GLM-5.3-Flash",
+    "base_url": null,
+    "resolved": false,
+    "health_url": "<deployed-url>/health",
+    "readiness_url": "<deployed-url>/v1/models",
+    "chat_completions_url": "<deployed-url>/v1/chat/completions",
+    "credential_handling": "The API key is stored in a Modal Secret and injected into the serving container as an environment variable. Only the secret name and the variable name are ever recorded."
+  },
+  "blockers": [
+    "Modeled cost $48.22 exceeds the planning threshold $10.00."
+  ],
+  "warnings": [
+    "Proxy auth is on, so Modal rejects unauthenticated requests at its edge before scheduling a container and they cannot allocate accelerators. A request bearing a valid workspace token still cold-starts a container, including after the expiry, where it is refused within seconds. That residual is operator-controlled and is not priced above."
+  ],
+  "steps": [
+    {
+      "name": "setup",
+      "purpose": "Authenticate the local Modal CLI against your workspace.",
+      "argv": [
+        "modal",
+        "setup"
+      ],
+      "command": "modal setup",
+      "requires_auth": false,
+      "spends_money": false,
+      "notes": [
+        "Opens a browser and writes a token to ~/.modal.toml."
+      ]
+    },
+    {
+      "name": "secret",
+      "purpose": "Store the endpoint API key as a Modal Secret so the serving container receives it as an environment variable.",
+      "argv": [
+        "modal",
+        "secret",
+        "create",
+        "glm-selfhost-api-key",
+        "GLM_SELFHOST_API_KEY=$GLM_SELFHOST_API_KEY"
+      ],
+      "command": "modal secret create glm-selfhost-api-key \"GLM_SELFHOST_API_KEY=${GLM_SELFHOST_API_KEY}\"",
+      "requires_auth": true,
+      "spends_money": false,
+      "notes": [
+        "Export GLM_SELFHOST_API_KEY in your shell first; the generated command references the variable and never contains the value.",
+        "Creating the secret in the Modal dashboard instead keeps it out of shell history entirely."
+      ]
+    },
+    {
+      "name": "volume",
+      "purpose": "Create the persistent volume that will hold the weights.",
+      "argv": [
+        "modal",
+        "volume",
+        "create",
+        "llmtracefx-glm53flash-weights"
+      ],
+      "command": "modal volume create llmtracefx-glm53flash-weights",
+      "requires_auth": true,
+      "spends_money": false,
+      "notes": [
+        "Creating an empty volume is free; storing weights on it is not. Storage bills until the volume is deleted."
+      ]
+    },
+    {
+      "name": "stage-weights",
+      "purpose": "Download the pinned model revision onto the volume using CPU and network only, then write a manifest of what landed.",
+      "argv": [
+        "modal",
+        "run",
+        "llmtracefx/deploy/modal_glm_app.py::stage_weights",
+        "--repo-id",
+        "zai-org/GLM-5.3-Flash",
+        "--revision",
+        "03eb5366286afd40d2221b1d9c63a6dd1ba4832e",
+        "--confirm",
+        "03eb5366286afd40d2221b1d9c63a6dd1ba4832e",
+        "--volume-name",
+        "llmtracefx-glm53flash-weights"
+      ],
+      "command": "modal run llmtracefx/deploy/modal_glm_app.py::stage_weights --repo-id zai-org/GLM-5.3-Flash --revision 03eb5366286afd40d2221b1d9c63a6dd1ba4832e --confirm 03eb5366286afd40d2221b1d9c63a6dd1ba4832e --volume-name llmtracefx-glm53flash-weights",
+      "requires_auth": true,
+      "spends_money": true,
+      "notes": [
+        "No GPU is attached to this step. Weights are never downloaded on an accelerator.",
+        "This transfers hundreds of GiB and takes a long time; the cost is CPU container time plus the storage it leaves behind.",
+        "Re-running with the same revision is a no-op once the manifest matches."
+      ]
+    },
+    {
+      "name": "verify-weights",
+      "purpose": "Re-check every staged file against the manifest, on CPU, and record the result the serving container requires.",
+      "argv": [
+        "modal",
+        "run",
+        "llmtracefx/deploy/modal_glm_app.py::verify_weights",
+        "--volume-name",
+        "llmtracefx-glm53flash-weights",
+        "--revision",
+        "03eb5366286afd40d2221b1d9c63a6dd1ba4832e"
+      ],
+      "command": "modal run llmtracefx/deploy/modal_glm_app.py::verify_weights --volume-name llmtracefx-glm53flash-weights --revision 03eb5366286afd40d2221b1d9c63a6dd1ba4832e",
+      "requires_auth": true,
+      "spends_money": true,
+      "notes": [
+        "CPU only. No accelerator is allocated to find a truncated download.",
+        "The serving container refuses to start until this has passed for the revision it is configured with."
+      ]
+    },
+    {
+      "name": "manifest",
+      "purpose": "Print the staging manifest recorded on the volume.",
+      "argv": [
+        "modal",
+        "run",
+        "llmtracefx/deploy/modal_glm_app.py::read_manifest",
+        "--volume-name",
+        "llmtracefx-glm53flash-weights",
+        "--revision",
+        "03eb5366286afd40d2221b1d9c63a6dd1ba4832e"
+      ],
+      "command": "modal run llmtracefx/deploy/modal_glm_app.py::read_manifest --volume-name llmtracefx-glm53flash-weights --revision 03eb5366286afd40d2221b1d9c63a6dd1ba4832e",
+      "requires_auth": true,
+      "spends_money": true,
+      "notes": [
+        "CPU only, seconds of container time."
+      ]
+    },
+    {
+      "name": "deploy",
+      "purpose": "Deploy the serving app and obtain its https URL.",
+      "argv": [
+        "modal",
+        "deploy",
+        "llmtracefx/deploy/modal_glm_app.py"
+      ],
+      "command": "modal deploy llmtracefx/deploy/modal_glm_app.py",
+      "requires_auth": true,
+      "spends_money": true,
+      "notes": [
+        "Deploying registers the app. GPUs are allocated on the first request and released after the scaledown window.",
+        "Every budget parameter is read from the environment at deploy time; the app refuses to build if any is missing."
+      ]
+    },
+    {
+      "name": "health",
+      "purpose": "Liveness probe. Cheap, bounded, no model work.",
+      "argv": [
+        "curl",
+        "-fsS",
+        "--max-time",
+        "30",
+        "-H",
+        "Authorization: Bearer $GLM_SELFHOST_API_KEY",
+        "<deployed-url>/health"
+      ],
+      "command": "curl -fsS --max-time 30 -H \"Authorization: Bearer ${GLM_SELFHOST_API_KEY}\" '<deployed-url>/health'",
+      "requires_auth": false,
+      "spends_money": true,
+      "notes": [
+        "The first authenticated call cold-starts the container and therefore allocates GPUs."
+      ]
+    },
+    {
+      "name": "readiness",
+      "purpose": "Readiness probe: the model list is only served once weights are loaded.",
+      "argv": [
+        "curl",
+        "-fsS",
+        "--max-time",
+        "60",
+        "-H",
+        "Authorization: Bearer $GLM_SELFHOST_API_KEY",
+        "<deployed-url>/v1/models"
+      ],
+      "command": "curl -fsS --max-time 60 -H \"Authorization: Bearer ${GLM_SELFHOST_API_KEY}\" '<deployed-url>/v1/models'",
+      "requires_auth": false,
+      "spends_money": true,
+      "notes": [
+        "The header references a shell variable, so the command text never contains the key."
+      ]
+    },
+    {
+      "name": "smoke",
+      "purpose": "One bounded chat completion proving the endpoint serves.",
+      "argv": [
+        "curl",
+        "-fsS",
+        "--max-time",
+        "120",
+        "-H",
+        "Content-Type: application/json",
+        "-H",
+        "Authorization: Bearer $GLM_SELFHOST_API_KEY",
+        "-d",
+        "{\"model\":\"zai-org/GLM-5.3-Flash\",\"max_tokens\":16,\"stream\":false,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the word: ready\"}]}",
+        "<deployed-url>/v1/chat/completions"
+      ],
+      "command": "curl -fsS --max-time 120 -H 'Content-Type: application/json' -H \"Authorization: Bearer ${GLM_SELFHOST_API_KEY}\" -d '{\"model\":\"zai-org/GLM-5.3-Flash\",\"max_tokens\":16,\"stream\":false,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with the word: ready\"}]}' '<deployed-url>/v1/chat/completions'",
+      "requires_auth": false,
+      "spends_money": true,
+      "notes": [
+        "Capped at 16 output tokens so a misbehaving server cannot generate indefinitely.",
+        "This proves the endpoint works. It is not a benchmark: timing evidence comes from the collector step."
+      ]
+    },
+    {
+      "name": "collect",
+      "purpose": "Measure the endpoint with the existing LLMTraceFX API collector, which owns all timing evidence.",
+      "argv": [
+        "llmtracefx-optimizer",
+        "collect-api",
+        "--run-id",
+        "glm53flash-selfhost-smoke",
+        "--provider",
+        "modal-selfhost",
+        "--endpoint",
+        "<deployed-url>/v1/chat/completions",
+        "--model-id",
+        "zai-org/GLM-5.3-Flash",
+        "--prompt-file",
+        "examples/optimizer/api-smoke-prompt.txt",
+        "--output-dir",
+        "output/glm53flash-selfhost",
+        "--api-key-env",
+        "GLM_SELFHOST_API_KEY",
+        "--request-timeout",
+        "120.0",
+        "--model-revision",
+        "03eb5366286afd40d2221b1d9c63a6dd1ba4832e"
+      ],
+      "command": "llmtracefx-optimizer collect-api --run-id glm53flash-selfhost-smoke --provider modal-selfhost --endpoint '<deployed-url>/v1/chat/completions' --model-id zai-org/GLM-5.3-Flash --prompt-file examples/optimizer/api-smoke-prompt.txt --output-dir output/glm53flash-selfhost --api-key-env GLM_SELFHOST_API_KEY --request-timeout 120.0 --model-revision 03eb5366286afd40d2221b1d9c63a6dd1ba4832e",
+      "requires_auth": false,
+      "spends_money": true,
+      "notes": [
+        "Metrics are produced outside the server on purpose: the server does not measure or grade itself."
+      ]
+    },
+    {
+      "name": "stop",
+      "purpose": "Stop the app so no container can be started by a request.",
+      "argv": [
+        "modal",
+        "app",
+        "stop",
+        "llmtracefx-glm53flash"
+      ],
+      "command": "modal app stop llmtracefx-glm53flash",
+      "requires_auth": true,
+      "spends_money": false,
+      "notes": [
+        "Do this first during teardown; it is what stops GPU spend."
+      ]
+    },
+    {
+      "name": "delete-volume",
+      "purpose": "Delete the weights volume so storage stops accruing.",
+      "argv": [
+        "modal",
+        "volume",
+        "delete",
+        "llmtracefx-glm53flash-weights"
+      ],
+      "command": "modal volume delete llmtracefx-glm53flash-weights",
+      "requires_auth": true,
+      "spends_money": false,
+      "notes": [
+        "Storage is the charge that outlives the experiment. Modal bills deleted data for up to four days after deletion.",
+        "Skip this only if you intend to serve again soon; re-staging means transferring the whole checkpoint again."
+      ]
+    }
+  ],
+  "executable_steps": [
+    "setup",
+    "secret",
+    "volume",
+    "stop",
+    "delete-volume"
+  ]
+}

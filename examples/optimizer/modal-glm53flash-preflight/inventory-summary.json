@@ -1,0 +1,20 @@
+{
+  "schema_version": "1",
+  "kind": "llmtracefx.model_inventory_preflight",
+  "source": "https://huggingface.co/api/models/zai-org/GLM-5.3-Flash?blobs=true",
+  "repo_id": "zai-org/GLM-5.3-Flash",
+  "revision": "03eb5366286afd40d2221b1d9c63a6dd1ba4832e",
+  "repository_private": false,
+  "repository_gated": false,
+  "file_count": 72,
+  "total_bytes": 328366172318,
+  "total_gib": 305.814829,
+  "safetensors_shard_count": 62,
+  "safetensors_bytes": 328337455672,
+  "files_with_published_sha256": 63,
+  "safetensors_shards_with_published_sha256": 62,
+  "files_without_published_sha256": 9,
+  "files_without_published_sha256_note": "Eight small repository files and model.safetensors.index.json have sizes but no SHA-256 in the published LFS metadata.",
+  "full_staging_observed": false,
+  "full_verification_observed": false
+}

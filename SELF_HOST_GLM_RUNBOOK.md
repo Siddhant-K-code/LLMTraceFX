@@ -4,6 +4,12 @@ This runbook covers the optional, budget-guarded Modal harness for
 GLM-5.3-Flash. Its purpose is to answer serving questions that a hosted API
 cannot answer, collect evidence briefly, and remove the deployment.
 
+The 2026-09-02 no-spend preflight is preserved in
+[`examples/optimizer/modal-glm53flash-preflight/`](examples/optimizer/modal-glm53flash-preflight/README.md).
+It refused paid execution because the complete conservative envelope exceeded
+the authorized cap, authentication was absent, and the dedicated vLLM image
+did not expose a verifiable embedded source revision.
+
 Planning is offline and no-spend. Staging, deployment, health checks, and
 inference are not.
 

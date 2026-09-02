@@ -1,0 +1,111 @@
+{
+  "schema_version": "1",
+  "kind": "llmtracefx.modal_glm53flash_preflight",
+  "as_of": "2026-09-02T21:57:45+05:30",
+  "repository_head": "debd8fa3f2d4bbed3ccdaad40fd1be80e264fe87",
+  "decision": {
+    "status": "refused",
+    "paid_execution_allowed": false,
+    "stop_gates": [
+      "modal_cli_unauthenticated",
+      "modeled_lifecycle_exceeds_authorized_hard_cap",
+      "embedded_framework_source_revision_unverified"
+    ]
+  },
+  "authorization": {
+    "provider": "Modal",
+    "hard_cap_usd": "10.000000",
+    "hard_cap_is_spending_target": false,
+    "actual_or_observed_credit_use_usd": "0.000000",
+    "remaining_authorization_usd": "10.000000",
+    "modal_cli_version": "1.5.4",
+    "modal_cli_authenticated": false,
+    "exact_login_step": "uv run modal setup"
+  },
+  "provider_policy": {
+    "openrouter_enabled": false,
+    "other_paid_providers_enabled": false,
+    "modal_paid_commands_executed": 0,
+    "automatic_retries": 0
+  },
+  "model": {
+    "repo_id": "zai-org/GLM-5.3-Flash",
+    "revision": "03eb5366286afd40d2221b1d9c63a6dd1ba4832e",
+    "revision_last_modified": "2026-08-31T11:33:06Z",
+    "license": "MIT",
+    "architecture": "Glm5NextForConditionalGeneration",
+    "model_type": "glm5_next",
+    "total_parameters_claim_b": 320,
+    "active_parameters_claim_b": 18,
+    "layers": 45,
+    "routed_experts": 288,
+    "experts_per_token": 8,
+    "maximum_context_tokens": 1048576,
+    "quantization": "native FP8 e4m3 with dynamic activation scaling",
+    "multimodal": true
+  },
+  "serving_configuration": {
+    "configured_gpu_type": "H200",
+    "configured_gpu_count": 4,
+    "configured_tensor_parallel_size": 4,
+    "configured_context_tokens": 131072,
+    "configured_max_containers": 1,
+    "configured_min_containers": 0,
+    "configured_proxy_auth_required": true,
+    "configured_container_timeout_seconds": 3600,
+    "configured_deployment_window_seconds": 3600,
+    "configured_startup_timeout_seconds": 3600,
+    "framework": "vLLM",
+    "framework_version_reported_by_upstream_issue": "0.1.dev20051+g487ecf187",
+    "framework_full_source_revision_candidate": "487ecf187d3dfe74d2cf6119a92881dba403c219",
+    "image": "vllm/vllm-openai:glm53-flash-cu129@sha256:3b9ab05f137ed51afb08ee68929bc2244acd13d21612eb08b5f5573a89241f79",
+    "linux_amd64_manifest_digest": "sha256:fcd2a743ca206241f8c7ead6a2e771936b7a1e7d99b662b64b8cece83ae45145",
+    "image_config_digest": "sha256:a34f2dabce96e0beca2f269e69d69508ee6872de40e0cc9d7191f9e2511c739c",
+    "image_created_at": "2026-08-26T02:45:01Z",
+    "image_embedded_build_revision": "unknown",
+    "exact_framework_source_revision_verified": false
+  },
+  "execution": {
+    "plan_completed": true,
+    "weight_staging_attempted": false,
+    "weight_verification_attempted": false,
+    "deployment_attempted": false,
+    "readiness_attempted": false,
+    "smoke_requests_attempted": 0,
+    "apps_created": 0,
+    "secrets_created": 0,
+    "volumes_created": 0,
+    "gpu_containers_created": 0,
+    "teardown_status": "not_required_no_modal_resources_created",
+    "volume_deletion_status": "not_applicable_no_volume_created"
+  },
+  "observations": {
+    "staged_bytes": null,
+    "staged_files": null,
+    "staging_duration_seconds": null,
+    "verification_result": "not_run",
+    "verification_duration_seconds": null,
+    "readiness_result": "not_run",
+    "startup_window_seconds": null,
+    "smoke_result": "not_run",
+    "smoke_client_timing_seconds": null,
+    "server_usage": null
+  },
+  "claims": {
+    "hardware_fit_proven": false,
+    "model_started": false,
+    "authenticated_output_completed": false,
+    "benchmark_claimed": false,
+    "production_readiness_claimed": false,
+    "performance_ranking_claimed": false,
+    "gpu_utilization_claimed": false,
+    "bandwidth_claimed": false,
+    "memory_usage_claimed": false,
+    "power_or_energy_claimed": false
+  },
+  "cleanup": {
+    "temporary_local_or_modal_secrets_created": false,
+    "safe_to_remove_temporary_secrets": true,
+    "remaining_cleanup": "Run uv run modal setup only if a separately authorized future preflight is planned; no experiment resource requires deletion."
+  }
+}

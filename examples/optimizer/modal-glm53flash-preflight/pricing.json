@@ -1,0 +1,39 @@
+{
+  "schema_version": "1",
+  "kind": "llmtracefx.modal_pricing_preflight",
+  "read_at": "2026-09-02T21:57:45+05:30",
+  "pricing_source": "https://modal.com/pricing",
+  "volume_policy_source": "https://modal.com/docs/guide/volumes",
+  "gpu": {
+    "type": "Nvidia H200 SXM",
+    "usd_per_second": "0.001261",
+    "usd_per_hour": "4.539600"
+  },
+  "cpu": {
+    "unit": "physical core",
+    "vcpus_per_core": 2,
+    "minimum_cores_per_container": "0.125",
+    "usd_per_core_second": "0.0000131",
+    "usd_per_core_hour": "0.0471600"
+  },
+  "memory": {
+    "usd_per_gib_second": "0.00000222",
+    "usd_per_gib_hour": "0.00799200"
+  },
+  "volume": {
+    "usd_per_gib_month_list_rate": "0.09",
+    "published_included_allowance": "1 TiB per month",
+    "included_allowance_assumed_available_in_plan": false,
+    "usage_snapshot_frequency": "daily",
+    "maximum_post_delete_billing_days": 4
+  },
+  "billing_granularity": {
+    "compute": "per second",
+    "storage": "daily usage snapshots billed at monthly list rate"
+  },
+  "limitations": [
+    "The planner is an operator cost model, not a provider-side billing cap.",
+    "The storage allowance was not deducted because authentication was absent and current workspace usage could not be verified.",
+    "Network transfer or resources outside the declared inputs are not represented."
+  ]
+}
