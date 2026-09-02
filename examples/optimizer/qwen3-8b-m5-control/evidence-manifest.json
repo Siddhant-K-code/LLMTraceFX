@@ -1,0 +1,123 @@
+{
+  "schema_version": "1",
+  "evidence_id": "m5-pro-qwen3-8b-exploratory-positive-control-20260902",
+  "run": {
+    "completed_at_utc": "2026-09-02T08:08:36.185127Z",
+    "code_checkout_commit": "6b82cf276ee1e1cef03a0c92847082f872c8feba",
+    "mode": "exploratory",
+    "clean_boot_operator_assertion": false,
+    "status": "completed",
+    "tiers_requested": [
+      2048,
+      8192,
+      16384
+    ],
+    "measured_runs_per_tier": 4,
+    "measured_runs_total": 12
+  },
+  "model": {
+    "official_id": "Qwen/Qwen3-8B",
+    "official_revision": "b968826d9c46dd6066d109eabc6255188de91218",
+    "license": "Apache-2.0",
+    "local_repository_id": "local-self-converted/qwen3-8b-mlx-q4g64",
+    "binding_fingerprint": "df71c0372db25213fc9ee4efe23b3502ba6fc6d0",
+    "checkpoint_bytes": 4619328159,
+    "checkpoint_file_count": 8,
+    "quantization": "MLX affine 4-bit, group size 64 (self-converted, not byte-equivalent to any third-party conversion)",
+    "converter": "mlx-lm",
+    "converter_revision": "ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd"
+  },
+  "tier_outcomes": [
+    {
+      "tier": "2k",
+      "requested_tokens": 2048,
+      "mean_actual_input_tokens": 1613.0,
+      "evaluated_runs": 4,
+      "passing_runs": 4,
+      "pass_rate": 1.0,
+      "mean_quality_score": 1.0,
+      "mean_total_ms": 2595.6080727501103,
+      "mean_prefill_ms": 1160.2728852503787,
+      "mean_decode_ms": 738.9394479996554,
+      "mean_decode_tokens_per_second": 53.77911727236196,
+      "correct_cases_per_minute": 23.115970638983462,
+      "max_active_memory_bytes": 4608043016.0,
+      "max_cache_memory_bytes": 277713890.0,
+      "max_peak_memory_bytes": 5605114236.0,
+      "timing_provenance": "measured_wall_clock",
+      "memory_provenance": "measured_native",
+      "token_rate_provenance": "derived"
+    },
+    {
+      "tier": "8k",
+      "requested_tokens": 8192,
+      "mean_actual_input_tokens": 6373.0,
+      "evaluated_runs": 4,
+      "passing_runs": 4,
+      "pass_rate": 1.0,
+      "mean_quality_score": 1.0,
+      "mean_total_ms": 4977.312041500227,
+      "mean_prefill_ms": 3779.449364250013,
+      "mean_decode_ms": 643.9947397502692,
+      "mean_decode_tokens_per_second": 46.53500723949503,
+      "correct_cases_per_minute": 12.054699303505034,
+      "max_active_memory_bytes": 4608043016.0,
+      "max_cache_memory_bytes": 1944972034.0,
+      "max_peak_memory_bytes": 6201600040.0,
+      "timing_provenance": "measured_wall_clock",
+      "memory_provenance": "measured_native",
+      "token_rate_provenance": "derived"
+    },
+    {
+      "tier": "16k",
+      "requested_tokens": 16384,
+      "mean_actual_input_tokens": 12697.0,
+      "evaluated_runs": 4,
+      "passing_runs": 4,
+      "pass_rate": 1.0,
+      "mean_quality_score": 1.0,
+      "mean_total_ms": 10287.574406000658,
+      "mean_prefill_ms": 8670.02729124988,
+      "mean_decode_ms": 1024.6734272500362,
+      "mean_decode_tokens_per_second": 39.667525366454484,
+      "correct_cases_per_minute": 5.832278594748485,
+      "max_active_memory_bytes": 4608043016.0,
+      "max_cache_memory_bytes": 1895709294.0,
+      "max_peak_memory_bytes": 7107602472.0,
+      "timing_provenance": "measured_wall_clock",
+      "memory_provenance": "measured_native",
+      "token_rate_provenance": "derived"
+    }
+  ],
+  "safety_observations": {
+    "provenance": "macOS memory_pressure and sysctl",
+    "preflight_memory_free_percent": 58.0,
+    "preflight_swap_used_bytes": 4003788226,
+    "postflight_memory_free_percent": 60.0,
+    "postflight_swap_used_bytes": 4555800576
+  },
+  "source_artifacts": {
+    "conversion-preflight-refusal-example.json": "ee79233e5d2eb878c0af984f4707172d294db0f9362f7847e3abc3df3ea775d8",
+    "conversion-summary.json": "efec72b01bd33736b8c752e366ef015ea348e8b952f3b1979d46094795ccb0c7",
+    "control-manifest.json": "432a87e5cfed55546de3e54f004979724d17ea9c227218bbe6df4f8a7dc6e0e8",
+    "evidence-summary.json": "b595418ff4b2962eab7fa8f1f1792fafbd7b9bf377c7df23866d6544a67ab919",
+    "report.html": "d8101f8efec228a5ee56246a9394ccbf2d9be80fba31043d569099f5fb8ca94f"
+  },
+  "comparison_scope": {
+    "different_model_and_system_identity": true,
+    "statement": "This different Qwen3-8B self-conversion completed under the recorded exploratory host state; it does not replace the Qwen3.8-27B result or prove that the 27B OOM was caused only by parameter count."
+  },
+  "limitations": [
+    "This is a self-converted Qwen3-8B positive control, not the packaged Qwen3.8-27B lab; the two are different models, different quantized checkpoints, and different memory/timing envelopes, and are never directly comparable.",
+    "Results apply only to the pinned official source revision, this repository's pinned mlx-lm converter revision, the exact recorded quantization parameters, and this M5 Pro configuration; they say nothing about any other conversion of Qwen3-8B, including third-party ones.",
+    "This report only shows completion under the host state actually observed during the run; it is not a claim about peak achievable throughput or about any other machine.",
+    "The workload catalog's context tiers target an approximate, model-independent token count; the checkpoint's own mlx-lm chat template and tokenizer generally produce a different *actual* input token count than that *requested* target -- each tier reports both, never conflated.",
+    "Total, prefill, and decode durations are host wall-clock boundaries measured by a fresh, isolated subprocess per row; they are not kernel timings.",
+    "Peak memory is MLX allocator peak memory when available, not whole-system resident memory.",
+    "Decode token rate is derived from measured generated tokens and decode wall time.",
+    "The per-row timeout is a parent-enforced subprocess wall-clock bound with TERM->KILL cleanup; it is not a claim about any cooperative in-process timeout being sufficient alone.",
+    "No GPU utilization, bandwidth, power, energy, or kernel timing is measured or inferred.",
+    "No clean-boot assertion was made; these measurements are exploratory and must not be presented as publication-mode performance claims.",
+    "The committed bundle contains sanitized aggregates and exact provenance/integrity metadata, not prompts, responses, raw logs, model weights, or local paths."
+  ]
+}

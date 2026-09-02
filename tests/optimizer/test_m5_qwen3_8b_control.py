@@ -1120,6 +1120,13 @@ def test_report_is_deterministic_sanitized_json_and_html(tmp_path, monkeypatch) 
     first = render_lab_report_html(report)
     second = render_lab_report_html(report)
     assert first == second
+    assert "<h1>M5 Pro × Qwen3-8B</h1>" in first
+    assert "Runtime: mlx-lm 0.31.3" in first
+    assert "Qwen3.8-27B</h1>" not in first
+    assert "Requested tokens" in first
+    assert "Mean actual tokens" in first
+    assert "Observed MLX active memory" in first
+    assert "Observed MLX cache memory" in first
     assert str(tmp_path) not in json.dumps(report)
     assert str(tmp_path) not in first
 

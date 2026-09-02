@@ -1,107 +1,96 @@
-# Qwen3-8B M5 Pro self-conversion control (planned, preparatory)
+# Qwen3-8B M5 Pro exploratory positive control
 
-**Status: no conversion or benchmark has run yet.** This directory ships the
-offline framework -- manifests, the self-conversion runner, the bound-manifest
-binder, the subprocess-isolated benchmark runner, and their tests -- for a
-*future* self-converted Qwen3-8B positive control. It is not the pinned
-Qwen3.8-27B lab in `../m5-pro-qwen3.8-27b/`, and unlike that lab, no model has
-been downloaded, converted, or benchmarked here: the one real attempt on this
-machine so far was refused before any download by the pre-conversion safety
-gate (see `conversion-preflight-refusal-example.json` below). Execution
-remains blocked pending a clean reboot and a passing safe preflight.
+This bundle records one provenance-safe local self-conversion and a completed
+exploratory control run on the same 24 GiB Apple M5 Pro used for the separate
+Qwen3.8-27B investigation.
 
-Once it does run, this control is intended to self-convert the official,
-public, ungated `Qwen/Qwen3-8B` at `b968826d9c46dd6066d109eabc6255188de91218`
-(Apache-2.0) with this repository's own pinned `mlx-lm==0.31.3`
-(`ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd`), using explicit, recorded
-quantization parameters: `quantize=true`, `q_group_size=64`, `q_bits=4`,
-`q_mode=affine`. It is designed to never claim byte-equivalence with any
-third-party conversion (e.g. `mlx-community`); a completed run
-cryptographically binds its own source revision, converter revision, and
-output file hashes instead. None of that has happened yet.
+The source is the official, public Apache-2.0
+`Qwen/Qwen3-8B@b968826d9c46dd6066d109eabc6255188de91218`. It was converted
+exactly once with `mlx-lm==0.31.3` at
+`ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd`, using affine 4-bit
+quantization, group size 64. The 15-file source inventory totals
+16,397,461,266 bytes. The 8-file converted output totals 4,619,328,159 bytes
+and has binding fingerprint `df71c0372db25213fc9ee4efe23b3502ba6fc6d0`.
+That fingerprint is a self-conversion identity, not a Git commit.
 
-Every manifest, cache path, and CLI entrypoint here (`llmtracefx-m5-control`)
-lives in its own `qwen3-8b` namespace, fully separate from the packaged 27B
-lab's `llmtracefx-m5-lab`/`llmtracefx-m5-frontier` artifacts.
+No byte-equivalence with any public or third-party MLX checkpoint is claimed.
 
-## Commands
+## Evidence bundle
+
+- [Checksums](SHA256SUMS)
+- [Exact conversion provenance and inventories](conversion-summary.json)
+- [Bound control manifest](control-manifest.json)
+- [Evidence manifest](evidence-manifest.json)
+- [Sanitized aggregate evidence](evidence-summary.json)
+- [Self-contained report and charts](report.html)
+- [Earlier preflight refusal](conversion-preflight-refusal-example.json)
+
+Local model weights, prompts, responses, raw logs, receipts, and
+absolute-path-bearing artifacts are not committed.
+
+## Observed exploratory results
+
+Each tier used one warmup followed by two measured repetitions for each of the
+two deterministic safe workloads. Every warmup and measured repetition ran in
+a fresh process group. Higher tiers ran only after the lower tier's evidence,
+quality, cleanup, memory, swap, and disk gates passed.
+
+| Requested tier | Mean actual input tokens | Passing runs | Pass rate | Mean total ms | Correct cases/min | Max MLX active bytes | Max MLX cache bytes | Max MLX peak bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2,048 | 1,613 | 4/4 | 1.00 | 2,595.61 | 23.12 | 4,608,043,016 | 277,713,890 | 5,605,114,236 |
+| 8,192 | 6,373 | 4/4 | 1.00 | 4,977.31 | 12.05 | 4,608,043,016 | 1,944,972,034 | 6,201,600,040 |
+| 16,384 | 12,697 | 4/4 | 1.00 | 10,287.57 | 5.83 | 4,608,043,016 | 1,895,709,294 | 7,107,602,472 |
+
+Requested tiers are workload-catalog targets. Actual counts are tokenizer
+observations and remain separate. Durations are host wall-clock boundaries.
+Active, cache, and peak values are MLX allocator counters. Correct cases per
+minute and decode token rates are derived only from measured counts and
+wall-clock durations. Missing values remain null.
+
+The final sweep began at 58% free memory and 4,003,788,226 swap bytes and ended
+at 60% free memory and 4,555,800,576 swap bytes. These are macOS
+`memory_pressure`/`sysctl` host observations, not free GPU memory.
+
+## Comparison boundary
+
+This is a **different model and system identity** from the pinned
+Qwen3.8-27B 4-bit run. It demonstrates only that this self-converted Qwen3-8B
+control completed through a requested 16K tier under the recorded host state.
+It does not replace the 27B result and does not prove that the 27B OOM was
+caused only by parameter count.
+
+The run was exploratory: no clean-boot operator assertion was made. These
+numbers are not publication-mode performance claims, not a universal capacity
+boundary, and not a fastest-model claim. No utilization, bandwidth, power,
+energy, kernel time, or free unified GPU memory is measured or inferred.
+
+## Safety history
+
+The earlier [refusal artifact](conversion-preflight-refusal-example.json)
+records a separate attempt that stopped before download at 39% free memory
+against the 40% conversion threshold. On 2026-09-02 the tool's own preflight
+passed at 59% free memory, 1,967,065,661 swap bytes, and 730,086,916,096 free
+disk bytes. The workflow then performed exactly one conversion attempt with no
+automatic retry, cache deletion, alternate checkpoint, or hosted action.
+
+## Reproduction commands
 
 ```bash
-# Default: offline plan only. No download or conversion.
+# No-download plan and safety preflight.
 make m5-control-plan
 
-# Self-convert the official source once. Never retried automatically.
-# Refuses before any download if the live safety gate is not satisfied.
+# Exactly one gated conversion attempt.
 make m5-control-convert
 
-# Materialize a bound benchmark manifest from a completed conversion receipt.
+# Bind the verified output inventory and run gated tiers.
 make m5-control-bind
-
-# Resume the subprocess-isolated benchmark, starting at 2K.
-make m5-control-run
-
-# Request gated escalation through 8K and 16K.
+make m5-control-run CONTROL_MAX_TIER=2k
+make m5-control-verify
+make m5-control-run CONTROL_MAX_TIER=8k
+make m5-control-verify
 make m5-control-run CONTROL_MAX_TIER=16k
 
-# Re-verify model/evidence bindings and render reports.
+# Verify and deterministically regenerate sanitized reports.
 make m5-control-verify
 make m5-control-report
 ```
-
-Local weights, prompts, raw responses, and absolute-path-bearing artifacts
-live under `.cache/llmtracefx/` and `.cache/models/` and are ignored by Git.
-Only sanitized aggregate evidence and self-contained reports are suitable to
-copy into this example directory -- and only once a real conversion and
-benchmark run have actually produced them.
-
-## How this is designed to differ from the 27B lab, once it runs
-
-- **Self-converted, not pinned pre-quantized.** The 27B lab downloads an
-  already-quantized `mlx-community` checkpoint byte-for-byte. This control is
-  designed to download the official *unquantized* source and run the
-  conversion itself, in a fresh, no-shell subprocess/process group with a
-  bounded timeout and TERM->KILL cleanup escalation; it is never retried
-  automatically, and a live safety gate (chip, memory, swap, free disk,
-  installed converter version) must pass before any download or subprocess
-  launch.
-- **Requested vs. actual tokenizer counts.** The workload catalog's context
-  tiers target an approximate, model-independent token count. This control's
-  own mlx-lm chat template (`enable_thinking=false`) and tokenizer generally
-  produce a different *actual* input token count than that *requested*
-  target; every tier is designed to report both, never conflated.
-- **Per-row subprocess isolation.** Every warmup and every measured
-  repetition is designed to run in its own fresh subprocess and process
-  group, with a parent-enforced wall-clock timeout independent of the
-  collector's own cooperative in-process timeout.
-- **Not comparable to the 27B lab.** Different model, different quantized
-  checkpoint, different memory/timing envelope. Any future report from this
-  control would only show completion under the host state actually observed
-  during that run.
-
-## What would be measured, once a run exists
-
-Identical evidence surface to the 27B lab: host wall-clock phase timings,
-requested/actual input and generated token counts, decode tokens/second,
-MLX allocator active/cache/peak memory when exposed by the runtime,
-deterministic structured-extraction and reasoning evaluator results, pass
-rate, and correct cases per minute. Missing measurements would remain `null`.
-No GPU utilization, bandwidth, power, energy, or kernel timing is measured or
-inferred. None of this has been produced yet.
-
-## Recorded refusal on this machine
-
-`conversion-preflight-refusal-example.json` is a sanitized **refusal
-artifact**, not benchmark evidence: it records that the live, conservative
-pre-conversion safety gate refused with the host at 39.0% free memory
-(40.0% required) before any download, conversion, or benchmark attempt.
-No model weights were downloaded, no conversion subprocess was started, no
-retry was attempted, and no existing cache was created, deleted, or
-modified. `memory_free_percent`/`swap_used_bytes` are macOS
-`memory_pressure`/`sysctl` host memory headroom, not free GPU memory. This
-reflects only the host state observed at one point in time on one machine.
-
-No `evidence-summary.json` or `report.html` exists in this directory: those
-require an actual self-conversion and benchmark run on real M5 Pro hardware,
-which has not happened. Populate them (and rewrite this section as recorded
-*results*, not a refusal) only after `make m5-control-convert && make
-m5-control-bind && make m5-control-run` actually complete.

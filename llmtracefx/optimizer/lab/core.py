@@ -1416,6 +1416,10 @@ def render_lab_report_html(report: dict[str, Any]) -> str:
     model = report["model"]
     environment = report["environment"] or {}
     safety_observations = report["safety_observations"]
+    model_label = str(model["official_id"]).rsplit("/", 1)[-1]
+    runtime_contract = report.get("runtime_contract") or {}
+    runtime_name = runtime_contract.get("name") or "unrecorded"
+    runtime_version = runtime_contract.get("version") or "unrecorded"
 
     def esc(value: Any) -> str:
         return html.escape(str(value), quote=True)
@@ -1423,6 +1427,8 @@ def render_lab_report_html(report: dict[str, Any]) -> str:
     rows = "".join(
         "<tr>"
         f"<td>{esc(tier['tier'])}</td>"
+        f"<td>{esc(tier.get('requested_tokens', 'n/a'))}</td>"
+        f"<td>{_fmt(tier.get('mean_actual_input_tokens'))}</td>"
         f"<td>{tier['evaluated_runs']}</td>"
         f"<td>{_fmt(tier['pass_rate'])}</td>"
         f"<td>{_fmt(tier['mean_quality_score'])}</td>"
@@ -1484,13 +1490,29 @@ def render_lab_report_html(report: dict[str, Any]) -> str:
             ),
         )
     )
+    if any(tier.get("max_active_memory_bytes") is not None for tier in tiers):
+        charts += _bar_chart(
+            tiers,
+            metric="max_active_memory_bytes",
+            title="Observed MLX active memory",
+            unit="GiB",
+            scale=1024**3,
+        )
+    if any(tier.get("max_cache_memory_bytes") is not None for tier in tiers):
+        charts += _bar_chart(
+            tiers,
+            metric="max_cache_memory_bytes",
+            title="Observed MLX cache memory",
+            unit="GiB",
+            scale=1024**3,
+        )
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>M5 Pro Qwen3.8 local inference lab</title>
+<title>M5 Pro {esc(model_label)} local inference lab</title>
 <style>
 :root{{--ink:#17202a;--muted:#5d6670;--paper:#f7f3ea;--panel:#fffdf8;--accent:#f05d23;}}
 *{{box-sizing:border-box}} body{{margin:0;background:var(--paper);color:var(--ink);
@@ -1506,7 +1528,7 @@ fill:var(--ink)}} code{{overflow-wrap:anywhere}} .warning{{border-left:5px solid
 </head>
 <body><main>
 <p class="stamp">LLMTraceFX / local evidence / no external references</p>
-<h1>M5 Pro × Qwen3.8-27B</h1>
+<h1>M5 Pro × {esc(model_label)}</h1>
 <p>Measured evidence for <code>{esc(model['repository_id'])}@{esc(model['revision'])}</code>,
 {esc(model['quantization'])}, under the pinned workloads and constraints below. This
 is not a universal fastest-model claim.</p>
@@ -1521,7 +1543,7 @@ Memory: {esc(environment.get('total_memory_gb') or 'unrecorded')} GiB<br>
 OS: {esc(environment.get('os_name') or 'unrecorded')}
 {esc(environment.get('os_release') or '')} / {esc(environment.get('architecture') or 'unrecorded')}<br>
 Python: {esc(environment.get('python_version') or 'unrecorded')}<br>
-Runtime: mlx-vlm {esc(environment.get('package_versions', {}).get('mlx-vlm', 'unrecorded'))},
+Runtime: {esc(runtime_name)} {esc(runtime_version)},
 MLX {esc(environment.get('package_versions', {}).get('mlx', 'unrecorded'))}
 </p></section>
 <section class="card"><h2>Safety observations</h2><p>
@@ -1532,7 +1554,8 @@ swap used: {esc(safety_observations['postflight_swap_used_bytes'])} bytes.<br>
 Provenance: {esc(safety_observations['provenance'])}.
 </p></section>
 <section class="card"><h2>Measured outcomes</h2><table><thead><tr>
-<th>Tier</th><th>Runs</th><th>Pass rate</th><th>Mean quality</th>
+<th>Tier</th><th>Requested tokens</th><th>Mean actual tokens</th>
+<th>Runs</th><th>Pass rate</th><th>Mean quality</th>
 <th>Total ms</th><th>Prefill ms</th><th>Decode ms</th><th>Decode tok/s</th>
 <th>Correct/min</th></tr></thead><tbody>{rows}</tbody></table></section>
 <section class="card warning"><h2>Stopped attempts</h2><table><thead><tr>

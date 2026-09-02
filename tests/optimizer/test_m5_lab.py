@@ -431,6 +431,8 @@ def test_shareable_report_and_chart_are_deterministic_and_private(
     assert str(tmp_path) not in first
     assert "http://" not in first
     assert "https://" not in first
+    assert "<h1>M5 Pro × Qwen3.8-27B</h1>" in first
+    assert "Runtime: mlx-vlm 0.6.8" in first
     assert_shareable(report)
     assert written == report
     assert (workspace / "reports" / "tune-report.json").is_file()

@@ -69,6 +69,20 @@ def _tier_with_tokens(
     summary["mean_actual_input_tokens"] = (
         sum(evaluated_actual) / len(evaluated_actual) if evaluated_actual else None
     )
+    active = [
+        record.memory.active.value
+        for verification, record in rows
+        if record.memory.active is not None
+        and verification.status in (RowStatus.COMPLETED, RowStatus.SKIPPED)
+    ]
+    cache = [
+        record.memory.cache.value
+        for verification, record in rows
+        if record.memory.cache is not None
+        and verification.status in (RowStatus.COMPLETED, RowStatus.SKIPPED)
+    ]
+    summary["max_active_memory_bytes"] = max(active) if active else None
+    summary["max_cache_memory_bytes"] = max(cache) if cache else None
     return summary
 
 

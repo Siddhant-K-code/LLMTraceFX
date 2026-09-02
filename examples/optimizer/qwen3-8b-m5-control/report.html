@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>M5 Pro Qwen3-8B local inference lab</title>
+<style>
+:root{--ink:#17202a;--muted:#5d6670;--paper:#f7f3ea;--panel:#fffdf8;--accent:#f05d23;}
+*{box-sizing:border-box} body{margin:0;background:var(--paper);color:var(--ink);
+font:15px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace} main{max-width:1120px;
+margin:auto;padding:40px 24px} h1{font-size:clamp(28px,5vw,54px);line-height:1.02}
+.stamp{color:var(--muted)} .card,.chart{background:var(--panel);border:1px solid #d9d1c3;
+padding:20px;margin:20px 0;overflow:auto} table{width:100%;border-collapse:collapse;
+min-width:900px} th,td{text-align:right;padding:10px;border-bottom:1px solid #ddd5c8}
+th:first-child,td:first-child{text-align:left} svg{width:100%;min-width:560px}
+.bar{fill:var(--accent)} .axis,.value{font:14px ui-monospace,SFMono-Regular,Menlo,monospace;
+fill:var(--ink)} code{overflow-wrap:anywhere} .warning{border-left:5px solid var(--accent)}
+</style>
+</head>
+<body><main>
+<p class="stamp">LLMTraceFX / local evidence / no external references</p>
+<h1>M5 Pro × Qwen3-8B</h1>
+<p>Measured evidence for <code>local-self-converted/qwen3-8b-mlx-q4g64@df71c0372db25213fc9ee4efe23b3502ba6fc6d0</code>,
+MLX affine 4-bit, group size 64 (self-converted, not byte-equivalent to any third-party conversion), under the pinned workloads and constraints below. This
+is not a universal fastest-model claim.</p>
+<section class="card"><h2>Run contract</h2>
+<p>Official model: <code>Qwen/Qwen3-8B@b968826d9c46dd6066d109eabc6255188de91218</code><br>
+License: Apache-2.0<br>Converter: mlx-lm at
+<code>ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd</code><br>Generated:
+2026-09-02T08:08:36.185127Z</p></section>
+<section class="card"><h2>Environment</h2><p>
+Accelerator: Apple M5 Pro<br>
+Memory: 24.0 GiB<br>
+OS: Darwin
+25.6.0 / arm64<br>
+Python: 3.13.15<br>
+Runtime: mlx-lm 0.31.3,
+MLX 0.32.2
+</p></section>
+<section class="card"><h2>Safety observations</h2><p>
+Preflight free memory: 58.0%,
+swap used: 4003788226 bytes.<br>
+Postflight free memory: 60.0%,
+swap used: 4555800576 bytes.<br>
+Provenance: macOS memory_pressure and sysctl.
+</p></section>
+<section class="card"><h2>Measured outcomes</h2><table><thead><tr>
+<th>Tier</th><th>Requested tokens</th><th>Mean actual tokens</th>
+<th>Runs</th><th>Pass rate</th><th>Mean quality</th>
+<th>Total ms</th><th>Prefill ms</th><th>Decode ms</th><th>Decode tok/s</th>
+<th>Correct/min</th></tr></thead><tbody><tr><td>2k</td><td>2048</td><td>1613.00</td><td>4</td><td>1.00</td><td>1.00</td><td>2595.61</td><td>1160.27</td><td>738.94</td><td>53.78</td><td>23.12</td></tr><tr><td>8k</td><td>8192</td><td>6373.00</td><td>4</td><td>1.00</td><td>1.00</td><td>4977.31</td><td>3779.45</td><td>643.99</td><td>46.54</td><td>12.05</td></tr><tr><td>16k</td><td>16384</td><td>12697.00</td><td>4</td><td>1.00</td><td>1.00</td><td>10287.57</td><td>8670.03</td><td>1024.67</td><td>39.67</td><td>5.83</td></tr></tbody></table></section>
+<section class="card warning"><h2>Stopped attempts</h2><table><thead><tr>
+<th>Tier</th><th>Phase</th><th>Status</th><th>Input tokens</th><th>Reason</th>
+</tr></thead><tbody></tbody></table></section>
+<section class="chart"><h2>Mean total latency by safe context tier</h2><svg viewBox="0 0 620 226" role="img" aria-label="Mean total latency by safe context tier"><text x="0" y="54" class="axis">2k</text><rect x="52" y="36" width="105.97" height="28" rx="3" class="bar"/><text x="163.97" y="55" class="value">2595.61 ms</text><text x="0" y="108" class="axis">8k</text><rect x="52" y="90" width="203.20" height="28" rx="3" class="bar"/><text x="261.20" y="109" class="value">4977.31 ms</text><text x="0" y="162" class="axis">16k</text><rect x="52" y="144" width="420.00" height="28" rx="3" class="bar"/><text x="478.00" y="163" class="value">10287.57 ms</text></svg></section><section class="chart"><h2>Deterministic evaluator pass rate</h2><svg viewBox="0 0 620 226" role="img" aria-label="Deterministic evaluator pass rate"><text x="0" y="54" class="axis">2k</text><rect x="52" y="36" width="420.00" height="28" rx="3" class="bar"/><text x="478.00" y="55" class="value">1.00 </text><text x="0" y="108" class="axis">8k</text><rect x="52" y="90" width="420.00" height="28" rx="3" class="bar"/><text x="478.00" y="109" class="value">1.00 </text><text x="0" y="162" class="axis">16k</text><rect x="52" y="144" width="420.00" height="28" rx="3" class="bar"/><text x="478.00" y="163" class="value">1.00 </text></svg></section><section class="chart"><h2>Correct cases per minute</h2><svg viewBox="0 0 620 226" role="img" aria-label="Correct cases per minute"><text x="0" y="54" class="axis">2k</text><rect x="52" y="36" width="420.00" height="28" rx="3" class="bar"/><text x="478.00" y="55" class="value">23.12 cases/min</text><text x="0" y="108" class="axis">8k</text><rect x="52" y="90" width="219.02" height="28" rx="3" class="bar"/><text x="277.02" y="109" class="value">12.05 cases/min</text><text x="0" y="162" class="axis">16k</text><rect x="52" y="144" width="105.97" height="28" rx="3" class="bar"/><text x="163.97" y="163" class="value">5.83 cases/min</text></svg></section><section class="chart"><h2>Observed MLX peak memory</h2><svg viewBox="0 0 620 226" role="img" aria-label="Observed MLX peak memory"><text x="0" y="54" class="axis">2k</text><rect x="52" y="36" width="331.22" height="28" rx="3" class="bar"/><text x="389.22" y="55" class="value">5.22 GiB</text><text x="0" y="108" class="axis">8k</text><rect x="52" y="90" width="366.46" height="28" rx="3" class="bar"/><text x="424.46" y="109" class="value">5.78 GiB</text><text x="0" y="162" class="axis">16k</text><rect x="52" y="144" width="420.00" height="28" rx="3" class="bar"/><text x="478.00" y="163" class="value">6.62 GiB</text></svg></section><section class="chart"><h2>Observed MLX active memory</h2><svg viewBox="0 0 620 226" role="img" aria-label="Observed MLX active memory"><text x="0" y="54" class="axis">2k</text><rect x="52" y="36" width="420.00" height="28" rx="3" class="bar"/><text x="478.00" y="55" class="value">4.29 GiB</text><text x="0" y="108" class="axis">8k</text><rect x="52" y="90" width="420.00" height="28" rx="3" class="bar"/><text x="478.00" y="109" class="value">4.29 GiB</text><text x="0" y="162" class="axis">16k</text><rect x="52" y="144" width="420.00" height="28" rx="3" class="bar"/><text x="478.00" y="163" class="value">4.29 GiB</text></svg></section><section class="chart"><h2>Observed MLX cache memory</h2><svg viewBox="0 0 620 226" role="img" aria-label="Observed MLX cache memory"><text x="0" y="54" class="axis">2k</text><rect x="52" y="36" width="59.97" height="28" rx="3" class="bar"/><text x="117.97" y="55" class="value">0.26 GiB</text><text x="0" y="108" class="axis">8k</text><rect x="52" y="90" width="420.00" height="28" rx="3" class="bar"/><text x="478.00" y="109" class="value">1.81 GiB</text><text x="0" y="162" class="axis">16k</text><rect x="52" y="144" width="409.36" height="28" rx="3" class="bar"/><text x="467.36" y="163" class="value">1.77 GiB</text></svg></section>
+<section class="card warning"><h2>Limits and provenance</h2><ul><li>This is a self-converted Qwen3-8B positive control, not the packaged Qwen3.8-27B lab; the two are different models, different quantized checkpoints, and different memory/timing envelopes, and are never directly comparable.</li><li>Results apply only to the pinned official source revision, this repository&#x27;s pinned mlx-lm converter revision, the exact recorded quantization parameters, and this M5 Pro configuration; they say nothing about any other conversion of Qwen3-8B, including third-party ones.</li><li>This report only shows completion under the host state actually observed during the run; it is not a claim about peak achievable throughput or about any other machine.</li><li>The workload catalog&#x27;s context tiers target an approximate, model-independent token count; the checkpoint&#x27;s own mlx-lm chat template and tokenizer generally produce a different *actual* input token count than that *requested* target -- each tier reports both, never conflated.</li><li>Total, prefill, and decode durations are host wall-clock boundaries measured by a fresh, isolated subprocess per row; they are not kernel timings.</li><li>Peak memory is MLX allocator peak memory when available, not whole-system resident memory.</li><li>Decode token rate is derived from measured generated tokens and decode wall time.</li><li>The per-row timeout is a parent-enforced subprocess wall-clock bound with TERM-&gt;KILL cleanup; it is not a claim about any cooperative in-process timeout being sufficient alone.</li><li>No GPU utilization, bandwidth, power, energy, or kernel timing is measured or inferred.</li></ul>
+<p>Stop point: none. Requested maximum:
+16k. Not executed:
+none.</p></section>
+</main></body></html>
