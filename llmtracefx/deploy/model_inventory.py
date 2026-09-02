@@ -147,7 +147,9 @@ def inventory_from_dict(data: Mapping[str, Any]) -> PublishedInventory:
     if len(paths) != len(set(paths)):
         raise DeploymentPlanError("published inventory contains duplicate paths")
     for entry in files:
-        if entry.sha256 is not None and not _SHA256.fullmatch(entry.sha256):
+        if entry.sha256 is not None and (
+            not isinstance(entry.sha256, str) or not _SHA256.fullmatch(entry.sha256)
+        ):
             raise DeploymentPlanError(
                 f"published inventory has malformed SHA-256 for {entry.path}"
             )

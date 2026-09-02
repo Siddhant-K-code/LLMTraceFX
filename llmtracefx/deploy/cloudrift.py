@@ -31,6 +31,26 @@ def _required_bool(data: Mapping[str, Any], field: str) -> bool:
     return value
 
 
+def _positive_int(data: Mapping[str, Any], field: str) -> int:
+    value = data[field]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise DeploymentPlanError(f"{field} must be a positive JSON integer")
+    return value
+
+
+def _positive_decimal(data: Mapping[str, Any], field: str) -> Decimal:
+    value = data[field]
+    if isinstance(value, bool) or not isinstance(value, (str, int, float, Decimal)):
+        raise DeploymentPlanError(f"{field} must be a positive finite decimal")
+    try:
+        decimal = Decimal(str(value))
+    except (ArithmeticError, ValueError) as exc:
+        raise DeploymentPlanError(f"{field} must be a positive finite decimal") from exc
+    if not decimal.is_finite() or decimal <= 0:
+        raise DeploymentPlanError(f"{field} must be a positive finite decimal")
+    return decimal
+
+
 @dataclass(frozen=True)
 class CloudRiftSnapshot:
     """Sanitized provider facts; unknown execution gates stay ``None`` or false."""
@@ -73,18 +93,22 @@ class CloudRiftSnapshot:
                 as_of=str(data["as_of"]),
                 evidence_kind=str(data["evidence_kind"]),
                 pricing_source=str(data["pricing_source"]),
-                advertised_h200_usd_per_gpu_hour=Decimal(
-                    str(data["advertised_h200_usd_per_gpu_hour"])
+                advertised_h200_usd_per_gpu_hour=_positive_decimal(
+                    data, "advertised_h200_usd_per_gpu_hour"
                 ),
                 advertised_h200_rate_term=str(data["advertised_h200_rate_term"]),
                 h200_on_demand_rate_verified=_required_bool(
                     data, "h200_on_demand_rate_verified"
                 ),
-                advertised_h200_memory_gb=int(data["advertised_h200_memory_gb"]),
-                advertised_h200_local_storage_gb=int(
-                    data["advertised_h200_local_storage_gb"]
+                advertised_h200_memory_gb=_positive_int(
+                    data, "advertised_h200_memory_gb"
                 ),
-                advertised_h200_max_gpus=int(data["advertised_h200_max_gpus"]),
+                advertised_h200_local_storage_gb=_positive_int(
+                    data, "advertised_h200_local_storage_gb"
+                ),
+                advertised_h200_max_gpus=_positive_int(
+                    data, "advertised_h200_max_gpus"
+                ),
                 attached_storage_and_network_included=_required_bool(
                     data, "attached_storage_and_network_included"
                 ),
@@ -94,7 +118,7 @@ class CloudRiftSnapshot:
                 billing_increment_seconds=(
                     None
                     if data.get("billing_increment_seconds") is None
-                    else int(data["billing_increment_seconds"])
+                    else _positive_int(data, "billing_increment_seconds")
                 ),
                 billing_rounding_rule_verified=_required_bool(
                     data, "billing_rounding_rule_verified"
@@ -124,12 +148,16 @@ class CloudRiftSnapshot:
                 framework_version=data.get("framework_version"),
                 image_reference=data.get("image_reference"),
                 available_gpu_type=str(data["available_gpu_type"]),
-                available_gpu_memory_gb_each=int(data["available_gpu_memory_gb_each"]),
-                available_gpu_count=int(data["available_gpu_count"]),
-                available_host_memory_gb=int(data["available_host_memory_gb"]),
-                available_disk_gb=int(data["available_disk_gb"]),
-                available_usd_per_gpu_hour=Decimal(
-                    str(data["available_usd_per_gpu_hour"])
+                available_gpu_memory_gb_each=_positive_int(
+                    data, "available_gpu_memory_gb_each"
+                ),
+                available_gpu_count=_positive_int(data, "available_gpu_count"),
+                available_host_memory_gb=_positive_int(
+                    data, "available_host_memory_gb"
+                ),
+                available_disk_gb=_positive_int(data, "available_disk_gb"),
+                available_usd_per_gpu_hour=_positive_decimal(
+                    data, "available_usd_per_gpu_hour"
                 ),
                 notes=tuple(str(note) for note in data.get("notes", ())),
             )

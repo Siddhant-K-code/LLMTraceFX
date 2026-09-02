@@ -110,6 +110,31 @@ def test_string_false_cannot_bypass_a_boolean_gate() -> None:
         CloudRiftSnapshot.from_dict(raw)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("billing_increment_seconds", False),
+        ("billing_increment_seconds", 0),
+        ("advertised_h200_usd_per_gpu_hour", "-2.5"),
+        ("available_usd_per_gpu_hour", "NaN"),
+    ],
+)
+def test_invalid_numeric_fields_fail_closed(field: str, value: object) -> None:
+    raw = json.loads(SNAPSHOT.read_text())
+    raw[field] = value
+
+    with pytest.raises(DeploymentPlanError, match="positive"):
+        CloudRiftSnapshot.from_dict(raw)
+
+
+def test_non_string_inventory_hash_fails_closed() -> None:
+    raw = json.loads(INVENTORY.read_text())
+    raw["files"][6]["sha256"] = 123
+
+    with pytest.raises(DeploymentPlanError, match="malformed SHA-256"):
+        inventory_from_dict(raw)
+
+
 def test_unaccounted_storage_network_or_transfer_fees_are_blockers() -> None:
     raw = deepcopy(json.loads(SNAPSHOT.read_text()))
     raw["attached_storage_and_network_included"] = False
