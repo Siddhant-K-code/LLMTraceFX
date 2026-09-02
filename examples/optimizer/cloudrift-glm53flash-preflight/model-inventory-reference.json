@@ -1,0 +1,16 @@
+{
+  "schema_version": "1",
+  "kind": "llmtracefx.model_inventory_reference",
+  "source_bundle_path": "../modal-glm53flash-preflight/inventory-summary.json",
+  "source_bundle_sha256": "a04807a41f3672831458a3a952fde538daade884e45ea0553924d15188dbc5f5",
+  "canonical_inventory_sha256": "298d7174291301065e2e62ee87b7fa62763d11ec4724184293a249a52861e613",
+  "upstream_source": "https://huggingface.co/api/models/zai-org/GLM-5.3-Flash/revision/03eb5366286afd40d2221b1d9c63a6dd1ba4832e?blobs=true",
+  "repo_id": "zai-org/GLM-5.3-Flash",
+  "revision": "03eb5366286afd40d2221b1d9c63a6dd1ba4832e",
+  "file_count": 72,
+  "total_bytes": 328366172318,
+  "safetensors_shard_count": 62,
+  "files_with_published_sha256": 63,
+  "reverified_at": "2026-09-02T22:38:00+05:30",
+  "weights_downloaded_locally": false
+}

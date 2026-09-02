@@ -1,0 +1,80 @@
+{
+  "schema_version": "1",
+  "kind": "llmtracefx.cloudrift_glm53flash_preflight",
+  "as_of": "2026-09-02T22:38:00+05:30",
+  "repository_base": "0dbdcf5e745f123e13d38d09296f629c24abd748",
+  "decision": {
+    "status": "refused",
+    "paid_execution_allowed": false,
+    "stop_gates": [
+      "h200_on_demand_rate_and_inventory_unverified",
+      "available_v100_gpu_memory_below_exact_model_inventory",
+      "billing_rounding_and_credit_behavior_unverified",
+      "renter_scheduled_termination_unavailable",
+      "stop_terminate_and_persistent_disk_billing_incomplete",
+      "cloudrift_access_missing",
+      "official_recipe_and_runtime_pins_unverified"
+    ]
+  },
+  "authorization": {
+    "provider": "CloudRift",
+    "reported_credit_usd": "200.000000",
+    "hard_cap_usd": "80.000000",
+    "planned_instance_cap_usd": "60.000000",
+    "minimum_reserve_usd": "20.000000",
+    "hard_cap_is_spending_target": false,
+    "provider_reported_spend_usd": null,
+    "experiment_attributable_spend_usd_inferred": "0.000000",
+    "spend_inference_basis": "No CloudRift credential was available and no authenticated, provisioning, or paid command ran."
+  },
+  "provider_policy": {
+    "openrouter_enabled": false,
+    "modal_enabled_for_execution": false,
+    "other_paid_providers_enabled": false,
+    "cloudrift_paid_commands_executed": 0,
+    "instances_created": 0,
+    "persistent_volumes_created": 0,
+    "automatic_retries": 0
+  },
+  "execution": {
+    "access_inventory_check_attempted": false,
+    "provisioning_attempted": false,
+    "weight_staging_attempted": false,
+    "weight_verification_attempted": false,
+    "topology_inspection_attempted": false,
+    "model_load_attempted": false,
+    "readiness_attempted": false,
+    "smoke_requests_attempted": 0,
+    "teardown_status": "not_required_no_cloudrift_resources_created"
+  },
+  "observations": {
+    "instance_hours": "0.000000",
+    "model_staged": false,
+    "integrity_verified_on_node": false,
+    "observed_gpu_count": 8,
+    "observed_gpu_model": "V100 SXM2",
+    "observed_gpu_memory_gb_each": 16,
+    "observed_aggregate_gpu_memory_gb": 128,
+    "observed_host_memory_gb": 52,
+    "observed_disk_gb": 400,
+    "observed_listing_usd_per_gpu_hour": "0.250000",
+    "observation_kind": "user-observed authenticated console inventory; identifiers removed",
+    "observed_topology_class": null,
+    "model_loaded": false,
+    "readiness_result": "not_run",
+    "smoke_result": "not_run",
+    "provider_billing_result": "unavailable_without_access"
+  },
+  "claims": {
+    "benchmark_claimed": false,
+    "production_readiness_claimed": false,
+    "throughput_claimed": false,
+    "utilization_claimed": false,
+    "bandwidth_claimed": false,
+    "memory_fit_claimed": false,
+    "sla_claimed": false,
+    "power_or_energy_claimed": false,
+    "hosted_comparison_superiority_claimed": false
+  },
+  "safe_user_action": "Do not rent the available V100 listing. No further action or spend is justified unless CloudRift first makes exactly 8x H200 available and supplies bounded on-demand billing, renter TTL from instance creation, terminate semantics, and a tested digest-pinned GLM-5.3-Flash recipe."
+}

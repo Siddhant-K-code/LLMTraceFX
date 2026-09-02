@@ -1,6 +1,6 @@
 # LLMTraceFX Makefile
 
-.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan test-deploy metal-evidence m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication m5-autopsy m5-autopsy-run m5-autopsy-publication m5-autopsy-evidence-verify m5-control-plan m5-control-convert m5-control-bind m5-control-run m5-control-verify m5-control-report
+.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan cloudrift-plan test-deploy metal-evidence m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication m5-autopsy m5-autopsy-run m5-autopsy-publication m5-autopsy-evidence-verify m5-control-plan m5-control-convert m5-control-bind m5-control-run m5-control-verify m5-control-report
 
 help:  ## Show this help message
 	@echo "LLMTraceFX - evidence-first inference toolkit"
@@ -98,6 +98,11 @@ glm-budget:  ## Recommend a session spending cap (make glm-budget CREDIT=30)
 
 glm-plan:  ## Adjudicate a deployment plan (make glm-plan ARGS="--max-usd 10 ...")
 	uv run llmtracefx-deploy plan $(ARGS)
+
+CLOUDRIFT_SNAPSHOT ?= examples/optimizer/cloudrift-glm53flash-preflight/provider-snapshot.json
+CLOUDRIFT_INVENTORY ?= examples/optimizer/modal-glm53flash-preflight/inventory-summary.json
+cloudrift-plan:  ## Verify the offline CloudRift plan (never authenticates or spends)
+	uv run llmtracefx-cloudrift $(CLOUDRIFT_SNAPSHOT) $(CLOUDRIFT_INVENTORY)
 
 test-deploy:  ## Run the offline deployment harness tests
 	uv run pytest tests/deploy

@@ -157,6 +157,9 @@ trace_table.xml
 # Modal cache
 .modal_cache/
 
+# Provider experiment state: ledgers, host keys, SSH material and raw logs
+.cloudrift-state/
+
 # Temporary files
 temp/
 tmp/

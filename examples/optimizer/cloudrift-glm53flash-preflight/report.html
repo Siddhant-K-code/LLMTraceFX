@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CloudRift GLM-5.3-Flash preflight refusal</title>
+    <style>
+      body { font: 16px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 920px; padding: 0 1rem; color: #17202a; }
+      h1 { line-height: 1.2; }
+      .refused { border-left: .4rem solid #b42318; background: #fef3f2; padding: 1rem; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border-bottom: 1px solid #d0d5dd; padding: .6rem; text-align: left; vertical-align: top; }
+      th { width: 42%; }
+      .cap { border: 1px solid #667085; height: 2rem; position: relative; }
+      .planned { background: #f79009; height: 100%; width: 75%; }
+      .cap span { position: absolute; inset: .25rem .5rem; font-weight: 700; }
+      code { overflow-wrap: anywhere; }
+    </style>
+  </head>
+  <body>
+    <h1>CloudRift GLM-5.3-Flash preflight refusal</h1>
+    <p class="refused"><strong>No paid lifecycle ran.</strong> Inventory,
+      lifecycle, access, and recipe gates stopped the experiment before a
+      CloudRift instance was created.</p>
+    <h2>Conditional budget model</h2>
+    <div class="cap" aria-label="$60 conditional plan within an $80 hard cap">
+      <div class="planned"></div><span>$60 conditional plan / $80 hard cap</span>
+    </div>
+    <p>The $60 value assumes the advertised $2.50 rate is available on demand.
+      Primary sources do not establish that assumption, so it is not spending
+      authority.</p>
+    <table>
+      <tr><th>Decision</th><td>refused before spend</td></tr>
+      <tr><th>Authorized hard cap</th><td>$80.00</td></tr>
+      <tr><th>Conditional three-hour instance cost</th><td>$60.00</td></tr>
+      <tr><th>Required reserve</th><td>$20.00</td></tr>
+      <tr><th>Actual attributable spend</th><td>$0.00 inferred</td></tr>
+      <tr><th>CloudRift instances created</th><td>0</td></tr>
+      <tr><th>Available console shape</th><td>8 x V100 SXM2, 16 GB each</td></tr>
+      <tr><th>Available aggregate GPU memory</th><td>128,000,000,000 bytes</td></tr>
+      <tr><th>Model/GPU-memory shortfall</th><td>200,366,172,318 bytes</td></tr>
+      <tr><th>Available host memory</th><td>52 GB</td></tr>
+      <tr><th>Available disk</th><td>400 GB</td></tr>
+      <tr><th>Model revision</th><td>03eb5366286afd40d2221b1d9c63a6dd1ba4832e</td></tr>
+      <tr><th>Published inventory</th><td>72 files</td></tr>
+      <tr><th>Published bytes</th><td>328,366,172,318</td></tr>
+      <tr><th>Published SHA-256 values</th><td>63</td></tr>
+      <tr><th>Readiness</th><td>not run</td></tr>
+      <tr><th>Smoke request</th><td>not run</td></tr>
+      <tr><th>Teardown</th><td>not_required_no_cloudrift_resources_created</td></tr>
+    </table>
+    <h2>Stop gates</h2>
+    <ul>
+      <li>Authenticated console inventory offers V100 SXM2, not the required H200.</li>
+      <li>Available aggregate GPU memory is 128,000,000,000 bytes, 200,366,172,318 bytes below the published model inventory.</li>
+      <li>8x H200 is not available in the authenticated account.</li>
+      <li>Short on-demand H200 pricing is unverified.</li>
+      <li>Monetary billing rounding is unverified.</li>
+      <li>Credit and tax treatment is unverified.</li>
+      <li>Stop/terminate billing semantics are unverified.</li>
+      <li>Persistent-disk pricing is unverified.</li>
+      <li>No reliable renter scheduled termination/TTL is published.</li>
+      <li>No CloudRift CLI/profile or SSH access is configured locally.</li>
+      <li>The exact tested CloudRift GLM serving recipe is unverified.</li>
+      <li>The exact vLLM version is not pinned.</li>
+      <li>The serving image is not digest pinned.</li>
+    </ul>
+    <h2>Supported conclusion</h2>
+    <p>The immutable public model inventory remains available and unchanged.
+      The only observed console shape was 8x V100 with 128 GB aggregate GPU
+      memory, 200,366,172,318 bytes below the model inventory. This preflight
+      does not establish staging, topology, model load, readiness, generation,
+      performance, or billing.</p>
+  </body>
+</html>
