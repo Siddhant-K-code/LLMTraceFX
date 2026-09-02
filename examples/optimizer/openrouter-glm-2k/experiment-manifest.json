@@ -1,0 +1,108 @@
+{
+  "budget": {
+    "account_delta_scope_limitation": "The single immediate post-run key-usage query reflected only 0.00039958 USD, equal to the Flash calls, while all eight final SSE usage blocks reported 0.00615262 USD. The account endpoint can lag and can include unrelated concurrent activity; its delta is separate corroborating evidence, not the experiment request total.",
+    "authorized_total_usd": "5.000000000000",
+    "input_token_ceiling_method": "UTF-8 byte length of the exact rendered prompt plus a fixed 4,096-token reserve for provider chat framing and special tokens; every input token is then priced at the full prompt rate even when cache reads could be cheaper",
+    "manifest_computed_request_total_usd": "0.006152620000",
+    "planned_ceiling_usd": "0.074532600000",
+    "planned_request_count": 8,
+    "post_run_account_usage_delta_usd": "0.000399580000",
+    "provider_reported_request_total_usd": "0.006152620000",
+    "remaining_authorization_usd": "4.993847380000",
+    "unallocated_reserve_usd": "4.925467400000"
+  },
+  "claims": {
+    "credentials_or_account_identifiers_published": false,
+    "prompts_or_responses_published": false,
+    "ranking_scope": "constraints-first, single-objective ranking within each exact hosted workload stratum only",
+    "reasoning_text_published": false,
+    "universal_winner_claimed": false
+  },
+  "evidence_id": "openrouter-zai-glm-2k-20260902",
+  "limitations": [
+    "Two repetitions per workload/model are directional evidence, not a population latency study.",
+    "Client timing combines network, gateway, queueing, and model execution.",
+    "OpenRouter and upstream conditions can change after the captured timestamp.",
+    "Mandatory reasoning used low effort; these results do not characterize high or max effort.",
+    "Provider-reported zero reasoning tokens do not prove the model performed no hidden internal computation.",
+    "Prompt caching affected some second repetitions and is reported per row rather than normalized away.",
+    "The local Qwen3-8B evidence is contextual only and was excluded from direct ranking."
+  ],
+  "local_qwen3_8b_context": {
+    "correct_cases_per_minute": 23.115970638983462,
+    "direct_ranking_excluded": true,
+    "mean_total_ms": 2595.6080727501103,
+    "pass_rate": 1.0,
+    "reasons": [
+      "different model and system identity",
+      "local MLX timing excludes hosted network and provider queueing",
+      "local run disabled thinking while hosted GLM reasoning is mandatory",
+      "local run used seed 20260831 while the pinned hosted endpoint did not advertise seed support",
+      "local evidence is exploratory and made no clean-boot assertion"
+    ],
+    "source_commit": "a6077adaf7135e2a2e360aeae4a73b6b411b3493",
+    "source_pr": 56,
+    "tier": "2k"
+  },
+  "matrix_contract": {
+    "context_tier": "2k",
+    "max_output_tokens": 96,
+    "reasoning_effort": "low",
+    "reasoning_mandatory": true,
+    "seed": null,
+    "seed_limitation": "The pinned first-party Z.AI endpoints did not advertise seed support, so no seed was sent. Both hosted systems otherwise used the same sampling contract.",
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "ttft_definition": "first non-empty visible content at the client",
+    "unsafe_code_completion_requested": false,
+    "workloads": [
+      "structured-json-profile-extraction@1",
+      "prose-reasoning-two-train-gap@1"
+    ]
+  },
+  "results": {
+    "z-ai/glm-5.3": {
+      "mean_total_ms": 3297.4740524996378,
+      "measured_requests": 4,
+      "passing_requests": 4,
+      "provider_reported_cost_usd": 0.00575304
+    },
+    "z-ai/glm-5.3-flash": {
+      "mean_total_ms": 7750.968041750639,
+      "measured_requests": 4,
+      "passing_requests": 4,
+      "provider_reported_cost_usd": 0.00039957999999999997
+    }
+  },
+  "run": {
+    "automatic_retries": 0,
+    "base_checkout_commit": "a6077adaf7135e2a2e360aeae4a73b6b411b3493",
+    "execution_code_sha256": {
+      "llmtracefx/optimizer/cli.py": "682b3c261081f3302e85d43107f48226c460eae4dd2f1f7a089edd232410e815",
+      "llmtracefx/optimizer/collectors/openai_api.py": "e970205e1e60e62bcf57f0c2214ef24d011fac3abec6409dc6e77f44c2347494",
+      "llmtracefx/optimizer/workloads/api_budget.py": "37ec48c6ba50c672438a2930955090de691f5ae3310d4889ddddb79770bf657a",
+      "llmtracefx/optimizer/workloads/api_verify.py": "b426162f14bce1208c700f0c384b626995250f54e14c375f6c0229bbc543016e"
+    },
+    "measured_repetitions_per_workload_model": 2,
+    "paid_inference_requests": 8,
+    "status": "completed",
+    "warmup_requests": 0
+  },
+  "schema_version": "1",
+  "systems": {
+    "fallbacks_allowed": false,
+    "gateway": "OpenRouter",
+    "provider_parameter_support_required": true,
+    "quantization": "fp8",
+    "requested_model_ids": [
+      "z-ai/glm-5.3-flash",
+      "z-ai/glm-5.3"
+    ],
+    "resolved_model_builds": {
+      "z-ai/glm-5.3": "z-ai/glm-5.3-20260816",
+      "z-ai/glm-5.3-flash": "z-ai/glm-5.3-flash-20260826"
+    },
+    "route_slug": "z-ai/fp8",
+    "upstream_provider": "Z.AI"
+  }
+}

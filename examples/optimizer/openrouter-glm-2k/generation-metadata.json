@@ -1,0 +1,95 @@
+{
+  "provider_identifiers_persisted": false,
+  "rows": [
+    {
+      "model": "z-ai/glm-5.3-flash-20260826",
+      "native_tokens_cached": 0,
+      "native_tokens_completion": 23,
+      "native_tokens_prompt": 1535,
+      "native_tokens_reasoning": 0,
+      "provider_name": "Z.AI",
+      "request_id": "flash-structured-r1",
+      "service_tier": null,
+      "total_cost": 0.000120875
+    },
+    {
+      "model": "z-ai/glm-5.3-flash-20260826",
+      "native_tokens_cached": 0,
+      "native_tokens_completion": 30,
+      "native_tokens_prompt": 1536,
+      "native_tokens_reasoning": 0,
+      "provider_name": "Z.AI",
+      "request_id": "flash-prose-r1",
+      "service_tier": null,
+      "total_cost": 0.0001227
+    },
+    {
+      "model": "z-ai/glm-5.3-flash-20260826",
+      "native_tokens_cached": 1472,
+      "native_tokens_completion": 23,
+      "native_tokens_prompt": 1535,
+      "native_tokens_reasoning": 0,
+      "provider_name": "Z.AI",
+      "request_id": "flash-structured-r2",
+      "service_tier": null,
+      "total_cost": 3.2555e-05
+    },
+    {
+      "model": "z-ai/glm-5.3-flash-20260826",
+      "native_tokens_cached": 0,
+      "native_tokens_completion": 33,
+      "native_tokens_prompt": 1536,
+      "native_tokens_reasoning": 0,
+      "provider_name": "Z.AI",
+      "request_id": "flash-prose-r2",
+      "service_tier": null,
+      "total_cost": 0.00012345
+    },
+    {
+      "model": "z-ai/glm-5.3-20260816",
+      "native_tokens_cached": 0,
+      "native_tokens_completion": 23,
+      "native_tokens_prompt": 1535,
+      "native_tokens_reasoning": 0,
+      "provider_name": "Z.AI",
+      "request_id": "glm-structured-r1",
+      "service_tier": null,
+      "total_cost": 0.0022502
+    },
+    {
+      "model": "z-ai/glm-5.3-20260816",
+      "native_tokens_cached": 0,
+      "native_tokens_completion": 37,
+      "native_tokens_prompt": 1536,
+      "native_tokens_reasoning": 0,
+      "provider_name": "Z.AI",
+      "request_id": "glm-prose-r1",
+      "service_tier": null,
+      "total_cost": 0.0023132
+    },
+    {
+      "model": "z-ai/glm-5.3-20260816",
+      "native_tokens_cached": 1472,
+      "native_tokens_completion": 23,
+      "native_tokens_prompt": 1535,
+      "native_tokens_reasoning": 0,
+      "provider_name": "Z.AI",
+      "request_id": "glm-structured-r2",
+      "service_tier": null,
+      "total_cost": 0.00057212
+    },
+    {
+      "model": "z-ai/glm-5.3-20260816",
+      "native_tokens_cached": 1472,
+      "native_tokens_completion": 33,
+      "native_tokens_prompt": 1536,
+      "native_tokens_reasoning": 0,
+      "provider_name": "Z.AI",
+      "request_id": "glm-prose-r2",
+      "service_tier": null,
+      "total_cost": 0.00061752
+    }
+  ],
+  "schema_version": "1",
+  "source_url": "https://openrouter.ai/api/v1/generation"
+}

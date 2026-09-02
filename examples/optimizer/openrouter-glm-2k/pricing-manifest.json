@@ -1,0 +1,38 @@
+{
+  "schema_version": "1",
+  "name": "OpenRouter pinned first-party Z.AI GLM pricing",
+  "description": "Live OpenRouter endpoint pricing captured before execution; exact z-ai/fp8 route, fallbacks disabled.",
+  "currency": "USD",
+  "entries": [
+    {
+      "entry_id": "openrouter-zai-glm-5.3-flash-fp8-20260902",
+      "provider": "openrouter",
+      "model_id": "z-ai/glm-5.3-flash",
+      "model_revision": null,
+      "currency": "USD",
+      "effective_at": "2026-09-02T11:40:32Z",
+      "source": "https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints",
+      "rates_are_illustrative": false,
+      "input_per_million": 0.075,
+      "output_per_million": 0.25,
+      "cached_input_per_million": 0.015,
+      "reasoning_per_million": null,
+      "notes": "Reasoning is included in completion_tokens and billed at output rate. Cache writes, when present, remain in uncached prompt tokens and are billed at input rate."
+    },
+    {
+      "entry_id": "openrouter-zai-glm-5.3-fp8-20260902",
+      "provider": "openrouter",
+      "model_id": "z-ai/glm-5.3",
+      "model_revision": null,
+      "currency": "USD",
+      "effective_at": "2026-09-02T11:40:32Z",
+      "source": "https://openrouter.ai/api/v1/models/z-ai/glm-5.3/endpoints",
+      "rates_are_illustrative": false,
+      "input_per_million": 1.4,
+      "output_per_million": 4.4,
+      "cached_input_per_million": 0.26,
+      "reasoning_per_million": null,
+      "notes": "Reasoning is included in completion_tokens and billed at output rate. Cache writes, when present, remain in uncached prompt tokens and are billed at input rate."
+    }
+  ]
+}

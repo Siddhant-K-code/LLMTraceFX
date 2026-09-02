@@ -117,6 +117,7 @@ _CANONICAL_ARTIFACT_NAMES = frozenset(
 )
 _MAX_VERIFIED_ARTIFACT_BYTES = 64 * 1024 * 1024
 _MAX_ARTIFACT_MANIFEST_BYTES = 64 * 1024
+_PROVIDER_ROUTE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 
 RUNTIME_NAME = "openai-compatible-api"
 """``RuntimeInfo.name`` for every record this collector writes."""
@@ -1172,6 +1173,69 @@ class FinishReasonVocabulary:
 
 
 @dataclass(frozen=True)
+class ProviderRouting:
+    """Optional gateway routing constraints carried in ``provider``."""
+
+    order: tuple[str, ...] = ()
+    allow_fallbacks: bool | None = None
+    require_parameters: bool | None = None
+    max_prompt_price_per_million: float | None = None
+    max_completion_price_per_million: float | None = None
+
+    def __post_init__(self) -> None:
+        if not self.order:
+            raise OpenAIStreamCollectorError(
+                "provider routing must name at least one endpoint"
+            )
+        for route in self.order:
+            if (
+                not isinstance(route, str)
+                or not _PROVIDER_ROUTE_PATTERN.fullmatch(route)
+                or ".." in route
+            ):
+                raise OpenAIStreamCollectorError(
+                    "provider route names must be short provider slugs"
+                )
+        if len(set(self.order)) != len(self.order):
+            raise OpenAIStreamCollectorError("provider route names must be unique")
+        for name in ("allow_fallbacks", "require_parameters"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, bool):
+                raise OpenAIStreamCollectorError(f"{name} must be a boolean when set")
+        for name in (
+            "max_prompt_price_per_million",
+            "max_completion_price_per_million",
+        ):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) < 0
+            ):
+                raise OpenAIStreamCollectorError(
+                    f"{name} must be a finite non-negative number when set"
+                )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"order": list(self.order)}
+        if self.allow_fallbacks is not None:
+            payload["allow_fallbacks"] = self.allow_fallbacks
+        if self.require_parameters is not None:
+            payload["require_parameters"] = self.require_parameters
+        max_price: dict[str, float] = {}
+        if self.max_prompt_price_per_million is not None:
+            max_price["prompt"] = float(self.max_prompt_price_per_million)
+        if self.max_completion_price_per_million is not None:
+            max_price["completion"] = float(self.max_completion_price_per_million)
+        if max_price:
+            payload["max_price"] = max_price
+        return payload
+
+
+@dataclass(frozen=True)
 class ProviderExtensions:
     """Provider-specific request fields, kept out of the OpenAI core.
 
@@ -1194,6 +1258,7 @@ class ProviderExtensions:
     thinking_type: str | None = None
     clear_thinking: bool | None = None
     provider_request_id: str | None = None
+    routing: ProviderRouting | None = None
 
     def __post_init__(self) -> None:
         for name in ("reasoning_effort", "thinking_type", "provider_request_id"):
@@ -1210,6 +1275,10 @@ class ProviderExtensions:
             raise OpenAIStreamCollectorError(
                 f"clear_thinking must be a boolean when set, got {self.clear_thinking!r}"
             )
+        if self.routing is not None and not isinstance(self.routing, ProviderRouting):
+            raise OpenAIStreamCollectorError(
+                "routing must be a ProviderRouting instance when set"
+            )
 
     def to_request_fields(self) -> dict[str, Any]:
         """Render these extensions as chat-completions body fields."""
@@ -1225,6 +1294,8 @@ class ProviderExtensions:
             fields["thinking"] = thinking
         if self.provider_request_id is not None:
             fields["request_id"] = self.provider_request_id
+        if self.routing is not None:
+            fields["provider"] = self.routing.to_dict()
         return fields
 
 
@@ -2480,6 +2551,11 @@ class ProviderUsage:
     """Usage fields the provider returned in an unusable shape. Recorded
     so a dropped value is visible instead of silently becoming ``None``."""
 
+    cache_write_tokens: int | None = None
+    """``usage.prompt_tokens_details.cache_write_tokens`` where exposed."""
+    cost_usd: float | None = None
+    """Provider-reported total account charge in OpenRouter USD credits."""
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "reported": self.reported,
@@ -2489,6 +2565,8 @@ class ProviderUsage:
             "total_tokens": self.total_tokens,
             "cached_prompt_tokens": self.cached_prompt_tokens,
             "reasoning_tokens": self.reasoning_tokens,
+            "cache_write_tokens": self.cache_write_tokens,
+            "cost_usd": self.cost_usd,
             "malformed_fields": list(self.malformed_fields),
         }
 
@@ -2519,6 +2597,25 @@ class ProviderUsage:
                 return None
             return int(value)
 
+        def read_cost(container: Any, key: str, label: str) -> float | None:
+            if not isinstance(container, Mapping) or key not in container:
+                return None
+            value = container[key]
+            if value is None:
+                return None
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                malformed.append(label)
+                return None
+            try:
+                numeric = float(value)
+            except OverflowError:
+                malformed.append(label)
+                return None
+            if not math.isfinite(numeric) or numeric < 0:
+                malformed.append(label)
+                return None
+            return numeric
+
         details = payload.get("prompt_tokens_details")
         completion_details = payload.get("completion_tokens_details")
         for label, container in (
@@ -2541,6 +2638,12 @@ class ProviderUsage:
                 "reasoning_tokens",
                 "completion_tokens_details.reasoning_tokens",
             ),
+            cache_write_tokens=read(
+                details,
+                "cache_write_tokens",
+                "prompt_tokens_details.cache_write_tokens",
+            ),
+            cost_usd=read_cost(payload, "cost", "cost"),
             malformed_fields=tuple(malformed),
         )
 
@@ -3664,6 +3767,11 @@ def _assert_credential_not_embedded(
         ("provider_request_id", config.extensions.provider_request_id),
     )
     haystacks.extend((label, value) for label, value in optional if value is not None)
+    if config.extensions.routing is not None:
+        haystacks.extend(
+            (f"provider_routing.order[{index}]", route)
+            for index, route in enumerate(config.extensions.routing.order)
+        )
     haystacks.extend(
         (f"command_argv[{index}]", value)
         for index, value in enumerate(config.command_argv)

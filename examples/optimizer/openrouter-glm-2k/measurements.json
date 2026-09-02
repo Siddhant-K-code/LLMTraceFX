@@ -1,0 +1,3021 @@
+{
+  "rows": [
+    {
+      "api_evidence": {
+        "collected_at": "2026-09-02T11:41:14.437372Z",
+        "failure": null,
+        "finish_reason": "stop",
+        "finish_reason_classification": "terminal",
+        "finish_reason_code": "stop",
+        "reasoning_content_returned": false,
+        "reasoning_text_persisted": false,
+        "response_model": "z-ai/glm-5.3-flash",
+        "schema_version": "1",
+        "statistics": {
+          "comment_count": 4,
+          "content_characters": 56,
+          "content_delta_count": 19,
+          "content_delta_rate_per_second": 1653.1645981112158,
+          "content_delta_rate_provenance": "derived",
+          "content_window_definition": "first content delta arrival to last content delta arrival, client-observed; excludes request, headers, leading metadata and the trailing usage/finish-reason/[DONE] events",
+          "content_window_ms": 10.888207998505095,
+          "generation_window_definition": "first generated event arrival, reasoning or content, to the last, client-observed; equals content_window_ms when no reasoning delta was streamed",
+          "generation_window_ms": 10.888207998505095,
+          "inter_content_delta": {
+            "count": 18,
+            "max_ms": 4.968790999555495,
+            "mean_ms": 0.6049004443613941,
+            "median_ms": 0.06349999966914766,
+            "min_ms": 0.0,
+            "p95_ms": 4.968790999555495
+          },
+          "metadata_event_count": 2,
+          "provider_completion_tokens_per_second": 2112.376986475442,
+          "provider_completion_tokens_per_second_note": "provider-reported completion tokens divided by generation_window_ms; mixed provenance. completion_tokens includes reasoning tokens where the provider counts them, so the wider generation window is the matching denominator. The window starts at the first generated delta, so that delta's own generation time is excluded, and when the delta count is far below completion_tokens the window endpoints are delta boundaries rather than token boundaries. Treat this as a coarse estimate, not a measured per-token rate.",
+          "provider_completion_tokens_per_second_unavailable_reason": null,
+          "provider_visible_completion_tokens_per_second": 2112.376986475442,
+          "provider_visible_completion_tokens_per_second_note": "(completion tokens minus provider-reported reasoning tokens) divided by content_window_ms; mixed provenance. It is null whenever the provider did not report a reasoning token count, because a missing count is not zero and assuming it were would inflate the visible rate.",
+          "reasoning_characters": 0,
+          "reasoning_delta_count": 0
+        },
+        "stream_had_unterminated_event": false,
+        "stream_terminated_with_done": true,
+        "success": true,
+        "timeline": {
+          "clock": "monotonic_client_perf_counter",
+          "completed_offset_ms": 2778.91387499767,
+          "dropped_event_count": 0,
+          "events": [
+            {
+              "characters": 2,
+              "index": 0,
+              "kind": "content",
+              "offset_ms": 2767.2362919984153
+            },
+            {
+              "characters": 4,
+              "index": 1,
+              "kind": "content",
+              "offset_ms": 2767.2362919984153
+            },
+            {
+              "characters": 2,
+              "index": 2,
+              "kind": "content",
+              "offset_ms": 2768.0550839977514
+            },
+            {
+              "characters": 2,
+              "index": 3,
+              "kind": "content",
+              "offset_ms": 2768.112124998879
+            },
+            {
+              "characters": 3,
+              "index": 4,
+              "kind": "content",
+              "offset_ms": 2768.160708998039
+            },
+            {
+              "characters": 2,
+              "index": 5,
+              "kind": "content",
+              "offset_ms": 2768.160708998039
+            },
+            {
+              "characters": 4,
+              "index": 6,
+              "kind": "content",
+              "offset_ms": 2768.160708998039
+            },
+            {
+              "characters": 5,
+              "index": 7,
+              "kind": "content",
+              "offset_ms": 2768.230624998978
+            },
+            {
+              "characters": 2,
+              "index": 8,
+              "kind": "content",
+              "offset_ms": 2770.3444589969877
+            },
+            {
+              "characters": 2,
+              "index": 9,
+              "kind": "content",
+              "offset_ms": 2770.3444589969877
+            },
+            {
+              "characters": 3,
+              "index": 10,
+              "kind": "content",
+              "offset_ms": 2770.473624997976
+            },
+            {
+              "characters": 2,
+              "index": 11,
+              "kind": "content",
+              "offset_ms": 2770.5298339969886
+            },
+            {
+              "characters": 1,
+              "index": 12,
+              "kind": "content",
+              "offset_ms": 2770.5298339969886
+            },
+            {
+              "characters": 2,
+              "index": 13,
+              "kind": "content",
+              "offset_ms": 2770.5929589974403
+            },
+            {
+              "characters": 1,
+              "index": 14,
+              "kind": "content",
+              "offset_ms": 2775.561749996996
+            },
+            {
+              "characters": 2,
+              "index": 15,
+              "kind": "content",
+              "offset_ms": 2775.7232089970785
+            },
+            {
+              "characters": 2,
+              "index": 16,
+              "kind": "content",
+              "offset_ms": 2777.9703339983826
+            },
+            {
+              "characters": 7,
+              "index": 17,
+              "kind": "content",
+              "offset_ms": 2778.0606249980337
+            },
+            {
+              "characters": 8,
+              "index": 18,
+              "kind": "content",
+              "offset_ms": 2778.1244999969203
+            },
+            {
+              "characters": 0,
+              "index": 19,
+              "kind": "metadata",
+              "offset_ms": 2778.1244999969203
+            },
+            {
+              "characters": 0,
+              "index": 20,
+              "kind": "metadata",
+              "offset_ms": 2778.2697919974453
+            },
+            {
+              "characters": 6,
+              "index": 21,
+              "kind": "done",
+              "offset_ms": 2778.5584169978392
+            }
+          ],
+          "events_truncated": false,
+          "first_body_chunk_offset_ms": 2765.628833996743,
+          "first_content_token_offset_ms": 2767.2362919984153,
+          "last_event_offset_ms": 2778.5584169978392,
+          "provenance": "measured_wall_clock",
+          "response_headers_offset_ms": 2765.504584000155,
+          "retained_event_count": 22,
+          "retained_event_limit": 20000,
+          "total_event_count": 22
+        },
+        "usage": {
+          "cache_write_tokens": 0,
+          "cached_prompt_tokens": 0,
+          "completion_tokens": 23,
+          "cost_usd": 0.000120875,
+          "malformed_fields": [],
+          "prompt_tokens": 1535,
+          "provenance": "provider_reported",
+          "reasoning_tokens": 0,
+          "reported": true,
+          "total_tokens": 1558
+        }
+      },
+      "final_record": {
+        "error": null,
+        "model": {
+          "model_family": null,
+          "model_id": "z-ai/glm-5.3-flash",
+          "model_revision": null,
+          "quantization": null,
+          "tokenizer_revision": null
+        },
+        "outcome": {
+          "notes": null,
+          "quality_metric": "structured_json_exact_field_match",
+          "quality_score": 1.0,
+          "success": true
+        },
+        "repetition": {
+          "measured_repetitions": 1,
+          "repetition_index": 0,
+          "seed": null,
+          "warmup_repetitions": 0
+        },
+        "run_id": "structured-json-profile-extraction-2k-autoregressive",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "schema_version": "1",
+        "timing": {
+          "decode": null,
+          "model_load": null,
+          "prefill": null,
+          "tokenize": null,
+          "total": {
+            "provenance": "measured_wall_clock",
+            "unit": "ms",
+            "value": 2778.91387499767
+          }
+        },
+        "tokens": {
+          "context_tokens": 1535,
+          "generated_tokens": 23,
+          "input_tokens": 1535,
+          "provenance": "provider_reported"
+        }
+      },
+      "generation_metadata": {
+        "model": "z-ai/glm-5.3-flash-20260826",
+        "native_tokens_cached": 0,
+        "native_tokens_completion": 23,
+        "native_tokens_prompt": 1535,
+        "native_tokens_reasoning": 0,
+        "provider_name": "Z.AI",
+        "service_tier": null,
+        "total_cost": 0.000120875
+      },
+      "repetition": 1,
+      "request_id": "flash-structured-r1",
+      "request_plan": {
+        "config_hash": "sha256:1ab523959b065dc54599a15f0657f875ec139d69321a53a8f94502b9656cf388",
+        "endpoint_origin": "https://openrouter.ai",
+        "endpoint_path": "/api/v1/chat/completions",
+        "endpoint_query_keys": [],
+        "messages": [
+          {
+            "characters": 8230,
+            "content_sha256": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd",
+            "role": "user"
+          }
+        ],
+        "method": "POST",
+        "provider_extensions": {
+          "provider": {
+            "allow_fallbacks": false,
+            "max_price": {
+              "completion": 0.25,
+              "prompt": 0.075
+            },
+            "order": [
+              "z-ai/fp8"
+            ],
+            "require_parameters": true
+          },
+          "reasoning_effort": "low"
+        },
+        "request_parameters": {
+          "max_tokens": 96,
+          "model": "z-ai/glm-5.3-flash",
+          "stream": true,
+          "temperature": 0.0,
+          "top_p": 1.0
+        },
+        "request_timeout_seconds": 120.0,
+        "retained_event_limit": 20000,
+        "schema_version": "1",
+        "workload_hash": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd"
+      },
+      "source_integrity": {
+        "api_sha256": "027b54cd2f7d0d86451f688f2bb8f0ce3cdc9d7a8606e9a8c7b44fbccba1952c",
+        "record_sha256": "a366db00df1059290abb54dc3b92d2f2236bf3cf49027361d76cc5ec6817c9d3",
+        "seal_sha256": "861438176e350bc664a592430d26badaeec7e37cac2aa82140c81adbb75b789f",
+        "verification_sha256": "5a541b52dcd65db00ac99c65dcb4c82ade0344b79b49e5b76bbbe070a6febb6e"
+      },
+      "system": {
+        "gateway": "openrouter",
+        "quantization": "fp8",
+        "requested_model_id": "z-ai/glm-5.3-flash",
+        "resolved_model_build": "z-ai/glm-5.3-flash-20260826",
+        "route_slug": "z-ai/fp8",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "upstream_provider": "Z.AI"
+      },
+      "verification": {
+        "artifacts_verified": true,
+        "ended_at": "2026-09-02T11:41:17.250365Z",
+        "outcome_success": true,
+        "quality_score": 1.0,
+        "reason": null,
+        "recorded_prompt_hash": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd",
+        "resumed": false,
+        "run_binding_hash": "sha256:368bb17d9515b4765986a2e89c7838d01825a27e9b296f9af7794d60041276fe",
+        "run_id": "structured-json-profile-extraction-2k-autoregressive",
+        "schema_version": "2",
+        "started_at": "2026-09-02T11:41:14.322050Z",
+        "status": "completed",
+        "total_ms": 2778.91387499767,
+        "verified_prompt_hash": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd"
+      },
+      "workload": {
+        "category": "structured_json",
+        "context_tier": "2k",
+        "decode_mode": "autoregressive",
+        "prompt_sha256": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd",
+        "workload_id": "structured-json-profile-extraction",
+        "workload_version": "1"
+      }
+    },
+    {
+      "api_evidence": {
+        "collected_at": "2026-09-02T11:42:13.135247Z",
+        "failure": null,
+        "finish_reason": "stop",
+        "finish_reason_classification": "terminal",
+        "finish_reason_code": "stop",
+        "reasoning_content_returned": false,
+        "reasoning_text_persisted": false,
+        "response_model": "z-ai/glm-5.3-flash",
+        "schema_version": "1",
+        "statistics": {
+          "comment_count": 27,
+          "content_characters": 81,
+          "content_delta_count": 27,
+          "content_delta_rate_per_second": 1879.6652751526492,
+          "content_delta_rate_provenance": "derived",
+          "content_window_definition": "first content delta arrival to last content delta arrival, client-observed; excludes request, headers, leading metadata and the trailing usage/finish-reason/[DONE] events",
+          "content_window_ms": 13.832249998813495,
+          "generation_window_definition": "first generated event arrival, reasoning or content, to the last, client-observed; equals content_window_ms when no reasoning delta was streamed",
+          "generation_window_ms": 13.832249998813495,
+          "inter_content_delta": {
+            "count": 26,
+            "max_ms": 3.8181249983608723,
+            "mean_ms": 0.5320096153389806,
+            "median_ms": 0.02224950003437698,
+            "min_ms": 0.0,
+            "p95_ms": 2.867749997676583
+          },
+          "metadata_event_count": 2,
+          "provider_completion_tokens_per_second": 2168.844548253057,
+          "provider_completion_tokens_per_second_note": "provider-reported completion tokens divided by generation_window_ms; mixed provenance. completion_tokens includes reasoning tokens where the provider counts them, so the wider generation window is the matching denominator. The window starts at the first generated delta, so that delta's own generation time is excluded, and when the delta count is far below completion_tokens the window endpoints are delta boundaries rather than token boundaries. Treat this as a coarse estimate, not a measured per-token rate.",
+          "provider_completion_tokens_per_second_unavailable_reason": null,
+          "provider_visible_completion_tokens_per_second": 2168.844548253057,
+          "provider_visible_completion_tokens_per_second_note": "(completion tokens minus provider-reported reasoning tokens) divided by content_window_ms; mixed provenance. It is null whenever the provider did not report a reasoning token count, because a missing count is not zero and assuming it were would inflate the visible rate.",
+          "reasoning_characters": 0,
+          "reasoning_delta_count": 0
+        },
+        "stream_had_unterminated_event": false,
+        "stream_terminated_with_done": true,
+        "success": true,
+        "timeline": {
+          "clock": "monotonic_client_perf_counter",
+          "completed_offset_ms": 11769.591042000684,
+          "dropped_event_count": 0,
+          "events": [
+            {
+              "characters": 1,
+              "index": 0,
+              "kind": "content",
+              "offset_ms": 11755.470916999911
+            },
+            {
+              "characters": 2,
+              "index": 1,
+              "kind": "content",
+              "offset_ms": 11755.470916999911
+            },
+            {
+              "characters": 3,
+              "index": 2,
+              "kind": "content",
+              "offset_ms": 11755.895834001421
+            },
+            {
+              "characters": 7,
+              "index": 3,
+              "kind": "content",
+              "offset_ms": 11755.895834001421
+            },
+            {
+              "characters": 6,
+              "index": 4,
+              "kind": "content",
+              "offset_ms": 11755.895834001421
+            },
+            {
+              "characters": 4,
+              "index": 5,
+              "kind": "content",
+              "offset_ms": 11755.895834001421
+            },
+            {
+              "characters": 4,
+              "index": 6,
+              "kind": "content",
+              "offset_ms": 11758.763583999098
+            },
+            {
+              "characters": 3,
+              "index": 7,
+              "kind": "content",
+              "offset_ms": 11758.835874999932
+            },
+            {
+              "characters": 2,
+              "index": 8,
+              "kind": "content",
+              "offset_ms": 11758.835874999932
+            },
+            {
+              "characters": 9,
+              "index": 9,
+              "kind": "content",
+              "offset_ms": 11758.874999999534
+            },
+            {
+              "characters": 6,
+              "index": 10,
+              "kind": "content",
+              "offset_ms": 11758.90100000106
+            },
+            {
+              "characters": 3,
+              "index": 11,
+              "kind": "content",
+              "offset_ms": 11758.90100000106
+            },
+            {
+              "characters": 1,
+              "index": 12,
+              "kind": "content",
+              "offset_ms": 11762.719124999421
+            },
+            {
+              "characters": 2,
+              "index": 13,
+              "kind": "content",
+              "offset_ms": 11762.779917000444
+            },
+            {
+              "characters": 4,
+              "index": 14,
+              "kind": "content",
+              "offset_ms": 11762.809458999982
+            },
+            {
+              "characters": 1,
+              "index": 15,
+              "kind": "content",
+              "offset_ms": 11762.809458999982
+            },
+            {
+              "characters": 3,
+              "index": 16,
+              "kind": "content",
+              "offset_ms": 11762.834624998504
+            },
+            {
+              "characters": 1,
+              "index": 17,
+              "kind": "content",
+              "offset_ms": 11762.850584000262
+            },
+            {
+              "characters": 3,
+              "index": 18,
+              "kind": "content",
+              "offset_ms": 11762.867208999523
+            },
+            {
+              "characters": 1,
+              "index": 19,
+              "kind": "content",
+              "offset_ms": 11764.93487499829
+            },
+            {
+              "characters": 1,
+              "index": 20,
+              "kind": "content",
+              "offset_ms": 11764.963166999223
+            },
+            {
+              "characters": 1,
+              "index": 21,
+              "kind": "content",
+              "offset_ms": 11764.981291998993
+            },
+            {
+              "characters": 2,
+              "index": 22,
+              "kind": "content",
+              "offset_ms": 11764.995749999798
+            },
+            {
+              "characters": 2,
+              "index": 23,
+              "kind": "content",
+              "offset_ms": 11765.010916999017
+            },
+            {
+              "characters": 1,
+              "index": 24,
+              "kind": "content",
+              "offset_ms": 11766.942541999015
+            },
+            {
+              "characters": 1,
+              "index": 25,
+              "kind": "content",
+              "offset_ms": 11766.961875000561
+            },
+            {
+              "characters": 7,
+              "index": 26,
+              "kind": "content",
+              "offset_ms": 11769.303166998725
+            },
+            {
+              "characters": 0,
+              "index": 27,
+              "kind": "metadata",
+              "offset_ms": 11769.303166998725
+            },
+            {
+              "characters": 0,
+              "index": 28,
+              "kind": "metadata",
+              "offset_ms": 11769.376833999559
+            },
+            {
+              "characters": 6,
+              "index": 29,
+              "kind": "done",
+              "offset_ms": 11769.451291998848
+            }
+          ],
+          "events_truncated": false,
+          "first_body_chunk_offset_ms": 10180.396374998963,
+          "first_content_token_offset_ms": 11755.470916999911,
+          "last_event_offset_ms": 11769.451291998848,
+          "provenance": "measured_wall_clock",
+          "response_headers_offset_ms": 10180.229792000318,
+          "retained_event_count": 30,
+          "retained_event_limit": 20000,
+          "total_event_count": 30
+        },
+        "usage": {
+          "cache_write_tokens": 0,
+          "cached_prompt_tokens": 0,
+          "completion_tokens": 30,
+          "cost_usd": 0.0001227,
+          "malformed_fields": [],
+          "prompt_tokens": 1536,
+          "provenance": "provider_reported",
+          "reasoning_tokens": 0,
+          "reported": true,
+          "total_tokens": 1566
+        }
+      },
+      "final_record": {
+        "error": null,
+        "model": {
+          "model_family": null,
+          "model_id": "z-ai/glm-5.3-flash",
+          "model_revision": null,
+          "quantization": null,
+          "tokenizer_revision": null
+        },
+        "outcome": {
+          "notes": null,
+          "quality_metric": "exact_answer_pattern_match",
+          "quality_score": 1.0,
+          "success": true
+        },
+        "repetition": {
+          "measured_repetitions": 1,
+          "repetition_index": 0,
+          "seed": null,
+          "warmup_repetitions": 0
+        },
+        "run_id": "prose-reasoning-two-train-gap-2k-autoregressive",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "schema_version": "1",
+        "timing": {
+          "decode": null,
+          "model_load": null,
+          "prefill": null,
+          "tokenize": null,
+          "total": {
+            "provenance": "measured_wall_clock",
+            "unit": "ms",
+            "value": 11769.591042000684
+          }
+        },
+        "tokens": {
+          "context_tokens": 1536,
+          "generated_tokens": 30,
+          "input_tokens": 1536,
+          "provenance": "provider_reported"
+        }
+      },
+      "generation_metadata": {
+        "model": "z-ai/glm-5.3-flash-20260826",
+        "native_tokens_cached": 0,
+        "native_tokens_completion": 30,
+        "native_tokens_prompt": 1536,
+        "native_tokens_reasoning": 0,
+        "provider_name": "Z.AI",
+        "service_tier": null,
+        "total_cost": 0.0001227
+      },
+      "repetition": 1,
+      "request_id": "flash-prose-r1",
+      "request_plan": {
+        "config_hash": "sha256:1ab523959b065dc54599a15f0657f875ec139d69321a53a8f94502b9656cf388",
+        "endpoint_origin": "https://openrouter.ai",
+        "endpoint_path": "/api/v1/chat/completions",
+        "endpoint_query_keys": [],
+        "messages": [
+          {
+            "characters": 8238,
+            "content_sha256": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568",
+            "role": "user"
+          }
+        ],
+        "method": "POST",
+        "provider_extensions": {
+          "provider": {
+            "allow_fallbacks": false,
+            "max_price": {
+              "completion": 0.25,
+              "prompt": 0.075
+            },
+            "order": [
+              "z-ai/fp8"
+            ],
+            "require_parameters": true
+          },
+          "reasoning_effort": "low"
+        },
+        "request_parameters": {
+          "max_tokens": 96,
+          "model": "z-ai/glm-5.3-flash",
+          "stream": true,
+          "temperature": 0.0,
+          "top_p": 1.0
+        },
+        "request_timeout_seconds": 120.0,
+        "retained_event_limit": 20000,
+        "schema_version": "1",
+        "workload_hash": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568"
+      },
+      "source_integrity": {
+        "api_sha256": "aea2e229e69eae596a9195b0475c5827987ca5ea865938ef4428b919c8cc6701",
+        "record_sha256": "ed9bf0de1e06c782f0bf2978cc94999ad2421c6a1b9ddd05ac946cafd16575e0",
+        "seal_sha256": "f55e22c2f90eab63e54104cba79f5bacae2918fec083e170ed64f38f724d1314",
+        "verification_sha256": "62aac3acb2c92934c72c4830e87bccca5876c1aa8d4ba5f001c24c6d23803017"
+      },
+      "system": {
+        "gateway": "openrouter",
+        "quantization": "fp8",
+        "requested_model_id": "z-ai/glm-5.3-flash",
+        "resolved_model_build": "z-ai/glm-5.3-flash-20260826",
+        "route_slug": "z-ai/fp8",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "upstream_provider": "Z.AI"
+      },
+      "verification": {
+        "artifacts_verified": true,
+        "ended_at": "2026-09-02T11:42:24.927692Z",
+        "outcome_success": true,
+        "quality_score": 1.0,
+        "reason": null,
+        "recorded_prompt_hash": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568",
+        "resumed": false,
+        "run_binding_hash": "sha256:3921d5b092ab23e22dec95d7466bb339b223e43172b9673611474338725ec0ed",
+        "run_id": "prose-reasoning-two-train-gap-2k-autoregressive",
+        "schema_version": "2",
+        "started_at": "2026-09-02T11:42:13.017408Z",
+        "status": "completed",
+        "total_ms": 11769.591042000684,
+        "verified_prompt_hash": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568"
+      },
+      "workload": {
+        "category": "prose_reasoning",
+        "context_tier": "2k",
+        "decode_mode": "autoregressive",
+        "prompt_sha256": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568",
+        "workload_id": "prose-reasoning-two-train-gap",
+        "workload_version": "1"
+      }
+    },
+    {
+      "api_evidence": {
+        "collected_at": "2026-09-02T11:42:25.144343Z",
+        "failure": null,
+        "finish_reason": "stop",
+        "finish_reason_classification": "terminal",
+        "finish_reason_code": "stop",
+        "reasoning_content_returned": false,
+        "reasoning_text_persisted": false,
+        "response_model": "z-ai/glm-5.3-flash",
+        "schema_version": "1",
+        "statistics": {
+          "comment_count": 21,
+          "content_characters": 56,
+          "content_delta_count": 19,
+          "content_delta_rate_per_second": 101.89027690893354,
+          "content_delta_rate_provenance": "derived",
+          "content_window_definition": "first content delta arrival to last content delta arrival, client-observed; excludes request, headers, leading metadata and the trailing usage/finish-reason/[DONE] events",
+          "content_window_ms": 176.66062499847612,
+          "generation_window_definition": "first generated event arrival, reasoning or content, to the last, client-observed; equals content_window_ms when no reasoning delta was streamed",
+          "generation_window_ms": 176.66062499847612,
+          "inter_content_delta": {
+            "count": 18,
+            "max_ms": 70.97104199783644,
+            "mean_ms": 9.814479166582007,
+            "median_ms": 0.14150000060908496,
+            "min_ms": 0.0,
+            "p95_ms": 70.97104199783644
+          },
+          "metadata_event_count": 2,
+          "provider_completion_tokens_per_second": 130.19313160585952,
+          "provider_completion_tokens_per_second_note": "provider-reported completion tokens divided by generation_window_ms; mixed provenance. completion_tokens includes reasoning tokens where the provider counts them, so the wider generation window is the matching denominator. The window starts at the first generated delta, so that delta's own generation time is excluded, and when the delta count is far below completion_tokens the window endpoints are delta boundaries rather than token boundaries. Treat this as a coarse estimate, not a measured per-token rate.",
+          "provider_completion_tokens_per_second_unavailable_reason": null,
+          "provider_visible_completion_tokens_per_second": 130.19313160585952,
+          "provider_visible_completion_tokens_per_second_note": "(completion tokens minus provider-reported reasoning tokens) divided by content_window_ms; mixed provenance. It is null whenever the provider did not report a reasoning token count, because a missing count is not zero and assuming it were would inflate the visible rate.",
+          "reasoning_characters": 0,
+          "reasoning_delta_count": 0
+        },
+        "stream_had_unterminated_event": false,
+        "stream_terminated_with_done": true,
+        "success": true,
+        "timeline": {
+          "clock": "monotonic_client_perf_counter",
+          "completed_offset_ms": 9420.862917002523,
+          "dropped_event_count": 0,
+          "events": [
+            {
+              "characters": 2,
+              "index": 0,
+              "kind": "content",
+              "offset_ms": 9231.948167001974
+            },
+            {
+              "characters": 4,
+              "index": 1,
+              "kind": "content",
+              "offset_ms": 9232.689708001999
+            },
+            {
+              "characters": 2,
+              "index": 2,
+              "kind": "content",
+              "offset_ms": 9232.689708001999
+            },
+            {
+              "characters": 2,
+              "index": 3,
+              "kind": "content",
+              "offset_ms": 9232.786167001905
+            },
+            {
+              "characters": 3,
+              "index": 4,
+              "kind": "content",
+              "offset_ms": 9232.818708002014
+            },
+            {
+              "characters": 2,
+              "index": 5,
+              "kind": "content",
+              "offset_ms": 9232.926208002027
+            },
+            {
+              "characters": 4,
+              "index": 6,
+              "kind": "content",
+              "offset_ms": 9265.057000000525
+            },
+            {
+              "characters": 5,
+              "index": 7,
+              "kind": "content",
+              "offset_ms": 9265.263667002728
+            },
+            {
+              "characters": 2,
+              "index": 8,
+              "kind": "content",
+              "offset_ms": 9265.34870800242
+            },
+            {
+              "characters": 2,
+              "index": 9,
+              "kind": "content",
+              "offset_ms": 9265.34870800242
+            },
+            {
+              "characters": 3,
+              "index": 10,
+              "kind": "content",
+              "offset_ms": 9265.399250001792
+            },
+            {
+              "characters": 2,
+              "index": 11,
+              "kind": "content",
+              "offset_ms": 9301.037291999819
+            },
+            {
+              "characters": 1,
+              "index": 12,
+              "kind": "content",
+              "offset_ms": 9334.470875000989
+            },
+            {
+              "characters": 2,
+              "index": 13,
+              "kind": "content",
+              "offset_ms": 9334.613875002105
+            },
+            {
+              "characters": 1,
+              "index": 14,
+              "kind": "content",
+              "offset_ms": 9336.61391699934
+            },
+            {
+              "characters": 2,
+              "index": 15,
+              "kind": "content",
+              "offset_ms": 9336.753916999442
+            },
+            {
+              "characters": 2,
+              "index": 16,
+              "kind": "content",
+              "offset_ms": 9336.753916999442
+            },
+            {
+              "characters": 7,
+              "index": 17,
+              "kind": "content",
+              "offset_ms": 9337.637750002614
+            },
+            {
+              "characters": 8,
+              "index": 18,
+              "kind": "content",
+              "offset_ms": 9408.60879200045
+            },
+            {
+              "characters": 0,
+              "index": 19,
+              "kind": "metadata",
+              "offset_ms": 9418.030625001848
+            },
+            {
+              "characters": 0,
+              "index": 20,
+              "kind": "metadata",
+              "offset_ms": 9418.249792001006
+            },
+            {
+              "characters": 6,
+              "index": 21,
+              "kind": "done",
+              "offset_ms": 9420.45941700053
+            }
+          ],
+          "events_truncated": false,
+          "first_body_chunk_offset_ms": 9231.708792001882,
+          "first_content_token_offset_ms": 9231.948167001974,
+          "last_event_offset_ms": 9420.45941700053,
+          "provenance": "measured_wall_clock",
+          "response_headers_offset_ms": 9231.492458002322,
+          "retained_event_count": 22,
+          "retained_event_limit": 20000,
+          "total_event_count": 22
+        },
+        "usage": {
+          "cache_write_tokens": 0,
+          "cached_prompt_tokens": 1472,
+          "completion_tokens": 23,
+          "cost_usd": 3.2555e-05,
+          "malformed_fields": [],
+          "prompt_tokens": 1535,
+          "provenance": "provider_reported",
+          "reasoning_tokens": 0,
+          "reported": true,
+          "total_tokens": 1558
+        }
+      },
+      "final_record": {
+        "error": null,
+        "model": {
+          "model_family": null,
+          "model_id": "z-ai/glm-5.3-flash",
+          "model_revision": null,
+          "quantization": null,
+          "tokenizer_revision": null
+        },
+        "outcome": {
+          "notes": null,
+          "quality_metric": "structured_json_exact_field_match",
+          "quality_score": 1.0,
+          "success": true
+        },
+        "repetition": {
+          "measured_repetitions": 1,
+          "repetition_index": 0,
+          "seed": null,
+          "warmup_repetitions": 0
+        },
+        "run_id": "structured-json-profile-extraction-2k-autoregressive",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "schema_version": "1",
+        "timing": {
+          "decode": null,
+          "model_load": null,
+          "prefill": null,
+          "tokenize": null,
+          "total": {
+            "provenance": "measured_wall_clock",
+            "unit": "ms",
+            "value": 9420.862917002523
+          }
+        },
+        "tokens": {
+          "context_tokens": 1535,
+          "generated_tokens": 23,
+          "input_tokens": 1535,
+          "provenance": "provider_reported"
+        }
+      },
+      "generation_metadata": {
+        "model": "z-ai/glm-5.3-flash-20260826",
+        "native_tokens_cached": 1472,
+        "native_tokens_completion": 23,
+        "native_tokens_prompt": 1535,
+        "native_tokens_reasoning": 0,
+        "provider_name": "Z.AI",
+        "service_tier": null,
+        "total_cost": 3.2555e-05
+      },
+      "repetition": 2,
+      "request_id": "flash-structured-r2",
+      "request_plan": {
+        "config_hash": "sha256:1ab523959b065dc54599a15f0657f875ec139d69321a53a8f94502b9656cf388",
+        "endpoint_origin": "https://openrouter.ai",
+        "endpoint_path": "/api/v1/chat/completions",
+        "endpoint_query_keys": [],
+        "messages": [
+          {
+            "characters": 8230,
+            "content_sha256": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd",
+            "role": "user"
+          }
+        ],
+        "method": "POST",
+        "provider_extensions": {
+          "provider": {
+            "allow_fallbacks": false,
+            "max_price": {
+              "completion": 0.25,
+              "prompt": 0.075
+            },
+            "order": [
+              "z-ai/fp8"
+            ],
+            "require_parameters": true
+          },
+          "reasoning_effort": "low"
+        },
+        "request_parameters": {
+          "max_tokens": 96,
+          "model": "z-ai/glm-5.3-flash",
+          "stream": true,
+          "temperature": 0.0,
+          "top_p": 1.0
+        },
+        "request_timeout_seconds": 120.0,
+        "retained_event_limit": 20000,
+        "schema_version": "1",
+        "workload_hash": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd"
+      },
+      "source_integrity": {
+        "api_sha256": "d33e6c91728f78a0e64c4869f817612725683176f2157660ae365fbf8400e957",
+        "record_sha256": "aa7ad8c429f133d19da3c2c58027f49898049fea06852e7572da878a0c2e8286",
+        "seal_sha256": "0ebe029d4076d9550b11540556e03c8a0558e4c711cb9b1cc347ac85b89c9991",
+        "verification_sha256": "47675ef0dbf2747c840736a2b6cab1c4aa82a124904bbf045ae04264fdd7dcd5"
+      },
+      "system": {
+        "gateway": "openrouter",
+        "quantization": "fp8",
+        "requested_model_id": "z-ai/glm-5.3-flash",
+        "resolved_model_build": "z-ai/glm-5.3-flash-20260826",
+        "route_slug": "z-ai/fp8",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "upstream_provider": "Z.AI"
+      },
+      "verification": {
+        "artifacts_verified": true,
+        "ended_at": "2026-09-02T11:42:34.599528Z",
+        "outcome_success": true,
+        "quality_score": 1.0,
+        "reason": null,
+        "recorded_prompt_hash": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd",
+        "resumed": false,
+        "run_binding_hash": "sha256:368bb17d9515b4765986a2e89c7838d01825a27e9b296f9af7794d60041276fe",
+        "run_id": "structured-json-profile-extraction-2k-autoregressive",
+        "schema_version": "2",
+        "started_at": "2026-09-02T11:42:25.028933Z",
+        "status": "completed",
+        "total_ms": 9420.862917002523,
+        "verified_prompt_hash": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd"
+      },
+      "workload": {
+        "category": "structured_json",
+        "context_tier": "2k",
+        "decode_mode": "autoregressive",
+        "prompt_sha256": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd",
+        "workload_id": "structured-json-profile-extraction",
+        "workload_version": "1"
+      }
+    },
+    {
+      "api_evidence": {
+        "collected_at": "2026-09-02T11:42:34.816867Z",
+        "failure": null,
+        "finish_reason": "stop",
+        "finish_reason_classification": "terminal",
+        "finish_reason_code": "stop",
+        "reasoning_content_returned": false,
+        "reasoning_text_persisted": false,
+        "response_model": "z-ai/glm-5.3-flash",
+        "schema_version": "1",
+        "statistics": {
+          "comment_count": 14,
+          "content_characters": 97,
+          "content_delta_count": 29,
+          "content_delta_rate_per_second": 45.65105121954903,
+          "content_delta_rate_provenance": "derived",
+          "content_window_definition": "first content delta arrival to last content delta arrival, client-observed; excludes request, headers, leading metadata and the trailing usage/finish-reason/[DONE] events",
+          "content_window_ms": 613.3484170022712,
+          "generation_window_definition": "first generated event arrival, reasoning or content, to the last, client-observed; equals content_window_ms when no reasoning delta was streamed",
+          "generation_window_ms": 613.3484170022712,
+          "inter_content_delta": {
+            "count": 28,
+            "max_ms": 306.8384580001293,
+            "mean_ms": 21.90530060722397,
+            "median_ms": 0.05258349847281352,
+            "min_ms": 0.0,
+            "p95_ms": 304.49200000293786
+          },
+          "metadata_event_count": 2,
+          "provider_completion_tokens_per_second": 53.80302465161136,
+          "provider_completion_tokens_per_second_note": "provider-reported completion tokens divided by generation_window_ms; mixed provenance. completion_tokens includes reasoning tokens where the provider counts them, so the wider generation window is the matching denominator. The window starts at the first generated delta, so that delta's own generation time is excluded, and when the delta count is far below completion_tokens the window endpoints are delta boundaries rather than token boundaries. Treat this as a coarse estimate, not a measured per-token rate.",
+          "provider_completion_tokens_per_second_unavailable_reason": null,
+          "provider_visible_completion_tokens_per_second": 53.80302465161136,
+          "provider_visible_completion_tokens_per_second_note": "(completion tokens minus provider-reported reasoning tokens) divided by content_window_ms; mixed provenance. It is null whenever the provider did not report a reasoning token count, because a missing count is not zero and assuming it were would inflate the visible rate.",
+          "reasoning_characters": 0,
+          "reasoning_delta_count": 0
+        },
+        "stream_had_unterminated_event": false,
+        "stream_terminated_with_done": true,
+        "success": true,
+        "timeline": {
+          "clock": "monotonic_client_perf_counter",
+          "completed_offset_ms": 7034.504333001678,
+          "dropped_event_count": 0,
+          "events": [
+            {
+              "characters": 1,
+              "index": 0,
+              "kind": "content",
+              "offset_ms": 6419.954875000258
+            },
+            {
+              "characters": 2,
+              "index": 1,
+              "kind": "content",
+              "offset_ms": 6420.436333002726
+            },
+            {
+              "characters": 3,
+              "index": 2,
+              "kind": "content",
+              "offset_ms": 6420.527917001891
+            },
+            {
+              "characters": 7,
+              "index": 3,
+              "kind": "content",
+              "offset_ms": 6420.599375000165
+            },
+            {
+              "characters": 6,
+              "index": 4,
+              "kind": "content",
+              "offset_ms": 6420.652708002308
+            },
+            {
+              "characters": 4,
+              "index": 5,
+              "kind": "content",
+              "offset_ms": 6420.696917000896
+            },
+            {
+              "characters": 4,
+              "index": 6,
+              "kind": "content",
+              "offset_ms": 6420.740875000774
+            },
+            {
+              "characters": 3,
+              "index": 7,
+              "kind": "content",
+              "offset_ms": 6420.785875001457
+            },
+            {
+              "characters": 2,
+              "index": 8,
+              "kind": "content",
+              "offset_ms": 6420.838875001209
+            },
+            {
+              "characters": 9,
+              "index": 9,
+              "kind": "content",
+              "offset_ms": 6420.838875001209
+            },
+            {
+              "characters": 6,
+              "index": 10,
+              "kind": "content",
+              "offset_ms": 6421.046041999944
+            },
+            {
+              "characters": 3,
+              "index": 11,
+              "kind": "content",
+              "offset_ms": 6421.046041999944
+            },
+            {
+              "characters": 1,
+              "index": 12,
+              "kind": "content",
+              "offset_ms": 6421.046041999944
+            },
+            {
+              "characters": 2,
+              "index": 13,
+              "kind": "content",
+              "offset_ms": 6421.046041999944
+            },
+            {
+              "characters": 4,
+              "index": 14,
+              "kind": "content",
+              "offset_ms": 6421.046041999944
+            },
+            {
+              "characters": 1,
+              "index": 15,
+              "kind": "content",
+              "offset_ms": 6725.538042002881
+            },
+            {
+              "characters": 3,
+              "index": 16,
+              "kind": "content",
+              "offset_ms": 6725.745125000685
+            },
+            {
+              "characters": 1,
+              "index": 17,
+              "kind": "content",
+              "offset_ms": 6725.823333003063
+            },
+            {
+              "characters": 3,
+              "index": 18,
+              "kind": "content",
+              "offset_ms": 6725.875500000257
+            },
+            {
+              "characters": 1,
+              "index": 19,
+              "kind": "content",
+              "offset_ms": 6725.960208001197
+            },
+            {
+              "characters": 1,
+              "index": 20,
+              "kind": "content",
+              "offset_ms": 6725.960208001197
+            },
+            {
+              "characters": 1,
+              "index": 21,
+              "kind": "content",
+              "offset_ms": 6725.960208001197
+            },
+            {
+              "characters": 2,
+              "index": 22,
+              "kind": "content",
+              "offset_ms": 6725.960208001197
+            },
+            {
+              "characters": 2,
+              "index": 23,
+              "kind": "content",
+              "offset_ms": 6725.960208001197
+            },
+            {
+              "characters": 1,
+              "index": 24,
+              "kind": "content",
+              "offset_ms": 6726.121375002549
+            },
+            {
+              "characters": 1,
+              "index": 25,
+              "kind": "content",
+              "offset_ms": 6726.121375002549
+            },
+            {
+              "characters": 6,
+              "index": 26,
+              "kind": "content",
+              "offset_ms": 7032.959833002678
+            },
+            {
+              "characters": 6,
+              "index": 27,
+              "kind": "content",
+              "offset_ms": 7033.196500000486
+            },
+            {
+              "characters": 11,
+              "index": 28,
+              "kind": "content",
+              "offset_ms": 7033.303292002529
+            },
+            {
+              "characters": 0,
+              "index": 29,
+              "kind": "metadata",
+              "offset_ms": 7033.375333001459
+            },
+            {
+              "characters": 0,
+              "index": 30,
+              "kind": "metadata",
+              "offset_ms": 7033.668333002424
+            },
+            {
+              "characters": 6,
+              "index": 31,
+              "kind": "done",
+              "offset_ms": 7034.031875002256
+            }
+          ],
+          "events_truncated": false,
+          "first_body_chunk_offset_ms": 6419.550292001077,
+          "first_content_token_offset_ms": 6419.954875000258,
+          "last_event_offset_ms": 7034.031875002256,
+          "provenance": "measured_wall_clock",
+          "response_headers_offset_ms": 6419.366125002853,
+          "retained_event_count": 32,
+          "retained_event_limit": 20000,
+          "total_event_count": 32
+        },
+        "usage": {
+          "cache_write_tokens": 0,
+          "cached_prompt_tokens": 0,
+          "completion_tokens": 33,
+          "cost_usd": 0.00012345,
+          "malformed_fields": [],
+          "prompt_tokens": 1536,
+          "provenance": "provider_reported",
+          "reasoning_tokens": 0,
+          "reported": true,
+          "total_tokens": 1569
+        }
+      },
+      "final_record": {
+        "error": null,
+        "model": {
+          "model_family": null,
+          "model_id": "z-ai/glm-5.3-flash",
+          "model_revision": null,
+          "quantization": null,
+          "tokenizer_revision": null
+        },
+        "outcome": {
+          "notes": null,
+          "quality_metric": "exact_answer_pattern_match",
+          "quality_score": 1.0,
+          "success": true
+        },
+        "repetition": {
+          "measured_repetitions": 1,
+          "repetition_index": 0,
+          "seed": null,
+          "warmup_repetitions": 0
+        },
+        "run_id": "prose-reasoning-two-train-gap-2k-autoregressive",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "schema_version": "1",
+        "timing": {
+          "decode": null,
+          "model_load": null,
+          "prefill": null,
+          "tokenize": null,
+          "total": {
+            "provenance": "measured_wall_clock",
+            "unit": "ms",
+            "value": 7034.504333001678
+          }
+        },
+        "tokens": {
+          "context_tokens": 1536,
+          "generated_tokens": 33,
+          "input_tokens": 1536,
+          "provenance": "provider_reported"
+        }
+      },
+      "generation_metadata": {
+        "model": "z-ai/glm-5.3-flash-20260826",
+        "native_tokens_cached": 0,
+        "native_tokens_completion": 33,
+        "native_tokens_prompt": 1536,
+        "native_tokens_reasoning": 0,
+        "provider_name": "Z.AI",
+        "service_tier": null,
+        "total_cost": 0.00012345
+      },
+      "repetition": 2,
+      "request_id": "flash-prose-r2",
+      "request_plan": {
+        "config_hash": "sha256:1ab523959b065dc54599a15f0657f875ec139d69321a53a8f94502b9656cf388",
+        "endpoint_origin": "https://openrouter.ai",
+        "endpoint_path": "/api/v1/chat/completions",
+        "endpoint_query_keys": [],
+        "messages": [
+          {
+            "characters": 8238,
+            "content_sha256": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568",
+            "role": "user"
+          }
+        ],
+        "method": "POST",
+        "provider_extensions": {
+          "provider": {
+            "allow_fallbacks": false,
+            "max_price": {
+              "completion": 0.25,
+              "prompt": 0.075
+            },
+            "order": [
+              "z-ai/fp8"
+            ],
+            "require_parameters": true
+          },
+          "reasoning_effort": "low"
+        },
+        "request_parameters": {
+          "max_tokens": 96,
+          "model": "z-ai/glm-5.3-flash",
+          "stream": true,
+          "temperature": 0.0,
+          "top_p": 1.0
+        },
+        "request_timeout_seconds": 120.0,
+        "retained_event_limit": 20000,
+        "schema_version": "1",
+        "workload_hash": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568"
+      },
+      "source_integrity": {
+        "api_sha256": "aba80baf286d76faf24e72328d51865f8beb60bf019ed96be5ed7006aa74940e",
+        "record_sha256": "4f56e55a206b354124e9d71b1f5da2f3c40a1d2b760395f1578f29df2a19056e",
+        "seal_sha256": "4c2e6f5f9d8f17ed60fffcec1933645debd62f05baaeb1b11f72b878f44f5f82",
+        "verification_sha256": "54280ccf017c5ed74bf35ed92df01532bad1ee58e52fa3d80effc497fe7eac6d"
+      },
+      "system": {
+        "gateway": "openrouter",
+        "quantization": "fp8",
+        "requested_model_id": "z-ai/glm-5.3-flash",
+        "resolved_model_build": "z-ai/glm-5.3-flash-20260826",
+        "route_slug": "z-ai/fp8",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "upstream_provider": "Z.AI"
+      },
+      "verification": {
+        "artifacts_verified": true,
+        "ended_at": "2026-09-02T11:42:41.886765Z",
+        "outcome_success": true,
+        "quality_score": 1.0,
+        "reason": null,
+        "recorded_prompt_hash": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568",
+        "resumed": false,
+        "run_binding_hash": "sha256:3921d5b092ab23e22dec95d7466bb339b223e43172b9673611474338725ec0ed",
+        "run_id": "prose-reasoning-two-train-gap-2k-autoregressive",
+        "schema_version": "2",
+        "started_at": "2026-09-02T11:42:34.703701Z",
+        "status": "completed",
+        "total_ms": 7034.504333001678,
+        "verified_prompt_hash": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568"
+      },
+      "workload": {
+        "category": "prose_reasoning",
+        "context_tier": "2k",
+        "decode_mode": "autoregressive",
+        "prompt_sha256": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568",
+        "workload_id": "prose-reasoning-two-train-gap",
+        "workload_version": "1"
+      }
+    },
+    {
+      "api_evidence": {
+        "collected_at": "2026-09-02T11:43:19.815217Z",
+        "failure": null,
+        "finish_reason": "stop",
+        "finish_reason_classification": "terminal",
+        "finish_reason_code": "stop",
+        "reasoning_content_returned": false,
+        "reasoning_text_persisted": false,
+        "response_model": "z-ai/glm-5.3",
+        "schema_version": "1",
+        "statistics": {
+          "comment_count": 7,
+          "content_characters": 56,
+          "content_delta_count": 20,
+          "content_delta_rate_per_second": 64225.20716093787,
+          "content_delta_rate_provenance": "derived",
+          "content_window_definition": "first content delta arrival to last content delta arrival, client-observed; excludes request, headers, leading metadata and the trailing usage/finish-reason/[DONE] events",
+          "content_window_ms": 0.29583400100818835,
+          "generation_window_definition": "first generated event arrival, reasoning or content, to the last, client-observed; equals content_window_ms when no reasoning delta was streamed",
+          "generation_window_ms": 0.29583400100818835,
+          "inter_content_delta": {
+            "count": 19,
+            "max_ms": 0.18720899970503524,
+            "mean_ms": 0.015570210579378334,
+            "median_ms": 0.0,
+            "min_ms": 0.0,
+            "p95_ms": 0.18720899970503524
+          },
+          "metadata_event_count": 2,
+          "provider_completion_tokens_per_second": 77746.30340534584,
+          "provider_completion_tokens_per_second_note": "provider-reported completion tokens divided by generation_window_ms; mixed provenance. completion_tokens includes reasoning tokens where the provider counts them, so the wider generation window is the matching denominator. The window starts at the first generated delta, so that delta's own generation time is excluded, and when the delta count is far below completion_tokens the window endpoints are delta boundaries rather than token boundaries. Treat this as a coarse estimate, not a measured per-token rate.",
+          "provider_completion_tokens_per_second_unavailable_reason": null,
+          "provider_visible_completion_tokens_per_second": 77746.30340534584,
+          "provider_visible_completion_tokens_per_second_note": "(completion tokens minus provider-reported reasoning tokens) divided by content_window_ms; mixed provenance. It is null whenever the provider did not report a reasoning token count, because a missing count is not zero and assuming it were would inflate the visible rate.",
+          "reasoning_characters": 0,
+          "reasoning_delta_count": 0
+        },
+        "stream_had_unterminated_event": false,
+        "stream_terminated_with_done": true,
+        "success": true,
+        "timeline": {
+          "clock": "monotonic_client_perf_counter",
+          "completed_offset_ms": 3608.5767499971553,
+          "dropped_event_count": 0,
+          "events": [
+            {
+              "characters": 2,
+              "index": 0,
+              "kind": "content",
+              "offset_ms": 3608.078665998619
+            },
+            {
+              "characters": 4,
+              "index": 1,
+              "kind": "content",
+              "offset_ms": 3608.078665998619
+            },
+            {
+              "characters": 2,
+              "index": 2,
+              "kind": "content",
+              "offset_ms": 3608.078665998619
+            },
+            {
+              "characters": 2,
+              "index": 3,
+              "kind": "content",
+              "offset_ms": 3608.078665998619
+            },
+            {
+              "characters": 3,
+              "index": 4,
+              "kind": "content",
+              "offset_ms": 3608.078665998619
+            },
+            {
+              "characters": 2,
+              "index": 5,
+              "kind": "content",
+              "offset_ms": 3608.265874998324
+            },
+            {
+              "characters": 4,
+              "index": 6,
+              "kind": "content",
+              "offset_ms": 3608.265874998324
+            },
+            {
+              "characters": 5,
+              "index": 7,
+              "kind": "content",
+              "offset_ms": 3608.265874998324
+            },
+            {
+              "characters": 2,
+              "index": 8,
+              "kind": "content",
+              "offset_ms": 3608.265874998324
+            },
+            {
+              "characters": 2,
+              "index": 9,
+              "kind": "content",
+              "offset_ms": 3608.265874998324
+            },
+            {
+              "characters": 3,
+              "index": 10,
+              "kind": "content",
+              "offset_ms": 3608.295415997418
+            },
+            {
+              "characters": 2,
+              "index": 11,
+              "kind": "content",
+              "offset_ms": 3608.3156659988163
+            },
+            {
+              "characters": 1,
+              "index": 12,
+              "kind": "content",
+              "offset_ms": 3608.3156659988163
+            },
+            {
+              "characters": 2,
+              "index": 13,
+              "kind": "content",
+              "offset_ms": 3608.3156659988163
+            },
+            {
+              "characters": 1,
+              "index": 14,
+              "kind": "content",
+              "offset_ms": 3608.3156659988163
+            },
+            {
+              "characters": 2,
+              "index": 15,
+              "kind": "content",
+              "offset_ms": 3608.3156659988163
+            },
+            {
+              "characters": 2,
+              "index": 16,
+              "kind": "content",
+              "offset_ms": 3608.3413749984175
+            },
+            {
+              "characters": 7,
+              "index": 17,
+              "kind": "content",
+              "offset_ms": 3608.353707997594
+            },
+            {
+              "characters": 2,
+              "index": 18,
+              "kind": "content",
+              "offset_ms": 3608.364374998928
+            },
+            {
+              "characters": 6,
+              "index": 19,
+              "kind": "content",
+              "offset_ms": 3608.374499999627
+            },
+            {
+              "characters": 0,
+              "index": 20,
+              "kind": "metadata",
+              "offset_ms": 3608.3842499974708
+            },
+            {
+              "characters": 0,
+              "index": 21,
+              "kind": "metadata",
+              "offset_ms": 3608.4099159998004
+            },
+            {
+              "characters": 6,
+              "index": 22,
+              "kind": "done",
+              "offset_ms": 3608.4482909973303
+            }
+          ],
+          "events_truncated": false,
+          "first_body_chunk_offset_ms": 3608.0296659965825,
+          "first_content_token_offset_ms": 3608.078665998619,
+          "last_event_offset_ms": 3608.4482909973303,
+          "provenance": "measured_wall_clock",
+          "response_headers_offset_ms": 3607.956957999704,
+          "retained_event_count": 23,
+          "retained_event_limit": 20000,
+          "total_event_count": 23
+        },
+        "usage": {
+          "cache_write_tokens": 0,
+          "cached_prompt_tokens": 0,
+          "completion_tokens": 23,
+          "cost_usd": 0.0022502,
+          "malformed_fields": [],
+          "prompt_tokens": 1535,
+          "provenance": "provider_reported",
+          "reasoning_tokens": 0,
+          "reported": true,
+          "total_tokens": 1558
+        }
+      },
+      "final_record": {
+        "error": null,
+        "model": {
+          "model_family": null,
+          "model_id": "z-ai/glm-5.3",
+          "model_revision": null,
+          "quantization": null,
+          "tokenizer_revision": null
+        },
+        "outcome": {
+          "notes": null,
+          "quality_metric": "structured_json_exact_field_match",
+          "quality_score": 1.0,
+          "success": true
+        },
+        "repetition": {
+          "measured_repetitions": 1,
+          "repetition_index": 0,
+          "seed": null,
+          "warmup_repetitions": 0
+        },
+        "run_id": "structured-json-profile-extraction-2k-autoregressive",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "schema_version": "1",
+        "timing": {
+          "decode": null,
+          "model_load": null,
+          "prefill": null,
+          "tokenize": null,
+          "total": {
+            "provenance": "measured_wall_clock",
+            "unit": "ms",
+            "value": 3608.5767499971553
+          }
+        },
+        "tokens": {
+          "context_tokens": 1535,
+          "generated_tokens": 23,
+          "input_tokens": 1535,
+          "provenance": "provider_reported"
+        }
+      },
+      "generation_metadata": {
+        "model": "z-ai/glm-5.3-20260816",
+        "native_tokens_cached": 0,
+        "native_tokens_completion": 23,
+        "native_tokens_prompt": 1535,
+        "native_tokens_reasoning": 0,
+        "provider_name": "Z.AI",
+        "service_tier": null,
+        "total_cost": 0.0022502
+      },
+      "repetition": 1,
+      "request_id": "glm-structured-r1",
+      "request_plan": {
+        "config_hash": "sha256:b3ab4cc5cc9a2d0cbfe68dd72b149002029b5d0a34049f9e1d1940623bb35f33",
+        "endpoint_origin": "https://openrouter.ai",
+        "endpoint_path": "/api/v1/chat/completions",
+        "endpoint_query_keys": [],
+        "messages": [
+          {
+            "characters": 8230,
+            "content_sha256": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd",
+            "role": "user"
+          }
+        ],
+        "method": "POST",
+        "provider_extensions": {
+          "provider": {
+            "allow_fallbacks": false,
+            "max_price": {
+              "completion": 4.4,
+              "prompt": 1.4
+            },
+            "order": [
+              "z-ai/fp8"
+            ],
+            "require_parameters": true
+          },
+          "reasoning_effort": "low"
+        },
+        "request_parameters": {
+          "max_tokens": 96,
+          "model": "z-ai/glm-5.3",
+          "stream": true,
+          "temperature": 0.0,
+          "top_p": 1.0
+        },
+        "request_timeout_seconds": 120.0,
+        "retained_event_limit": 20000,
+        "schema_version": "1",
+        "workload_hash": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd"
+      },
+      "source_integrity": {
+        "api_sha256": "16279dca9d5e70e17929e6f4566336df55a847da866fa9b3c6b7a48fa7f9b5a0",
+        "record_sha256": "035a78d48f3851ce5da43b58fa7ded2c898fb92453df21d80df143a1f5f603e8",
+        "seal_sha256": "c5d34e351cee3a004593158ded9b17581b1f66232fca44a2edfe526fb0896c5b",
+        "verification_sha256": "046c6821ab67b87b834863df5c2043739353b012fc6cf25d0b17118dcd27e715"
+      },
+      "system": {
+        "gateway": "openrouter",
+        "quantization": "fp8",
+        "requested_model_id": "z-ai/glm-5.3",
+        "resolved_model_build": "z-ai/glm-5.3-20260816",
+        "route_slug": "z-ai/fp8",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "upstream_provider": "Z.AI"
+      },
+      "verification": {
+        "artifacts_verified": true,
+        "ended_at": "2026-09-02T11:43:23.446749Z",
+        "outcome_success": true,
+        "quality_score": 1.0,
+        "reason": null,
+        "recorded_prompt_hash": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd",
+        "resumed": false,
+        "run_binding_hash": "sha256:d699d0c0e7a97b2da07261bc137dae04ad6bd7789d732e8436f69f9615fee44b",
+        "run_id": "structured-json-profile-extraction-2k-autoregressive",
+        "schema_version": "2",
+        "started_at": "2026-09-02T11:43:19.698870Z",
+        "status": "completed",
+        "total_ms": 3608.5767499971553,
+        "verified_prompt_hash": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd"
+      },
+      "workload": {
+        "category": "structured_json",
+        "context_tier": "2k",
+        "decode_mode": "autoregressive",
+        "prompt_sha256": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd",
+        "workload_id": "structured-json-profile-extraction",
+        "workload_version": "1"
+      }
+    },
+    {
+      "api_evidence": {
+        "collected_at": "2026-09-02T11:43:23.658637Z",
+        "failure": null,
+        "finish_reason": "stop",
+        "finish_reason_classification": "terminal",
+        "finish_reason_code": "stop",
+        "reasoning_content_returned": false,
+        "reasoning_text_persisted": false,
+        "response_model": "z-ai/glm-5.3",
+        "schema_version": "1",
+        "statistics": {
+          "comment_count": 7,
+          "content_characters": 92,
+          "content_delta_count": 31,
+          "content_delta_rate_per_second": 2439.561490476754,
+          "content_delta_rate_provenance": "derived",
+          "content_window_definition": "first content delta arrival to last content delta arrival, client-observed; excludes request, headers, leading metadata and the trailing usage/finish-reason/[DONE] events",
+          "content_window_ms": 12.297291999857407,
+          "generation_window_definition": "first generated event arrival, reasoning or content, to the last, client-observed; equals content_window_ms when no reasoning delta was streamed",
+          "generation_window_ms": 12.297291999857407,
+          "inter_content_delta": {
+            "count": 30,
+            "max_ms": 4.261250000126893,
+            "mean_ms": 0.4099097333285802,
+            "median_ms": 0.015125000572879799,
+            "min_ms": 0.0,
+            "p95_ms": 3.45437500072876
+          },
+          "metadata_event_count": 2,
+          "provider_completion_tokens_per_second": 3008.79250492133,
+          "provider_completion_tokens_per_second_note": "provider-reported completion tokens divided by generation_window_ms; mixed provenance. completion_tokens includes reasoning tokens where the provider counts them, so the wider generation window is the matching denominator. The window starts at the first generated delta, so that delta's own generation time is excluded, and when the delta count is far below completion_tokens the window endpoints are delta boundaries rather than token boundaries. Treat this as a coarse estimate, not a measured per-token rate.",
+          "provider_completion_tokens_per_second_unavailable_reason": null,
+          "provider_visible_completion_tokens_per_second": 3008.79250492133,
+          "provider_visible_completion_tokens_per_second_note": "(completion tokens minus provider-reported reasoning tokens) divided by content_window_ms; mixed provenance. It is null whenever the provider did not report a reasoning token count, because a missing count is not zero and assuming it were would inflate the visible rate.",
+          "reasoning_characters": 0,
+          "reasoning_delta_count": 0
+        },
+        "stream_had_unterminated_event": false,
+        "stream_terminated_with_done": true,
+        "success": true,
+        "timeline": {
+          "clock": "monotonic_client_perf_counter",
+          "completed_offset_ms": 3316.8692920007743,
+          "dropped_event_count": 0,
+          "events": [
+            {
+              "characters": 1,
+              "index": 0,
+              "kind": "content",
+              "offset_ms": 3301.5644999977667
+            },
+            {
+              "characters": 2,
+              "index": 1,
+              "kind": "content",
+              "offset_ms": 3301.7350000009174
+            },
+            {
+              "characters": 3,
+              "index": 2,
+              "kind": "content",
+              "offset_ms": 3301.7350000009174
+            },
+            {
+              "characters": 9,
+              "index": 3,
+              "kind": "content",
+              "offset_ms": 3301.7674170005193
+            },
+            {
+              "characters": 6,
+              "index": 4,
+              "kind": "content",
+              "offset_ms": 3301.7674170005193
+            },
+            {
+              "characters": 3,
+              "index": 5,
+              "kind": "content",
+              "offset_ms": 3303.676125000493
+            },
+            {
+              "characters": 1,
+              "index": 6,
+              "kind": "content",
+              "offset_ms": 3303.676125000493
+            },
+            {
+              "characters": 2,
+              "index": 7,
+              "kind": "content",
+              "offset_ms": 3303.7118329993973
+            },
+            {
+              "characters": 2,
+              "index": 8,
+              "kind": "content",
+              "offset_ms": 3303.7260829987645
+            },
+            {
+              "characters": 1,
+              "index": 9,
+              "kind": "content",
+              "offset_ms": 3303.7260829987645
+            },
+            {
+              "characters": 2,
+              "index": 10,
+              "kind": "content",
+              "offset_ms": 3303.7417079976876
+            },
+            {
+              "characters": 2,
+              "index": 11,
+              "kind": "content",
+              "offset_ms": 3305.9011670011387
+            },
+            {
+              "characters": 1,
+              "index": 12,
+              "kind": "content",
+              "offset_ms": 3305.9219579990895
+            },
+            {
+              "characters": 2,
+              "index": 13,
+              "kind": "content",
+              "offset_ms": 3305.9219579990895
+            },
+            {
+              "characters": 4,
+              "index": 14,
+              "kind": "content",
+              "offset_ms": 3305.936707998626
+            },
+            {
+              "characters": 1,
+              "index": 15,
+              "kind": "content",
+              "offset_ms": 3305.9472919994732
+            },
+            {
+              "characters": 3,
+              "index": 16,
+              "kind": "content",
+              "offset_ms": 3305.9472919994732
+            },
+            {
+              "characters": 4,
+              "index": 17,
+              "kind": "content",
+              "offset_ms": 3305.9627920010826
+            },
+            {
+              "characters": 1,
+              "index": 18,
+              "kind": "content",
+              "offset_ms": 3305.9717079995607
+            },
+            {
+              "characters": 3,
+              "index": 19,
+              "kind": "content",
+              "offset_ms": 3305.9803750002175
+            },
+            {
+              "characters": 5,
+              "index": 20,
+              "kind": "content",
+              "offset_ms": 3305.9898749997956
+            },
+            {
+              "characters": 4,
+              "index": 21,
+              "kind": "content",
+              "offset_ms": 3305.9898749997956
+            },
+            {
+              "characters": 7,
+              "index": 22,
+              "kind": "content",
+              "offset_ms": 3306.0269999987213
+            },
+            {
+              "characters": 3,
+              "index": 23,
+              "kind": "content",
+              "offset_ms": 3309.48137499945
+            },
+            {
+              "characters": 1,
+              "index": 24,
+              "kind": "content",
+              "offset_ms": 3309.511957999348
+            },
+            {
+              "characters": 3,
+              "index": 25,
+              "kind": "content",
+              "offset_ms": 3309.528207999392
+            },
+            {
+              "characters": 1,
+              "index": 26,
+              "kind": "content",
+              "offset_ms": 3309.5398750010645
+            },
+            {
+              "characters": 1,
+              "index": 27,
+              "kind": "content",
+              "offset_ms": 3309.556166997936
+            },
+            {
+              "characters": 1,
+              "index": 28,
+              "kind": "content",
+              "offset_ms": 3309.556166997936
+            },
+            {
+              "characters": 2,
+              "index": 29,
+              "kind": "content",
+              "offset_ms": 3313.817416998063
+            },
+            {
+              "characters": 11,
+              "index": 30,
+              "kind": "content",
+              "offset_ms": 3313.861791997624
+            },
+            {
+              "characters": 0,
+              "index": 31,
+              "kind": "metadata",
+              "offset_ms": 3316.6412919999857
+            },
+            {
+              "characters": 0,
+              "index": 32,
+              "kind": "metadata",
+              "offset_ms": 3316.694249999273
+            },
+            {
+              "characters": 6,
+              "index": 33,
+              "kind": "done",
+              "offset_ms": 3316.746707998391
+            }
+          ],
+          "events_truncated": false,
+          "first_body_chunk_offset_ms": 3299.656874998618,
+          "first_content_token_offset_ms": 3301.5644999977667,
+          "last_event_offset_ms": 3316.746707998391,
+          "provenance": "measured_wall_clock",
+          "response_headers_offset_ms": 3299.608958001045,
+          "retained_event_count": 34,
+          "retained_event_limit": 20000,
+          "total_event_count": 34
+        },
+        "usage": {
+          "cache_write_tokens": 0,
+          "cached_prompt_tokens": 0,
+          "completion_tokens": 37,
+          "cost_usd": 0.0023132,
+          "malformed_fields": [],
+          "prompt_tokens": 1536,
+          "provenance": "provider_reported",
+          "reasoning_tokens": 0,
+          "reported": true,
+          "total_tokens": 1573
+        }
+      },
+      "final_record": {
+        "error": null,
+        "model": {
+          "model_family": null,
+          "model_id": "z-ai/glm-5.3",
+          "model_revision": null,
+          "quantization": null,
+          "tokenizer_revision": null
+        },
+        "outcome": {
+          "notes": null,
+          "quality_metric": "exact_answer_pattern_match",
+          "quality_score": 1.0,
+          "success": true
+        },
+        "repetition": {
+          "measured_repetitions": 1,
+          "repetition_index": 0,
+          "seed": null,
+          "warmup_repetitions": 0
+        },
+        "run_id": "prose-reasoning-two-train-gap-2k-autoregressive",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "schema_version": "1",
+        "timing": {
+          "decode": null,
+          "model_load": null,
+          "prefill": null,
+          "tokenize": null,
+          "total": {
+            "provenance": "measured_wall_clock",
+            "unit": "ms",
+            "value": 3316.8692920007743
+          }
+        },
+        "tokens": {
+          "context_tokens": 1536,
+          "generated_tokens": 37,
+          "input_tokens": 1536,
+          "provenance": "provider_reported"
+        }
+      },
+      "generation_metadata": {
+        "model": "z-ai/glm-5.3-20260816",
+        "native_tokens_cached": 0,
+        "native_tokens_completion": 37,
+        "native_tokens_prompt": 1536,
+        "native_tokens_reasoning": 0,
+        "provider_name": "Z.AI",
+        "service_tier": null,
+        "total_cost": 0.0023132
+      },
+      "repetition": 1,
+      "request_id": "glm-prose-r1",
+      "request_plan": {
+        "config_hash": "sha256:b3ab4cc5cc9a2d0cbfe68dd72b149002029b5d0a34049f9e1d1940623bb35f33",
+        "endpoint_origin": "https://openrouter.ai",
+        "endpoint_path": "/api/v1/chat/completions",
+        "endpoint_query_keys": [],
+        "messages": [
+          {
+            "characters": 8238,
+            "content_sha256": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568",
+            "role": "user"
+          }
+        ],
+        "method": "POST",
+        "provider_extensions": {
+          "provider": {
+            "allow_fallbacks": false,
+            "max_price": {
+              "completion": 4.4,
+              "prompt": 1.4
+            },
+            "order": [
+              "z-ai/fp8"
+            ],
+            "require_parameters": true
+          },
+          "reasoning_effort": "low"
+        },
+        "request_parameters": {
+          "max_tokens": 96,
+          "model": "z-ai/glm-5.3",
+          "stream": true,
+          "temperature": 0.0,
+          "top_p": 1.0
+        },
+        "request_timeout_seconds": 120.0,
+        "retained_event_limit": 20000,
+        "schema_version": "1",
+        "workload_hash": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568"
+      },
+      "source_integrity": {
+        "api_sha256": "ab610137bf706b880749584d55ced6592d87c91aa55da6a906f043490c63f7ce",
+        "record_sha256": "8402a83fed57d24f25f18164915a93ff7a62b976ad58db1b105c197e74cf189d",
+        "seal_sha256": "55f927b0515d7ecfc55c04d47adce9484ea39ed455f29965f0e509fc00188b34",
+        "verification_sha256": "b314a466dbe49f9f9c1adcbac7b5e4c154bf5deda067bfcd8732a898a4ab55ec"
+      },
+      "system": {
+        "gateway": "openrouter",
+        "quantization": "fp8",
+        "requested_model_id": "z-ai/glm-5.3",
+        "resolved_model_build": "z-ai/glm-5.3-20260816",
+        "route_slug": "z-ai/fp8",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "upstream_provider": "Z.AI"
+      },
+      "verification": {
+        "artifacts_verified": true,
+        "ended_at": "2026-09-02T11:43:26.994618Z",
+        "outcome_success": true,
+        "quality_score": 1.0,
+        "reason": null,
+        "recorded_prompt_hash": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568",
+        "resumed": false,
+        "run_binding_hash": "sha256:a95c3b537d7e531c35a5546d23258020a8910c73155cff62cee59e54e4a733f9",
+        "run_id": "prose-reasoning-two-train-gap-2k-autoregressive",
+        "schema_version": "2",
+        "started_at": "2026-09-02T11:43:23.541495Z",
+        "status": "completed",
+        "total_ms": 3316.8692920007743,
+        "verified_prompt_hash": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568"
+      },
+      "workload": {
+        "category": "prose_reasoning",
+        "context_tier": "2k",
+        "decode_mode": "autoregressive",
+        "prompt_sha256": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568",
+        "workload_id": "prose-reasoning-two-train-gap",
+        "workload_version": "1"
+      }
+    },
+    {
+      "api_evidence": {
+        "collected_at": "2026-09-02T11:43:27.231738Z",
+        "failure": null,
+        "finish_reason": "stop",
+        "finish_reason_classification": "terminal",
+        "finish_reason_code": "stop",
+        "reasoning_content_returned": false,
+        "reasoning_text_persisted": false,
+        "response_model": "z-ai/glm-5.3",
+        "schema_version": "1",
+        "statistics": {
+          "comment_count": 6,
+          "content_characters": 56,
+          "content_delta_count": 20,
+          "content_delta_rate_per_second": 22007.730508224544,
+          "content_delta_rate_provenance": "derived",
+          "content_window_definition": "first content delta arrival to last content delta arrival, client-observed; excludes request, headers, leading metadata and the trailing usage/finish-reason/[DONE] events",
+          "content_window_ms": 0.8633329998701811,
+          "generation_window_definition": "first generated event arrival, reasoning or content, to the last, client-observed; equals content_window_ms when no reasoning delta was streamed",
+          "generation_window_ms": 0.8633329998701811,
+          "inter_content_delta": {
+            "count": 19,
+            "max_ms": 0.45129099817131646,
+            "mean_ms": 0.045438578940535844,
+            "median_ms": 0.02591700103948824,
+            "min_ms": 0.0,
+            "p95_ms": 0.45129099817131646
+          },
+          "metadata_event_count": 2,
+          "provider_completion_tokens_per_second": 26640.93693100866,
+          "provider_completion_tokens_per_second_note": "provider-reported completion tokens divided by generation_window_ms; mixed provenance. completion_tokens includes reasoning tokens where the provider counts them, so the wider generation window is the matching denominator. The window starts at the first generated delta, so that delta's own generation time is excluded, and when the delta count is far below completion_tokens the window endpoints are delta boundaries rather than token boundaries. Treat this as a coarse estimate, not a measured per-token rate.",
+          "provider_completion_tokens_per_second_unavailable_reason": null,
+          "provider_visible_completion_tokens_per_second": 26640.93693100866,
+          "provider_visible_completion_tokens_per_second_note": "(completion tokens minus provider-reported reasoning tokens) divided by content_window_ms; mixed provenance. It is null whenever the provider did not report a reasoning token count, because a missing count is not zero and assuming it were would inflate the visible rate.",
+          "reasoning_characters": 0,
+          "reasoning_delta_count": 0
+        },
+        "stream_had_unterminated_event": false,
+        "stream_terminated_with_done": true,
+        "success": true,
+        "timeline": {
+          "clock": "monotonic_client_perf_counter",
+          "completed_offset_ms": 2950.179458999628,
+          "dropped_event_count": 0,
+          "events": [
+            {
+              "characters": 2,
+              "index": 0,
+              "kind": "content",
+              "offset_ms": 2948.797459001071
+            },
+            {
+              "characters": 4,
+              "index": 1,
+              "kind": "content",
+              "offset_ms": 2948.797459001071
+            },
+            {
+              "characters": 2,
+              "index": 2,
+              "kind": "content",
+              "offset_ms": 2949.248749999242
+            },
+            {
+              "characters": 2,
+              "index": 3,
+              "kind": "content",
+              "offset_ms": 2949.2904170001566
+            },
+            {
+              "characters": 3,
+              "index": 4,
+              "kind": "content",
+              "offset_ms": 2949.323834000097
+            },
+            {
+              "characters": 2,
+              "index": 5,
+              "kind": "content",
+              "offset_ms": 2949.3531250009255
+            },
+            {
+              "characters": 4,
+              "index": 6,
+              "kind": "content",
+              "offset_ms": 2949.3796250026207
+            },
+            {
+              "characters": 5,
+              "index": 7,
+              "kind": "content",
+              "offset_ms": 2949.4046670006355
+            },
+            {
+              "characters": 2,
+              "index": 8,
+              "kind": "content",
+              "offset_ms": 2949.4310840018443
+            },
+            {
+              "characters": 2,
+              "index": 9,
+              "kind": "content",
+              "offset_ms": 2949.455834001128
+            },
+            {
+              "characters": 3,
+              "index": 10,
+              "kind": "content",
+              "offset_ms": 2949.480750001385
+            },
+            {
+              "characters": 2,
+              "index": 11,
+              "kind": "content",
+              "offset_ms": 2949.5043749993783
+            },
+            {
+              "characters": 1,
+              "index": 12,
+              "kind": "content",
+              "offset_ms": 2949.531875001412
+            },
+            {
+              "characters": 2,
+              "index": 13,
+              "kind": "content",
+              "offset_ms": 2949.531875001412
+            },
+            {
+              "characters": 1,
+              "index": 14,
+              "kind": "content",
+              "offset_ms": 2949.569333999534
+            },
+            {
+              "characters": 2,
+              "index": 15,
+              "kind": "content",
+              "offset_ms": 2949.569333999534
+            },
+            {
+              "characters": 2,
+              "index": 16,
+              "kind": "content",
+              "offset_ms": 2949.6112920023734
+            },
+            {
+              "characters": 7,
+              "index": 17,
+              "kind": "content",
+              "offset_ms": 2949.6348749999015
+            },
+            {
+              "characters": 2,
+              "index": 18,
+              "kind": "content",
+              "offset_ms": 2949.660792000941
+            },
+            {
+              "characters": 6,
+              "index": 19,
+              "kind": "content",
+              "offset_ms": 2949.660792000941
+            },
+            {
+              "characters": 0,
+              "index": 20,
+              "kind": "metadata",
+              "offset_ms": 2949.6916249991045
+            },
+            {
+              "characters": 0,
+              "index": 21,
+              "kind": "metadata",
+              "offset_ms": 2949.7707920018
+            },
+            {
+              "characters": 6,
+              "index": 22,
+              "kind": "done",
+              "offset_ms": 2949.873749999824
+            }
+          ],
+          "events_truncated": false,
+          "first_body_chunk_offset_ms": 2948.6365420016227,
+          "first_content_token_offset_ms": 2948.797459001071,
+          "last_event_offset_ms": 2949.873749999824,
+          "provenance": "measured_wall_clock",
+          "response_headers_offset_ms": 2948.3732920016337,
+          "retained_event_count": 23,
+          "retained_event_limit": 20000,
+          "total_event_count": 23
+        },
+        "usage": {
+          "cache_write_tokens": 0,
+          "cached_prompt_tokens": 1472,
+          "completion_tokens": 23,
+          "cost_usd": 0.00057212,
+          "malformed_fields": [],
+          "prompt_tokens": 1535,
+          "provenance": "provider_reported",
+          "reasoning_tokens": 0,
+          "reported": true,
+          "total_tokens": 1558
+        }
+      },
+      "final_record": {
+        "error": null,
+        "model": {
+          "model_family": null,
+          "model_id": "z-ai/glm-5.3",
+          "model_revision": null,
+          "quantization": null,
+          "tokenizer_revision": null
+        },
+        "outcome": {
+          "notes": null,
+          "quality_metric": "structured_json_exact_field_match",
+          "quality_score": 1.0,
+          "success": true
+        },
+        "repetition": {
+          "measured_repetitions": 1,
+          "repetition_index": 0,
+          "seed": null,
+          "warmup_repetitions": 0
+        },
+        "run_id": "structured-json-profile-extraction-2k-autoregressive",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "schema_version": "1",
+        "timing": {
+          "decode": null,
+          "model_load": null,
+          "prefill": null,
+          "tokenize": null,
+          "total": {
+            "provenance": "measured_wall_clock",
+            "unit": "ms",
+            "value": 2950.179458999628
+          }
+        },
+        "tokens": {
+          "context_tokens": 1535,
+          "generated_tokens": 23,
+          "input_tokens": 1535,
+          "provenance": "provider_reported"
+        }
+      },
+      "generation_metadata": {
+        "model": "z-ai/glm-5.3-20260816",
+        "native_tokens_cached": 1472,
+        "native_tokens_completion": 23,
+        "native_tokens_prompt": 1535,
+        "native_tokens_reasoning": 0,
+        "provider_name": "Z.AI",
+        "service_tier": null,
+        "total_cost": 0.00057212
+      },
+      "repetition": 2,
+      "request_id": "glm-structured-r2",
+      "request_plan": {
+        "config_hash": "sha256:b3ab4cc5cc9a2d0cbfe68dd72b149002029b5d0a34049f9e1d1940623bb35f33",
+        "endpoint_origin": "https://openrouter.ai",
+        "endpoint_path": "/api/v1/chat/completions",
+        "endpoint_query_keys": [],
+        "messages": [
+          {
+            "characters": 8230,
+            "content_sha256": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd",
+            "role": "user"
+          }
+        ],
+        "method": "POST",
+        "provider_extensions": {
+          "provider": {
+            "allow_fallbacks": false,
+            "max_price": {
+              "completion": 4.4,
+              "prompt": 1.4
+            },
+            "order": [
+              "z-ai/fp8"
+            ],
+            "require_parameters": true
+          },
+          "reasoning_effort": "low"
+        },
+        "request_parameters": {
+          "max_tokens": 96,
+          "model": "z-ai/glm-5.3",
+          "stream": true,
+          "temperature": 0.0,
+          "top_p": 1.0
+        },
+        "request_timeout_seconds": 120.0,
+        "retained_event_limit": 20000,
+        "schema_version": "1",
+        "workload_hash": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd"
+      },
+      "source_integrity": {
+        "api_sha256": "34bdcc31cc10f6d4a78d7c9bdcfe9c6e3e7cc3671013a918994962a05db6c3db",
+        "record_sha256": "ed68089a9988f3ec7eeecf52c5555200b42f900bff23099b7705ddfd5e1e9cc3",
+        "seal_sha256": "ec18c7b7be053c1431edf5b07cecb14947103b48e86cac6ff227a1bb9b02fd29",
+        "verification_sha256": "3f7c3ade1df23222215c511b097e8b9844fd3388f442952d27069457b5a4d31b"
+      },
+      "system": {
+        "gateway": "openrouter",
+        "quantization": "fp8",
+        "requested_model_id": "z-ai/glm-5.3",
+        "resolved_model_build": "z-ai/glm-5.3-20260816",
+        "route_slug": "z-ai/fp8",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "upstream_provider": "Z.AI"
+      },
+      "verification": {
+        "artifacts_verified": true,
+        "ended_at": "2026-09-02T11:43:30.215898Z",
+        "outcome_success": true,
+        "quality_score": 1.0,
+        "reason": null,
+        "recorded_prompt_hash": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd",
+        "resumed": false,
+        "run_binding_hash": "sha256:d699d0c0e7a97b2da07261bc137dae04ad6bd7789d732e8436f69f9615fee44b",
+        "run_id": "structured-json-profile-extraction-2k-autoregressive",
+        "schema_version": "2",
+        "started_at": "2026-09-02T11:43:27.104213Z",
+        "status": "completed",
+        "total_ms": 2950.179458999628,
+        "verified_prompt_hash": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd"
+      },
+      "workload": {
+        "category": "structured_json",
+        "context_tier": "2k",
+        "decode_mode": "autoregressive",
+        "prompt_sha256": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd",
+        "workload_id": "structured-json-profile-extraction",
+        "workload_version": "1"
+      }
+    },
+    {
+      "api_evidence": {
+        "collected_at": "2026-09-02T11:43:30.432800Z",
+        "failure": null,
+        "finish_reason": "stop",
+        "finish_reason_classification": "terminal",
+        "finish_reason_code": "stop",
+        "reasoning_content_returned": false,
+        "reasoning_text_persisted": false,
+        "response_model": "z-ai/glm-5.3",
+        "schema_version": "1",
+        "statistics": {
+          "comment_count": 6,
+          "content_characters": 97,
+          "content_delta_count": 27,
+          "content_delta_rate_per_second": 54.28430618672471,
+          "content_delta_rate_provenance": "derived",
+          "content_window_definition": "first content delta arrival to last content delta arrival, client-observed; excludes request, headers, leading metadata and the trailing usage/finish-reason/[DONE] events",
+          "content_window_ms": 478.9597919989319,
+          "generation_window_definition": "first generated event arrival, reasoning or content, to the last, client-observed; equals content_window_ms when no reasoning delta was streamed",
+          "generation_window_ms": 478.9597919989319,
+          "inter_content_delta": {
+            "count": 26,
+            "max_ms": 145.8840830018744,
+            "mean_ms": 18.42153046149738,
+            "median_ms": 0.13889600086258724,
+            "min_ms": 0.0,
+            "p95_ms": 84.01850000154809
+          },
+          "metadata_event_count": 2,
+          "provider_completion_tokens_per_second": 68.89931169853521,
+          "provider_completion_tokens_per_second_note": "provider-reported completion tokens divided by generation_window_ms; mixed provenance. completion_tokens includes reasoning tokens where the provider counts them, so the wider generation window is the matching denominator. The window starts at the first generated delta, so that delta's own generation time is excluded, and when the delta count is far below completion_tokens the window endpoints are delta boundaries rather than token boundaries. Treat this as a coarse estimate, not a measured per-token rate.",
+          "provider_completion_tokens_per_second_unavailable_reason": null,
+          "provider_visible_completion_tokens_per_second": 68.89931169853521,
+          "provider_visible_completion_tokens_per_second_note": "(completion tokens minus provider-reported reasoning tokens) divided by content_window_ms; mixed provenance. It is null whenever the provider did not report a reasoning token count, because a missing count is not zero and assuming it were would inflate the visible rate.",
+          "reasoning_characters": 0,
+          "reasoning_delta_count": 0
+        },
+        "stream_had_unterminated_event": false,
+        "stream_terminated_with_done": true,
+        "success": true,
+        "timeline": {
+          "clock": "monotonic_client_perf_counter",
+          "completed_offset_ms": 3314.2707090009935,
+          "dropped_event_count": 0,
+          "events": [
+            {
+              "characters": 1,
+              "index": 0,
+              "kind": "content",
+              "offset_ms": 2821.9722920002823
+            },
+            {
+              "characters": 2,
+              "index": 1,
+              "kind": "content",
+              "offset_ms": 2849.67408400189
+            },
+            {
+              "characters": 3,
+              "index": 2,
+              "kind": "content",
+              "offset_ms": 2849.67408400189
+            },
+            {
+              "characters": 7,
+              "index": 3,
+              "kind": "content",
+              "offset_ms": 2849.67408400189
+            },
+            {
+              "characters": 6,
+              "index": 4,
+              "kind": "content",
+              "offset_ms": 2916.81095900276
+            },
+            {
+              "characters": 4,
+              "index": 5,
+              "kind": "content",
+              "offset_ms": 2916.993334001745
+            },
+            {
+              "characters": 4,
+              "index": 6,
+              "kind": "content",
+              "offset_ms": 2995.6728750003094
+            },
+            {
+              "characters": 3,
+              "index": 7,
+              "kind": "content",
+              "offset_ms": 2995.9157920020516
+            },
+            {
+              "characters": 2,
+              "index": 8,
+              "kind": "content",
+              "offset_ms": 2996.0251250013243
+            },
+            {
+              "characters": 9,
+              "index": 9,
+              "kind": "content",
+              "offset_ms": 2997.7613750015735
+            },
+            {
+              "characters": 6,
+              "index": 10,
+              "kind": "content",
+              "offset_ms": 2997.8762089995143
+            },
+            {
+              "characters": 3,
+              "index": 11,
+              "kind": "content",
+              "offset_ms": 2997.9378339994582
+            },
+            {
+              "characters": 1,
+              "index": 12,
+              "kind": "content",
+              "offset_ms": 3143.8219170013326
+            },
+            {
+              "characters": 2,
+              "index": 13,
+              "kind": "content",
+              "offset_ms": 3144.059209000261
+            },
+            {
+              "characters": 4,
+              "index": 14,
+              "kind": "content",
+              "offset_ms": 3144.1602500017325
+            },
+            {
+              "characters": 1,
+              "index": 15,
+              "kind": "content",
+              "offset_ms": 3144.227291999414
+            },
+            {
+              "characters": 3,
+              "index": 16,
+              "kind": "content",
+              "offset_ms": 3144.2997500016645
+            },
+            {
+              "characters": 5,
+              "index": 17,
+              "kind": "content",
+              "offset_ms": 3144.2997500016645
+            },
+            {
+              "characters": 5,
+              "index": 18,
+              "kind": "content",
+              "offset_ms": 3149.038916999416
+            },
+            {
+              "characters": 6,
+              "index": 19,
+              "kind": "content",
+              "offset_ms": 3149.182875000406
+            },
+            {
+              "characters": 1,
+              "index": 20,
+              "kind": "content",
+              "offset_ms": 3233.201375001954
+            },
+            {
+              "characters": 3,
+              "index": 21,
+              "kind": "content",
+              "offset_ms": 3233.335209002689
+            },
+            {
+              "characters": 1,
+              "index": 22,
+              "kind": "content",
+              "offset_ms": 3233.335209002689
+            },
+            {
+              "characters": 1,
+              "index": 23,
+              "kind": "content",
+              "offset_ms": 3235.384375002468
+            },
+            {
+              "characters": 1,
+              "index": 24,
+              "kind": "content",
+              "offset_ms": 3235.384375002468
+            },
+            {
+              "characters": 2,
+              "index": 25,
+              "kind": "content",
+              "offset_ms": 3235.384375002468
+            },
+            {
+              "characters": 11,
+              "index": 26,
+              "kind": "content",
+              "offset_ms": 3300.9320839992142
+            },
+            {
+              "characters": 0,
+              "index": 27,
+              "kind": "metadata",
+              "offset_ms": 3311.4120419995743
+            },
+            {
+              "characters": 0,
+              "index": 28,
+              "kind": "metadata",
+              "offset_ms": 3311.688834000961
+            },
+            {
+              "characters": 6,
+              "index": 29,
+              "kind": "done",
+              "offset_ms": 3313.620749999245
+            }
+          ],
+          "events_truncated": false,
+          "first_body_chunk_offset_ms": 2821.710833999532,
+          "first_content_token_offset_ms": 2821.9722920002823,
+          "last_event_offset_ms": 3313.620749999245,
+          "provenance": "measured_wall_clock",
+          "response_headers_offset_ms": 2821.518417000334,
+          "retained_event_count": 30,
+          "retained_event_limit": 20000,
+          "total_event_count": 30
+        },
+        "usage": {
+          "cache_write_tokens": 0,
+          "cached_prompt_tokens": 1472,
+          "completion_tokens": 33,
+          "cost_usd": 0.00061752,
+          "malformed_fields": [],
+          "prompt_tokens": 1536,
+          "provenance": "provider_reported",
+          "reasoning_tokens": 0,
+          "reported": true,
+          "total_tokens": 1569
+        }
+      },
+      "final_record": {
+        "error": null,
+        "model": {
+          "model_family": null,
+          "model_id": "z-ai/glm-5.3",
+          "model_revision": null,
+          "quantization": null,
+          "tokenizer_revision": null
+        },
+        "outcome": {
+          "notes": null,
+          "quality_metric": "exact_answer_pattern_match",
+          "quality_score": 1.0,
+          "success": true
+        },
+        "repetition": {
+          "measured_repetitions": 1,
+          "repetition_index": 0,
+          "seed": null,
+          "warmup_repetitions": 0
+        },
+        "run_id": "prose-reasoning-two-train-gap-2k-autoregressive",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "schema_version": "1",
+        "timing": {
+          "decode": null,
+          "model_load": null,
+          "prefill": null,
+          "tokenize": null,
+          "total": {
+            "provenance": "measured_wall_clock",
+            "unit": "ms",
+            "value": 3314.2707090009935
+          }
+        },
+        "tokens": {
+          "context_tokens": 1536,
+          "generated_tokens": 33,
+          "input_tokens": 1536,
+          "provenance": "provider_reported"
+        }
+      },
+      "generation_metadata": {
+        "model": "z-ai/glm-5.3-20260816",
+        "native_tokens_cached": 1472,
+        "native_tokens_completion": 33,
+        "native_tokens_prompt": 1536,
+        "native_tokens_reasoning": 0,
+        "provider_name": "Z.AI",
+        "service_tier": null,
+        "total_cost": 0.00061752
+      },
+      "repetition": 2,
+      "request_id": "glm-prose-r2",
+      "request_plan": {
+        "config_hash": "sha256:b3ab4cc5cc9a2d0cbfe68dd72b149002029b5d0a34049f9e1d1940623bb35f33",
+        "endpoint_origin": "https://openrouter.ai",
+        "endpoint_path": "/api/v1/chat/completions",
+        "endpoint_query_keys": [],
+        "messages": [
+          {
+            "characters": 8238,
+            "content_sha256": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568",
+            "role": "user"
+          }
+        ],
+        "method": "POST",
+        "provider_extensions": {
+          "provider": {
+            "allow_fallbacks": false,
+            "max_price": {
+              "completion": 4.4,
+              "prompt": 1.4
+            },
+            "order": [
+              "z-ai/fp8"
+            ],
+            "require_parameters": true
+          },
+          "reasoning_effort": "low"
+        },
+        "request_parameters": {
+          "max_tokens": 96,
+          "model": "z-ai/glm-5.3",
+          "stream": true,
+          "temperature": 0.0,
+          "top_p": 1.0
+        },
+        "request_timeout_seconds": 120.0,
+        "retained_event_limit": 20000,
+        "schema_version": "1",
+        "workload_hash": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568"
+      },
+      "source_integrity": {
+        "api_sha256": "701be147ab9272e407c8a27ead444cf1991222c4c99cfd3d92acfb1feb1d844f",
+        "record_sha256": "513610e744d63da5f447616dfd4fcae2487624ef767cd4fc6b5451b6b4cd8a38",
+        "seal_sha256": "fc9ae810bfb6f20b808a5c683431bc91831ef41c82c4a8493c1bd4d1724d61eb",
+        "verification_sha256": "b4d8d7a3364d7b4efea1ebbca18b53a45be2de44a502f1ac0be02e91fb4682ca"
+      },
+      "system": {
+        "gateway": "openrouter",
+        "quantization": "fp8",
+        "requested_model_id": "z-ai/glm-5.3",
+        "resolved_model_build": "z-ai/glm-5.3-20260816",
+        "route_slug": "z-ai/fp8",
+        "runtime": {
+          "backend": null,
+          "git_revision": null,
+          "name": "openai-compatible-api",
+          "provider": "openrouter",
+          "version": null
+        },
+        "upstream_provider": "Z.AI"
+      },
+      "verification": {
+        "artifacts_verified": true,
+        "ended_at": "2026-09-02T11:43:33.782569Z",
+        "outcome_success": true,
+        "quality_score": 1.0,
+        "reason": null,
+        "recorded_prompt_hash": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568",
+        "resumed": false,
+        "run_binding_hash": "sha256:a95c3b537d7e531c35a5546d23258020a8910c73155cff62cee59e54e4a733f9",
+        "run_id": "prose-reasoning-two-train-gap-2k-autoregressive",
+        "schema_version": "2",
+        "started_at": "2026-09-02T11:43:30.316333Z",
+        "status": "completed",
+        "total_ms": 3314.2707090009935,
+        "verified_prompt_hash": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568"
+      },
+      "workload": {
+        "category": "prose_reasoning",
+        "context_tier": "2k",
+        "decode_mode": "autoregressive",
+        "prompt_sha256": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568",
+        "workload_id": "prose-reasoning-two-train-gap",
+        "workload_version": "1"
+      }
+    }
+  ],
+  "schema_version": "1"
+}

@@ -1,0 +1,153 @@
+{
+  "schema_version": "1",
+  "captured_at_utc": "2026-09-02T11:40:32Z",
+  "sources": [
+    "https://openrouter.ai/api/v1/models",
+    "https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints",
+    "https://openrouter.ai/api/v1/models/z-ai/glm-5.3/endpoints",
+    "https://openrouter.ai/docs/guides/routing/provider-selection",
+    "https://openrouter.ai/docs/cookbook/administration/usage-accounting",
+    "https://openrouter.ai/docs/guides/best-practices/reasoning-tokens"
+  ],
+  "models": [
+    {
+      "id": "z-ai/glm-5.3-flash",
+      "created": 1787752741,
+      "catalog_context_length": 1310720,
+      "catalog_pricing_per_token": {
+        "prompt": "0.000000075",
+        "completion": "0.00000025",
+        "input_cache_read": "0.000000015"
+      },
+      "reasoning": {
+        "mandatory": true,
+        "default_enabled": true,
+        "supported_efforts": [
+          "max",
+          "high",
+          "low"
+        ],
+        "default_effort": "max"
+      },
+      "supported_parameters": [
+        "frequency_penalty",
+        "include_reasoning",
+        "logit_bias",
+        "logprobs",
+        "max_tokens",
+        "min_p",
+        "presence_penalty",
+        "reasoning",
+        "reasoning_effort",
+        "repetition_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_logprobs",
+        "top_p"
+      ],
+      "pinned_endpoint": {
+        "name": "Z.AI | z-ai/glm-5.3-flash-20260826",
+        "provider_name": "Z.AI",
+        "route_slug": "z-ai/fp8",
+        "quantization": "fp8",
+        "status": 0,
+        "context_length": 1048576,
+        "max_completion_tokens": 131072,
+        "pricing_per_token": {
+          "prompt": "0.000000075",
+          "completion": "0.00000025",
+          "input_cache_read": "0.000000015",
+          "discount": 0.5
+        },
+        "supported_parameters": [
+          "reasoning",
+          "include_reasoning",
+          "max_tokens",
+          "temperature",
+          "top_p",
+          "tools",
+          "tool_choice",
+          "top_k",
+          "response_format",
+          "reasoning_effort"
+        ]
+      }
+    },
+    {
+      "id": "z-ai/glm-5.3",
+      "created": 1787086655,
+      "catalog_context_length": 1310720,
+      "catalog_pricing_per_token": {
+        "prompt": "0.0000014",
+        "completion": "0.0000044",
+        "input_cache_read": "0.00000026"
+      },
+      "reasoning": {
+        "mandatory": true,
+        "default_enabled": true,
+        "supported_efforts": [
+          "max",
+          "high",
+          "low"
+        ],
+        "default_effort": "max"
+      },
+      "supported_parameters": [
+        "frequency_penalty",
+        "include_reasoning",
+        "logit_bias",
+        "logprobs",
+        "max_tokens",
+        "min_p",
+        "parallel_tool_calls",
+        "presence_penalty",
+        "reasoning",
+        "reasoning_effort",
+        "repetition_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_logprobs",
+        "top_p"
+      ],
+      "pinned_endpoint": {
+        "name": "Z.AI | z-ai/glm-5.3-20260816",
+        "provider_name": "Z.AI",
+        "route_slug": "z-ai/fp8",
+        "quantization": "fp8",
+        "status": 0,
+        "context_length": 1048576,
+        "max_completion_tokens": 131072,
+        "pricing_per_token": {
+          "prompt": "0.0000014",
+          "completion": "0.0000044",
+          "input_cache_read": "0.00000026",
+          "discount": 0
+        },
+        "supported_parameters": [
+          "reasoning",
+          "include_reasoning",
+          "max_tokens",
+          "temperature",
+          "top_p",
+          "tools",
+          "tool_choice",
+          "top_k",
+          "response_format",
+          "reasoning_effort"
+        ]
+      }
+    }
+  ]
+}

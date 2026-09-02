@@ -123,6 +123,11 @@ from ..collectors.openai_api import (
 )
 from ..collectors.sse import SSEDecodeError, SSEDecoder
 from ..schema import ExperimentRecord, OutcomeInfo, SchemaValidationError, utc_now_iso
+from .api_budget import (
+    BudgetError,
+    BudgetGate,
+    conservative_input_token_upper_bound,
+)
 from .catalog import workload_by_id
 from .evaluators import evaluate_workload
 from .matrix import DECODE_MODE_NATIVE_MTP, MatrixEntry, MatrixManifest
@@ -691,6 +696,27 @@ def _command_argv(
                 "true" if binding.extensions.clear_thinking else "false",
             )
         )
+    if binding.extensions.routing is not None:
+        for route in binding.extensions.routing.order:
+            argv.extend(("--route-provider", route))
+        if binding.extensions.routing.allow_fallbacks is False:
+            argv.append("--disable-provider-fallbacks")
+        if binding.extensions.routing.require_parameters is True:
+            argv.append("--require-provider-parameters")
+        if binding.extensions.routing.max_prompt_price_per_million is not None:
+            argv.extend(
+                (
+                    "--max-provider-prompt-price",
+                    str(binding.extensions.routing.max_prompt_price_per_million),
+                )
+            )
+        if binding.extensions.routing.max_completion_price_per_million is not None:
+            argv.extend(
+                (
+                    "--max-provider-completion-price",
+                    str(binding.extensions.routing.max_completion_price_per_million),
+                )
+            )
     return tuple(argv)
 
 
@@ -1022,6 +1048,8 @@ def execute_api_row(
     resume: bool,
     transport_factory: Callable[[], StreamingTransport],
     environ: Mapping[str, str] | None = None,
+    budget_gate: BudgetGate | None = None,
+    budget_request_id: str | None = None,
 ) -> APIRowResult:
     """Verify, (maybe) execute, and evaluate one matrix row over the API.
 
@@ -1313,12 +1341,58 @@ def execute_api_row(
     #    replacement set is complete.
     (run_dir / RUN_MANIFEST_NAME).unlink(missing_ok=True)
 
-    capped = _EventCappedTransport(transport_factory(), limit=binding.max_stream_events)
+    if (budget_gate is None) != (budget_request_id is None):
+        return _finish(
+            RowStatus.FAILED,
+            "budget_gate and budget_request_id must be configured together",
+            verified_hash=verified_hash,
+            binding_hash=binding_hash,
+        )
+    if budget_gate is not None and budget_request_id is not None:
+        try:
+            budget_gate.claim(
+                budget_request_id,
+                model_id=binding.model_id,
+                workload_id=entry.workload_id,
+                workload_version=workload.version,
+                prompt_sha256=verified_hash,
+                input_token_upper_bound=conservative_input_token_upper_bound(
+                    prompt_text, binding.system_prompt
+                ),
+                max_output_tokens=entry.max_tokens,
+            )
+        except BudgetError as exc:
+            return _finish(
+                RowStatus.FAILED,
+                f"budget gate refused request: {exc}",
+                verified_hash=verified_hash,
+                binding_hash=binding_hash,
+            )
+
     try:
+        capped = _EventCappedTransport(
+            transport_factory(), limit=binding.max_stream_events
+        )
         collection_result = collect_openai_stream(
             config, transport=capped, environ=resolved_environ
         )
     except (OSError, OpenAIStreamCollectorError) as exc:
+        if budget_gate is not None and budget_request_id is not None:
+            try:
+                budget_gate.settle(
+                    budget_request_id,
+                    provider_success=False,
+                    usage=None,
+                    failure=f"collection exception: {type(exc).__name__}",
+                )
+            except BudgetError as budget_exc:
+                return _finish(
+                    RowStatus.FAILED,
+                    f"API collection failed and budget settlement failed: "
+                    f"{budget_exc}",
+                    verified_hash=verified_hash,
+                    binding_hash=binding_hash,
+                )
         # A missing credential, an unusable environment or a failed
         # artifact write never describes a request whose result could be
         # graded, so it fails the row rather than producing evidence.
@@ -1331,6 +1405,26 @@ def execute_api_row(
 
     artifacts_verified = artifact_set_is_complete(collection_dir)
     collected_record = collection_result.record
+    if budget_gate is not None and budget_request_id is not None:
+        failure = collection_result.evidence.failure
+        try:
+            budget_gate.settle(
+                budget_request_id,
+                provider_success=collected_record.outcome.success,
+                usage=collection_result.evidence.usage,
+                failure=None if failure is None else failure.category,
+            )
+        except BudgetError as exc:
+            collected_record.write_json(final_record_path)
+            return _finish(
+                RowStatus.FAILED,
+                f"budget settlement failed: {exc}",
+                final_record=collected_record,
+                verified_hash=verified_hash,
+                binding_hash=binding_hash,
+                wrote_collection=True,
+                artifacts_verified=artifacts_verified,
+            )
     cap_tripped = capped.last_response is not None and capped.last_response.cap_tripped
     cap_note = (
         f"the stream was abandoned after the configured "
@@ -1437,6 +1531,8 @@ def run_selected_api_rows(
     resume: bool,
     transport_factory: Callable[[], StreamingTransport] = UrllibStreamingTransport,
     environ: Mapping[str, str] | None = None,
+    budget_gate: BudgetGate | None = None,
+    budget_request_id: str | None = None,
 ) -> tuple[APIRowResult, ...]:
     """Execute and evaluate every selected matrix row in manifest order."""
     return tuple(
@@ -1449,6 +1545,8 @@ def run_selected_api_rows(
             resume=resume,
             transport_factory=transport_factory,
             environ=environ,
+            budget_gate=budget_gate,
+            budget_request_id=budget_request_id,
         )
         for entry in select_entries(manifest, selection)
     )

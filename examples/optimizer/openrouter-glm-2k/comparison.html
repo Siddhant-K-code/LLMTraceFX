@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="generator" content="llmtracefx-optimizer compare-report">
+<meta name="robots" content="noindex, nofollow">
+<meta name="description" content="Cross-system comparison for policy quality-gated hosted GLM throughput: 2 comparable unit(s), 2 recommendation(s), 0 inconclusive, 0 rejected system(s), 0 excluded run(s). Generated 2026-09-02T11:44:23.771009Z.">
+<title>quality-gated hosted GLM throughput &middot; LLMTraceFX cross-system comparison</title>
+<!--
+THESIS: an instrument readout for a decision that has to survive an audit.
+OWN-WORLD: oscilloscope graticule and measurement cursors (seed 3bd5d052).
+Bone field, paper sheet lifted on one shadow, near black ink, one signal orange.
+STORY: unmeasured runs enter, the policy sets thresholds, one candidate clears
+them, and everything rejected stays on the page with the limit it breached.
+FIRST VIEWPORT: lockup and document stamp, the policy under test, then a
+divisional readout of totals, so the answer and its cost are legible before any
+table is read.
+FORM: hairline divisions, no cards, no corner radius, tabular mono for every
+measurement and identifier, sans for prose, status carried by a word plus a
+mark and never by color alone.
+-->
+<style>:root {
+      color-scheme: light;
+      /* Ground. A bone field carrying a faint graticule, and a lighter paper
+         sheet that the document is printed on. */
+      --field: #f4f1ea;
+      --sheet: #fbfaf7;
+      --graticule: #16181a0f;
+      /* Ink and rules. */
+      --ink: #16181a;
+      --muted: #5b6167;
+      --rule: #16181a26;
+      --rule-soft: #16181a14;
+      /* One accent, used for structure and for the single marked thing in a
+         region: 5.06:1 on the sheet, so it is safe as text as well as fill. */
+      --signal: #c23d16;
+      --signal-tint: #c23d1612;
+      /* Data states. Each one is always paired with a word, never used alone.
+         "hold" is graphite rather than amber on purpose: refusing to draw a
+         conclusion is a null reading, not a warning. */
+      --verify: #17513a;
+      --breach: #8c1d28;
+      --hold: #4a5157;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+        "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+        "Liberation Mono", "DejaVu Sans Mono", monospace;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html { -webkit-text-size-adjust: 100%; }
+
+    body {
+      margin: 0;
+      padding: clamp(16px, 3vw, 44px) clamp(12px, 3vw, 40px) 72px;
+      background-color: var(--field);
+      background-image:
+        repeating-linear-gradient(to right, var(--graticule) 0 1px, transparent 1px 48px),
+        repeating-linear-gradient(to bottom, var(--graticule) 0 1px, transparent 1px 48px);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 15px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .sheet {
+      max-width: 1180px;
+      margin: 0 auto;
+      background: var(--sheet);
+      border: 1px solid var(--rule);
+      box-shadow: 0 1px 1px #16181a0f, 0 26px 52px -30px #16181a5c;
+      padding: clamp(20px, 4vw, 56px);
+    }
+
+    /* Masthead: brand on the left, document stamp on the right. */
+    .masthead {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 20px 32px;
+      flex-wrap: wrap;
+      border-bottom: 1px solid var(--ink);
+      padding-bottom: 14px;
+      margin-bottom: clamp(28px, 4vw, 44px);
+    }
+    .lockup { display: block; height: 19px; width: auto; color: var(--ink); }
+    .stamp {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--muted);
+      text-align: right;
+      line-height: 1.75;
+      margin: 0;
+    }
+    .stamp b { color: var(--ink); font-weight: 600; }
+
+    h1 {
+      font-size: clamp(1.55rem, 1.05rem + 1.9vw, 2.3rem);
+      line-height: 1.13;
+      letter-spacing: -0.022em;
+      font-weight: 600;
+      margin: 0 0 12px;
+      max-width: 24ch;
+      text-wrap: balance;
+    }
+    .lede {
+      margin: 0 0 6px;
+      max-width: 68ch;
+      font-size: 1.0625rem;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+    p { max-width: 72ch; }
+
+    section { margin-top: clamp(34px, 4.5vw, 52px); }
+    /* Section rule with a division tick, the way a graticule marks a division. */
+    .rule {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px 24px;
+      flex-wrap: wrap;
+      position: relative;
+      border-top: 1px solid var(--ink);
+      padding-top: 13px;
+      margin-bottom: 18px;
+    }
+    .rule::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0;
+      width: 2px; height: 7px;
+      background: var(--signal);
+    }
+    h2 {
+      font-size: 1.0625rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin: 0;
+    }
+    h2 .qualifier {
+      display: block;
+      font-size: 10.5px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--muted);
+      margin-bottom: 5px;
+    }
+    h2 .subject-id {
+      font-family: var(--mono);
+      font-size: 0.9375rem;
+      font-weight: 400;
+      overflow-wrap: anywhere;
+    }
+    .rule > h2 { flex: 1 1 24rem; min-width: 0; }
+    h3 {
+      font-size: 0.8125rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin: 30px 0 12px;
+    }
+    h4 {
+      font-size: 10.5px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--muted);
+      margin: 14px 0 4px;
+    }
+    .muted { color: var(--muted); }
+
+    a { color: var(--ink); text-decoration-color: var(--rule); text-underline-offset: 3px; }
+    a:hover { text-decoration-color: var(--signal); }
+    a:focus-visible, summary:focus-visible {
+      outline: 2px solid var(--signal);
+      outline-offset: 3px;
+    }
+    .skip { position: absolute; left: -9999px; }
+    .skip:focus {
+      position: fixed; left: 16px; top: 16px; z-index: 9;
+      background: var(--ink); color: var(--sheet);
+      padding: 10px 14px; font-size: 13px;
+    }
+
+    /* Contents: the transect through the evidence, station by station. */
+    .transect {
+      border-top: 1px solid var(--rule);
+      border-bottom: 1px solid var(--rule);
+      padding: 6px 0;
+      margin-top: 48px;
+    }
+    .transect ol { list-style: none; margin: 0; padding: 0; }
+    .transect li { border-top: 1px solid var(--rule-soft); }
+    .transect li:first-child { border-top: 0; }
+    .transect a {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 4px 12px;
+      align-items: baseline;
+      padding: 7px 0;
+      font-size: 13px;
+      line-height: 1.45;
+      text-decoration: none;
+      overflow-wrap: anywhere;
+    }
+    .transect .label { min-width: 0; }
+    .transect a:hover { text-decoration: underline; text-underline-offset: 3px; }
+    .transect .station {
+      flex: 0 0 auto;
+      width: 7px; height: 7px;
+      background: var(--ink);
+      transform: translateY(-1px);
+    }
+    .transect .station-rec { background: var(--signal); }
+    .transect .station-hold { background: none; border: 1.5px solid var(--hold); }
+    .transect .note {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: var(--ink);
+      white-space: nowrap;
+    }
+    .transect .note-hold { color: var(--hold); }
+
+    /* Divisional readout: counts on one ruled strip, no cards, no hierarchy
+       between the numbers, because none of them outranks another. */
+    .readout {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+      border-top: 1px solid var(--ink);
+      border-bottom: 1px solid var(--rule);
+    }
+    .division {
+      position: relative;
+      padding: 15px 16px 15px 15px;
+      border-left: 1px solid var(--rule-soft);
+    }
+    .division:first-child { border-left: 0; padding-left: 0; }
+    .division::before {
+      content: "";
+      position: absolute;
+      top: 0; left: -1px;
+      width: 1px; height: 6px;
+      background: var(--ink);
+    }
+    .division:first-child::before { display: none; }
+    .division .v {
+      display: block;
+      font-family: var(--mono);
+      font-size: 1.375rem;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.1;
+      letter-spacing: -0.015em;
+    }
+    .division .k {
+      display: block;
+      margin-top: 7px;
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--muted);
+    }
+    .v-rec { color: var(--signal); }
+    .v-hold { color: var(--hold); }
+    .v-breach { color: var(--breach); }
+
+    /* Status is a word plus a mark. The color only ever repeats what the
+       word already says, so it is safe to lose it. */
+    .state {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .state::before { content: ""; width: 8px; height: 8px; flex: 0 0 auto; }
+    .state-rec { color: var(--signal); }
+    .state-rec::before { background: var(--signal); }
+    .state-ok { color: var(--verify); }
+    .state-ok::before { background: var(--verify); }
+    .state-bad { color: var(--breach); }
+    .state-bad::before { background: var(--breach); }
+    .state-hold { color: var(--hold); }
+    .state-hold::before { border: 1.5px solid var(--hold); }
+
+    /* Verdict block: ruled, not carded. */
+    .verdict {
+      border-top: 1px solid var(--ink);
+      border-bottom: 1px solid var(--rule);
+      padding: 16px 0 18px;
+      margin: 0;
+    }
+    .verdict .subject {
+      display: block;
+      font-family: var(--mono);
+      font-size: 1rem;
+      margin: 10px 0 0;
+      word-break: break-word;
+    }
+    .verdict p { margin: 8px 0 0; max-width: 72ch; }
+
+    /* Name/value specification lists. */
+    .spec {
+      display: grid;
+      grid-template-columns: minmax(11rem, auto) 1fr;
+      margin: 0;
+      border-top: 1px solid var(--rule);
+    }
+    .spec dt {
+      padding: 9px 24px 9px 0;
+      font-size: 12.5px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--rule-soft);
+    }
+    .spec dd {
+      margin: 0;
+      padding: 9px 0;
+      font-family: var(--mono);
+      font-size: 12.5px;
+      font-variant-numeric: tabular-nums;
+      border-bottom: 1px solid var(--rule-soft);
+      word-break: break-word;
+    }
+
+    /* Evidence tables. */
+    .scroller { overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+    }
+    caption {
+      caption-side: top;
+      text-align: left;
+      font-size: 12.5px;
+      color: var(--muted);
+      padding-bottom: 12px;
+      max-width: 72ch;
+    }
+    thead th {
+      font-size: 10.5px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      text-align: left;
+      vertical-align: bottom;
+      padding: 0 14px 8px 0;
+      border-bottom: 1px solid var(--ink);
+      white-space: nowrap;
+    }
+    tbody th, tbody td {
+      text-align: left;
+      font-weight: 400;
+      vertical-align: top;
+      padding: 11px 14px 11px 0;
+      border-bottom: 1px solid var(--rule-soft);
+    }
+    tbody th { font-family: var(--mono); word-break: break-word; }
+    .num {
+      font-family: var(--mono);
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      padding-right: 20px;
+      white-space: nowrap;
+    }
+    thead th.num { text-align: right; padding-right: 20px; }
+    /* Each candidate is a row group: its identifier spans the full width so
+       the measurement columns stay narrow enough to read across, and the
+       identifier is never clipped or broken into a one-word column. */
+    tbody.cand { border-top: 1px solid var(--rule-soft); }
+    tbody.cand:first-of-type { border-top: 0; }
+    .cand-head > th {
+      padding: 14px 0 6px;
+      border-bottom: 0;
+      font-family: var(--sans);
+      font-weight: 400;
+    }
+    .cand-id {
+      display: flex;
+      align-items: baseline;
+      gap: 10px 14px;
+      flex-wrap: wrap;
+    }
+    .cand-rank {
+      font-family: var(--mono);
+      font-size: 13.5px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .cand-label {
+      font-family: var(--mono);
+      font-size: 13.5px;
+      overflow-wrap: anywhere;
+      flex: 1 1 18rem;
+      min-width: 0;
+    }
+    .cand-metrics > td { border-bottom: 0; padding-top: 4px; }
+    .cand-evidence > td { border-bottom: 0; padding: 0 0 12px; }
+    /* The recommended row is marked in the gutter with the same filled pad the
+       logo ends on, not with a colored stripe down its side. */
+    .pad, .pad-open {
+      display: inline-block;
+      width: 8px; height: 8px;
+      margin-right: 9px;
+      transform: translateY(-1px);
+    }
+    .pad { background: var(--signal); }
+    .pad-open { border: 1px solid var(--rule); }
+    tbody.is-rec > tr > * { background: var(--signal-tint); }
+    tbody.is-rec .cand-rank { color: var(--ink); }
+
+    /* Rejected candidates: each one keeps the limit it breached. */
+    .reject { border-top: 1px solid var(--rule); padding: 15px 0; }
+    .reject:first-of-type { border-top: 1px solid var(--ink); }
+    .reject .subject {
+      font-family: var(--mono);
+      font-size: 13.5px;
+      word-break: break-word;
+    }
+    .violations { list-style: none; margin: 9px 0 0; padding: 0; max-width: 72ch; }
+    .violations li { position: relative; padding-left: 20px; margin: 5px 0; }
+    .violations li::before {
+      content: "";
+      position: absolute;
+      left: 0; top: 0.62em;
+      width: 11px; height: 2px;
+      background: var(--breach);
+    }
+
+    /* Cursor pair: two measurements against a shared baseline, then the delta,
+       the way two cursors on a scope produce one reading. */
+    .cursors { border-top: 1px solid var(--rule); margin-top: 14px; }
+    .cursor {
+      display: grid;
+      grid-template-columns: minmax(9rem, auto) 1fr auto;
+      gap: 8px 18px;
+      align-items: baseline;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--rule-soft);
+    }
+    .cursor .who { font-size: 12.5px; color: var(--muted); }
+    .cursor .what {
+      font-family: var(--mono);
+      font-size: 12.5px;
+      word-break: break-word;
+      color: var(--ink);
+    }
+    .cursor .reading {
+      font-family: var(--mono);
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      white-space: nowrap;
+    }
+    .cursor-delta { border-bottom: 1px solid var(--ink); }
+    .cursor-delta .who { color: var(--ink); }
+    .runs { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+
+    /* Excluded material carries a diagonal ruling, the way set aside samples
+       are struck through on a lab sheet. No hue: this is not a warning. */
+    .hazard tbody th { white-space: nowrap; }
+    .hazard tbody td { overflow-wrap: anywhere; }
+    .hazard tbody tr {
+      background-image: repeating-linear-gradient(
+        135deg, #16181a0d 0 5px, transparent 5px 11px);
+    }
+
+    /* The routed motif at diagram scale. Quiet by default: it is a mark of
+       where a measurement ended, not an illustration. */
+    .ornament {
+      display: block;
+      width: 232px;
+      height: auto;
+      color: var(--ink);
+      opacity: 0.3;
+      margin: 26px 0 0;
+    }
+    .ornament.terminus { width: 148px; opacity: 0.18; margin: 44px 0 0; }
+    .empty-spec { max-width: 68ch; }
+    .empty-spec div {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 4px 24px;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--rule-soft);
+      font-size: 13px;
+    }
+    .empty-spec .nil {
+      font-family: var(--mono);
+      font-size: 12.5px;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .evidence-list { list-style: none; margin: 5px 0 12px; padding: 0; }
+    .evidence-list li { padding: 3px 0; }
+    code {
+      font-family: var(--mono);
+      font-size: 12.5px;
+      word-break: break-all;
+    }
+
+    details { margin-top: 4px; }
+    summary {
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      padding: 6px 0;
+      font-size: 10.5px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.09em;
+      color: var(--muted);
+      list-style: none;
+    }
+    summary::-webkit-details-marker { display: none; }
+    summary::before {
+      content: "";
+      width: 6px; height: 6px;
+      border-right: 1.5px solid currentColor;
+      border-bottom: 1.5px solid currentColor;
+      transform: rotate(-45deg);
+      transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+      margin-bottom: 2px;
+    }
+    details[open] > summary::before { transform: rotate(45deg); }
+    summary:hover { color: var(--ink); }
+
+    .empty {
+      border-top: 1px solid var(--rule);
+      padding: 22px 0 18px;
+      color: var(--muted);
+      max-width: 68ch;
+    }
+
+    footer {
+      margin-top: clamp(40px, 5vw, 60px);
+      border-top: 1px solid var(--rule);
+      padding-top: 14px;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px 32px;
+      flex-wrap: wrap;
+      font-family: var(--mono);
+      font-size: 10.5px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition-duration: 0.01ms !important; }
+    }
+
+    /* Narrow screens read one evidence chain at a time: the table stops being
+       a grid and becomes labelled rows, so no measurement is ever clipped. */
+    @media (max-width: 760px) {
+      .reflow thead {
+        position: absolute;
+        width: 1px; height: 1px;
+        margin: -1px; padding: 0;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      .reflow, .reflow tbody, .reflow tbody tr { display: block; width: 100%; }
+      /* A table-caption inside a block-ified table generates an anonymous
+         shrink-to-fit table box and collapses to one word per line. */
+      .reflow caption { display: block; width: 100%; }
+      .reflow tbody th, .reflow tbody td {
+        display: grid;
+        grid-template-columns: minmax(0, 38%) minmax(0, 1fr);
+        gap: 6px 14px;
+        padding: 5px 0;
+        border-bottom: 0;
+        text-align: left;
+        min-width: 0;
+        white-space: normal;
+      }
+      .reflow tbody th::before, .reflow tbody td::before {
+        content: attr(data-label);
+        font-family: var(--sans);
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        color: var(--muted);
+        padding-top: 3px;
+        overflow-wrap: anywhere;
+      }
+      /* Values are the point of the document: they get the room, and they
+         wrap rather than clip, whatever the identifier length. */
+      .reflow tbody th > *, .reflow tbody td > * { min-width: 0; overflow-wrap: anywhere; }
+      .reflow tbody code { word-break: break-all; }
+      .reflow .num { text-align: left; padding-right: 0; }
+      .reflow tbody td, .reflow tbody th { overflow-wrap: anywhere; }
+      .reflow .cand-head > th, .reflow .cand-evidence > td { display: block; }
+      .reflow .cand-head > th::before, .reflow .cand-evidence > td::before { content: none; }
+      .reflow tbody.cand { display: block; border-top: 1px solid var(--rule); padding-bottom: 8px; }
+      .reflow tbody.cand:first-of-type { border-top: 1px solid var(--ink); }
+      /* Stacked records need their own seam; without it two consecutive
+         rows read as one long record. */
+      .reflow tbody:not(.cand) tr + tr {
+        border-top: 1px solid var(--rule);
+        margin-top: 8px;
+        padding-top: 8px;
+      }
+      .scroller { overflow-x: visible; }
+      .spec { grid-template-columns: 1fr; }
+      .spec dt { padding-bottom: 0; border-bottom: 0; }
+      .spec dd { padding-top: 2px; }
+      .cursor { grid-template-columns: 1fr; }
+      .cursor .reading { text-align: left; }
+      .transect a { grid-template-columns: auto minmax(0, 1fr); }
+      .transect .note { grid-column: 2; }
+      .stamp { text-align: left; }
+    }
+
+    @media print {
+      body {
+        background: #fff;
+        padding: 0;
+        font-size: 10.5pt;
+      }
+      .sheet {
+        max-width: none;
+        border: 0;
+        box-shadow: none;
+        padding: 0;
+        background: #fff;
+      }
+      .skip, .transect { display: none; }
+      a { text-decoration: none; }
+      tr, .reject, .cursor, .division, tbody.cand { break-inside: avoid; }
+      h1, h2, h3, .rule { break-after: avoid; }
+      section { break-inside: auto; }
+      /* Printed evidence is not hidden evidence: expand disclosures for paper
+         in engines that support it, and label them where it is unsupported. */
+      details::details-content { content-visibility: visible; }
+      details:not([open]) > summary::after { content: " (collapsed on screen)"; }
+    }</style>
+</head>
+<body>
+<a class="skip" href="#report">Skip to the report</a><div class="sheet"><header class="masthead"><svg class="lockup" viewBox="0 0 206 32" role="img" aria-label="LLMTraceFX"><g fill="none" stroke="currentColor" stroke-linecap="butt" stroke-linejoin="miter"><path d="M3 8H10L16 14H19" stroke-width="3.5"/><path d="M3 24H10L16 18H19" stroke-width="1.75"/><path transform="translate(43 0)" stroke-width="3" d="M1.5 7.5V24.5H11.5 M17.5 7.5V24.5H27.5 M33.5 24.5V7.5L40 16L46.5 7.5V24.5 M52.5 7.5H62.5M57.5 7.5V24.5 M68.5 24.5V7.5H75.5L78.5 10.5V13L75.5 15.5H68.5M75 15.5L78.5 24.5 M84.5 24.5V11L88 7.5H91L94.5 11V24.5M84.5 17H94.5 M110.5 10.5L107.5 7.5H103.5L100.5 10.5V21.5L103.5 24.5H107.5L110.5 21.5 M126.5 7.5H116.5V24.5H126.5M116.5 16H124.5 M142.5 7.5H132.5V24.5M132.5 16H140.5 M148.5 7.5L158.5 24.5M158.5 7.5L148.5 24.5"/></g><rect x="18" y="10.5" width="11" height="11" fill="var(--signal, #c23d16)"/></svg><p class="stamp">Cross-system comparison<br><b>2026-09-02T11:44:23.771009Z</b><br>Schema 1 &middot; paths redacted</p></header><main id="report"><h1>quality-gated hosted GLM throughput</h1><p class="lede">Systems are only placed side by side when they were asked the identical question: same workload and version, same prompt hash, same context tier, same evaluator, same output cap and sampling. Anything else is reported as a separate unit. Nothing here is re-scored, no measurement is blended into an overall grade, and every value that was not recorded stays unavailable rather than becoming zero.</p><nav class="transect" aria-label="Report contents"><ol><li><a href="#summary"><span class="station" aria-hidden="true"></span><span class="label">Summary</span></a></li><li><a href="#unit-1"><span class="station station-rec" aria-hidden="true"></span><span class="label">prose-reasoning-two-train-gap@v1 [2k] evaluator=exact_answer_pattern_match max_output=96 temperature=0 top_p=1</span><span class="note">RECOMMENDED</span></a></li><li><a href="#unit-2"><span class="station station-rec" aria-hidden="true"></span><span class="label">structured-json-profile-extraction@v1 [2k] evaluator=structured_json_exact_field_match max_output=96 temperature=0 top_p=1</span><span class="note">RECOMMENDED</span></a></li><li><a href="#pricing"><span class="station" aria-hidden="true"></span><span class="label">Pricing input</span></a></li><li><a href="#provenance"><span class="station" aria-hidden="true"></span><span class="label">Provenance</span></a></li></ol></nav><section id="summary" aria-labelledby="summary-h"><div class="rule"><h2 id="summary-h">Summary</h2></div><div class="readout"><div class="division"><span class="v ">2</span><span class="k">Comparable units</span></div><div class="division"><span class="v v-rec">2</span><span class="k">Recommendations</span></div><div class="division"><span class="v ">0</span><span class="k">Inconclusive</span></div><div class="division"><span class="v ">4</span><span class="k">Ranked systems</span></div><div class="division"><span class="v ">0</span><span class="k">Rejected systems</span></div><div class="division"><span class="v ">0</span><span class="k">Excluded runs</span></div></div></section><section id="unit-1" aria-labelledby="unit-1-h"><div class="rule"><h2 id="unit-1-h"><span class="qualifier">Comparable unit</span><span class="subject-id">prose-reasoning-two-train-gap@v1 [2k] evaluator=exact_answer_pattern_match max_output=96 temperature=0 top_p=1</span></h2><span class="state state-rec">RECOMMENDED</span></div><dl class="spec"><dt>Workload</dt><dd>prose-reasoning-two-train-gap (v1)</dd><dt>Context tier</dt><dd>2k</dd><dt>Prompt hash</dt><dd>sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568</dd><dt>Evaluator / quality metric</dt><dd>exact_answer_pattern_match</dd><dt>Max output tokens</dt><dd>96</dd><dt>Sampling</dt><dd>temperature=0, top_p=1</dd><dt>Ranking objective</dt><dd>max_correct_cases_per_minute</dd></dl><div class="verdict is-rec"><p>For workload <code>prose-reasoning-two-train-gap</code> v1 at context tier <code>2k</code>, evaluated by <code>exact_answer_pattern_match</code>, ranked on <code>max_correct_cases_per_minute</code>, and only for that:</p><span class="subject">z-ai/glm-5.3 via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=/api/v1/chat/completions</span><p>Won with objective value <code>18.0964</code>, backed by 2 run(s) with usable timing evidence. Ranked ahead of <code>z-ai/glm-5.3-flash via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=/api/v1/chat/completions</code> (objective value <code>6.3816</code>).</p><div class="constraints"><p class="muted">Constraints in force for this verdict:</p><ul class="constraint-list"><li>required run status in completed, skipped</li><li>pass rate &gt;= 1.0</li><li>at least 2 measured run(s)</li></ul></div></div><h3>Ranked systems</h3><div class="scroller"><table class="reflow" role="table"><caption>2 system(s) cleared every constraint, ranked by max_correct_cases_per_minute. Quality columns are shown beside the objective so a faster system is never read as a better one.</caption><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader" class="num">Objective</th><th scope="col" role="columnheader" class="num">Pass rate</th><th scope="col" role="columnheader" class="num">Quality</th><th scope="col" role="columnheader" class="num">Mean latency (ms)</th><th scope="col" role="columnheader" class="num">p50 / p95 (ms)</th><th scope="col" role="columnheader" class="num">Correct/min</th><th scope="col" role="columnheader" class="num">Cost per correct case</th><th scope="col" role="columnheader" class="num">Correct per unit</th><th scope="col" role="columnheader" class="num">Evidence</th></tr></thead><tbody role="rowgroup" class="cand is-rec"><tr role="row" class="cand-head"><th scope="rowgroup" role="rowheader" colspan="9"><span class="cand-id"><span class="cand-rank"><span class="pad" aria-hidden="true"></span>#1</span><span class="cand-label">z-ai/glm-5.3 via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=/api/v1/chat/completions</span><span class="state state-rec">Recommended</span></span></th></tr><tr role="row" class="cand-metrics"><td role="cell" class="num" data-label="Objective">18.0964</td><td role="cell" class="num" data-label="Pass rate">100.0%</td><td role="cell" class="num" data-label="Quality">exact_answer_pattern_match = 1.000</td><td role="cell" class="num" data-label="Mean latency (ms)">3315.57</td><td role="cell" class="num" data-label="p50 / p95 (ms)">3315.57 / 3316.87</td><td role="cell" class="num" data-label="Correct/min">18.096</td><td role="cell" class="num" data-label="Cost per correct case">0.00146536 USD</td><td role="cell" class="num" data-label="Correct per unit">682.426</td><td role="cell" class="num" data-label="Evidence">2</td></tr><tr role="row" class="cand-evidence"><td role="cell" colspan="9"><details><summary>Measurements, usage, cost and source artifacts</summary><dl class="spec"><dt>Time to first token</dt><dd>3061.77 ms (client-observed stream offset (includes network transport and queueing))</dd><dt>Latency spread (stdev)</dt><dd>1.30</dd><dt>Coefficient of variation</dt><dd>0.0004</dd><dt>Local peak memory</dt><dd>local-only measurement, not available for a hosted system</dd></dl><h4>Provider-reported usage</h4><p class="muted">Reported by the provider, not measured by this client.</p><dl class="spec"><dt>Input tokens</dt><dd>3,072</dd><dt>Output tokens</dt><dd>70</dd><dt>Cached input tokens</dt><dd>1,472</dd><dt>Reasoning tokens</dt><dd>0</dd><dt>Runs reporting usage</dt><dd>2 of 2</dd></dl><h4>Estimated cost</h4><p><span class="state state-hold">Estimated</span></p><p class="muted">Every figure above is derived from provider-reported token usage priced with supplied rates. None of it was measured, and none of it is a quotation.</p><dl class="spec"><dt>Total</dt><dd>0.00293072 USD</dd><dt>Per case</dt><dd>0.00146536 USD</dd><dt>Per correct case</dt><dd>0.00146536 USD</dd><dt>Correct cases per USD</dt><dd>682.426</dd><dt>Pricing entry</dt><dd>openrouter-zai-glm-5.3-fp8-20260902</dd><dt>Pricing entry hash</dt><dd>093cfa1ff019cf2aa8b365bddb0c4285f4bb3a92b387d5fbe0406ecea33d0c39</dd></dl><h4>Missing evidence</h4><ul class="violations"><li>peak memory is a local-only measurement and is not available for a system executed by a hosted provider</li></ul><h4>Run IDs</h4><ul class="evidence-list"><li><code>prose-reasoning-two-train-gap-2k-autoregressive</code></li><li><code>prose-reasoning-two-train-gap-2k-autoregressive</code></li></ul><h4>Verification artifacts</h4><ul class="evidence-list"><li><code>runs/prose-reasoning-two-train-gap-2k-autoregressive/verification.json</code></li><li><code>runs/prose-reasoning-two-train-gap-2k-autoregressive/verification.json</code></li></ul><h4>Final record artifacts</h4><ul class="evidence-list"><li><code>runs/prose-reasoning-two-train-gap-2k-autoregressive/final_record.json</code></li><li><code>runs/prose-reasoning-two-train-gap-2k-autoregressive/final_record.json</code></li></ul></details></td></tr></tbody><tbody role="rowgroup" class="cand"><tr role="row" class="cand-head"><th scope="rowgroup" role="rowheader" colspan="9"><span class="cand-id"><span class="cand-rank"><span class="pad-open" aria-hidden="true"></span>#2</span><span class="cand-label">z-ai/glm-5.3-flash via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=/api/v1/chat/completions</span></span></th></tr><tr role="row" class="cand-metrics"><td role="cell" class="num" data-label="Objective">6.3816</td><td role="cell" class="num" data-label="Pass rate">100.0%</td><td role="cell" class="num" data-label="Quality">exact_answer_pattern_match = 1.000</td><td role="cell" class="num" data-label="Mean latency (ms)">9402.05</td><td role="cell" class="num" data-label="p50 / p95 (ms)">9402.05 / 11769.59</td><td role="cell" class="num" data-label="Correct/min">6.382</td><td role="cell" class="num" data-label="Cost per correct case">0.000123075 USD</td><td role="cell" class="num" data-label="Correct per unit">8125.127</td><td role="cell" class="num" data-label="Evidence">2</td></tr><tr role="row" class="cand-evidence"><td role="cell" colspan="9"><details><summary>Measurements, usage, cost and source artifacts</summary><dl class="spec"><dt>Time to first token</dt><dd>9087.71 ms (client-observed stream offset (includes network transport and queueing))</dd><dt>Latency spread (stdev)</dt><dd>2367.54</dd><dt>Coefficient of variation</dt><dd>0.2518</dd><dt>Local peak memory</dt><dd>local-only measurement, not available for a hosted system</dd></dl><h4>Provider-reported usage</h4><p class="muted">Reported by the provider, not measured by this client.</p><dl class="spec"><dt>Input tokens</dt><dd>3,072</dd><dt>Output tokens</dt><dd>63</dd><dt>Cached input tokens</dt><dd>0</dd><dt>Reasoning tokens</dt><dd>0</dd><dt>Runs reporting usage</dt><dd>2 of 2</dd></dl><h4>Estimated cost</h4><p><span class="state state-hold">Estimated</span></p><p class="muted">Every figure above is derived from provider-reported token usage priced with supplied rates. None of it was measured, and none of it is a quotation.</p><dl class="spec"><dt>Total</dt><dd>0.00024615 USD</dd><dt>Per case</dt><dd>0.000123075 USD</dd><dt>Per correct case</dt><dd>0.000123075 USD</dd><dt>Correct cases per USD</dt><dd>8125.127</dd><dt>Pricing entry</dt><dd>openrouter-zai-glm-5.3-flash-fp8-20260902</dd><dt>Pricing entry hash</dt><dd>66395b56789a875a259ccb124f441dfb5d46188f78a897bffaca133efa049f3f</dd></dl><h4>Missing evidence</h4><ul class="violations"><li>peak memory is a local-only measurement and is not available for a system executed by a hosted provider</li></ul><h4>Run IDs</h4><ul class="evidence-list"><li><code>prose-reasoning-two-train-gap-2k-autoregressive</code></li><li><code>prose-reasoning-two-train-gap-2k-autoregressive</code></li></ul><h4>Verification artifacts</h4><ul class="evidence-list"><li><code>runs/prose-reasoning-two-train-gap-2k-autoregressive/verification.json</code></li><li><code>runs/prose-reasoning-two-train-gap-2k-autoregressive/verification.json</code></li></ul><h4>Final record artifacts</h4><ul class="evidence-list"><li><code>runs/prose-reasoning-two-train-gap-2k-autoregressive/final_record.json</code></li><li><code>runs/prose-reasoning-two-train-gap-2k-autoregressive/final_record.json</code></li></ul></details></td></tr></tbody></table></div><h3>Evidence frontier</h3><p class="muted">Systems that nothing else beats on every axis at once. Axes: <code>max_pass_rate, max_correct_cases_per_minute, min_mean_total_latency_ms, min_cost_per_correct_case</code>. Dominance is computed on point estimates, so a system that leads only inside its noise band still shows here as dominating; the ranking above applies the noise test and this table does not. There is no universal winner on this page.</p><div class="scroller"><table class="reflow" role="table"><caption>Each system is either on the frontier or named with every system that dominates it.</caption><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">System</th><th scope="col" role="columnheader">Position</th><th scope="col" role="columnheader">Dominated by</th></tr></thead><tbody role="rowgroup"><tr role="row"><th scope="row" role="rowheader" data-label="System"><code>z-ai/glm-5.3 via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=/api/v1/chat/completions</code></th><td role="cell" data-label="Position"><span class="state state-ok">On frontier</span></td><td role="cell" data-label="Dominated by"><span class="nil">none</span></td></tr><tr role="row"><th scope="row" role="rowheader" data-label="System"><code>z-ai/glm-5.3-flash via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=/api/v1/chat/completions</code></th><td role="cell" data-label="Position"><span class="state state-ok">On frontier</span></td><td role="cell" data-label="Dominated by"><span class="nil">none</span></td></tr></tbody></table></div><h3>Rejected systems</h3><p class="empty">None. Every system in this unit cleared the policy constraints.</p><h3>Missing evidence for this unit</h3><p class="muted">Nothing missing: every ranked system carried evidence for every axis this unit was compared on.</p></section><section id="unit-2" aria-labelledby="unit-2-h"><div class="rule"><h2 id="unit-2-h"><span class="qualifier">Comparable unit</span><span class="subject-id">structured-json-profile-extraction@v1 [2k] evaluator=structured_json_exact_field_match max_output=96 temperature=0 top_p=1</span></h2><span class="state state-rec">RECOMMENDED</span></div><dl class="spec"><dt>Workload</dt><dd>structured-json-profile-extraction (v1)</dd><dt>Context tier</dt><dd>2k</dd><dt>Prompt hash</dt><dd>sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd</dd><dt>Evaluator / quality metric</dt><dd>structured_json_exact_field_match</dd><dt>Max output tokens</dt><dd>96</dd><dt>Sampling</dt><dd>temperature=0, top_p=1</dd><dt>Ranking objective</dt><dd>max_correct_cases_per_minute</dd></dl><div class="verdict is-rec"><p>For workload <code>structured-json-profile-extraction</code> v1 at context tier <code>2k</code>, evaluated by <code>structured_json_exact_field_match</code>, ranked on <code>max_correct_cases_per_minute</code>, and only for that:</p><span class="subject">z-ai/glm-5.3 via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=/api/v1/chat/completions</span><p>Won with objective value <code>18.2962</code>, backed by 2 run(s) with usable timing evidence. Ranked ahead of <code>z-ai/glm-5.3-flash via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=/api/v1/chat/completions</code> (objective value <code>9.8362</code>).</p><div class="constraints"><p class="muted">Constraints in force for this verdict:</p><ul class="constraint-list"><li>required run status in completed, skipped</li><li>pass rate &gt;= 1.0</li><li>at least 2 measured run(s)</li></ul></div></div><h3>Ranked systems</h3><div class="scroller"><table class="reflow" role="table"><caption>2 system(s) cleared every constraint, ranked by max_correct_cases_per_minute. Quality columns are shown beside the objective so a faster system is never read as a better one.</caption><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader" class="num">Objective</th><th scope="col" role="columnheader" class="num">Pass rate</th><th scope="col" role="columnheader" class="num">Quality</th><th scope="col" role="columnheader" class="num">Mean latency (ms)</th><th scope="col" role="columnheader" class="num">p50 / p95 (ms)</th><th scope="col" role="columnheader" class="num">Correct/min</th><th scope="col" role="columnheader" class="num">Cost per correct case</th><th scope="col" role="columnheader" class="num">Correct per unit</th><th scope="col" role="columnheader" class="num">Evidence</th></tr></thead><tbody role="rowgroup" class="cand is-rec"><tr role="row" class="cand-head"><th scope="rowgroup" role="rowheader" colspan="9"><span class="cand-id"><span class="cand-rank"><span class="pad" aria-hidden="true"></span>#1</span><span class="cand-label">z-ai/glm-5.3 via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=/api/v1/chat/completions</span><span class="state state-rec">Recommended</span></span></th></tr><tr role="row" class="cand-metrics"><td role="cell" class="num" data-label="Objective">18.2962</td><td role="cell" class="num" data-label="Pass rate">100.0%</td><td role="cell" class="num" data-label="Quality">structured_json_exact_field_match = 1.000</td><td role="cell" class="num" data-label="Mean latency (ms)">3279.38</td><td role="cell" class="num" data-label="p50 / p95 (ms)">3279.38 / 3608.58</td><td role="cell" class="num" data-label="Correct/min">18.296</td><td role="cell" class="num" data-label="Cost per correct case">0.00141116 USD</td><td role="cell" class="num" data-label="Correct per unit">708.637</td><td role="cell" class="num" data-label="Evidence">2</td></tr><tr role="row" class="cand-evidence"><td role="cell" colspan="9"><details><summary>Measurements, usage, cost and source artifacts</summary><dl class="spec"><dt>Time to first token</dt><dd>3278.44 ms (client-observed stream offset (includes network transport and queueing))</dd><dt>Latency spread (stdev)</dt><dd>329.20</dd><dt>Coefficient of variation</dt><dd>0.1004</dd><dt>Local peak memory</dt><dd>local-only measurement, not available for a hosted system</dd></dl><h4>Provider-reported usage</h4><p class="muted">Reported by the provider, not measured by this client.</p><dl class="spec"><dt>Input tokens</dt><dd>3,070</dd><dt>Output tokens</dt><dd>46</dd><dt>Cached input tokens</dt><dd>1,472</dd><dt>Reasoning tokens</dt><dd>0</dd><dt>Runs reporting usage</dt><dd>2 of 2</dd></dl><h4>Estimated cost</h4><p><span class="state state-hold">Estimated</span></p><p class="muted">Every figure above is derived from provider-reported token usage priced with supplied rates. None of it was measured, and none of it is a quotation.</p><dl class="spec"><dt>Total</dt><dd>0.00282232 USD</dd><dt>Per case</dt><dd>0.00141116 USD</dd><dt>Per correct case</dt><dd>0.00141116 USD</dd><dt>Correct cases per USD</dt><dd>708.637</dd><dt>Pricing entry</dt><dd>openrouter-zai-glm-5.3-fp8-20260902</dd><dt>Pricing entry hash</dt><dd>093cfa1ff019cf2aa8b365bddb0c4285f4bb3a92b387d5fbe0406ecea33d0c39</dd></dl><h4>Missing evidence</h4><ul class="violations"><li>peak memory is a local-only measurement and is not available for a system executed by a hosted provider</li></ul><h4>Run IDs</h4><ul class="evidence-list"><li><code>structured-json-profile-extraction-2k-autoregressive</code></li><li><code>structured-json-profile-extraction-2k-autoregressive</code></li></ul><h4>Verification artifacts</h4><ul class="evidence-list"><li><code>runs/structured-json-profile-extraction-2k-autoregressive/verification.json</code></li><li><code>runs/structured-json-profile-extraction-2k-autoregressive/verification.json</code></li></ul><h4>Final record artifacts</h4><ul class="evidence-list"><li><code>runs/structured-json-profile-extraction-2k-autoregressive/final_record.json</code></li><li><code>runs/structured-json-profile-extraction-2k-autoregressive/final_record.json</code></li></ul></details></td></tr></tbody><tbody role="rowgroup" class="cand"><tr role="row" class="cand-head"><th scope="rowgroup" role="rowheader" colspan="9"><span class="cand-id"><span class="cand-rank"><span class="pad-open" aria-hidden="true"></span>#2</span><span class="cand-label">z-ai/glm-5.3-flash via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=/api/v1/chat/completions</span></span></th></tr><tr role="row" class="cand-metrics"><td role="cell" class="num" data-label="Objective">9.8362</td><td role="cell" class="num" data-label="Pass rate">100.0%</td><td role="cell" class="num" data-label="Quality">structured_json_exact_field_match = 1.000</td><td role="cell" class="num" data-label="Mean latency (ms)">6099.89</td><td role="cell" class="num" data-label="p50 / p95 (ms)">6099.89 / 9420.86</td><td role="cell" class="num" data-label="Correct/min">9.836</td><td role="cell" class="num" data-label="Cost per correct case">7.6715e-05 USD</td><td role="cell" class="num" data-label="Correct per unit">13035.260</td><td role="cell" class="num" data-label="Evidence">2</td></tr><tr role="row" class="cand-evidence"><td role="cell" colspan="9"><details><summary>Measurements, usage, cost and source artifacts</summary><dl class="spec"><dt>Time to first token</dt><dd>5999.59 ms (client-observed stream offset (includes network transport and queueing))</dd><dt>Latency spread (stdev)</dt><dd>3320.97</dd><dt>Coefficient of variation</dt><dd>0.5444</dd><dt>Local peak memory</dt><dd>local-only measurement, not available for a hosted system</dd></dl><h4>Provider-reported usage</h4><p class="muted">Reported by the provider, not measured by this client.</p><dl class="spec"><dt>Input tokens</dt><dd>3,070</dd><dt>Output tokens</dt><dd>46</dd><dt>Cached input tokens</dt><dd>1,472</dd><dt>Reasoning tokens</dt><dd>0</dd><dt>Runs reporting usage</dt><dd>2 of 2</dd></dl><h4>Estimated cost</h4><p><span class="state state-hold">Estimated</span></p><p class="muted">Every figure above is derived from provider-reported token usage priced with supplied rates. None of it was measured, and none of it is a quotation.</p><dl class="spec"><dt>Total</dt><dd>0.00015343 USD</dd><dt>Per case</dt><dd>7.6715e-05 USD</dd><dt>Per correct case</dt><dd>7.6715e-05 USD</dd><dt>Correct cases per USD</dt><dd>13035.260</dd><dt>Pricing entry</dt><dd>openrouter-zai-glm-5.3-flash-fp8-20260902</dd><dt>Pricing entry hash</dt><dd>66395b56789a875a259ccb124f441dfb5d46188f78a897bffaca133efa049f3f</dd></dl><h4>Missing evidence</h4><ul class="violations"><li>peak memory is a local-only measurement and is not available for a system executed by a hosted provider</li></ul><h4>Run IDs</h4><ul class="evidence-list"><li><code>structured-json-profile-extraction-2k-autoregressive</code></li><li><code>structured-json-profile-extraction-2k-autoregressive</code></li></ul><h4>Verification artifacts</h4><ul class="evidence-list"><li><code>runs/structured-json-profile-extraction-2k-autoregressive/verification.json</code></li><li><code>runs/structured-json-profile-extraction-2k-autoregressive/verification.json</code></li></ul><h4>Final record artifacts</h4><ul class="evidence-list"><li><code>runs/structured-json-profile-extraction-2k-autoregressive/final_record.json</code></li><li><code>runs/structured-json-profile-extraction-2k-autoregressive/final_record.json</code></li></ul></details></td></tr></tbody></table></div><h3>Evidence frontier</h3><p class="muted">Systems that nothing else beats on every axis at once. Axes: <code>max_pass_rate, max_correct_cases_per_minute, min_mean_total_latency_ms, min_cost_per_correct_case</code>. Dominance is computed on point estimates, so a system that leads only inside its noise band still shows here as dominating; the ranking above applies the noise test and this table does not. There is no universal winner on this page.</p><div class="scroller"><table class="reflow" role="table"><caption>Each system is either on the frontier or named with every system that dominates it.</caption><thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">System</th><th scope="col" role="columnheader">Position</th><th scope="col" role="columnheader">Dominated by</th></tr></thead><tbody role="rowgroup"><tr role="row"><th scope="row" role="rowheader" data-label="System"><code>z-ai/glm-5.3 via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=/api/v1/chat/completions</code></th><td role="cell" data-label="Position"><span class="state state-ok">On frontier</span></td><td role="cell" data-label="Dominated by"><span class="nil">none</span></td></tr><tr role="row"><th scope="row" role="rowheader" data-label="System"><code>z-ai/glm-5.3-flash via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=/api/v1/chat/completions</code></th><td role="cell" data-label="Position"><span class="state state-ok">On frontier</span></td><td role="cell" data-label="Dominated by"><span class="nil">none</span></td></tr></tbody></table></div><h3>Rejected systems</h3><p class="empty">None. Every system in this unit cleared the policy constraints.</p><h3>Missing evidence for this unit</h3><p class="muted">Nothing missing: every ranked system carried evidence for every axis this unit was compared on.</p></section><section id="pricing" aria-labelledby="pricing-h"><div class="rule"><h2 id="pricing-h">Pricing input</h2></div><p>Rates were supplied by the operator with a source and an effective date. They are still applied to provider-reported usage rather than measured, so every figure derived from them is an estimate.</p><dl class="spec"><dt>Manifest</dt><dd>pricing-manifest.json</dd><dt>Manifest hash</dt><dd>3eef4f5d2ac03619e78616d701d44247a81561f8be1bea1d77062e28bc6a19f8</dd><dt>Currency</dt><dd>USD</dd><dt>Entries used</dt><dd>openrouter-zai-glm-5.3-flash-fp8-20260902, openrouter-zai-glm-5.3-fp8-20260902</dd></dl></section><section id="provenance" aria-labelledby="provenance-h"><div class="rule"><h2 id="provenance-h">Provenance</h2><span class="muted">paths redacted</span></div><h3>Source results directories</h3><ul class="evidence-list"><li><code>structured</code></li><li><code>prose</code></li><li><code>structured</code></li><li><code>prose</code></li><li><code>structured</code></li><li><code>prose</code></li><li><code>structured</code></li><li><code>prose</code></li></ul><h3>Excluded runs</h3><p class="empty">None. Every run found in the source directories carried enough evidence to be compared.</p></section></main><svg class="ornament terminus" viewBox="0 0 160 32" aria-hidden="true"><g fill="none" stroke="currentColor"><path d="M0 6H72L88 14H120" stroke-width="2.5"/><path d="M0 26H72L88 18H120" stroke-width="1.25"/><path d="M24 3V9M48 3V9M64 3V9" stroke-width="1.25"/></g><rect x="119" y="6" width="20" height="20" fill="currentColor"/></svg><footer><span>Generated by <code>llmtracefx-optimizer compare-report</code></span><span>Static HTML, no external references, safe to open from disk</span></footer></div>
+</body>
+</html>

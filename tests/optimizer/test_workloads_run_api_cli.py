@@ -503,6 +503,76 @@ def test_no_resume_forces_a_second_request(
     assert len(FakeTransport.requests) == 2
 
 
+def test_budget_gate_prevents_a_second_attempt_for_the_same_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", API_KEY)
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", FakeTransport)
+    matrix = build_matrix(tmp_path)
+    manifest = json.loads(matrix.read_text(encoding="utf-8"))
+    entry = next(
+        item
+        for item in manifest["entries"]
+        if item["decode_mode"] == DECODE_MODE_AUTOREGRESSIVE
+    )
+    plan = tmp_path / "budget-plan.json"
+    plan.write_text(
+        json.dumps(
+            {
+                "schema_version": "1",
+                "experiment_id": "cli-budget-test",
+                "authorized_total_usd": "5.00",
+                "requests": [
+                    {
+                        "request_id": "only-attempt",
+                        "model_id": "z-ai/glm-5.3",
+                        "workload_id": entry["workload_id"],
+                        "workload_version": entry["workload_version"],
+                        "prompt_sha256": entry["prompt"]["prompt_hash"],
+                        "input_token_ceiling": 20_000,
+                        "max_output_tokens": entry["max_tokens"],
+                        "prompt_usd_per_token": "0.0000014",
+                        "completion_usd_per_token": "0.0000044",
+                        "cached_prompt_usd_per_token": "0.00000026",
+                        "cache_write_billing": ("included_in_uncached_prompt_rate"),
+                        "reasoning_billing": "included_in_completion_tokens",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    argv = [
+        "workloads",
+        "run-api",
+        "--matrix",
+        str(matrix),
+        "--output-dir",
+        str(tmp_path / "results"),
+        "--model-id",
+        "z-ai/glm-5.3",
+        "--profile",
+        "openrouter",
+        "--mode",
+        DECODE_MODE_AUTOREGRESSIVE,
+        "--budget-plan",
+        str(plan),
+        "--budget-ledger",
+        str(tmp_path / "budget-ledger.json"),
+        "--budget-request-id",
+        "only-attempt",
+    ]
+
+    assert invoke(argv) == 0
+    assert len(FakeTransport.requests) == 1
+    capsys.readouterr()
+    assert invoke([*argv, "--no-resume"]) == 1
+    assert len(FakeTransport.requests) == 1
+    assert "automatic retries are forbidden" in capsys.readouterr().out
+
+
 def test_reasoning_settings_reach_the_request_body(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -530,6 +600,40 @@ def test_reasoning_settings_reach_the_request_body(
     body = json.loads(FakeTransport.requests[0].body.decode("utf-8"))
     assert body["reasoning_effort"] == "high"
     assert body["thinking"] == {"type": "enabled", "clear_thinking": False}
+
+
+def test_provider_route_and_max_prices_reach_the_request_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", API_KEY)
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", FakeTransport)
+
+    assert (
+        invoke(
+            base_argv(
+                tmp_path,
+                "--profile",
+                "openrouter",
+                "--mode",
+                DECODE_MODE_AUTOREGRESSIVE,
+                "--route-provider",
+                "z-ai/fp8",
+                "--disable-provider-fallbacks",
+                "--require-provider-parameters",
+                "--max-provider-prompt-price",
+                "1.4",
+                "--max-provider-completion-price",
+                "4.4",
+            )
+        )
+        == 0
+    )
+    assert json.loads(FakeTransport.requests[0].body)["provider"] == {
+        "order": ["z-ai/fp8"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+        "max_price": {"prompt": 1.4, "completion": 4.4},
+    }
 
 
 def test_missing_matrix_manifest_is_an_error(

@@ -49,6 +49,7 @@ from llmtracefx.optimizer.collectors.openai_api import (
     HTTPRequest,
     OpenAIStreamCollectorError,
     ProviderExtensions,
+    ProviderRouting,
     ProviderUsage,
     TransportConnectionError,
     TransportTimeout,
@@ -433,6 +434,30 @@ def test_glm_request_profiles_reach_the_wire(
     assert transport.requests[0].headers["Accept"] == "text/event-stream"
 
 
+def test_gateway_routing_constraints_reach_the_wire_and_plan(
+    tmp_path: Path,
+) -> None:
+    routing = ProviderRouting(
+        order=("z-ai/fp8",),
+        allow_fallbacks=False,
+        require_parameters=True,
+        max_prompt_price_per_million=1.4,
+        max_completion_price_per_million=4.4,
+    )
+    config = make_config(tmp_path, extensions=ProviderExtensions(routing=routing))
+
+    result, transport = run(config, glm_stream())
+
+    expected = {
+        "order": ["z-ai/fp8"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+        "max_price": {"prompt": 1.4, "completion": 4.4},
+    }
+    assert json.loads(transport.requests[0].body)["provider"] == expected
+    assert result.evidence.plan.provider_extensions["provider"] == expected
+
+
 # --- Credential handling -----------------------------------------------------
 
 
@@ -719,6 +744,31 @@ def test_reasoning_tokens_are_captured_when_the_provider_reports_them(
     result, _ = run(config, glm_stream(usage=usage))
 
     assert result.evidence.usage.reasoning_tokens == 6
+
+
+def test_provider_cost_and_cache_write_usage_are_captured(
+    tmp_path: Path,
+) -> None:
+    result, _ = run(
+        make_config(tmp_path),
+        glm_stream(
+            usage={
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+                "cost": 0.00123,
+                "prompt_tokens_details": {
+                    "cached_tokens": 40,
+                    "cache_write_tokens": 10,
+                },
+            }
+        ),
+    )
+
+    usage = result.evidence.usage
+    assert usage.cost_usd == pytest.approx(0.00123)
+    assert usage.cached_prompt_tokens == 40
+    assert usage.cache_write_tokens == 10
 
 
 def test_malformed_usage_values_are_recorded_not_silently_dropped(

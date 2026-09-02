@@ -65,6 +65,7 @@ from .collectors.openai_api import (
     APICollectionConfig,
     OpenAIStreamCollectorError,
     ProviderExtensions,
+    ProviderRouting,
     UrllibStreamingTransport,
     _contains_credential,
     assert_credential_not_embedded,
@@ -130,6 +131,7 @@ from .tune.report import GroupOutcome, TuneReport, TuneReportValidationError
 from .tune.report_html import render_tune_report_html
 from .tune.tuner import tune
 from .workloads.aggregate import summarize_results, write_summary
+from .workloads.api_budget import BudgetError, BudgetGate, BudgetPlan
 from .workloads.api_profiles import (
     API_PROFILES,
     PROFILE_NAMES,
@@ -164,6 +166,7 @@ from .workloads.verify import (
     VerifyError,
     plan_selected_rows,
     run_selected_rows,
+    select_entries,
 )
 
 
@@ -1033,6 +1036,26 @@ def _api_binding_from_args(args: argparse.Namespace) -> APIBinding:
     # ``missing`` is empty here, so these three are strings; asserting it
     # keeps that obvious to a reader and to the type checker.
     assert provider is not None and endpoint is not None and api_key_env is not None
+    routing_requested = any(
+        (
+            args.route_provider,
+            args.disable_provider_fallbacks,
+            args.require_provider_parameters,
+            args.max_provider_prompt_price is not None,
+            args.max_provider_completion_price is not None,
+        )
+    )
+    routing = (
+        ProviderRouting(
+            order=tuple(args.route_provider or ()),
+            allow_fallbacks=(False if args.disable_provider_fallbacks else None),
+            require_parameters=(True if args.require_provider_parameters else None),
+            max_prompt_price_per_million=args.max_provider_prompt_price,
+            max_completion_price_per_million=args.max_provider_completion_price,
+        )
+        if routing_requested
+        else None
+    )
     binding = APIBinding(
         provider=provider,
         endpoint=endpoint,
@@ -1052,6 +1075,7 @@ def _api_binding_from_args(args: argparse.Namespace) -> APIBinding:
                 None if args.clear_thinking is None else args.clear_thinking == "true"
             ),
             provider_request_id=args.provider_request_id,
+            routing=routing,
         ),
     )
     binding.validate()
@@ -1186,6 +1210,39 @@ def _cmd_workloads_run_api(args: argparse.Namespace) -> int:
         )
         return 0 if blocked == 0 else 2
 
+    budget_values = (
+        args.budget_plan,
+        args.budget_ledger,
+        args.budget_request_id,
+    )
+    if any(value is not None for value in budget_values) and not all(
+        value is not None for value in budget_values
+    ):
+        print(
+            "--budget-plan, --budget-ledger and --budget-request-id must be "
+            "provided together",
+            file=sys.stderr,
+        )
+        return 1
+    budget_gate = None
+    if args.budget_plan is not None:
+        selected = select_entries(manifest, selection)
+        if len(selected) != 1:
+            print(
+                "budget-gated execution requires exactly one selected matrix "
+                "row per invocation",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            # Read once before creating any ledger so malformed, ambiguous or
+            # over-cap pricing refuses without writing experiment state.
+            BudgetPlan.read(Path(args.budget_plan))
+            budget_gate = BudgetGate(Path(args.budget_plan), Path(args.budget_ledger))
+        except BudgetError as exc:
+            print(f"Budget gate configuration failed: {exc}", file=sys.stderr)
+            return 1
+
     results = run_selected_api_rows(
         manifest,
         manifest_dir=manifest_dir,
@@ -1196,6 +1253,8 @@ def _cmd_workloads_run_api(args: argparse.Namespace) -> int:
         resume=not args.no_resume,
         transport_factory=UrllibStreamingTransport,
         environ=os.environ,
+        budget_gate=budget_gate,
+        budget_request_id=args.budget_request_id,
     )
     if not results:
         print("No matrix rows matched the selection filters", file=sys.stderr)
@@ -3155,6 +3214,59 @@ def build_parser() -> argparse.ArgumentParser:
         "--provider-request-id",
         default=None,
         help="Optional caller-supplied provider request ID",
+    )
+    run_api_parser.add_argument(
+        "--route-provider",
+        action="append",
+        default=None,
+        help=(
+            "Exact gateway provider endpoint slug to try, in order. Repeat to "
+            "supply more than one. Routing constraints are persisted in the "
+            "request identity."
+        ),
+    )
+    run_api_parser.add_argument(
+        "--disable-provider-fallbacks",
+        action="store_true",
+        help="Refuse gateway fallback outside --route-provider",
+    )
+    run_api_parser.add_argument(
+        "--require-provider-parameters",
+        action="store_true",
+        help="Route only to endpoints supporting every requested parameter",
+    )
+    run_api_parser.add_argument(
+        "--max-provider-prompt-price",
+        type=float,
+        default=None,
+        help="Gateway maximum prompt price in USD per million tokens",
+    )
+    run_api_parser.add_argument(
+        "--max-provider-completion-price",
+        type=float,
+        default=None,
+        help="Gateway maximum completion price in USD per million tokens",
+    )
+    run_api_parser.add_argument(
+        "--budget-plan",
+        default=None,
+        help=(
+            "Immutable whole-experiment budget plan. Execution is fail-closed "
+            "at a USD 5 lifetime cap."
+        ),
+    )
+    run_api_parser.add_argument(
+        "--budget-ledger",
+        default=None,
+        help="Atomic sealed ledger shared by every request in the budget plan",
+    )
+    run_api_parser.add_argument(
+        "--budget-request-id",
+        default=None,
+        help=(
+            "Unique authorized request ID for this one-row invocation; an ID "
+            "can never be attempted twice"
+        ),
     )
     run_api_parser.add_argument(
         "--run-id", nargs="+", default=None, help="Select specific run_id(s)"

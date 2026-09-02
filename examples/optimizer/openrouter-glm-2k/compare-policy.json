@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "name": "quality-gated hosted GLM throughput",
+  "description": "Rank only completed two-repetition systems that pass every case; within each exact workload/prompt/sampling stratum maximize correct cases per minute.",
+  "objective": "max_correct_cases_per_minute",
+  "constraints": {
+    "required_statuses": [
+      "completed",
+      "skipped"
+    ],
+    "min_pass_rate": 1.0,
+    "min_measured_repetitions": 2
+  }
+}

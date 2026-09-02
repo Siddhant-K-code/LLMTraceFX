@@ -1,0 +1,617 @@
+{
+  "excluded_runs": [],
+  "generated_at": "2026-09-02T11:44:23.771009Z",
+  "policy": {
+    "constraints": {
+      "allowed_provenances": null,
+      "max_coefficient_of_variation": null,
+      "max_cost_per_correct_case": null,
+      "max_mean_total_latency_ms": null,
+      "min_measured_repetitions": 2,
+      "min_pass_rate": 1.0,
+      "min_quality_score": null,
+      "required_quality_metric": null,
+      "required_statuses": [
+        "completed",
+        "skipped"
+      ]
+    },
+    "description": "Rank only completed two-repetition systems that pass every case; within each exact workload/prompt/sampling stratum maximize correct cases per minute.",
+    "name": "quality-gated hosted GLM throughput",
+    "objective": "max_correct_cases_per_minute",
+    "schema_version": "1"
+  },
+  "pricing": {
+    "currency": "USD",
+    "entry_ids_used": [
+      "openrouter-zai-glm-5.3-flash-fp8-20260902",
+      "openrouter-zai-glm-5.3-fp8-20260902"
+    ],
+    "manifest_path": "pricing-manifest.json",
+    "manifest_sha256": "3eef4f5d2ac03619e78616d701d44247a81561f8be1bea1d77062e28bc6a19f8",
+    "rates_are_illustrative": false
+  },
+  "results_dirs": [
+    "measurements.json"
+  ],
+  "schema_version": "1",
+  "strata": [
+    {
+      "comparable_unit_key": {
+        "context_tier": "2k",
+        "max_output_tokens": 96,
+        "quality_metric": "exact_answer_pattern_match",
+        "request_shape": null,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "workload_id": "prose-reasoning-two-train-gap",
+        "workload_prompt_hash": "sha256:f583af51b9a3e6cb49cd53a71d0737924329492701508af226515734c4f9f568",
+        "workload_version": "1"
+      },
+      "comparable_unit_label": "prose-reasoning-two-train-gap@v1 [2k] evaluator=exact_answer_pattern_match max_output=96 temperature=0 top_p=1",
+      "frontier": [
+        {
+          "dominated": false,
+          "dominated_by": [],
+          "system_key": {
+            "accelerator": null,
+            "decode_mode": "autoregressive",
+            "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+            "execution_config_hash": "sha256:b3ab4cc5cc9a2d0cbfe68dd72b149002029b5d0a34049f9e1d1940623bb35f33",
+            "is_local": false,
+            "model_id": "z-ai/glm-5.3",
+            "model_revision": null,
+            "provider": "openrouter",
+            "quantization": null,
+            "reasoning_effort": "low",
+            "runtime_backend": null,
+            "runtime_name": "openai-compatible-api",
+            "thinking_type": null
+          },
+          "system_label": "z-ai/glm-5.3 via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=https://openrouter.ai/api/v1/chat/completions"
+        },
+        {
+          "dominated": false,
+          "dominated_by": [],
+          "system_key": {
+            "accelerator": null,
+            "decode_mode": "autoregressive",
+            "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+            "execution_config_hash": "sha256:1ab523959b065dc54599a15f0657f875ec139d69321a53a8f94502b9656cf388",
+            "is_local": false,
+            "model_id": "z-ai/glm-5.3-flash",
+            "model_revision": null,
+            "provider": "openrouter",
+            "quantization": null,
+            "reasoning_effort": "low",
+            "runtime_backend": null,
+            "runtime_name": "openai-compatible-api",
+            "thinking_type": null
+          },
+          "system_label": "z-ai/glm-5.3-flash via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=https://openrouter.ai/api/v1/chat/completions"
+        }
+      ],
+      "frontier_axes": [
+        "max_pass_rate",
+        "max_correct_cases_per_minute",
+        "min_mean_total_latency_ms",
+        "min_cost_per_correct_case"
+      ],
+      "inconclusive_reason": null,
+      "missing_evidence": [],
+      "objective_name": "max_correct_cases_per_minute",
+      "outcome": "recommended",
+      "ranked": [
+        {
+          "coefficient_of_variation": 0.0003918757558109474,
+          "correct_cases_per_minute": 18.096435904214292,
+          "cost": {
+            "correct_cases_per_currency_unit": 682.426161489327,
+            "cost_per_case": 0.0014653599999999998,
+            "cost_per_correct_case": 0.0014653599999999998,
+            "currency": "USD",
+            "estimated": true,
+            "monetary_basis": "estimated_from_provider_reported_usage_and_manifest_rates",
+            "pricing_entry_id": "openrouter-zai-glm-5.3-fp8-20260902",
+            "pricing_entry_sha256": "093cfa1ff019cf2aa8b365bddb0c4285f4bb3a92b387d5fbe0406ecea33d0c39",
+            "rates_are_illustrative": false,
+            "reasons": [],
+            "total_amount": 0.0029307199999999995
+          },
+          "evidence_count": 2,
+          "max_peak_memory_bytes": null,
+          "mean_peak_memory_bytes": null,
+          "mean_quality_score": 1.0,
+          "mean_total_latency_ms": 3315.570000500884,
+          "mean_ttft_ms": 3061.7683959990245,
+          "missing_evidence": [
+            "peak memory is a local-only measurement and is not available for a system executed by a hosted provider"
+          ],
+          "objective_name": "max_correct_cases_per_minute",
+          "objective_value": 18.096435904214292,
+          "p50_total_latency_ms": 3315.570000500884,
+          "p95_total_latency_ms": 3316.8692920007743,
+          "pass_rate": 1.0,
+          "quality_metric": "exact_answer_pattern_match",
+          "rank": 1,
+          "record_paths": [
+            "measurements.json",
+            "measurements.json"
+          ],
+          "run_ids": [
+            "prose-reasoning-two-train-gap-2k-autoregressive",
+            "prose-reasoning-two-train-gap-2k-autoregressive"
+          ],
+          "stdev_total_latency_ms": 1.299291499890387,
+          "system_key": {
+            "accelerator": null,
+            "decode_mode": "autoregressive",
+            "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+            "execution_config_hash": "sha256:b3ab4cc5cc9a2d0cbfe68dd72b149002029b5d0a34049f9e1d1940623bb35f33",
+            "is_local": false,
+            "model_id": "z-ai/glm-5.3",
+            "model_revision": null,
+            "provider": "openrouter",
+            "quantization": null,
+            "reasoning_effort": "low",
+            "runtime_backend": null,
+            "runtime_name": "openai-compatible-api",
+            "thinking_type": null
+          },
+          "system_label": "z-ai/glm-5.3 via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=https://openrouter.ai/api/v1/chat/completions",
+          "ttft_basis": "client_observed_stream",
+          "usage": {
+            "cached_input_tokens": 1472,
+            "complete": true,
+            "input_tokens": 3072,
+            "output_tokens": 70,
+            "provenance": "provider_reported",
+            "reasoning_tokens": 0,
+            "runs_reporting_usage": 2,
+            "runs_total": 2
+          },
+          "verification_paths": [
+            "measurements.json",
+            "measurements.json"
+          ]
+        },
+        {
+          "coefficient_of_variation": 0.2518114599276973,
+          "correct_cases_per_minute": 6.381588563921274,
+          "cost": {
+            "correct_cases_per_currency_unit": 8125.126955108673,
+            "cost_per_case": 0.000123075,
+            "cost_per_correct_case": 0.000123075,
+            "currency": "USD",
+            "estimated": true,
+            "monetary_basis": "estimated_from_provider_reported_usage_and_manifest_rates",
+            "pricing_entry_id": "openrouter-zai-glm-5.3-flash-fp8-20260902",
+            "pricing_entry_sha256": "66395b56789a875a259ccb124f441dfb5d46188f78a897bffaca133efa049f3f",
+            "rates_are_illustrative": false,
+            "reasons": [],
+            "total_amount": 0.00024615
+          },
+          "evidence_count": 2,
+          "max_peak_memory_bytes": null,
+          "mean_peak_memory_bytes": null,
+          "mean_quality_score": 1.0,
+          "mean_total_latency_ms": 9402.047687501181,
+          "mean_ttft_ms": 9087.712896000085,
+          "missing_evidence": [
+            "peak memory is a local-only measurement and is not available for a system executed by a hosted provider"
+          ],
+          "objective_name": "max_correct_cases_per_minute",
+          "objective_value": 6.381588563921274,
+          "p50_total_latency_ms": 9402.047687501181,
+          "p95_total_latency_ms": 11769.591042000684,
+          "pass_rate": 1.0,
+          "quality_metric": "exact_answer_pattern_match",
+          "rank": 2,
+          "record_paths": [
+            "measurements.json",
+            "measurements.json"
+          ],
+          "run_ids": [
+            "prose-reasoning-two-train-gap-2k-autoregressive",
+            "prose-reasoning-two-train-gap-2k-autoregressive"
+          ],
+          "stdev_total_latency_ms": 2367.543354499503,
+          "system_key": {
+            "accelerator": null,
+            "decode_mode": "autoregressive",
+            "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+            "execution_config_hash": "sha256:1ab523959b065dc54599a15f0657f875ec139d69321a53a8f94502b9656cf388",
+            "is_local": false,
+            "model_id": "z-ai/glm-5.3-flash",
+            "model_revision": null,
+            "provider": "openrouter",
+            "quantization": null,
+            "reasoning_effort": "low",
+            "runtime_backend": null,
+            "runtime_name": "openai-compatible-api",
+            "thinking_type": null
+          },
+          "system_label": "z-ai/glm-5.3-flash via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=https://openrouter.ai/api/v1/chat/completions",
+          "ttft_basis": "client_observed_stream",
+          "usage": {
+            "cached_input_tokens": 0,
+            "complete": true,
+            "input_tokens": 3072,
+            "output_tokens": 63,
+            "provenance": "provider_reported",
+            "reasoning_tokens": 0,
+            "runs_reporting_usage": 2,
+            "runs_total": 2
+          },
+          "verification_paths": [
+            "measurements.json",
+            "measurements.json"
+          ]
+        }
+      ],
+      "recommended": {
+        "coefficient_of_variation": 0.0003918757558109474,
+        "correct_cases_per_minute": 18.096435904214292,
+        "cost": {
+          "correct_cases_per_currency_unit": 682.426161489327,
+          "cost_per_case": 0.0014653599999999998,
+          "cost_per_correct_case": 0.0014653599999999998,
+          "currency": "USD",
+          "estimated": true,
+          "monetary_basis": "estimated_from_provider_reported_usage_and_manifest_rates",
+          "pricing_entry_id": "openrouter-zai-glm-5.3-fp8-20260902",
+          "pricing_entry_sha256": "093cfa1ff019cf2aa8b365bddb0c4285f4bb3a92b387d5fbe0406ecea33d0c39",
+          "rates_are_illustrative": false,
+          "reasons": [],
+          "total_amount": 0.0029307199999999995
+        },
+        "evidence_count": 2,
+        "max_peak_memory_bytes": null,
+        "mean_peak_memory_bytes": null,
+        "mean_quality_score": 1.0,
+        "mean_total_latency_ms": 3315.570000500884,
+        "mean_ttft_ms": 3061.7683959990245,
+        "missing_evidence": [
+          "peak memory is a local-only measurement and is not available for a system executed by a hosted provider"
+        ],
+        "objective_name": "max_correct_cases_per_minute",
+        "objective_value": 18.096435904214292,
+        "p50_total_latency_ms": 3315.570000500884,
+        "p95_total_latency_ms": 3316.8692920007743,
+        "pass_rate": 1.0,
+        "quality_metric": "exact_answer_pattern_match",
+        "rank": 1,
+        "record_paths": [
+          "measurements.json",
+          "measurements.json"
+        ],
+        "run_ids": [
+          "prose-reasoning-two-train-gap-2k-autoregressive",
+          "prose-reasoning-two-train-gap-2k-autoregressive"
+        ],
+        "stdev_total_latency_ms": 1.299291499890387,
+        "system_key": {
+          "accelerator": null,
+          "decode_mode": "autoregressive",
+          "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+          "execution_config_hash": "sha256:b3ab4cc5cc9a2d0cbfe68dd72b149002029b5d0a34049f9e1d1940623bb35f33",
+          "is_local": false,
+          "model_id": "z-ai/glm-5.3",
+          "model_revision": null,
+          "provider": "openrouter",
+          "quantization": null,
+          "reasoning_effort": "low",
+          "runtime_backend": null,
+          "runtime_name": "openai-compatible-api",
+          "thinking_type": null
+        },
+        "system_label": "z-ai/glm-5.3 via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=https://openrouter.ai/api/v1/chat/completions",
+        "ttft_basis": "client_observed_stream",
+        "usage": {
+          "cached_input_tokens": 1472,
+          "complete": true,
+          "input_tokens": 3072,
+          "output_tokens": 70,
+          "provenance": "provider_reported",
+          "reasoning_tokens": 0,
+          "runs_reporting_usage": 2,
+          "runs_total": 2
+        },
+        "verification_paths": [
+          "measurements.json",
+          "measurements.json"
+        ]
+      },
+      "rejected": []
+    },
+    {
+      "comparable_unit_key": {
+        "context_tier": "2k",
+        "max_output_tokens": 96,
+        "quality_metric": "structured_json_exact_field_match",
+        "request_shape": null,
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "workload_id": "structured-json-profile-extraction",
+        "workload_prompt_hash": "sha256:4a4a49e8368a99919fff1d1e68586466e279267d9de8d081ba8c08adac592fcd",
+        "workload_version": "1"
+      },
+      "comparable_unit_label": "structured-json-profile-extraction@v1 [2k] evaluator=structured_json_exact_field_match max_output=96 temperature=0 top_p=1",
+      "frontier": [
+        {
+          "dominated": false,
+          "dominated_by": [],
+          "system_key": {
+            "accelerator": null,
+            "decode_mode": "autoregressive",
+            "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+            "execution_config_hash": "sha256:b3ab4cc5cc9a2d0cbfe68dd72b149002029b5d0a34049f9e1d1940623bb35f33",
+            "is_local": false,
+            "model_id": "z-ai/glm-5.3",
+            "model_revision": null,
+            "provider": "openrouter",
+            "quantization": null,
+            "reasoning_effort": "low",
+            "runtime_backend": null,
+            "runtime_name": "openai-compatible-api",
+            "thinking_type": null
+          },
+          "system_label": "z-ai/glm-5.3 via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=https://openrouter.ai/api/v1/chat/completions"
+        },
+        {
+          "dominated": false,
+          "dominated_by": [],
+          "system_key": {
+            "accelerator": null,
+            "decode_mode": "autoregressive",
+            "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+            "execution_config_hash": "sha256:1ab523959b065dc54599a15f0657f875ec139d69321a53a8f94502b9656cf388",
+            "is_local": false,
+            "model_id": "z-ai/glm-5.3-flash",
+            "model_revision": null,
+            "provider": "openrouter",
+            "quantization": null,
+            "reasoning_effort": "low",
+            "runtime_backend": null,
+            "runtime_name": "openai-compatible-api",
+            "thinking_type": null
+          },
+          "system_label": "z-ai/glm-5.3-flash via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=https://openrouter.ai/api/v1/chat/completions"
+        }
+      ],
+      "frontier_axes": [
+        "max_pass_rate",
+        "max_correct_cases_per_minute",
+        "min_mean_total_latency_ms",
+        "min_cost_per_correct_case"
+      ],
+      "inconclusive_reason": null,
+      "missing_evidence": [],
+      "objective_name": "max_correct_cases_per_minute",
+      "outcome": "recommended",
+      "ranked": [
+        {
+          "coefficient_of_variation": 0.100384473826667,
+          "correct_cases_per_minute": 18.29615191907781,
+          "cost": {
+            "correct_cases_per_currency_unit": 708.6368661243233,
+            "cost_per_case": 0.0014111599999999998,
+            "cost_per_correct_case": 0.0014111599999999998,
+            "currency": "USD",
+            "estimated": true,
+            "monetary_basis": "estimated_from_provider_reported_usage_and_manifest_rates",
+            "pricing_entry_id": "openrouter-zai-glm-5.3-fp8-20260902",
+            "pricing_entry_sha256": "093cfa1ff019cf2aa8b365bddb0c4285f4bb3a92b387d5fbe0406ecea33d0c39",
+            "rates_are_illustrative": false,
+            "reasons": [],
+            "total_amount": 0.0028223199999999997
+          },
+          "evidence_count": 2,
+          "max_peak_memory_bytes": null,
+          "mean_peak_memory_bytes": null,
+          "mean_quality_score": 1.0,
+          "mean_total_latency_ms": 3279.3781044983916,
+          "mean_ttft_ms": 3278.438062499845,
+          "missing_evidence": [
+            "peak memory is a local-only measurement and is not available for a system executed by a hosted provider"
+          ],
+          "objective_name": "max_correct_cases_per_minute",
+          "objective_value": 18.29615191907781,
+          "p50_total_latency_ms": 3279.3781044983916,
+          "p95_total_latency_ms": 3608.5767499971553,
+          "pass_rate": 1.0,
+          "quality_metric": "structured_json_exact_field_match",
+          "rank": 1,
+          "record_paths": [
+            "measurements.json",
+            "measurements.json"
+          ],
+          "run_ids": [
+            "structured-json-profile-extraction-2k-autoregressive",
+            "structured-json-profile-extraction-2k-autoregressive"
+          ],
+          "stdev_total_latency_ms": 329.19864549876365,
+          "system_key": {
+            "accelerator": null,
+            "decode_mode": "autoregressive",
+            "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+            "execution_config_hash": "sha256:b3ab4cc5cc9a2d0cbfe68dd72b149002029b5d0a34049f9e1d1940623bb35f33",
+            "is_local": false,
+            "model_id": "z-ai/glm-5.3",
+            "model_revision": null,
+            "provider": "openrouter",
+            "quantization": null,
+            "reasoning_effort": "low",
+            "runtime_backend": null,
+            "runtime_name": "openai-compatible-api",
+            "thinking_type": null
+          },
+          "system_label": "z-ai/glm-5.3 via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=https://openrouter.ai/api/v1/chat/completions",
+          "ttft_basis": "client_observed_stream",
+          "usage": {
+            "cached_input_tokens": 1472,
+            "complete": true,
+            "input_tokens": 3070,
+            "output_tokens": 46,
+            "provenance": "provider_reported",
+            "reasoning_tokens": 0,
+            "runs_reporting_usage": 2,
+            "runs_total": 2
+          },
+          "verification_paths": [
+            "measurements.json",
+            "measurements.json"
+          ]
+        },
+        {
+          "coefficient_of_variation": 0.5444320134086554,
+          "correct_cases_per_minute": 9.836245535138648,
+          "cost": {
+            "correct_cases_per_currency_unit": 13035.260379326077,
+            "cost_per_case": 7.6715e-05,
+            "cost_per_correct_case": 7.6715e-05,
+            "currency": "USD",
+            "estimated": true,
+            "monetary_basis": "estimated_from_provider_reported_usage_and_manifest_rates",
+            "pricing_entry_id": "openrouter-zai-glm-5.3-flash-fp8-20260902",
+            "pricing_entry_sha256": "66395b56789a875a259ccb124f441dfb5d46188f78a897bffaca133efa049f3f",
+            "rates_are_illustrative": false,
+            "reasons": [],
+            "total_amount": 0.00015343
+          },
+          "evidence_count": 2,
+          "max_peak_memory_bytes": null,
+          "mean_peak_memory_bytes": null,
+          "mean_quality_score": 1.0,
+          "mean_total_latency_ms": 6099.888396000097,
+          "mean_ttft_ms": 5999.592229500195,
+          "missing_evidence": [
+            "peak memory is a local-only measurement and is not available for a system executed by a hosted provider"
+          ],
+          "objective_name": "max_correct_cases_per_minute",
+          "objective_value": 9.836245535138648,
+          "p50_total_latency_ms": 6099.888396000097,
+          "p95_total_latency_ms": 9420.862917002523,
+          "pass_rate": 1.0,
+          "quality_metric": "structured_json_exact_field_match",
+          "rank": 2,
+          "record_paths": [
+            "measurements.json",
+            "measurements.json"
+          ],
+          "run_ids": [
+            "structured-json-profile-extraction-2k-autoregressive",
+            "structured-json-profile-extraction-2k-autoregressive"
+          ],
+          "stdev_total_latency_ms": 3320.9745210024266,
+          "system_key": {
+            "accelerator": null,
+            "decode_mode": "autoregressive",
+            "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+            "execution_config_hash": "sha256:1ab523959b065dc54599a15f0657f875ec139d69321a53a8f94502b9656cf388",
+            "is_local": false,
+            "model_id": "z-ai/glm-5.3-flash",
+            "model_revision": null,
+            "provider": "openrouter",
+            "quantization": null,
+            "reasoning_effort": "low",
+            "runtime_backend": null,
+            "runtime_name": "openai-compatible-api",
+            "thinking_type": null
+          },
+          "system_label": "z-ai/glm-5.3-flash via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=https://openrouter.ai/api/v1/chat/completions",
+          "ttft_basis": "client_observed_stream",
+          "usage": {
+            "cached_input_tokens": 1472,
+            "complete": true,
+            "input_tokens": 3070,
+            "output_tokens": 46,
+            "provenance": "provider_reported",
+            "reasoning_tokens": 0,
+            "runs_reporting_usage": 2,
+            "runs_total": 2
+          },
+          "verification_paths": [
+            "measurements.json",
+            "measurements.json"
+          ]
+        }
+      ],
+      "recommended": {
+        "coefficient_of_variation": 0.100384473826667,
+        "correct_cases_per_minute": 18.29615191907781,
+        "cost": {
+          "correct_cases_per_currency_unit": 708.6368661243233,
+          "cost_per_case": 0.0014111599999999998,
+          "cost_per_correct_case": 0.0014111599999999998,
+          "currency": "USD",
+          "estimated": true,
+          "monetary_basis": "estimated_from_provider_reported_usage_and_manifest_rates",
+          "pricing_entry_id": "openrouter-zai-glm-5.3-fp8-20260902",
+          "pricing_entry_sha256": "093cfa1ff019cf2aa8b365bddb0c4285f4bb3a92b387d5fbe0406ecea33d0c39",
+          "rates_are_illustrative": false,
+          "reasons": [],
+          "total_amount": 0.0028223199999999997
+        },
+        "evidence_count": 2,
+        "max_peak_memory_bytes": null,
+        "mean_peak_memory_bytes": null,
+        "mean_quality_score": 1.0,
+        "mean_total_latency_ms": 3279.3781044983916,
+        "mean_ttft_ms": 3278.438062499845,
+        "missing_evidence": [
+          "peak memory is a local-only measurement and is not available for a system executed by a hosted provider"
+        ],
+        "objective_name": "max_correct_cases_per_minute",
+        "objective_value": 18.29615191907781,
+        "p50_total_latency_ms": 3279.3781044983916,
+        "p95_total_latency_ms": 3608.5767499971553,
+        "pass_rate": 1.0,
+        "quality_metric": "structured_json_exact_field_match",
+        "rank": 1,
+        "record_paths": [
+          "measurements.json",
+          "measurements.json"
+        ],
+        "run_ids": [
+          "structured-json-profile-extraction-2k-autoregressive",
+          "structured-json-profile-extraction-2k-autoregressive"
+        ],
+        "stdev_total_latency_ms": 329.19864549876365,
+        "system_key": {
+          "accelerator": null,
+          "decode_mode": "autoregressive",
+          "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+          "execution_config_hash": "sha256:b3ab4cc5cc9a2d0cbfe68dd72b149002029b5d0a34049f9e1d1940623bb35f33",
+          "is_local": false,
+          "model_id": "z-ai/glm-5.3",
+          "model_revision": null,
+          "provider": "openrouter",
+          "quantization": null,
+          "reasoning_effort": "low",
+          "runtime_backend": null,
+          "runtime_name": "openai-compatible-api",
+          "thinking_type": null
+        },
+        "system_label": "z-ai/glm-5.3 via openrouter [openai-compatible-api/unknown] quant=unrecorded reasoning=low decode=autoregressive endpoint=https://openrouter.ai/api/v1/chat/completions",
+        "ttft_basis": "client_observed_stream",
+        "usage": {
+          "cached_input_tokens": 1472,
+          "complete": true,
+          "input_tokens": 3070,
+          "output_tokens": 46,
+          "provenance": "provider_reported",
+          "reasoning_tokens": 0,
+          "runs_reporting_usage": 2,
+          "runs_total": 2
+        },
+        "verification_paths": [
+          "measurements.json",
+          "measurements.json"
+        ]
+      },
+      "rejected": []
+    }
+  ],
+  "tune_report_paths": []
+}
