@@ -9,11 +9,13 @@ import json
 import math
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
-from llmtracefx.optimizer.compare.report import CompareReport
-from llmtracefx.optimizer.compare.report_html import render_compare_report_html
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 PUBLIC_DIR = Path(__file__).resolve().parent
 MAX_PUBLIC_FILE_BYTES = 4 * 1024 * 1024
@@ -235,6 +237,16 @@ def _sanitize_comparison_paths(value: Any) -> None:
             _sanitize_comparison_paths(item)
 
 
+def _render_comparison(path: Path) -> str:
+    from llmtracefx.optimizer.compare.report import CompareReport
+    from llmtracefx.optimizer.compare.report_html import (
+        render_compare_report_html,
+    )
+
+    report = CompareReport.read_json(path)
+    return render_compare_report_html(report, redact_paths=True)
+
+
 def _measurement(
     root: Path,
     request_id: str,
@@ -374,7 +386,6 @@ def build(root: Path) -> None:
             ),
             "rows": [
                 {
-                    "operator_row_label": request_id,
                     **{
                         key: generation[request_id][key]
                         for key in (
@@ -402,9 +413,8 @@ def build(root: Path) -> None:
     comparison["pricing"]["manifest_path"] = "pricing-manifest.json"
     _sanitize_comparison_paths(comparison)
     _write_json(PUBLIC_DIR / "comparison.json", comparison)
-    validated_comparison = CompareReport.read_json(PUBLIC_DIR / "comparison.json")
     (PUBLIC_DIR / "comparison.html").write_text(
-        render_compare_report_html(validated_comparison, redact_paths=True),
+        _render_comparison(PUBLIC_DIR / "comparison.json"),
         encoding="utf-8",
     )
 
@@ -644,8 +654,7 @@ def verify() -> None:
     comparison = _load_json(PUBLIC_DIR / "comparison.json")
     if comparison["results_dirs"] != ["measurements.json"]:
         raise EvidenceError("comparison report still carries private result paths")
-    validated_comparison = CompareReport.read_json(PUBLIC_DIR / "comparison.json")
-    expected_html = render_compare_report_html(validated_comparison, redact_paths=True)
+    expected_html = _render_comparison(PUBLIC_DIR / "comparison.json")
     if _read_text(PUBLIC_DIR / "comparison.html") != expected_html:
         raise EvidenceError(
             "comparison HTML is not the deterministic rendering of comparison JSON"

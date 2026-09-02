@@ -785,6 +785,93 @@ def test_an_endpoint_query_holding_the_key_is_refused_before_it_is_hashed(
     assert API_KEY not in captured.err
 
 
+@pytest.mark.parametrize("flag", ["--budget-plan", "--budget-ledger"])
+def test_a_credential_in_a_budget_path_is_refused_before_any_file_or_network(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flag: str,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", API_KEY)
+    matrix = build_matrix(tmp_path)
+    output = tmp_path / "results"
+    safe_plan = tmp_path / "budget-plan.json"
+    safe_ledger = tmp_path / "budget-ledger.json"
+    values = {
+        "--budget-plan": safe_plan,
+        "--budget-ledger": safe_ledger,
+    }
+    values[flag] = tmp_path / f"private-{API_KEY}.json"
+
+    code, out, err = run_main(
+        [
+            "workloads",
+            "run-api",
+            "--matrix",
+            str(matrix),
+            "--output-dir",
+            str(output),
+            "--profile",
+            "openrouter",
+            "--model-id",
+            "z-ai/glm-5.3",
+            "--budget-plan",
+            str(values["--budget-plan"]),
+            "--budget-ledger",
+            str(values["--budget-ledger"]),
+            "--budget-request-id",
+            "one",
+        ]
+    )
+
+    assert code == 1
+    assert API_KEY not in out
+    assert API_KEY not in err
+    assert flag in err
+    assert not output.exists()
+
+
+def test_budget_error_detail_is_credential_scrubbed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", API_KEY)
+    matrix = build_matrix(tmp_path)
+    ledger = tmp_path / "budget-ledger.json"
+    plan = tmp_path / "budget-plan.json"
+
+    def fail_read(*_args: Any, **_kwargs: Any) -> None:
+        raise cli.BudgetError(f"provider echoed {API_KEY}")
+
+    monkeypatch.setattr(cli.BudgetPlan, "read", fail_read)
+
+    code, out, err = run_main(
+        [
+            "workloads",
+            "run-api",
+            "--matrix",
+            str(matrix),
+            "--output-dir",
+            str(tmp_path / "results"),
+            "--profile",
+            "openrouter",
+            "--model-id",
+            "z-ai/glm-5.3",
+            "--run-id",
+            "structured-json-profile-extraction-2k-autoregressive",
+            "--budget-plan",
+            str(plan),
+            "--budget-ledger",
+            str(ledger),
+            "--budget-request-id",
+            "one",
+        ]
+    )
+
+    assert code == 1
+    assert API_KEY not in out
+    assert API_KEY not in err
+    assert "[REDACTED]" in err
+
+
 def test_an_innocuous_query_key_holding_the_key_is_also_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

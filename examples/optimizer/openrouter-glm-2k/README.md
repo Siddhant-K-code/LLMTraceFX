@@ -56,7 +56,7 @@ the actual charge.
 ## Verify
 
 ```bash
-python examples/optimizer/openrouter-glm-2k/evidence_bundle.py verify
+uv run python examples/optimizer/openrouter-glm-2k/evidence_bundle.py verify
 ```
 
 ## Separate self-hosted question

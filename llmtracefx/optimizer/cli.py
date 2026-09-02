@@ -1123,10 +1123,17 @@ def _cmd_workloads_run_api(args: argparse.Namespace) -> int:
     # verification.json under that name.
     credential = os.environ.get(key_env, "").strip() if key_env else ""
     if credential:
-        for label, value in (
+        path_values = [
             ("--output-dir", args.output_dir),
             ("--matrix", args.matrix),
+        ]
+        for label, value in (
+            ("--budget-plan", args.budget_plan),
+            ("--budget-ledger", args.budget_ledger),
         ):
+            if value is not None:
+                path_values.append((label, value))
+        for label, value in path_values:
             if _contains_credential(str(value), credential):
                 # The offending value is named by its flag and never
                 # echoed; it is the credential.
@@ -1240,7 +1247,11 @@ def _cmd_workloads_run_api(args: argparse.Namespace) -> int:
             BudgetPlan.read(Path(args.budget_plan))
             budget_gate = BudgetGate(Path(args.budget_plan), Path(args.budget_ledger))
         except BudgetError as exc:
-            print(f"Budget gate configuration failed: {exc}", file=sys.stderr)
+            print(
+                f"Budget gate configuration failed: "
+                f"{_scrubbed_detail(key_env, exc)}",
+                file=sys.stderr,
+            )
             return 1
 
     results = run_selected_api_rows(

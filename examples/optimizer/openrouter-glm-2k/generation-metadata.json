@@ -8,7 +8,6 @@
       "native_tokens_completion": 23,
       "native_tokens_prompt": 1535,
       "native_tokens_reasoning": 0,
-      "operator_row_label": "flash-structured-r1",
       "provider_name": "Z.AI",
       "service_tier": null,
       "total_cost": 0.000120875
@@ -19,7 +18,6 @@
       "native_tokens_completion": 30,
       "native_tokens_prompt": 1536,
       "native_tokens_reasoning": 0,
-      "operator_row_label": "flash-prose-r1",
       "provider_name": "Z.AI",
       "service_tier": null,
       "total_cost": 0.0001227
@@ -30,7 +28,6 @@
       "native_tokens_completion": 23,
       "native_tokens_prompt": 1535,
       "native_tokens_reasoning": 0,
-      "operator_row_label": "flash-structured-r2",
       "provider_name": "Z.AI",
       "service_tier": null,
       "total_cost": 3.2555e-05
@@ -41,7 +38,6 @@
       "native_tokens_completion": 33,
       "native_tokens_prompt": 1536,
       "native_tokens_reasoning": 0,
-      "operator_row_label": "flash-prose-r2",
       "provider_name": "Z.AI",
       "service_tier": null,
       "total_cost": 0.00012345
@@ -52,7 +48,6 @@
       "native_tokens_completion": 23,
       "native_tokens_prompt": 1535,
       "native_tokens_reasoning": 0,
-      "operator_row_label": "glm-structured-r1",
       "provider_name": "Z.AI",
       "service_tier": null,
       "total_cost": 0.0022502
@@ -63,7 +58,6 @@
       "native_tokens_completion": 37,
       "native_tokens_prompt": 1536,
       "native_tokens_reasoning": 0,
-      "operator_row_label": "glm-prose-r1",
       "provider_name": "Z.AI",
       "service_tier": null,
       "total_cost": 0.0023132
@@ -74,7 +68,6 @@
       "native_tokens_completion": 23,
       "native_tokens_prompt": 1535,
       "native_tokens_reasoning": 0,
-      "operator_row_label": "glm-structured-r2",
       "provider_name": "Z.AI",
       "service_tier": null,
       "total_cost": 0.00057212
@@ -85,7 +78,6 @@
       "native_tokens_completion": 33,
       "native_tokens_prompt": 1536,
       "native_tokens_reasoning": 0,
-      "operator_row_label": "glm-prose-r2",
       "provider_name": "Z.AI",
       "service_tier": null,
       "total_cost": 0.00061752

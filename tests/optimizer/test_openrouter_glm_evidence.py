@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -58,6 +59,19 @@ def test_all_rows_are_exact_pinned_passing_measurements() -> None:
     )
 
 
+def test_documented_direct_verifier_command_works_from_checkout() -> None:
+    completed = subprocess.run(
+        [sys.executable, str(PUBLIC / "evidence_bundle.py"), "verify"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "public evidence verified" in completed.stdout
+
+
 def test_comparison_is_hosted_only_and_constraints_first() -> None:
     report = load("comparison.json")
 
@@ -72,8 +86,7 @@ def test_comparison_is_hosted_only_and_constraints_first() -> None:
 
 
 def test_comparison_html_is_the_sanitized_json_rendering() -> None:
-    report = BUNDLE.CompareReport.read_json(PUBLIC / "comparison.json")
-    expected = BUNDLE.render_compare_report_html(report, redact_paths=True)
+    expected = BUNDLE._render_comparison(PUBLIC / "comparison.json")
 
     assert (PUBLIC / "comparison.html").read_text(encoding="utf-8") == expected
     assert ".cache/" not in expected
