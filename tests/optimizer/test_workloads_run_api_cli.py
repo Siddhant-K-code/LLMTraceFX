@@ -19,6 +19,7 @@ import pytest
 
 from llmtracefx.optimizer import cli
 from llmtracefx.optimizer.collectors.openai_api import HTTPRequest
+from llmtracefx.optimizer.workloads.api_budget import BudgetGate
 from llmtracefx.optimizer.workloads.catalog import (
     STRUCTURED_JSON_PROFILE_EXTRACTION,
 )
@@ -517,12 +518,52 @@ def test_budget_gate_prevents_a_second_attempt_for_the_same_request(
         for item in manifest["entries"]
         if item["decode_mode"] == DECODE_MODE_AUTOREGRESSIVE
     )
+    routing_args = [
+        "--temperature",
+        "0",
+        "--top-p",
+        "1",
+        "--reasoning-effort",
+        "low",
+        "--route-provider",
+        "z-ai/fp8",
+        "--disable-provider-fallbacks",
+        "--require-provider-parameters",
+        "--max-provider-prompt-price",
+        "1.4",
+        "--max-provider-completion-price",
+        "4.4",
+    ]
+    assert (
+        invoke(
+            [
+                "workloads",
+                "run-api",
+                "--matrix",
+                str(matrix),
+                "--output-dir",
+                str(tmp_path / "preflight"),
+                "--model-id",
+                "z-ai/glm-5.3",
+                "--profile",
+                "openrouter",
+                "--mode",
+                DECODE_MODE_AUTOREGRESSIVE,
+                *routing_args,
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+    request_plan = json.loads(capsys.readouterr().out)["rows"][0]["request_plan"]
     plan = tmp_path / "budget-plan.json"
+    ledger = tmp_path / "budget-ledger.json"
     plan.write_text(
         json.dumps(
             {
-                "schema_version": "1",
+                "schema_version": "2",
                 "experiment_id": "cli-budget-test",
+                "ledger_file_name": ledger.name,
                 "authorized_total_usd": "5.00",
                 "requests": [
                     {
@@ -531,6 +572,15 @@ def test_budget_gate_prevents_a_second_attempt_for_the_same_request(
                         "workload_id": entry["workload_id"],
                         "workload_version": entry["workload_version"],
                         "prompt_sha256": entry["prompt"]["prompt_hash"],
+                        "request_config_sha256": request_plan["config_hash"],
+                        "endpoint_origin": request_plan["endpoint_origin"],
+                        "endpoint_path": request_plan["endpoint_path"],
+                        "route_providers": ["z-ai/fp8"],
+                        "allow_fallbacks": False,
+                        "require_parameters": True,
+                        "max_provider_prompt_price_per_million": "1.4",
+                        "max_provider_completion_price_per_million": "4.4",
+                        "reasoning_effort": "low",
                         "input_token_ceiling": 20_000,
                         "max_output_tokens": entry["max_tokens"],
                         "prompt_usd_per_token": "0.0000014",
@@ -544,6 +594,7 @@ def test_budget_gate_prevents_a_second_attempt_for_the_same_request(
         ),
         encoding="utf-8",
     )
+    BudgetGate.initialize(plan, ledger)
     argv = [
         "workloads",
         "run-api",
@@ -557,10 +608,11 @@ def test_budget_gate_prevents_a_second_attempt_for_the_same_request(
         "openrouter",
         "--mode",
         DECODE_MODE_AUTOREGRESSIVE,
+        *routing_args,
         "--budget-plan",
         str(plan),
         "--budget-ledger",
-        str(tmp_path / "budget-ledger.json"),
+        str(ledger),
         "--budget-request-id",
         "only-attempt",
     ]

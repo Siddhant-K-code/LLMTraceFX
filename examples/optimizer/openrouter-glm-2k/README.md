@@ -41,6 +41,14 @@ state, comparison JSON/HTML, and limitations. It contains no prompt,
 response, reasoning text, credential, account identifier, raw header,
 provider request identifier, or private path.
 
+An independent post-run review found that the historical budget-ledger schema
+v1 auto-initialized a missing ledger and did not bind each claim to the full
+request/routing/price configuration. The final schema v2 code refuses a
+missing ledger and binds those fields. This bundle preserves the executed v1
+ledger rather than rewriting history; each measured request's own sealed plan
+still records the pinned route and provider-side price caps, and its final
+usage block records the actual charge.
+
 ## Verify
 
 ```bash

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,15 @@ def request(
         "workload_id": "structured-json-profile-extraction",
         "workload_version": "1",
         "prompt_sha256": "sha256:prompt",
+        "request_config_sha256": "sha256:config",
+        "endpoint_origin": "https://openrouter.ai",
+        "endpoint_path": "/api/v1/chat/completions",
+        "route_providers": ["z-ai/fp8"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+        "max_provider_prompt_price_per_million": "1.4",
+        "max_provider_completion_price_per_million": "4.4",
+        "reasoning_effort": "low",
         "input_token_ceiling": 10_000,
         "max_output_tokens": 96,
         "prompt_usd_per_token": prompt_rate,
@@ -47,8 +57,9 @@ def write_plan(
     path.write_text(
         json.dumps(
             {
-                "schema_version": "1",
+                "schema_version": "2",
                 "experiment_id": "hosted-budget-test",
+                "ledger_file_name": "ledger.json",
                 "authorized_total_usd": authorized,
                 "requests": requests,
             }
@@ -66,6 +77,15 @@ def claim(
     workload_id: str = "structured-json-profile-extraction",
     workload_version: str = "1",
     prompt_sha256: str = "sha256:prompt",
+    request_config_sha256: str = "sha256:config",
+    endpoint_origin: str = "https://openrouter.ai",
+    endpoint_path: str = "/api/v1/chat/completions",
+    route_providers: tuple[str, ...] = ("z-ai/fp8",),
+    allow_fallbacks: bool = False,
+    require_parameters: bool = True,
+    max_provider_prompt_price_per_million: Decimal = Decimal("1.4"),
+    max_provider_completion_price_per_million: Decimal = Decimal("4.4"),
+    reasoning_effort: str = "low",
     input_token_upper_bound: int = 9_000,
     max_output_tokens: int = 96,
 ) -> None:
@@ -75,6 +95,17 @@ def claim(
         workload_id=workload_id,
         workload_version=workload_version,
         prompt_sha256=prompt_sha256,
+        request_config_sha256=request_config_sha256,
+        endpoint_origin=endpoint_origin,
+        endpoint_path=endpoint_path,
+        route_providers=route_providers,
+        allow_fallbacks=allow_fallbacks,
+        require_parameters=require_parameters,
+        max_provider_prompt_price_per_million=max_provider_prompt_price_per_million,
+        max_provider_completion_price_per_million=(
+            max_provider_completion_price_per_million
+        ),
+        reasoning_effort=reasoning_effort,
         input_token_upper_bound=input_token_upper_bound,
         max_output_tokens=max_output_tokens,
     )
@@ -98,7 +129,7 @@ def test_cumulative_request_ceilings_must_fit_authorization(tmp_path: Path) -> N
 def test_claim_is_atomic_sealed_and_cannot_be_retried(tmp_path: Path) -> None:
     plan = write_plan(tmp_path / "plan.json", [request("one")])
     ledger = tmp_path / "ledger.json"
-    gate = BudgetGate(plan, ledger)
+    gate = BudgetGate.initialize(plan, ledger)
 
     claim(gate, "one")
 
@@ -112,7 +143,7 @@ def test_claim_is_atomic_sealed_and_cannot_be_retried(tmp_path: Path) -> None:
 
 def test_failed_request_keeps_ceiling_and_stops_the_model(tmp_path: Path) -> None:
     requests = [request("first"), request("second")]
-    gate = BudgetGate(
+    gate = BudgetGate.initialize(
         write_plan(tmp_path / "plan.json", requests), tmp_path / "ledger.json"
     )
     claim(gate, "first")
@@ -157,7 +188,7 @@ def test_missing_or_ambiguous_billing_categories_refuse(
 def test_tampered_ledger_seal_refuses_before_another_claim(tmp_path: Path) -> None:
     plan = write_plan(tmp_path / "plan.json", [request("one"), request("two")])
     ledger = tmp_path / "ledger.json"
-    gate = BudgetGate(plan, ledger)
+    gate = BudgetGate.initialize(plan, ledger)
     claim(gate, "one")
     payload = json.loads(ledger.read_text(encoding="utf-8"))
     payload["remaining_authorized_usd"] = "5.000000000000"
@@ -168,13 +199,17 @@ def test_tampered_ledger_seal_refuses_before_another_claim(tmp_path: Path) -> No
 
 
 def test_request_binding_must_match_exactly(tmp_path: Path) -> None:
-    gate = BudgetGate(
+    gate = BudgetGate.initialize(
         write_plan(tmp_path / "plan.json", [request("one")]),
         tmp_path / "ledger.json",
     )
 
     with pytest.raises(BudgetError, match="plan binding"):
         claim(gate, "one", prompt_sha256="sha256:different")
+    with pytest.raises(BudgetError, match="plan binding"):
+        claim(gate, "one", request_config_sha256="sha256:different")
+    with pytest.raises(BudgetError, match="plan binding"):
+        claim(gate, "one", route_providers=("unrestricted",))
     with pytest.raises(BudgetError, match="token ceiling"):
         claim(gate, "one", input_token_upper_bound=10_001)
 
@@ -182,7 +217,7 @@ def test_request_binding_must_match_exactly(tmp_path: Path) -> None:
 def test_success_settles_to_provider_cost_but_keeps_computed_cost_separate(
     tmp_path: Path,
 ) -> None:
-    gate = BudgetGate(
+    gate = BudgetGate.initialize(
         write_plan(tmp_path / "plan.json", [request("one")]),
         tmp_path / "ledger.json",
     )
@@ -211,7 +246,7 @@ def test_success_settles_to_provider_cost_but_keeps_computed_cost_separate(
 def test_missing_cached_usage_makes_computed_cost_unavailable_not_zero(
     tmp_path: Path,
 ) -> None:
-    gate = BudgetGate(
+    gate = BudgetGate.initialize(
         write_plan(tmp_path / "plan.json", [request("one")]),
         tmp_path / "ledger.json",
     )
@@ -230,3 +265,43 @@ def test_missing_cached_usage_makes_computed_cost_unavailable_not_zero(
     )
 
     assert gate.snapshot()["entries"][0]["computed_observed_cost_usd"] is None
+
+
+def test_execution_refuses_to_initialize_or_reset_a_missing_ledger(
+    tmp_path: Path,
+) -> None:
+    plan = write_plan(tmp_path / "plan.json", [request("one")])
+    ledger = tmp_path / "ledger.json"
+
+    with pytest.raises(BudgetError, match="never initializes or resets"):
+        BudgetGate(plan, ledger)
+    initialized = BudgetGate.initialize(plan, ledger)
+    claim(initialized, "one")
+    ledger.unlink()
+    with pytest.raises(BudgetError, match="never initializes or resets"):
+        BudgetGate(plan, ledger)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "max_provider_prompt_price_per_million",
+            "1.41",
+            "prompt price cap exceeds",
+        ),
+        (
+            "max_provider_completion_price_per_million",
+            "4.41",
+            "completion price cap exceeds",
+        ),
+    ],
+)
+def test_provider_price_caps_cannot_exceed_planned_rates(
+    tmp_path: Path, field: str, value: str, message: str
+) -> None:
+    planned = request("one")
+    planned[field] = value
+
+    with pytest.raises(BudgetError, match=message):
+        BudgetPlan.read(write_plan(tmp_path / "plan.json", [planned]))

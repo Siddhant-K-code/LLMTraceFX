@@ -28,8 +28,8 @@ from ..collectors._shared import atomic_write_text, sha256_text
 from ..collectors.openai_api import ProviderUsage
 from ..schema import utc_now_iso
 
-BUDGET_PLAN_SCHEMA_VERSION = "1"
-BUDGET_LEDGER_SCHEMA_VERSION = "1"
+BUDGET_PLAN_SCHEMA_VERSION = "2"
+BUDGET_LEDGER_SCHEMA_VERSION = "2"
 DEFAULT_HARD_LIMIT_USD = Decimal("5.00")
 _MONEY_PLACES = Decimal("0.000000000001")
 _LEDGER_SEAL_FIELD = "ledger_sha256"
@@ -84,6 +84,15 @@ class BudgetRequest:
     workload_id: str
     workload_version: str
     prompt_sha256: str
+    request_config_sha256: str
+    endpoint_origin: str
+    endpoint_path: str
+    route_providers: tuple[str, ...]
+    allow_fallbacks: bool
+    require_parameters: bool
+    max_provider_prompt_price_per_million: Decimal
+    max_provider_completion_price_per_million: Decimal
+    reasoning_effort: str
     input_token_ceiling: int
     max_output_tokens: int
     prompt_usd_per_token: Decimal
@@ -110,6 +119,19 @@ class BudgetRequest:
             "workload_id": self.workload_id,
             "workload_version": self.workload_version,
             "prompt_sha256": self.prompt_sha256,
+            "request_config_sha256": self.request_config_sha256,
+            "endpoint_origin": self.endpoint_origin,
+            "endpoint_path": self.endpoint_path,
+            "route_providers": list(self.route_providers),
+            "allow_fallbacks": self.allow_fallbacks,
+            "require_parameters": self.require_parameters,
+            "max_provider_prompt_price_per_million": str(
+                self.max_provider_prompt_price_per_million
+            ),
+            "max_provider_completion_price_per_million": str(
+                self.max_provider_completion_price_per_million
+            ),
+            "reasoning_effort": self.reasoning_effort,
             "input_token_ceiling": self.input_token_ceiling,
             "max_output_tokens": self.max_output_tokens,
             "prompt_usd_per_token": str(self.prompt_usd_per_token),
@@ -139,24 +161,71 @@ class BudgetRequest:
                 "'included_in_completion_tokens'; unknown reasoning billing "
                 "cannot be assumed free"
             )
+        routes = data.get("route_providers")
+        if (
+            not isinstance(routes, list)
+            or not routes
+            or not all(isinstance(route, str) and route for route in routes)
+            or len(set(routes)) != len(routes)
+        ):
+            raise BudgetError(
+                f"{context}.route_providers must be a non-empty list of "
+                "unique strings"
+            )
+        allow_fallbacks = data.get("allow_fallbacks")
+        require_parameters = data.get("require_parameters")
+        if not isinstance(allow_fallbacks, bool):
+            raise BudgetError(f"{context}.allow_fallbacks must be a boolean")
+        if not isinstance(require_parameters, bool):
+            raise BudgetError(f"{context}.require_parameters must be a boolean")
+        max_prompt_price = _decimal(
+            data.get("max_provider_prompt_price_per_million"),
+            context=f"{context}.max_provider_prompt_price_per_million",
+        )
+        max_completion_price = _decimal(
+            data.get("max_provider_completion_price_per_million"),
+            context=f"{context}.max_provider_completion_price_per_million",
+        )
+        prompt_rate = _decimal(
+            data.get("prompt_usd_per_token"),
+            context=f"{context}.prompt_usd_per_token",
+        )
+        completion_rate = _decimal(
+            data.get("completion_usd_per_token"),
+            context=f"{context}.completion_usd_per_token",
+        )
+        per_million = Decimal(1_000_000)
+        if max_prompt_price / per_million > prompt_rate:
+            raise BudgetError(
+                f"{context} provider prompt price cap exceeds its planned rate"
+            )
+        if max_completion_price / per_million > completion_rate:
+            raise BudgetError(
+                f"{context} provider completion price cap exceeds its planned rate"
+            )
         return cls(
             request_id=_string(data, "request_id", context=context),
             model_id=_string(data, "model_id", context=context),
             workload_id=_string(data, "workload_id", context=context),
             workload_version=_string(data, "workload_version", context=context),
             prompt_sha256=_string(data, "prompt_sha256", context=context),
+            request_config_sha256=_string(
+                data, "request_config_sha256", context=context
+            ),
+            endpoint_origin=_string(data, "endpoint_origin", context=context),
+            endpoint_path=_string(data, "endpoint_path", context=context),
+            route_providers=tuple(routes),
+            allow_fallbacks=allow_fallbacks,
+            require_parameters=require_parameters,
+            max_provider_prompt_price_per_million=max_prompt_price,
+            max_provider_completion_price_per_million=max_completion_price,
+            reasoning_effort=_string(data, "reasoning_effort", context=context),
             input_token_ceiling=_positive_int(
                 data, "input_token_ceiling", context=context
             ),
             max_output_tokens=_positive_int(data, "max_output_tokens", context=context),
-            prompt_usd_per_token=_decimal(
-                data.get("prompt_usd_per_token"),
-                context=f"{context}.prompt_usd_per_token",
-            ),
-            completion_usd_per_token=_decimal(
-                data.get("completion_usd_per_token"),
-                context=f"{context}.completion_usd_per_token",
-            ),
+            prompt_usd_per_token=prompt_rate,
+            completion_usd_per_token=completion_rate,
             cached_prompt_usd_per_token=_decimal(
                 data.get("cached_prompt_usd_per_token"),
                 context=f"{context}.cached_prompt_usd_per_token",
@@ -171,6 +240,7 @@ class BudgetPlan:
     """Validated immutable authorization for an entire hosted experiment."""
 
     experiment_id: str
+    ledger_file_name: str
     authorized_total_usd: Decimal
     requests: tuple[BudgetRequest, ...]
     content_sha256: str
@@ -216,6 +286,7 @@ class BudgetPlan:
             )
         plan = cls(
             experiment_id=_string(raw, "experiment_id", context="budget plan"),
+            ledger_file_name=_string(raw, "ledger_file_name", context="budget plan"),
             authorized_total_usd=authorized,
             requests=requests,
             content_sha256=sha256_text(_canonical_json(raw)),
@@ -282,15 +353,48 @@ class BudgetGate:
         *,
         hard_limit_usd: Decimal = DEFAULT_HARD_LIMIT_USD,
     ) -> None:
+        self._configure(plan_path, ledger_path, hard_limit_usd=hard_limit_usd)
+        with _exclusive_lock(self.lock_path):
+            if not self.ledger_path.exists():
+                raise BudgetError(
+                    "budget ledger does not exist; execution never initializes "
+                    "or resets lifetime authorization"
+                )
+            self._read_ledger()
+
+    def _configure(
+        self,
+        plan_path: Path,
+        ledger_path: Path,
+        *,
+        hard_limit_usd: Decimal,
+    ) -> None:
         self.plan = BudgetPlan.read(plan_path, hard_limit_usd=hard_limit_usd)
+        if ledger_path.name != self.plan.ledger_file_name:
+            raise BudgetError(
+                "budget ledger file name does not match the immutable plan"
+            )
         self.ledger_path = ledger_path
         self.lock_path = ledger_path.with_name(f".{ledger_path.name}.lock")
         self._requests = {request.request_id: request for request in self.plan.requests}
-        with _exclusive_lock(self.lock_path):
-            if self.ledger_path.exists():
-                self._read_ledger()
-            else:
-                self._write_ledger(self._initial_ledger())
+
+    @classmethod
+    def initialize(
+        cls,
+        plan_path: Path,
+        ledger_path: Path,
+        *,
+        hard_limit_usd: Decimal = DEFAULT_HARD_LIMIT_USD,
+    ) -> BudgetGate:
+        """Create the sole initial ledger before any execution is allowed."""
+
+        gate = cls.__new__(cls)
+        gate._configure(plan_path, ledger_path, hard_limit_usd=hard_limit_usd)
+        with _exclusive_lock(gate.lock_path):
+            if gate.ledger_path.exists():
+                raise BudgetError("budget ledger already exists and cannot be reset")
+            gate._write_ledger(gate._initial_ledger())
+        return gate
 
     def _initial_ledger(self) -> dict[str, Any]:
         by_model: dict[str, Decimal] = defaultdict(Decimal)
@@ -403,6 +507,15 @@ class BudgetGate:
         workload_id: str,
         workload_version: str,
         prompt_sha256: str,
+        request_config_sha256: str,
+        endpoint_origin: str,
+        endpoint_path: str,
+        route_providers: tuple[str, ...],
+        allow_fallbacks: bool,
+        require_parameters: bool,
+        max_provider_prompt_price_per_million: Decimal,
+        max_provider_completion_price_per_million: Decimal,
+        reasoning_effort: str,
         input_token_upper_bound: int,
         max_output_tokens: int,
     ) -> None:
@@ -416,6 +529,15 @@ class BudgetGate:
             workload_id,
             workload_version,
             prompt_sha256,
+            request_config_sha256,
+            endpoint_origin,
+            endpoint_path,
+            route_providers,
+            allow_fallbacks,
+            require_parameters,
+            max_provider_prompt_price_per_million,
+            max_provider_completion_price_per_million,
+            reasoning_effort,
             max_output_tokens,
         )
         planned_binding = (
@@ -423,6 +545,15 @@ class BudgetGate:
             planned.workload_id,
             planned.workload_version,
             planned.prompt_sha256,
+            planned.request_config_sha256,
+            planned.endpoint_origin,
+            planned.endpoint_path,
+            planned.route_providers,
+            planned.allow_fallbacks,
+            planned.require_parameters,
+            planned.max_provider_prompt_price_per_million,
+            planned.max_provider_completion_price_per_million,
+            planned.reasoning_effort,
             planned.max_output_tokens,
         )
         if actual_binding != planned_binding:

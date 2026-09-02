@@ -2,17 +2,20 @@
   "budget": {
     "account_delta_scope_limitation": "The single immediate post-run key-usage query reflected only 0.00039958 USD, equal to the Flash calls, while all eight final SSE usage blocks reported 0.00615262 USD. The account endpoint can lag and can include unrelated concurrent activity; its delta is separate corroborating evidence, not the experiment request total.",
     "authorized_total_usd": "5.000000000000",
+    "execution_ledger_schema": "1",
     "input_token_ceiling_method": "UTF-8 byte length of the exact rendered prompt plus a fixed 4,096-token reserve for provider chat framing and special tokens; every input token is then priced at the full prompt rate even when cache reads could be cheaper",
     "manifest_computed_request_total_usd": "0.006152620000",
     "planned_ceiling_usd": "0.074532600000",
     "planned_request_count": 8,
     "post_run_account_usage_delta_usd": "0.000399580000",
+    "post_run_gate_hardening": "Independent review found that execution schema v1 auto-initialized a missing ledger and did not bind its claim to the complete request/routing/price configuration. The committed schema v2 refuses missing ledgers and binds those fields. The historical v1 plan and ledger are preserved unchanged; actual request plans and provider usage separately show the pinned route, price caps, and charges used here.",
     "provider_reported_request_total_usd": "0.006152620000",
     "remaining_authorization_usd": "4.993847380000",
     "unallocated_reserve_usd": "4.925467400000"
   },
   "claims": {
     "credentials_or_account_identifiers_published": false,
+    "historical_gate_limitations_disclosed": true,
     "prompts_or_responses_published": false,
     "ranking_scope": "constraints-first, single-objective ranking within each exact hosted workload stratum only",
     "reasoning_text_published": false,
@@ -26,7 +29,8 @@
     "Mandatory reasoning used low effort; these results do not characterize high or max effort.",
     "Provider-reported zero reasoning tokens do not prove the model performed no hidden internal computation.",
     "Prompt caching affected some second repetitions and is reported per row rather than normalized away.",
-    "The local Qwen3-8B evidence is contextual only and was excluded from direct ranking."
+    "The local Qwen3-8B evidence is contextual only and was excluded from direct ranking.",
+    "The historical execution used budget-ledger schema v1; its full-request binding limitations are disclosed in budget.post_run_gate_hardening rather than rewritten after the run."
   ],
   "local_qwen3_8b_context": {
     "correct_cases_per_minute": 23.115970638983462,

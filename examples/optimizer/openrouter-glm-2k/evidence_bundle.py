@@ -18,6 +18,20 @@ MODEL_BUILDS = {
     "z-ai/glm-5.3-flash": "z-ai/glm-5.3-flash-20260826",
     "z-ai/glm-5.3": "z-ai/glm-5.3-20260816",
 }
+EXECUTION_CODE_SHA256 = {
+    "llmtracefx/optimizer/cli.py": (
+        "682b3c261081f3302e85d43107f48226c460eae4dd2f1f7a089edd232410e815"
+    ),
+    "llmtracefx/optimizer/collectors/openai_api.py": (
+        "e970205e1e60e62bcf57f0c2214ef24d011fac3abec6409dc6e77f44c2347494"
+    ),
+    "llmtracefx/optimizer/workloads/api_budget.py": (
+        "37ec48c6ba50c672438a2930955090de691f5ae3310d4889ddddb79770bf657a"
+    ),
+    "llmtracefx/optimizer/workloads/api_verify.py": (
+        "b426162f14bce1208c700f0c384b626995250f54e14c375f6c0229bbc543016e"
+    ),
+}
 REQUESTS = (
     (
         "flash-structured-r1",
@@ -236,8 +250,28 @@ def _measurement(
     record = _load_json(paths["record"])
     api = _load_json(paths["api"])
     plan = api["plan"]
+    response_id = api.get("response_id")
+    if not isinstance(response_id, str) or not response_id:
+        raise EvidenceError("API evidence is missing its generation correlation ID")
+    correlation_sha256 = (
+        "sha256:"
+        + hashlib.sha256(
+            f"openrouter-generation-correlation-v1:{response_id}".encode()
+        ).hexdigest()
+    )
+    routing = plan["provider_extensions"].get("provider")
+    if (
+        not isinstance(routing, dict)
+        or not isinstance(routing.get("order"), list)
+        or len(routing["order"]) != 1
+        or not isinstance(routing["order"][0], str)
+    ):
+        raise EvidenceError("request plan does not pin exactly one provider route")
+    route_slug = routing["order"][0]
+    quantization = route_slug.partition("/")[2] or None
     return {
         "request_id": request_id,
+        "provider_generation_correlation_sha256": correlation_sha256,
         "repetition": repetition,
         "workload": {
             "workload_id": verification["workload_id"],
@@ -252,8 +286,8 @@ def _measurement(
             "resolved_model_build": generation["model"],
             "gateway": verification["provider"],
             "upstream_provider": generation["provider_name"],
-            "route_slug": "z-ai/fp8",
-            "quantization": "fp8",
+            "route_slug": route_slug,
+            "quantization": quantization,
             "runtime": record["runtime"],
         },
         "request_plan": {
@@ -336,17 +370,6 @@ def _measurement(
     }
 
 
-def _code_hashes() -> dict[str, str]:
-    root = PUBLIC_DIR.parents[2]
-    paths = (
-        "llmtracefx/optimizer/cli.py",
-        "llmtracefx/optimizer/collectors/openai_api.py",
-        "llmtracefx/optimizer/workloads/api_budget.py",
-        "llmtracefx/optimizer/workloads/api_verify.py",
-    )
-    return {path: _sha256(root / path) for path in paths}
-
-
 def build(root: Path) -> None:
     generation = _generation_rows(root)
     measurements = [
@@ -374,6 +397,11 @@ def build(root: Path) -> None:
             "rows": [
                 {
                     "request_id": request_id,
+                    "provider_generation_correlation_sha256": next(
+                        row["provider_generation_correlation_sha256"]
+                        for row in measurements
+                        if row["request_id"] == request_id
+                    ),
                     **{
                         key: generation[request_id][key]
                         for key in (
@@ -424,12 +452,16 @@ def build(root: Path) -> None:
                 row["api_evidence"]["usage"]["cost_usd"] for row in rows
             ),
         }
+    route_slugs = {row["system"]["route_slug"] for row in measurements}
+    quantizations = {row["system"]["quantization"] for row in measurements}
+    if len(route_slugs) != 1 or len(quantizations) != 1:
+        raise EvidenceError("measured rows do not share one exact route identity")
     manifest = {
         "schema_version": "1",
         "evidence_id": "openrouter-zai-glm-2k-20260902",
         "run": {
             "base_checkout_commit": ("a6077adaf7135e2a2e360aeae4a73b6b411b3493"),
-            "execution_code_sha256": _code_hashes(),
+            "execution_code_sha256": EXECUTION_CODE_SHA256,
             "paid_inference_requests": 8,
             "warmup_requests": 0,
             "measured_repetitions_per_workload_model": 2,
@@ -441,8 +473,8 @@ def build(root: Path) -> None:
             "requested_model_ids": list(MODEL_BUILDS),
             "resolved_model_builds": MODEL_BUILDS,
             "upstream_provider": "Z.AI",
-            "route_slug": "z-ai/fp8",
-            "quantization": "fp8",
+            "route_slug": next(iter(route_slugs)),
+            "quantization": next(iter(quantizations)),
             "fallbacks_allowed": False,
             "provider_parameter_support_required": True,
         },
@@ -480,6 +512,16 @@ def build(root: Path) -> None:
                 float(ledger["authorized_total_usd"])
                 - float(ledger["planned_ceiling_usd"]),
                 ".12f",
+            ),
+            "execution_ledger_schema": "1",
+            "post_run_gate_hardening": (
+                "Independent review found that execution schema v1 "
+                "auto-initialized a missing ledger and did not bind its claim "
+                "to the complete request/routing/price configuration. The "
+                "committed schema v2 refuses missing ledgers and binds those "
+                "fields. The historical v1 plan and ledger are preserved "
+                "unchanged; actual request plans and provider usage separately "
+                "show the pinned route, price caps, and charges used here."
             ),
             "provider_reported_request_total_usd": ledger["cumulative_accounted_usd"],
             "manifest_computed_request_total_usd": format(
@@ -526,6 +568,7 @@ def build(root: Path) -> None:
             "prompts_or_responses_published": False,
             "reasoning_text_published": False,
             "credentials_or_account_identifiers_published": False,
+            "historical_gate_limitations_disclosed": True,
         },
         "limitations": [
             "Two repetitions per workload/model are directional evidence, not a population latency study.",
@@ -535,6 +578,7 @@ def build(root: Path) -> None:
             "Provider-reported zero reasoning tokens do not prove the model performed no hidden internal computation.",
             "Prompt caching affected some second repetitions and is reported per row rather than normalized away.",
             "The local Qwen3-8B evidence is contextual only and was excluded from direct ranking.",
+            "The historical execution used budget-ledger schema v1; its full-request binding limitations are disclosed in budget.post_run_gate_hardening rather than rewritten after the run.",
         ],
     }
     _write_json(PUBLIC_DIR / "experiment-manifest.json", manifest)
@@ -593,6 +637,9 @@ def verify() -> None:
             raise EvidenceError("resolved model build does not match the catalog pin")
         if row["system"]["upstream_provider"] != "Z.AI":
             raise EvidenceError("row did not resolve to the pinned Z.AI provider")
+        correlation = row.get("provider_generation_correlation_sha256")
+        if not isinstance(correlation, str) or not correlation.startswith("sha256:"):
+            raise EvidenceError("row is missing its private-ID correlation digest")
 
     ledger = _load_json(PUBLIC_DIR / "budget-ledger.json")
     seal = ledger.pop("ledger_sha256", None)
@@ -619,6 +666,18 @@ def verify() -> None:
     comparison = _load_json(PUBLIC_DIR / "comparison.json")
     if comparison["results_dirs"] != ["measurements.json"]:
         raise EvidenceError("comparison report still carries private result paths")
+    generation = _load_json(PUBLIC_DIR / "generation-metadata.json")
+    generation_correlations = {
+        row["request_id"]: row["provider_generation_correlation_sha256"]
+        for row in generation["rows"]
+    }
+    measurement_correlations = {
+        row["request_id"]: row["provider_generation_correlation_sha256"] for row in rows
+    }
+    if generation_correlations != measurement_correlations:
+        raise EvidenceError(
+            "generation metadata is not correlated to the measured completions"
+        )
 
 
 def main() -> int:

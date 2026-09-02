@@ -84,6 +84,7 @@ import json
 import os
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -1349,6 +1350,23 @@ def execute_api_row(
             binding_hash=binding_hash,
         )
     if budget_gate is not None and budget_request_id is not None:
+        routing = binding.extensions.routing
+        if (
+            routing is None
+            or routing.allow_fallbacks is None
+            or routing.require_parameters is None
+            or routing.max_prompt_price_per_million is None
+            or routing.max_completion_price_per_million is None
+            or binding.extensions.reasoning_effort is None
+        ):
+            return _finish(
+                RowStatus.FAILED,
+                "budget-gated execution requires explicit provider routes, "
+                "fallback policy, parameter policy, prompt/completion price "
+                "caps, and reasoning effort",
+                verified_hash=verified_hash,
+                binding_hash=binding_hash,
+            )
         try:
             budget_gate.claim(
                 budget_request_id,
@@ -1356,6 +1374,19 @@ def execute_api_row(
                 workload_id=entry.workload_id,
                 workload_version=workload.version,
                 prompt_sha256=verified_hash,
+                request_config_sha256=request_plan.config_hash,
+                endpoint_origin=request_plan.endpoint_origin,
+                endpoint_path=request_plan.endpoint_path,
+                route_providers=routing.order,
+                allow_fallbacks=routing.allow_fallbacks,
+                require_parameters=routing.require_parameters,
+                max_provider_prompt_price_per_million=Decimal(
+                    str(routing.max_prompt_price_per_million)
+                ),
+                max_provider_completion_price_per_million=Decimal(
+                    str(routing.max_completion_price_per_million)
+                ),
+                reasoning_effort=binding.extensions.reasoning_effort,
                 input_token_upper_bound=conservative_input_token_upper_bound(
                     prompt_text, binding.system_prompt
                 ),
