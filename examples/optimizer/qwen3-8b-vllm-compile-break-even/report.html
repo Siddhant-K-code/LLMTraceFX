@@ -13,6 +13,9 @@
 </head>
 <body>
   <h1>Qwen3 8B vLLM compilation break-even</h1>
+  <p>Scope: one CloudRift RTX 4090 VM, one pinned Qwen3 8B revision, and one
+  exact 12-request sequence in eager and compiled modes. Modal and MLX results
+  are excluded from this ranking.</p>
   <p class="finding"><strong>No observed break-even through request 12.</strong>
   Repeating the exact sequence yields a modeled crossing at request
   113.</p>
@@ -26,6 +29,11 @@
   $0.393033.</p>
   <p>Boot-to-console-termination inferred spend:
   $0.484358.
-  Provider-reported spend is unavailable. Console termination is confirmed.</p>
+  Provider-reported spend is unavailable. Provider-console termination was
+  confirmed by the user; OS shutdown was scheduled but not observed.</p>
+  <p>Collection limitation: the measured runner did not rehash the live model
+  or cross-check both retained receipt hashes before each cell. No independent
+  host receipt was retained for the fresh-container, cache-drop, timeout,
+  bind-mount, network, or Docker image-inspection controls.</p>
 </body>
 </html>

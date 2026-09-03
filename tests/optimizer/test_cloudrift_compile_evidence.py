@@ -119,7 +119,7 @@ def test_verifier_rejects_resealed_compile_timing_drift(tmp_path: Path) -> None:
     evidence._write_jsonl(bundle / "lifecycle-records.jsonl", lifecycle)
     reseal(bundle)
 
-    with pytest.raises(evidence.CloudRiftEvidenceError, match="lifecycle measurement"):
+    with pytest.raises(evidence.CloudRiftEvidenceError, match="canonical raw record"):
         evidence.verify_bundle(bundle)
 
 
@@ -144,7 +144,9 @@ def test_exact_two_cell_contract_and_break_even() -> None:
     assert [cell["mode"] for cell in contract["cells"]] == ["eager", "compiled"]
     assert contract["request_count_per_cell"] == 12
     assert contract["isolation"]["max_live_cells"] == 1
-    assert contract["isolation"]["hard_timeout_seconds_per_cell"] == 2700
+    assert contract["isolation"]["planned_hard_timeout_seconds_per_cell"] == 2700
+    assert contract["isolation"]["fresh_container_per_cell"] is None
+    assert contract["isolation"]["host_page_cache_dropped_between_cells"] is None
     assert contract["isolation"]["model_warmup_requests"] == 0
     assert result["observed_break_even_request_count"] is None
     assert result["observed_lower_bound_request_count"] == 12

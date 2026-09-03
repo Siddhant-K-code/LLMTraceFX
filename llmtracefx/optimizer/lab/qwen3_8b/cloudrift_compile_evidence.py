@@ -64,6 +64,15 @@ COLLECTION_SOURCE_COMMIT = "9c0879351cc3e4f294b5c827d74dfc00182d53bb"
 EXECUTED_RUNNER_SHA256 = (
     "sha256:42e3414895133a39a48996543ef0f980e02c12699b3d923e7c6c75819ca290fb"
 )
+EXPECTED_LIFECYCLE_RECORDS_SHA256 = (
+    "ea05631d31b231426a3930a1c05c42826d823b15551f11cb7b4431f875f66f92"
+)
+EXPECTED_REQUEST_RECORDS_SHA256 = (
+    "b06d3ebf613c7ac00676d96f7e699bcbe18cf1635b639ba68570fa2e3c86b42e"
+)
+EXPECTED_TEARDOWN_CAPTURE_SHA256 = (
+    "sha256:2e049a0662c6c009fc2123f3c421438db8d4859a25c93cce240c6ebe488e0d4f"
+)
 EXPECTED_PROMPT_IDENTITIES = {
     "2k/structured-json-profile-extraction": (
         1611,
@@ -94,6 +103,12 @@ MEASURED_RUNNER_LIMITATION = (
     "The measured runner verified the staging and prompt receipts independently "
     "and mounted model and state read-only, but it did not rehash the live model "
     "or cross-check both receipt hashes before each measured cell."
+)
+HOST_RECEIPT_LIMITATION = (
+    "No independent host orchestration receipt was retained for the fresh-container, "
+    "cache-drop, timeout-wrapper, bind-mount, network, or Docker image-inspection "
+    "controls. The public records prove ordered non-overlapping processes and no "
+    "warmup requests, but not those additional host controls."
 )
 PROVENANCE = (
     "client_observed",
@@ -138,14 +153,19 @@ paired outputs had identical token IDs. The boot-to-console-termination window
 implies $0.484358 at the observed list rate. This remains a lower bound because
 the provisioning-to-boot interval is unavailable. Provider-reported spend is
 unavailable. The experiment containers, GPU processes, model data, runtime
-images, result caches, and temporary public key were removed before shutdown.
-The user confirmed CloudRift console termination separately.
+images, result caches, and temporary public key were removed before the scheduled
+OS shutdown. OS shutdown itself was not observed. The user confirmed CloudRift
+console termination separately.
 
 The collection runner verified the staging and prompt receipts independently,
 and both cells mounted the model and state read-only. It did not rehash the live
 16 GB model or cross-check the two receipt hashes before each measured cell.
 The public verifier binds the retained inventory, prompt arrays, and collection
 source, but this collection limitation cannot be retroactively removed.
+No independent host orchestration receipt was retained for the fresh-container,
+cache-drop, timeout-wrapper, bind-mount, network, or Docker image-inspection
+controls. The records prove ordered non-overlapping processes and no warmup
+requests, but those additional host controls remain unverified.
 
 Run `python evidence_bundle.py verify` from this directory to verify the closed
 file set, checksums, privacy rules, model and runtime pins, request contract,
@@ -518,6 +538,9 @@ def _render_report(
 </head>
 <body>
   <h1>Qwen3 8B vLLM compilation break-even</h1>
+  <p>Scope: one CloudRift RTX 4090 VM, one pinned Qwen3 8B revision, and one
+  exact 12-request sequence in eager and compiled modes. Modal and MLX results
+  are excluded from this ranking.</p>
   <p class="finding"><strong>No observed break-even through request 12.</strong>
   Repeating the exact sequence yields a modeled crossing at request
   {break_even['modeled_repeated_cycle_break_even_request_count']}.</p>
@@ -531,7 +554,12 @@ def _render_report(
   ${cost['inferred_spend_usd_through_scheduled_shutdown_boundary']}.</p>
   <p>Boot-to-console-termination inferred spend:
   ${cost['final_inferred_spend_through_console_termination_usd']}.
-  Provider-reported spend is unavailable. Console termination is confirmed.</p>
+  Provider-reported spend is unavailable. Provider-console termination was
+  confirmed by the user; OS shutdown was scheduled but not observed.</p>
+  <p>Collection limitation: the measured runner did not rehash the live model
+  or cross-check both retained receipt hashes before each cell. No independent
+  host receipt was retained for the fresh-container, cache-drop, timeout,
+  bind-mount, network, or Docker image-inspection controls.</p>
 </body>
 </html>
 """
@@ -709,13 +737,15 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
         "isolation": {
             "sequence": ["rtx4090-eager", "rtx4090-compiled"],
             "max_live_cells": 1,
-            "hard_timeout_seconds_per_cell": 2700,
-            "fresh_container_per_cell": True,
-            "host_page_cache_dropped_between_cells": True,
+            "planned_hard_timeout_seconds_per_cell": 2700,
+            "fresh_container_per_cell": None,
+            "host_page_cache_dropped_between_cells": None,
             "model_warmup_requests": 0,
             "public_endpoint": False,
         },
-        "safe_command": [
+        "representative_safe_command": [
+            "timeout",
+            "2700",
             "docker",
             "run",
             "--rm",
@@ -731,6 +761,14 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
             "4096",
             "--network",
             "none",
+            "--env",
+            "CLOUDRIFT_HOST_INVOCATION_STARTED_AT=<utc-timestamp>",
+            "--mount",
+            "type=bind,src=<model>,dst=/model,readonly",
+            "--mount",
+            "type=bind,src=<state>,dst=/state,readonly",
+            "--mount",
+            "type=bind,src=<output>,dst=/output",
             "--entrypoint",
             "/usr/bin/python3",
             "llmtracefx-vllm:0.28.0-te415",
@@ -751,6 +789,7 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
                 "Compilation and CUDA graph component durations were not retained "
                 "and remain null."
             ),
+            HOST_RECEIPT_LIMITATION,
         ],
     }
     pricing = {
@@ -792,6 +831,10 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
         "gpu_memory_mib": 24564,
         "driver_version": "580.159.03",
         "same_private_gpu_identity_verified": True,
+        "derived_image_id_verification": (
+            "runner-reported constant; independent Docker image-inspection receipt "
+            "not retained"
+        ),
     }
     workload = {
         "schema_version": "1",
@@ -903,6 +946,13 @@ def verify_bundle(root: Path) -> None:
         "\n".join(expected_lines) + "\n"
     ):
         raise CloudRiftEvidenceError("SHA256SUMS does not verify")
+    if (
+        _sha256_bytes((root / "lifecycle-records.jsonl").read_bytes())
+        != EXPECTED_LIFECYCLE_RECORDS_SHA256
+        or _sha256_bytes((root / "request-records.jsonl").read_bytes())
+        != EXPECTED_REQUEST_RECORDS_SHA256
+    ):
+        raise CloudRiftEvidenceError("canonical raw record identity drifted")
     _scan_privacy(root)
     for name in JSON_FILES:
         value = _read_json(root / name)
@@ -956,14 +1006,15 @@ def verify_bundle(root: Path) -> None:
                 "Compilation and CUDA graph component durations were not retained "
                 "and remain null."
             ),
+            HOST_RECEIPT_LIMITATION,
         ]
         or contract["isolation"]
         != {
             "sequence": ["rtx4090-eager", "rtx4090-compiled"],
             "max_live_cells": 1,
-            "hard_timeout_seconds_per_cell": 2700,
-            "fresh_container_per_cell": True,
-            "host_page_cache_dropped_between_cells": True,
+            "planned_hard_timeout_seconds_per_cell": 2700,
+            "fresh_container_per_cell": None,
+            "host_page_cache_dropped_between_cells": None,
             "model_warmup_requests": 0,
             "public_endpoint": False,
         }
@@ -978,6 +1029,8 @@ def verify_bundle(root: Path) -> None:
         raise CloudRiftEvidenceError("exactly two ordered cells are required")
     if len(requests) != 24:
         raise CloudRiftEvidenceError("exactly 24 request records are required")
+    if _dt(lifecycle[1]["host_invocation_started_at"]) < _dt(lifecycle[0]["ended_at"]):
+        raise CloudRiftEvidenceError("measured cells overlap")
     for expected_cell, record in zip(expected_cells, lifecycle, strict=True):
         expected_reasons = {
             "eager": (
@@ -1181,7 +1234,11 @@ def verify_bundle(root: Path) -> None:
         or not teardown["os_shutdown_observation_unavailable_reason"]
         or not teardown["provider_console_termination_confirmed"]
         or teardown["provider_console_terminated_at"] != CONSOLE_TERMINATED_AT
-        or re.fullmatch(r"sha256:[0-9a-f]{64}", teardown["capture_sha256"]) is None
+        or teardown["capture_sha256"] != EXPECTED_TEARDOWN_CAPTURE_SHA256
+        or teardown["cleanup_ended_at"] != "2026-09-03T16:33:57Z"
+        or teardown["provider_console_confirmation_provenance"]
+        != "user confirmation relayed by the coordinator"
+        or teardown["status"] != "complete"
     ):
         raise CloudRiftEvidenceError("teardown status is invalid")
     for item in lifecycle:
@@ -1202,6 +1259,10 @@ def verify_bundle(root: Path) -> None:
         "gpu_memory_mib": 24564,
         "driver_version": "580.159.03",
         "same_private_gpu_identity_verified": True,
+        "derived_image_id_verification": (
+            "runner-reported constant; independent Docker image-inspection receipt "
+            "not retained"
+        ),
     }:
         raise CloudRiftEvidenceError("runtime or same-GPU binding drifted")
     inventory = _read_json(root / "model-inventory.json")

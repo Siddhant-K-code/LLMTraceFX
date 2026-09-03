@@ -884,6 +884,11 @@ SOURCES: tuple[dict[str, Any], ...] = (
                 "prompt receipts, but did not rehash the live model or cross-check "
                 "both receipt hashes before each cell."
             ),
+            (
+                "No independent host receipt was retained for fresh-container, "
+                "cache-drop, timeout, bind-mount, network, or Docker image-inspection "
+                "controls."
+            ),
             "MLX results are an incompatible scope and are not ranked here.",
         ),
     },

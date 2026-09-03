@@ -19,11 +19,11 @@
   "collection_source_sha256": "sha256:42e3414895133a39a48996543ef0f980e02c12699b3d923e7c6c75819ca290fb",
   "execution_base_head": "741dc5b27a4603a9d9d93f531d4de4f31703ac6e",
   "isolation": {
-    "fresh_container_per_cell": true,
-    "hard_timeout_seconds_per_cell": 2700,
-    "host_page_cache_dropped_between_cells": true,
+    "fresh_container_per_cell": null,
+    "host_page_cache_dropped_between_cells": null,
     "max_live_cells": 1,
     "model_warmup_requests": 0,
+    "planned_hard_timeout_seconds_per_cell": 2700,
     "public_endpoint": false,
     "sequence": [
       "rtx4090-eager",
@@ -32,7 +32,8 @@
   },
   "limitations": [
     "The measured runner verified the staging and prompt receipts independently and mounted model and state read-only, but it did not rehash the live model or cross-check both receipt hashes before each measured cell.",
-    "Compilation and CUDA graph component durations were not retained and remain null."
+    "Compilation and CUDA graph component durations were not retained and remain null.",
+    "No independent host orchestration receipt was retained for the fresh-container, cache-drop, timeout-wrapper, bind-mount, network, or Docker image-inspection controls. The public records prove ordered non-overlapping processes and no warmup requests, but not those additional host controls."
   ],
   "model": {
     "file_count": 15,
@@ -50,8 +51,9 @@
     "derived"
   ],
   "provider": "CloudRift",
-  "request_count_per_cell": 12,
-  "safe_command": [
+  "representative_safe_command": [
+    "timeout",
+    "2700",
     "docker",
     "run",
     "--rm",
@@ -67,6 +69,14 @@
     "4096",
     "--network",
     "none",
+    "--env",
+    "CLOUDRIFT_HOST_INVOCATION_STARTED_AT=<utc-timestamp>",
+    "--mount",
+    "type=bind,src=<model>,dst=/model,readonly",
+    "--mount",
+    "type=bind,src=<state>,dst=/state,readonly",
+    "--mount",
+    "type=bind,src=<output>,dst=/output",
     "--entrypoint",
     "/usr/bin/python3",
     "llmtracefx-vllm:0.28.0-te415",
@@ -80,6 +90,7 @@
     "--output",
     "/output/<cell>.json"
   ],
+  "request_count_per_cell": 12,
   "sampling": {
     "max_tokens": 96,
     "seed": 20260831,

@@ -1,5 +1,5 @@
 {
-  "catalog_hash": "sha256:976cf37b3de15808d4e8f1447dc60aeed265663717a7f352b452520973922298",
+  "catalog_hash": "sha256:1061a6265a61775b8a1c7b5218aa1afd94cfc4bf1659d34b3ff27fc75b78f4fb",
   "claim_dimensions": [
     "timing",
     "quality",
@@ -440,7 +440,7 @@
       }
     },
     {
-      "artifact_set_hash": "sha256:29151e2241e47f10c4a465492fa21c9e44d7535259344cd6cf9e11dcb4bab519",
+      "artifact_set_hash": "sha256:1e946ec3b84e587d0b2a9f8f48ed0f74c1a8727f862c77e1da0b59f73255be54",
       "budget": {
         "authorized_usd": 5.0,
         "inferred_usd": 0.484358,
@@ -498,6 +498,7 @@
         "Compilation and CUDA graph component durations were not retained.",
         "Provider-reported spend and provisioning-to-boot cost are unavailable.",
         "The measured runner independently verified retained staging and prompt receipts, but did not rehash the live model or cross-check both receipt hashes before each cell.",
+        "No independent host receipt was retained for fresh-container, cache-drop, timeout, bind-mount, network, or Docker image-inspection controls.",
         "MLX results are an incompatible scope and are not ranked here."
       ],
       "measurements": [
@@ -965,7 +966,7 @@
     "name": "llmtracefx-evidence",
     "version": "1"
   },
-  "registry_hash": "sha256:b7001de1081a5f6e66614120ab959efeb53c6747731685453498f5c085a277a9",
+  "registry_hash": "sha256:9ac919e357d4e69d14b85c8b12c02bbd11688361eac970308f8479c10977bc28",
   "schema_version": "1",
   "unregistered_candidates": []
 }

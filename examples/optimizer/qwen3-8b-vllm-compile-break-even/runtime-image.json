@@ -1,6 +1,7 @@
 {
   "base_image_reference": "vllm/vllm-openai:v0.28.0@sha256:2286e8533ca8b6bc777594bae30524f1426ba46ca21797524e06df6a94b06635",
   "derived_image_id": "sha256:fd34de17a99d2890ed1031fd32fff4c74837bbc92df7dcb955caf610266cffb3",
+  "derived_image_id_verification": "runner-reported constant; independent Docker image-inspection receipt not retained",
   "driver_version": "580.159.03",
   "gpu": "NVIDIA GeForce RTX 4090",
   "gpu_memory_mib": 24564,
