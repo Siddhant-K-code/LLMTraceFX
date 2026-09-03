@@ -148,6 +148,40 @@
     {
       "claims": {
         "cost": {
+          "provenance": "list-rate lower bound only; final provider spend is unavailable",
+          "state": "supported"
+        },
+        "deployment_readiness": {
+          "provenance": "bounded benchmark is not a production deployment assessment",
+          "state": "unsupported"
+        },
+        "memory": {
+          "provenance": "sampled peak device memory for both cells",
+          "state": "supported"
+        },
+        "model_fit": {
+          "provenance": "both exact-revision cells completed",
+          "state": "supported"
+        },
+        "process_attribution": {
+          "provenance": "one isolated cell at a time",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "24 deterministic workload evaluator results",
+          "state": "supported"
+        },
+        "timing": {
+          "provenance": "measured initialization and 24 bounded request records",
+          "state": "supported"
+        }
+      },
+      "evidence_id": "qwen3-8b-cloudrift-vllm-compile-20260903",
+      "outcome": "comparison"
+    },
+    {
+      "claims": {
+        "cost": {
           "provenance": "local execution has no spend claim",
           "state": "not_applicable"
         },

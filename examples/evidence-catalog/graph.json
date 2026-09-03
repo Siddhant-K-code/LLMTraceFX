@@ -1,5 +1,5 @@
 {
-  "catalog_hash": "sha256:ae2dfd29754788d6a305347e0718af43dc2f8c7d2753221591bcaf83737bea5f",
+  "catalog_hash": "sha256:807c5e09df99716bd7c6fb7e05fd6ceffc4e1e95ff861095b9a2f754979b08b4",
   "edges": [
     {
       "relation": "same_model_as",
@@ -9,6 +9,11 @@
     {
       "relation": "compares",
       "source": "openrouter-glm-2k-comparison-20260902",
+      "target": "qwen3-8b-m5-pro-control-20260902"
+    },
+    {
+      "relation": "uses_workload_contract",
+      "source": "qwen3-8b-cloudrift-vllm-compile-20260903",
       "target": "qwen3-8b-m5-pro-control-20260902"
     },
     {
@@ -77,6 +82,21 @@
         "cost"
       ],
       "system": "provider managed and undisclosed"
+    },
+    {
+      "evidence_id": "qwen3-8b-cloudrift-vllm-compile-20260903",
+      "kind": "compile_break_even",
+      "model": "Qwen/Qwen3-8B",
+      "outcome": "comparison",
+      "status": "verified",
+      "supported_claim_scope": [
+        "timing",
+        "quality",
+        "cost",
+        "memory",
+        "model_fit"
+      ],
+      "system": "NVIDIA GeForce RTX 4090, 24,564 MiB"
     },
     {
       "evidence_id": "qwen3-8b-m5-pro-control-20260902",

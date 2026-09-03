@@ -35,7 +35,7 @@ from .registry import (
 
 MAX_CATALOG_BYTES = 2 * 1024 * 1024
 MAX_JSON_DEPTH = 32
-MAX_JSON_ITEMS = 4096
+MAX_JSON_ITEMS = 250_000
 MAX_STRING_LENGTH = 32 * 1024
 CATALOG_FILES = (
     "README.md",
@@ -67,6 +67,7 @@ KINDS = {
     "positive_control",
     "hosted_comparison",
     "provider_preflight",
+    "compile_break_even",
 }
 SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 SAFE_PATH_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -132,6 +133,10 @@ SCRIPT_ADAPTERS = {
     ),
     "cloudrift_preflight_v1": (
         "examples/optimizer/cloudrift-glm53flash-preflight/evidence_bundle.py",
+        ("verify",),
+    ),
+    "cloudrift_compile_v1": (
+        "examples/optimizer/qwen3-8b-vllm-compile-break-even/evidence_bundle.py",
         ("verify",),
     ),
 }
@@ -516,6 +521,20 @@ def _verify_source_bindings(repo_root: Path, source: Mapping[str, Any]) -> None:
         captured = manifest["as_of"]
         source_commit = manifest["repository_base"]
         model_id = inventory["repo_id"]
+        model_revision = inventory["revision"]
+    elif evidence_id == "qwen3-8b-cloudrift-vllm-compile-20260903":
+        contract = _load_json(bundle / "experiment-contract.json")
+        inventory = _load_json(bundle / "model-inventory.json")
+        lifecycle = [
+            json.loads(line)
+            for line in read_bounded_regular_text(
+                bundle / "lifecycle-records.jsonl", MAX_EVIDENCE_ARTIFACT_BYTES
+            ).splitlines()
+        ]
+        schema = contract["schema_version"]
+        captured = lifecycle[-1]["ended_at"]
+        source_commit = contract["execution_base_head"]
+        model_id = inventory["model_id"]
         model_revision = inventory["revision"]
     else:  # pragma: no cover - SOURCES is a closed registry
         raise CatalogError(f"{evidence_id} has no source binding contract")

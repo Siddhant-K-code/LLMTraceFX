@@ -1,0 +1,19 @@
+{
+  "contingency_usd": "1.880000",
+  "cutoff_cost_usd": "3.120000",
+  "experiment_cutoff_hours": "8.000000",
+  "hard_cap_usd": "5.000000",
+  "observed_at": "2026-09-03",
+  "public_api_quote": false,
+  "region": "ap-east-tw-kn-1",
+  "schema_version": "1",
+  "shape": {
+    "disk_gb_displayed": 280,
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "gpu_memory_gb_displayed": 24,
+    "ram_gb_displayed": 47,
+    "shared_public_ip": true
+  },
+  "source": "user-observed CloudRift console screenshot",
+  "usd_per_hour": "0.390000"
+}

@@ -1,0 +1,17 @@
+{
+  "accounted_seconds_through_os_shutdown": 3628,
+  "credits_treated_as_zero_spend": false,
+  "eight_hour_cutoff_cost_usd": "3.120000",
+  "final_inferred_spend_through_console_termination_usd": null,
+  "hard_cap_usd": "5.000000",
+  "inferred_spend_scope": "list-rate lower bound",
+  "inferred_spend_usd_through_os_shutdown": "0.393033",
+  "limitation": "Billing may continue after OS shutdown until CloudRift console termination; console termination time is unconfirmed.",
+  "os_shutdown_scheduled_at": "2026-09-03T16:34:57Z",
+  "provider_reported_spend_usd": null,
+  "rate_source": "user-observed CloudRift console screenshot",
+  "remaining_hard_cap_at_os_shutdown_usd": "4.606967",
+  "schema_version": "1",
+  "usd_per_hour": "0.390000",
+  "vm_boot_at": "2026-09-03T15:34:29Z"
+}

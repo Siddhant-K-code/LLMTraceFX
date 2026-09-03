@@ -310,6 +310,7 @@
         },
         "kind": {
           "enum": [
+            "compile_break_even",
             "fit_frontier",
             "hosted_comparison",
             "metal_attribution",
@@ -530,12 +531,18 @@
       "items": {
         "$ref": "#/$defs/nonEmptyString"
       },
-      "maxItems": 4096,
+      "maxItems": 250000,
       "minItems": 1,
       "type": "array"
     },
     "verifier": {
       "oneOf": [
+        {
+          "const": {
+            "name": "cloudrift-compile.verify",
+            "version": "1"
+          }
+        },
         {
           "const": {
             "name": "cloudrift-preflight.verify",

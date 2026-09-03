@@ -40,8 +40,8 @@ def _write_catalog(tmp_path: Path, catalog: dict) -> Path:
 def test_committed_catalog_verifies_every_registered_adapter() -> None:
     result = core.verify_catalog(CATALOG, ROOT)
     assert result["verified"] is True
-    assert result["entries"] == len(SOURCES) == 8
-    assert result["edges"] == 5
+    assert result["entries"] == len(SOURCES) == 9
+    assert result["edges"] == 6
     assert result["verified_evidence_ids"] == sorted(
         source["evidence_id"] for source in SOURCES
     )
@@ -263,7 +263,7 @@ def test_claim_matrix_is_closed_and_never_boolean() -> None:
     artifacts = core.render_catalog_artifacts(_catalog())
     matrix = json.loads(artifacts["claim-matrix.json"])
     assert matrix["dimensions"] == list(CLAIM_DIMENSIONS)
-    assert len(matrix["rows"]) == 8
+    assert len(matrix["rows"]) == 9
     for row in matrix["rows"]:
         assert set(row["claims"]) == set(CLAIM_DIMENSIONS)
         assert {claim["state"] for claim in row["claims"].values()} <= {
@@ -503,7 +503,7 @@ def test_external_cwd_verification_uses_explicit_catalog(tmp_path: Path) -> None
     assert completed.returncode == 0, completed.stdout + completed.stderr
     result = json.loads(completed.stdout)
     assert result["verified"] is True
-    assert result["entries"] == 8
+    assert result["entries"] == 9
 
 
 def test_unrelated_project_is_not_inferred_as_repository_root(

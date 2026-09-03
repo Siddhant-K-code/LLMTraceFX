@@ -1,0 +1,248 @@
+{
+  "all_requests_correct": true,
+  "evaluations": [
+    {
+      "cell_id": "rtx4090-eager",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 1,
+      "quality_metric": "structured_json_exact_field_match",
+      "quality_score": 1.0,
+      "request_id": "2k-structured-json-profile-extraction-rep-01",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-eager",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 2,
+      "quality_metric": "structured_json_exact_field_match",
+      "quality_score": 1.0,
+      "request_id": "2k-structured-json-profile-extraction-rep-02",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-eager",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 3,
+      "quality_metric": "exact_answer_pattern_match",
+      "quality_score": 1.0,
+      "request_id": "2k-prose-reasoning-two-train-gap-rep-01",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-eager",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 4,
+      "quality_metric": "exact_answer_pattern_match",
+      "quality_score": 1.0,
+      "request_id": "2k-prose-reasoning-two-train-gap-rep-02",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-eager",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 5,
+      "quality_metric": "structured_json_exact_field_match",
+      "quality_score": 1.0,
+      "request_id": "8k-structured-json-profile-extraction-rep-01",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-eager",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 6,
+      "quality_metric": "structured_json_exact_field_match",
+      "quality_score": 1.0,
+      "request_id": "8k-structured-json-profile-extraction-rep-02",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-eager",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 7,
+      "quality_metric": "exact_answer_pattern_match",
+      "quality_score": 1.0,
+      "request_id": "8k-prose-reasoning-two-train-gap-rep-01",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-eager",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 8,
+      "quality_metric": "exact_answer_pattern_match",
+      "quality_score": 1.0,
+      "request_id": "8k-prose-reasoning-two-train-gap-rep-02",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-eager",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 9,
+      "quality_metric": "structured_json_exact_field_match",
+      "quality_score": 1.0,
+      "request_id": "16k-structured-json-profile-extraction-rep-01",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-eager",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 10,
+      "quality_metric": "structured_json_exact_field_match",
+      "quality_score": 1.0,
+      "request_id": "16k-structured-json-profile-extraction-rep-02",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-eager",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 11,
+      "quality_metric": "exact_answer_pattern_match",
+      "quality_score": 1.0,
+      "request_id": "16k-prose-reasoning-two-train-gap-rep-01",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-eager",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 12,
+      "quality_metric": "exact_answer_pattern_match",
+      "quality_score": 1.0,
+      "request_id": "16k-prose-reasoning-two-train-gap-rep-02",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-compiled",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 1,
+      "quality_metric": "structured_json_exact_field_match",
+      "quality_score": 1.0,
+      "request_id": "2k-structured-json-profile-extraction-rep-01",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-compiled",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 2,
+      "quality_metric": "structured_json_exact_field_match",
+      "quality_score": 1.0,
+      "request_id": "2k-structured-json-profile-extraction-rep-02",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-compiled",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 3,
+      "quality_metric": "exact_answer_pattern_match",
+      "quality_score": 1.0,
+      "request_id": "2k-prose-reasoning-two-train-gap-rep-01",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-compiled",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 4,
+      "quality_metric": "exact_answer_pattern_match",
+      "quality_score": 1.0,
+      "request_id": "2k-prose-reasoning-two-train-gap-rep-02",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-compiled",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 5,
+      "quality_metric": "structured_json_exact_field_match",
+      "quality_score": 1.0,
+      "request_id": "8k-structured-json-profile-extraction-rep-01",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-compiled",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 6,
+      "quality_metric": "structured_json_exact_field_match",
+      "quality_score": 1.0,
+      "request_id": "8k-structured-json-profile-extraction-rep-02",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-compiled",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 7,
+      "quality_metric": "exact_answer_pattern_match",
+      "quality_score": 1.0,
+      "request_id": "8k-prose-reasoning-two-train-gap-rep-01",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-compiled",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 8,
+      "quality_metric": "exact_answer_pattern_match",
+      "quality_score": 1.0,
+      "request_id": "8k-prose-reasoning-two-train-gap-rep-02",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-compiled",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 9,
+      "quality_metric": "structured_json_exact_field_match",
+      "quality_score": 1.0,
+      "request_id": "16k-structured-json-profile-extraction-rep-01",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-compiled",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 10,
+      "quality_metric": "structured_json_exact_field_match",
+      "quality_score": 1.0,
+      "request_id": "16k-structured-json-profile-extraction-rep-02",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-compiled",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 11,
+      "quality_metric": "exact_answer_pattern_match",
+      "quality_score": 1.0,
+      "request_id": "16k-prose-reasoning-two-train-gap-rep-01",
+      "success": true
+    },
+    {
+      "cell_id": "rtx4090-compiled",
+      "evaluator": "evaluate_workload",
+      "notes": null,
+      "ordinal": 12,
+      "quality_metric": "exact_answer_pattern_match",
+      "quality_score": 1.0,
+      "request_id": "16k-prose-reasoning-two-train-gap-rep-02",
+      "success": true
+    }
+  ],
+  "schema_version": "1",
+  "successful_requests": 24,
+  "total_requests": 24
+}

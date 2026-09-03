@@ -1,0 +1,89 @@
+{
+  "cumulative_initialization_to_terminal": [
+    {
+      "compiled_minus_eager_seconds": 54.15205999999999,
+      "compiled_seconds": 119.715634,
+      "eager_seconds": 65.563574,
+      "request_count": 1
+    },
+    {
+      "compiled_minus_eager_seconds": 53.828503,
+      "compiled_seconds": 120.271427,
+      "eager_seconds": 66.442924,
+      "request_count": 2
+    },
+    {
+      "compiled_minus_eager_seconds": 53.194784999999996,
+      "compiled_seconds": 121.187157,
+      "eager_seconds": 67.992372,
+      "request_count": 3
+    },
+    {
+      "compiled_minus_eager_seconds": 52.570432,
+      "compiled_seconds": 122.102465,
+      "eager_seconds": 69.532033,
+      "request_count": 4
+    },
+    {
+      "compiled_minus_eager_seconds": 52.21780199999999,
+      "compiled_seconds": 123.161216,
+      "eager_seconds": 70.943414,
+      "request_count": 5
+    },
+    {
+      "compiled_minus_eager_seconds": 51.864614,
+      "compiled_seconds": 124.219255,
+      "eager_seconds": 72.354641,
+      "request_count": 6
+    },
+    {
+      "compiled_minus_eager_seconds": 51.444418999999996,
+      "compiled_seconds": 125.658057,
+      "eager_seconds": 74.213638,
+      "request_count": 7
+    },
+    {
+      "compiled_minus_eager_seconds": 51.025245999999996,
+      "compiled_seconds": 127.098492,
+      "eager_seconds": 76.073246,
+      "request_count": 8
+    },
+    {
+      "compiled_minus_eager_seconds": 50.69266900000001,
+      "compiled_seconds": 128.995268,
+      "eager_seconds": 78.302599,
+      "request_count": 9
+    },
+    {
+      "compiled_minus_eager_seconds": 50.36075600000001,
+      "compiled_seconds": 130.893852,
+      "eager_seconds": 80.533096,
+      "request_count": 10
+    },
+    {
+      "compiled_minus_eager_seconds": 49.51274000000001,
+      "compiled_seconds": 133.588409,
+      "eager_seconds": 84.075669,
+      "request_count": 11
+    },
+    {
+      "compiled_minus_eager_seconds": 48.72314200000001,
+      "compiled_seconds": 136.278298,
+      "eager_seconds": 87.555156,
+      "request_count": 12
+    }
+  ],
+  "exact_cycle_latency_saving_seconds": 5.815559796000798,
+  "exact_cycle_request_count": 12,
+  "extrapolation_assumption": "Exact ordered 12-request latency savings repeat unchanged; initialization occurs once per serving lifecycle.",
+  "initialization_penalty_seconds": 54.543064,
+  "modeled_repeated_cycle_break_even_cost_crossing_request_count": 113,
+  "modeled_repeated_cycle_break_even_request_count": 113,
+  "observed_break_even_request_count": null,
+  "observed_lower_bound_request_count": 12,
+  "provenance": {
+    "modeled_repeated_cycle": "derived",
+    "observed": "derived"
+  },
+  "schema_version": "1"
+}

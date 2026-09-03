@@ -1,0 +1,19 @@
+{
+  "base_image_reference": "vllm/vllm-openai:v0.28.0@sha256:2286e8533ca8b6bc777594bae30524f1426ba46ca21797524e06df6a94b06635",
+  "derived_image_id": "sha256:fd34de17a99d2890ed1031fd32fff4c74837bbc92df7dcb955caf610266cffb3",
+  "driver_version": "580.159.03",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "gpu_memory_mib": 24564,
+  "overlay": [
+    "typing_extensions==4.15.0"
+  ],
+  "packages": {
+    "cuda_version": "13.0",
+    "python_version": "3.12",
+    "torch_version": "2.13.0+cu130",
+    "transformers_version": "5.15.1",
+    "typing_extensions_version": "4.15.0",
+    "vllm_version": "0.28.0"
+  },
+  "schema_version": "1"
+}

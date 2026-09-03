@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Qwen3 8B vLLM compilation break-even</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 960px; padding: 0 1rem; color: #17202a; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border-bottom: 1px solid #d0d5dd; padding: .6rem; text-align: left; }
+    .finding { border-left: .4rem solid #b54708; background: #fffaeb; padding: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Qwen3 8B vLLM compilation break-even</h1>
+  <p class="finding"><strong>No observed break-even through request 12.</strong>
+  Repeating the exact sequence yields a modeled crossing at request
+  113.</p>
+  <table>
+    <thead><tr><th>Mode</th><th>Initialization</th><th>Request phase</th><th>Host lifecycle</th><th>Peak GPU memory</th></tr></thead>
+    <tbody><tr><td>eager</td><td>64.600 s</td><td>23.018 s</td><td>132.293 s</td><td>23,707 MiB</td></tr><tr><td>compiled</td><td>119.143 s</td><td>17.189 s</td><td>175.954 s</td><td>21,951 MiB</td></tr></tbody>
+  </table>
+  <p>Correct responses: 24 of
+  24. List-rate lower bound through scheduled OS
+  shutdown: $0.393033.</p>
+  <p>Provider-reported spend and final spend through console termination are
+  unavailable. CloudRift console termination is not confirmed.</p>
+</body>
+</html>

@@ -761,6 +761,124 @@ SOURCES: tuple[dict[str, Any], ...] = (
             "The required H200 inventory and official runtime recipe were unverified.",
         ),
     },
+    {
+        "evidence_id": "qwen3-8b-cloudrift-vllm-compile-20260903",
+        "kind": "compile_break_even",
+        "status": "verified",
+        "outcome": "comparison",
+        "public_path": "examples/optimizer/qwen3-8b-vllm-compile-break-even",
+        "bundle_schema_version": "1",
+        "adapter": "cloudrift_compile_v1",
+        "artifact_files": (
+            "README.md",
+            "SHA256SUMS",
+            "break-even.json",
+            "break-even.svg",
+            "claim-matrix.json",
+            "correctness-report.json",
+            "cost-ledger.json",
+            "evidence_bundle.py",
+            "experiment-contract.json",
+            "lifecycle-records.jsonl",
+            "model-inventory.json",
+            "pricing-snapshot.json",
+            "report.html",
+            "request-records.jsonl",
+            "runtime-image.json",
+            "teardown-report.json",
+            "workload-contract.json",
+        ),
+        "captured_at": "2026-09-03T16:30:38.954381+00:00",
+        "source_commit": "741dc5b27a4603a9d9d93f531d4de4f31703ac6e",
+        "model": {
+            "id": "Qwen/Qwen3-8B",
+            "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+            "quantization": "bfloat16",
+        },
+        "runtime": {
+            "name": "vLLM",
+            "version": "0.28.0",
+            "provider": "CloudRift",
+        },
+        "hardware": {
+            "system": "NVIDIA GeForce RTX 4090, 24,564 MiB",
+            "architecture": "CUDA 13.0",
+        },
+        "workload": {
+            "identity": "qwen3-8b-vllm-compile-break-even-v1",
+            "context": "2K, 8K, and 16K tiers; exact pinned token arrays",
+            "request": "12 requests per cell; 96 maximum output tokens",
+        },
+        "measurements": (
+            {
+                "scope": "initialization, TTFT, and complete response latency",
+                "provenance": "client-observed and vLLM metrics",
+            },
+            {
+                "scope": "peak GPU memory",
+                "provenance": "sampled nvidia-smi used memory",
+            },
+            {
+                "scope": "list-rate lifecycle cost through OS shutdown",
+                "provenance": "derived lower bound from user-observed console rate",
+            },
+        ),
+        "claims": _claims(
+            timing=(
+                "supported",
+                "measured initialization and 24 bounded request records",
+            ),
+            quality=(
+                "supported",
+                "24 deterministic workload evaluator results",
+            ),
+            cost=(
+                "supported",
+                "list-rate lower bound only; final provider spend is unavailable",
+            ),
+            memory=("supported", "sampled peak device memory for both cells"),
+            process_attribution=("not_applicable", "one isolated cell at a time"),
+            model_fit=("supported", "both exact-revision cells completed"),
+            deployment_readiness=(
+                "unsupported",
+                "bounded benchmark is not a production deployment assessment",
+            ),
+        ),
+        "supported_claims": (
+            "Compilation did not repay initialization through request 12.",
+            "Exact-sequence repeated-cycle extrapolation crosses at request 113.",
+            "All 24 bounded responses passed deterministic evaluation.",
+            "Both isolated cells completed on the fixed RTX 4090.",
+        ),
+        "unsupported_claims": (
+            "general break-even outside the exact workload and runtime",
+            "provider-reported or final spend through console termination",
+            "production readiness, SLA, power, energy, or bandwidth",
+            "direct component timing for compilation or CUDA graph capture",
+        ),
+        "budget": {
+            "scope": "list_rate_lower_bound_through_os_shutdown",
+            "authorized_usd": 5.0,
+            "planned_usd": 3.12,
+            "reported_usd": None,
+            "inferred_usd": 0.393033,
+            "limitation": (
+                "Console termination was unconfirmed, so final spend is unknown."
+            ),
+        },
+        "dependencies": (
+            {
+                "evidence_id": "qwen3-8b-m5-pro-control-20260902",
+                "relation": "uses_workload_contract",
+            },
+        ),
+        "limitations": (
+            "Break-even at request 113 is modeled from repeated exact-cycle savings.",
+            "Compilation and CUDA graph component durations were not retained.",
+            "Console termination and final provider spend were unconfirmed.",
+            "MLX results are an incompatible scope and are not ranked here.",
+        ),
+    },
 )
 
 ADAPTERS = {
@@ -790,6 +908,10 @@ ADAPTERS = {
     },
     "cloudrift_preflight_v1": {
         "name": "cloudrift-preflight.verify",
+        "version": VERIFIER_VERSION,
+    },
+    "cloudrift_compile_v1": {
+        "name": "cloudrift-compile.verify",
         "version": VERIFIER_VERSION,
     },
 }

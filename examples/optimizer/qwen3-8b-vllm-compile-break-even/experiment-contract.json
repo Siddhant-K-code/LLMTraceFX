@@ -1,0 +1,86 @@
+{
+  "cells": [
+    {
+      "cell_id": "rtx4090-eager",
+      "compilation_mode": "NONE",
+      "cuda_graph_mode": "NONE",
+      "enforce_eager": true,
+      "mode": "eager"
+    },
+    {
+      "cell_id": "rtx4090-compiled",
+      "compilation_mode": "VLLM_COMPILE",
+      "cuda_graph_mode": "FULL_AND_PIECEWISE",
+      "enforce_eager": false,
+      "mode": "compiled"
+    }
+  ],
+  "collection_source_sha256": "sha256:42e3414895133a39a48996543ef0f980e02c12699b3d923e7c6c75819ca290fb",
+  "execution_base_head": "741dc5b27a4603a9d9d93f531d4de4f31703ac6e",
+  "isolation": {
+    "fresh_container_per_cell": true,
+    "hard_timeout_seconds_per_cell": 2700,
+    "host_page_cache_dropped_between_cells": true,
+    "max_live_cells": 1,
+    "model_warmup_requests": 0,
+    "public_endpoint": false,
+    "sequence": [
+      "rtx4090-eager",
+      "rtx4090-compiled"
+    ]
+  },
+  "model": {
+    "file_count": 15,
+    "id": "Qwen/Qwen3-8B",
+    "license": "Apache-2.0",
+    "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+    "total_bytes": 16397461266
+  },
+  "provenance_domains": [
+    "client_observed",
+    "vllm",
+    "cuda",
+    "cloudrift_user_observed",
+    "model_reported",
+    "derived"
+  ],
+  "provider": "CloudRift",
+  "request_count_per_cell": 12,
+  "safe_command": [
+    "docker",
+    "run",
+    "--rm",
+    "--gpus",
+    "device=0",
+    "--cpus",
+    "4",
+    "--memory",
+    "32g",
+    "--shm-size",
+    "8g",
+    "--pids-limit",
+    "4096",
+    "--network",
+    "none",
+    "--entrypoint",
+    "/usr/bin/python3",
+    "llmtracefx-vllm:0.28.0-te415",
+    "-m",
+    "llmtracefx.optimizer.lab.qwen3_8b.cloudrift_runner",
+    "<eager-or-compiled>",
+    "--model-path",
+    "/model",
+    "--state-path",
+    "/state",
+    "--output",
+    "/output/<cell>.json"
+  ],
+  "sampling": {
+    "max_tokens": 96,
+    "seed": 20260831,
+    "temperature": 0.0,
+    "top_p": 1.0
+  },
+  "schema_version": "1",
+  "scope": "single fixed RTX 4090 VM"
+}

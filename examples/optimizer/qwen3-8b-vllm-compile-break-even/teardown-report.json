@@ -1,0 +1,15 @@
+{
+  "cleanup_ended_at": "2026-09-03T16:33:57Z",
+  "experiment_containers_remaining": 0,
+  "experiment_directory_removed": true,
+  "gpu_processes_remaining": 0,
+  "model_cache_removed": true,
+  "os_reachable_after_shutdown": false,
+  "os_shutdown_scheduled": true,
+  "provider_console_termination_confirmed": false,
+  "result_cache_removed": true,
+  "runtime_images_removed": true,
+  "schema_version": "1",
+  "status": "vm_cleanup_complete_provider_termination_unconfirmed",
+  "temporary_public_key_removed": true
+}

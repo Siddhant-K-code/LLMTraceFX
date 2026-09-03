@@ -1,0 +1,41 @@
+{
+  "claims": [
+    {
+      "artifact": "break-even.json",
+      "claim": "Compilation did not break even through request 12.",
+      "provenance": "derived",
+      "state": "supported"
+    },
+    {
+      "artifact": "break-even.json",
+      "claim": "The exact repeated cycle crosses at request 113.",
+      "provenance": "derived",
+      "state": "modeled"
+    },
+    {
+      "artifact": "correctness-report.json",
+      "claim": "All 24 bounded responses passed evaluation.",
+      "provenance": "derived",
+      "state": "supported"
+    },
+    {
+      "artifact": "lifecycle-records.jsonl",
+      "claim": "Peak GPU memory was measured for both cells.",
+      "provenance": "cuda",
+      "state": "supported"
+    },
+    {
+      "artifact": "cost-ledger.json",
+      "claim": "Final CloudRift spend is known.",
+      "provenance": "cloudrift_user_observed",
+      "state": "unsupported"
+    },
+    {
+      "artifact": "teardown-report.json",
+      "claim": "CloudRift console termination is confirmed.",
+      "provenance": "cloudrift_user_observed",
+      "state": "unsupported"
+    }
+  ],
+  "schema_version": "1"
+}

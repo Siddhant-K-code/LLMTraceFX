@@ -1,5 +1,5 @@
 {
-  "catalog_hash": "sha256:ae2dfd29754788d6a305347e0718af43dc2f8c7d2753221591bcaf83737bea5f",
+  "catalog_hash": "sha256:807c5e09df99716bd7c6fb7e05fd6ceffc4e1e95ff861095b9a2f754979b08b4",
   "claim_dimensions": [
     "timing",
     "quality",
@@ -18,6 +18,11 @@
     {
       "relation": "compares",
       "source": "openrouter-glm-2k-comparison-20260902",
+      "target": "qwen3-8b-m5-pro-control-20260902"
+    },
+    {
+      "relation": "uses_workload_contract",
+      "source": "qwen3-8b-cloudrift-vllm-compile-20260903",
       "target": "qwen3-8b-m5-pro-control-20260902"
     },
     {
@@ -435,6 +440,116 @@
       }
     },
     {
+      "artifact_set_hash": "sha256:e5fda8a630d4bf65024dbac83734d414dc511229410b8cabcaf6c75cd6df075c",
+      "budget": {
+        "authorized_usd": 5.0,
+        "inferred_usd": 0.393033,
+        "limitation": "Console termination was unconfirmed, so final spend is unknown.",
+        "planned_usd": 3.12,
+        "reported_usd": null,
+        "scope": "list_rate_lower_bound_through_os_shutdown"
+      },
+      "bundle_schema_version": "1",
+      "captured_at": "2026-09-03T16:30:38.954381+00:00",
+      "claims": {
+        "cost": {
+          "provenance": "list-rate lower bound only; final provider spend is unavailable",
+          "state": "supported"
+        },
+        "deployment_readiness": {
+          "provenance": "bounded benchmark is not a production deployment assessment",
+          "state": "unsupported"
+        },
+        "memory": {
+          "provenance": "sampled peak device memory for both cells",
+          "state": "supported"
+        },
+        "model_fit": {
+          "provenance": "both exact-revision cells completed",
+          "state": "supported"
+        },
+        "process_attribution": {
+          "provenance": "one isolated cell at a time",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "24 deterministic workload evaluator results",
+          "state": "supported"
+        },
+        "timing": {
+          "provenance": "measured initialization and 24 bounded request records",
+          "state": "supported"
+        }
+      },
+      "dependencies": [
+        {
+          "evidence_id": "qwen3-8b-m5-pro-control-20260902",
+          "relation": "uses_workload_contract"
+        }
+      ],
+      "evidence_id": "qwen3-8b-cloudrift-vllm-compile-20260903",
+      "hardware": {
+        "architecture": "CUDA 13.0",
+        "system": "NVIDIA GeForce RTX 4090, 24,564 MiB"
+      },
+      "kind": "compile_break_even",
+      "limitations": [
+        "Break-even at request 113 is modeled from repeated exact-cycle savings.",
+        "Compilation and CUDA graph component durations were not retained.",
+        "Console termination and final provider spend were unconfirmed.",
+        "MLX results are an incompatible scope and are not ranked here."
+      ],
+      "measurements": [
+        {
+          "provenance": "client-observed and vLLM metrics",
+          "scope": "initialization, TTFT, and complete response latency"
+        },
+        {
+          "provenance": "sampled nvidia-smi used memory",
+          "scope": "peak GPU memory"
+        },
+        {
+          "provenance": "derived lower bound from user-observed console rate",
+          "scope": "list-rate lifecycle cost through OS shutdown"
+        }
+      ],
+      "model": {
+        "id": "Qwen/Qwen3-8B",
+        "quantization": "bfloat16",
+        "revision": "b968826d9c46dd6066d109eabc6255188de91218"
+      },
+      "outcome": "comparison",
+      "public_path": "examples/optimizer/qwen3-8b-vllm-compile-break-even",
+      "runtime": {
+        "name": "vLLM",
+        "provider": "CloudRift",
+        "version": "0.28.0"
+      },
+      "source_commit": "741dc5b27a4603a9d9d93f531d4de4f31703ac6e",
+      "status": "verified",
+      "supported_claims": [
+        "Compilation did not repay initialization through request 12.",
+        "Exact-sequence repeated-cycle extrapolation crosses at request 113.",
+        "All 24 bounded responses passed deterministic evaluation.",
+        "Both isolated cells completed on the fixed RTX 4090."
+      ],
+      "unsupported_claims": [
+        "general break-even outside the exact workload and runtime",
+        "provider-reported or final spend through console termination",
+        "production readiness, SLA, power, energy, or bandwidth",
+        "direct component timing for compilation or CUDA graph capture"
+      ],
+      "verifier": {
+        "name": "cloudrift-compile.verify",
+        "version": "1"
+      },
+      "workload": {
+        "context": "2K, 8K, and 16K tiers; exact pinned token arrays",
+        "identity": "qwen3-8b-vllm-compile-break-even-v1",
+        "request": "12 requests per cell; 96 maximum output tokens"
+      }
+    },
+    {
       "artifact_set_hash": "sha256:f80c18650d8d5e891957398d53058cd50182f2d5c8167775275cb8416af86335",
       "budget": {
         "authorized_usd": null,
@@ -846,7 +961,7 @@
     "name": "llmtracefx-evidence",
     "version": "1"
   },
-  "registry_hash": "sha256:cee6ede6921228c203ce07bfcb82a4f5a5ef1439f848b3cd0e577e0419278699",
+  "registry_hash": "sha256:d552cca3cec898366a5063667ec3b345a89979e697ef68bca7076e4002b83191",
   "schema_version": "1",
   "unregistered_candidates": []
 }

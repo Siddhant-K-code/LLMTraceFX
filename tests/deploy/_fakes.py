@@ -64,7 +64,6 @@ class FakeImage:
         self.local_dirs: list[tuple[str, str]] = []
         self.local_dir_options: list[dict[str, Any]] = []
         self.working_directory: str | None = None
-        self.entrypoint_commands: list[str] | None = None
 
     def pip_install(self, *packages: str, **_: Any) -> FakeImage:
         self.pip_packages.extend(packages)
@@ -83,10 +82,6 @@ class FakeImage:
 
     def workdir(self, path: str) -> FakeImage:
         self.working_directory = path
-        return self
-
-    def entrypoint(self, commands: list[str]) -> FakeImage:
-        self.entrypoint_commands = commands
         return self
 
 
@@ -119,9 +114,8 @@ class FakeRegistration:
 
 
 class FakeApp:
-    def __init__(self, name: str, **kwargs: Any) -> None:
+    def __init__(self, name: str) -> None:
         self.name = name
-        self.kwargs = kwargs
         self.registrations: dict[str, FakeRegistration] = {}
 
     def _registration(self, func: Any) -> FakeRegistration:
@@ -152,8 +146,8 @@ def build_fake_modal() -> types.ModuleType:
     volumes: list[FakeVolume] = []
     secrets: list[FakeSecret] = []
 
-    def make_app(name: str, **kwargs: Any) -> FakeApp:
-        app = FakeApp(name, **kwargs)
+    def make_app(name: str) -> FakeApp:
+        app = FakeApp(name)
         apps.append(app)
         return app
 

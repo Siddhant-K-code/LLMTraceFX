@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="380" viewBox="0 0 820 380" role="img" aria-labelledby="title desc">
+<title id="title">Cumulative initialization and request time through request 12</title>
+<desc id="desc">Compiled execution remains slower through every observed request.</desc>
+<rect width="820" height="380" fill="white"/>
+<line x1="50" y1="330" x2="780" y2="330" stroke="#667085"/>
+<line x1="50" y1="40" x2="50" y2="330" stroke="#667085"/>
+<polyline points="110,225.1 170,223.7 230,221.2 290,218.7 350,216.5 410,214.2 470,211.3 530,208.3 590,204.7 650,201.1 710,195.5 770,189.9" fill="none" stroke="#175cd3" stroke-width="3"/>
+<polyline points="110,138.5 170,137.6 230,136.1 290,134.6 350,132.9 410,131.2 470,128.9 530,126.6 590,123.6 650,120.6 710,116.3 770,112.0" fill="none" stroke="#b54708" stroke-width="3"/>
+<text x="55" y="25" font-family="system-ui" font-size="16">Seconds from initialization start</text>
+<text x="610" y="360" font-family="system-ui" font-size="14">Observed request count</text>
+<text x="570" y="55" font-family="system-ui" font-size="14" fill="#175cd3">Eager</text>
+<text x="650" y="55" font-family="system-ui" font-size="14" fill="#b54708">Compiled</text>
+</svg>
