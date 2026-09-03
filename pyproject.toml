@@ -99,6 +99,7 @@ llmtracefx-cloudrift = "llmtracefx.deploy.cloudrift_cli:main"
 llmtracefx-m5-lab = "llmtracefx.optimizer.lab.cli:main"
 llmtracefx-m5-frontier = "llmtracefx.optimizer.lab.frontier:main"
 llmtracefx-m5-control = "llmtracefx.optimizer.lab.qwen3_8b.cli:main"
+llmtracefx-evidence = "llmtracefx.evidence.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

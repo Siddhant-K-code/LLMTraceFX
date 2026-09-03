@@ -1,0 +1,852 @@
+{
+  "catalog_hash": "sha256:ae2dfd29754788d6a305347e0718af43dc2f8c7d2753221591bcaf83737bea5f",
+  "claim_dimensions": [
+    "timing",
+    "quality",
+    "cost",
+    "memory",
+    "process_attribution",
+    "model_fit",
+    "deployment_readiness"
+  ],
+  "edges": [
+    {
+      "relation": "same_model_as",
+      "source": "cloudrift-glm53flash-preflight-20260902",
+      "target": "modal-glm53flash-preflight-20260902"
+    },
+    {
+      "relation": "compares",
+      "source": "openrouter-glm-2k-comparison-20260902",
+      "target": "qwen3-8b-m5-pro-control-20260902"
+    },
+    {
+      "relation": "same_model_as",
+      "source": "qwen38-27b-m5-pro-clean-boot-autopsy-20260901",
+      "target": "qwen38-27b-m5-pro-fit-frontier-20260901"
+    },
+    {
+      "relation": "same_model_as",
+      "source": "qwen38-27b-m5-pro-clean-boot-autopsy-20260901",
+      "target": "qwen38-27b-m5-pro-lab-oom-20260831"
+    },
+    {
+      "relation": "same_model_as",
+      "source": "qwen38-27b-m5-pro-fit-frontier-20260901",
+      "target": "qwen38-27b-m5-pro-lab-oom-20260831"
+    }
+  ],
+  "entries": [
+    {
+      "artifact_set_hash": "sha256:e7b5ae6331089f945941126aeb261d201d53db4e1176b245ba7535271d0abf0e",
+      "budget": {
+        "authorized_usd": 80.0,
+        "inferred_usd": 0.0,
+        "limitation": "No provider billing result was available without access.",
+        "planned_usd": 60.0,
+        "reported_usd": null,
+        "scope": "planned_caps_and_inferred_zero_spend"
+      },
+      "bundle_schema_version": "1",
+      "captured_at": "2026-09-02T22:38:00+05:30",
+      "claims": {
+        "cost": {
+          "provenance": "planned caps and inferred zero spend; no provider usage",
+          "state": "supported"
+        },
+        "deployment_readiness": {
+          "provenance": "preflight refusal and exact stop gates are recorded",
+          "state": "supported"
+        },
+        "memory": {
+          "provenance": "aggregate listed V100 memory and exact model inventory comparison",
+          "state": "supported"
+        },
+        "model_fit": {
+          "provenance": "available V100 memory was below the exact model inventory",
+          "state": "supported"
+        },
+        "process_attribution": {
+          "provenance": "no process ran",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "no model output exists",
+          "state": "unsupported"
+        },
+        "timing": {
+          "provenance": "no deployment or request ran",
+          "state": "unsupported"
+        }
+      },
+      "dependencies": [
+        {
+          "evidence_id": "modal-glm53flash-preflight-20260902",
+          "relation": "same_model_as"
+        }
+      ],
+      "evidence_id": "cloudrift-glm53flash-preflight-20260902",
+      "hardware": {
+        "architecture": null,
+        "system": "observed 8x V100; required 8x H200 unavailable"
+      },
+      "kind": "provider_preflight",
+      "limitations": [
+        "No provisioning, model load, readiness probe, or smoke request ran.",
+        "The required H200 inventory and official runtime recipe were unverified."
+      ],
+      "measurements": [
+        {
+          "provenance": "user-observed aggregate; identifiers removed",
+          "scope": "observed console inventory"
+        },
+        {
+          "provenance": "inferred zero because no resource was created",
+          "scope": "experiment-attributable spend"
+        }
+      ],
+      "model": {
+        "id": "zai-org/GLM-5.3-Flash",
+        "quantization": "native FP8 e4m3 with dynamic activation scaling",
+        "revision": "03eb5366286afd40d2221b1d9c63a6dd1ba4832e"
+      },
+      "outcome": "refused",
+      "public_path": "examples/optimizer/cloudrift-glm53flash-preflight",
+      "runtime": {
+        "name": "unselected; official recipe unverified",
+        "provider": "CloudRift",
+        "version": null
+      },
+      "source_commit": "0dbdcf5e745f123e13d38d09296f629c24abd748",
+      "status": "verified",
+      "supported_claims": [
+        "Paid execution was refused by seven explicit stop gates.",
+        "The observed V100 listing was below the exact model inventory.",
+        "No CloudRift resource was created and spend is inferred zero."
+      ],
+      "unsupported_claims": [
+        "H200 fit, startup, readiness, benchmark, throughput, or SLA",
+        "runtime utilization, bandwidth, power, or energy"
+      ],
+      "verifier": {
+        "name": "cloudrift-preflight.verify",
+        "version": "1"
+      },
+      "workload": {
+        "context": "no model request",
+        "identity": "GLM-5.3-Flash provider preflight",
+        "request": "no authenticated, provisioning, or paid execution"
+      }
+    },
+    {
+      "artifact_set_hash": "sha256:c615f77d6170eb8ac80ce54689feb68921e1f8acd827b44f72070fbb0cfb1035",
+      "budget": {
+        "authorized_usd": null,
+        "inferred_usd": null,
+        "limitation": "No cost measurement was in scope.",
+        "planned_usd": null,
+        "reported_usd": null,
+        "scope": "not_applicable"
+      },
+      "bundle_schema_version": "1",
+      "captured_at": "2026-08-31T13:18:34+00:00",
+      "claims": {
+        "cost": {
+          "provenance": "local trace capture has no spend claim",
+          "state": "not_applicable"
+        },
+        "deployment_readiness": {
+          "provenance": "not a deployment run",
+          "state": "not_applicable"
+        },
+        "memory": {
+          "provenance": "GPU memory footprint was not measured",
+          "state": "unsupported"
+        },
+        "model_fit": {
+          "provenance": "no model was loaded",
+          "state": "not_applicable"
+        },
+        "process_attribution": {
+          "provenance": "target-process interval counts and trace-wide counts",
+          "state": "supported"
+        },
+        "quality": {
+          "provenance": "no model output was evaluated",
+          "state": "not_applicable"
+        },
+        "timing": {
+          "provenance": "interval counts are not utilization or time",
+          "state": "unsupported"
+        }
+      },
+      "dependencies": [],
+      "evidence_id": "metal-attribution-m5-pro-20260831",
+      "hardware": {
+        "architecture": "arm64",
+        "system": "Apple M5 Pro"
+      },
+      "kind": "metal_attribution",
+      "limitations": [
+        "Interval count is not utilization or elapsed GPU time.",
+        "Only sanitized aggregate trace evidence is public."
+      ],
+      "measurements": [
+        {
+          "provenance": "measured_native and target-process attributed",
+          "scope": "Metal interval count"
+        },
+        {
+          "provenance": "derived from measured interval counts",
+          "scope": "unrelated interval share"
+        }
+      ],
+      "model": {
+        "id": null,
+        "quantization": null,
+        "revision": null
+      },
+      "outcome": "completed",
+      "public_path": "examples/metal_evidence/public",
+      "runtime": {
+        "name": "Apple Instruments Metal System Trace",
+        "provider": "local",
+        "version": "26.6"
+      },
+      "source_commit": null,
+      "status": "verified",
+      "supported_claims": [
+        "Trace-wide Metal interval totals include unrelated processes.",
+        "Target-process attribution matched each controlled dispatch count."
+      ],
+      "unsupported_claims": [
+        "GPU utilization or busy percentage",
+        "kernel time, memory bandwidth, occupancy, power, or energy",
+        "GPU memory footprint"
+      ],
+      "verifier": {
+        "name": "metal-evidence.verify_public_bundle",
+        "version": "1"
+      },
+      "workload": {
+        "context": null,
+        "identity": "metal-evidence-workload",
+        "request": "five controlled dispatch-count captures"
+      }
+    },
+    {
+      "artifact_set_hash": "sha256:f2956754d080064e3f941aeca0a7e5c902e2c84fb5927e395f6fd9ec0e860046",
+      "budget": {
+        "authorized_usd": 10.0,
+        "inferred_usd": 0.0,
+        "limitation": "No provider-reported usage was available.",
+        "planned_usd": null,
+        "reported_usd": null,
+        "scope": "modeled_plan_and_inferred_zero_spend"
+      },
+      "bundle_schema_version": "1",
+      "captured_at": "2026-09-02T21:57:45+05:30",
+      "claims": {
+        "cost": {
+          "provenance": "modeled cost and inferred zero spend are distinct scopes",
+          "state": "supported"
+        },
+        "deployment_readiness": {
+          "provenance": "preflight refusal and exact stop gates are recorded",
+          "state": "supported"
+        },
+        "memory": {
+          "provenance": "no runtime memory was measured",
+          "state": "unsupported"
+        },
+        "model_fit": {
+          "provenance": "planned hardware fit was not proven",
+          "state": "unsupported"
+        },
+        "process_attribution": {
+          "provenance": "no process ran",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "no model output exists",
+          "state": "unsupported"
+        },
+        "timing": {
+          "provenance": "no deployment or request ran",
+          "state": "unsupported"
+        }
+      },
+      "dependencies": [],
+      "evidence_id": "modal-glm53flash-preflight-20260902",
+      "hardware": {
+        "architecture": "linux/amd64 image manifest",
+        "system": "planned 4x H200; not provisioned"
+      },
+      "kind": "provider_preflight",
+      "limitations": [
+        "No model load, deployment, readiness probe, or smoke request ran.",
+        "The framework source revision remained unverified."
+      ],
+      "measurements": [
+        {
+          "provenance": "pricing plan; not provider usage",
+          "scope": "modeled lifecycle cost"
+        },
+        {
+          "provenance": "inferred zero because no resource was created",
+          "scope": "experiment-attributable spend"
+        }
+      ],
+      "model": {
+        "id": "zai-org/GLM-5.3-Flash",
+        "quantization": "native FP8 e4m3 with dynamic activation scaling",
+        "revision": "03eb5366286afd40d2221b1d9c63a6dd1ba4832e"
+      },
+      "outcome": "refused",
+      "public_path": "examples/optimizer/modal-glm53flash-preflight",
+      "runtime": {
+        "name": "vLLM",
+        "provider": "Modal",
+        "version": "unverified source revision candidate"
+      },
+      "source_commit": "debd8fa3f2d4bbed3ccdaad40fd1be80e264fe87",
+      "status": "verified",
+      "supported_claims": [
+        "Paid execution was refused by three explicit stop gates.",
+        "No Modal resource was created and attributable spend is inferred zero."
+      ],
+      "unsupported_claims": [
+        "hardware fit, startup, readiness, benchmark, or ranking",
+        "runtime memory, utilization, bandwidth, power, or energy"
+      ],
+      "verifier": {
+        "name": "modal-preflight.verify",
+        "version": "1"
+      },
+      "workload": {
+        "context": "planned 131,072 tokens",
+        "identity": "GLM-5.3-Flash deployment preflight",
+        "request": "no authenticated or paid execution"
+      }
+    },
+    {
+      "artifact_set_hash": "sha256:90e2ec60eec7d5cda570f526cb7efe607a57af8c359b8bb66e27c391aeba4527",
+      "budget": {
+        "authorized_usd": 5.0,
+        "inferred_usd": null,
+        "limitation": "The local ledger is user-writable; account delta can lag and include unrelated activity.",
+        "planned_usd": 0.0745326,
+        "reported_usd": 0.00615262,
+        "scope": "provider_reported_request_usage"
+      },
+      "bundle_schema_version": "1",
+      "captured_at": "2026-09-02T11:44:23.771009Z",
+      "claims": {
+        "cost": {
+          "provenance": "provider usage, plan, and account delta remain separate scopes",
+          "state": "supported"
+        },
+        "deployment_readiness": {
+          "provenance": "comparison does not establish production readiness",
+          "state": "unsupported"
+        },
+        "memory": {
+          "provenance": "provider memory was not exposed",
+          "state": "unsupported"
+        },
+        "model_fit": {
+          "provenance": "hosted completion does not prove hardware fit",
+          "state": "unsupported"
+        },
+        "process_attribution": {
+          "provenance": "hosted provider internals",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "pinned evaluators for eight completed requests",
+          "state": "supported"
+        },
+        "timing": {
+          "provenance": "client-observed hosted request timing",
+          "state": "supported"
+        }
+      },
+      "dependencies": [
+        {
+          "evidence_id": "qwen3-8b-m5-pro-control-20260902",
+          "relation": "compares"
+        }
+      ],
+      "evidence_id": "openrouter-glm-2k-comparison-20260902",
+      "hardware": {
+        "architecture": null,
+        "system": "provider managed and undisclosed"
+      },
+      "kind": "hosted_comparison",
+      "limitations": [
+        "Client timing includes network, gateway, queueing, and execution.",
+        "Two repetitions per workload/model are directional evidence."
+      ],
+      "measurements": [
+        {
+          "provenance": "network, gateway, queueing, and execution combined",
+          "scope": "client timing"
+        },
+        {
+          "provenance": "final SSE usage blocks",
+          "scope": "provider request usage cost"
+        },
+        {
+          "provenance": "separate lag-prone corroborating observation",
+          "scope": "account usage delta"
+        }
+      ],
+      "model": {
+        "id": "z-ai/glm-5.3 and z-ai/glm-5.3-flash",
+        "quantization": "fp8",
+        "revision": "z-ai/glm-5.3-20260816 and z-ai/glm-5.3-flash-20260826"
+      },
+      "outcome": "comparison",
+      "public_path": "examples/optimizer/openrouter-glm-2k",
+      "runtime": {
+        "name": "OpenRouter hosted API",
+        "provider": "OpenRouter / Z.AI",
+        "version": "captured provider route"
+      },
+      "source_commit": "a6077adaf7135e2a2e360aeae4a73b6b411b3493",
+      "status": "verified",
+      "supported_claims": [
+        "Eight pinned hosted requests completed and passed their evaluators.",
+        "Provider-reported request usage totaled USD 0.00615262."
+      ],
+      "unsupported_claims": [
+        "universal winner or cross-system local ranking",
+        "server-only timing, provider memory, or hardware fit",
+        "production readiness"
+      ],
+      "verifier": {
+        "name": "openrouter-glm.verify",
+        "version": "1"
+      },
+      "workload": {
+        "context": "2K tier",
+        "identity": "structured-json-profile-extraction@1 and prose-reasoning-two-train-gap@1",
+        "request": "eight requests; low reasoning; no retries"
+      }
+    },
+    {
+      "artifact_set_hash": "sha256:f80c18650d8d5e891957398d53058cd50182f2d5c8167775275cb8416af86335",
+      "budget": {
+        "authorized_usd": null,
+        "inferred_usd": null,
+        "limitation": "Local execution did not record cost.",
+        "planned_usd": null,
+        "reported_usd": null,
+        "scope": "not_applicable"
+      },
+      "bundle_schema_version": "1",
+      "captured_at": "2026-09-02T08:08:36.185127Z",
+      "claims": {
+        "cost": {
+          "provenance": "local execution has no spend claim",
+          "state": "not_applicable"
+        },
+        "deployment_readiness": {
+          "provenance": "exploratory benchmark is not a deployment assessment",
+          "state": "unsupported"
+        },
+        "memory": {
+          "provenance": "MLX allocator counters; not RSS or swap",
+          "state": "supported"
+        },
+        "model_fit": {
+          "provenance": "this self-converted 8B checkpoint completed through requested 16K",
+          "state": "supported"
+        },
+        "process_attribution": {
+          "provenance": "single isolated row process",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "pinned evaluator pass rate and score",
+          "state": "supported"
+        },
+        "timing": {
+          "provenance": "host wall-clock prefill/decode/total",
+          "state": "supported"
+        }
+      },
+      "dependencies": [],
+      "evidence_id": "qwen3-8b-m5-pro-control-20260902",
+      "hardware": {
+        "architecture": "arm64",
+        "system": "Apple M5 Pro, 24 GiB unified memory"
+      },
+      "kind": "positive_control",
+      "limitations": [
+        "Exploratory run without a clean-boot assertion.",
+        "Different model and system identity from every 27B result."
+      ],
+      "measurements": [
+        {
+          "provenance": "measured_wall_clock",
+          "scope": "host wall-clock timing"
+        },
+        {
+          "provenance": "measured_native; not RSS or swap",
+          "scope": "MLX active/cache/peak allocator counters"
+        },
+        {
+          "provenance": "derived from measured counts and wall time",
+          "scope": "decode rate and correct cases per minute"
+        }
+      ],
+      "model": {
+        "id": "Qwen/Qwen3-8B",
+        "quantization": "MLX affine 4-bit, group size 64; self-converted",
+        "revision": "b968826d9c46dd6066d109eabc6255188de91218"
+      },
+      "outcome": "completed",
+      "public_path": "examples/optimizer/qwen3-8b-m5-control",
+      "runtime": {
+        "name": "mlx-lm",
+        "provider": "local",
+        "version": "0.31.3"
+      },
+      "source_commit": "6b82cf276ee1e1cef03a0c92847082f872c8feba",
+      "status": "verified",
+      "supported_claims": [
+        "The exact self-converted Qwen3-8B checkpoint completed all recorded tiers.",
+        "All twelve evaluated rows passed their pinned evaluator."
+      ],
+      "unsupported_claims": [
+        "comparability with the Qwen3.8-27B checkpoint",
+        "clean-boot publication performance",
+        "GPU utilization, bandwidth, power, energy, or kernel timing"
+      ],
+      "verifier": {
+        "name": "sha256-allowlist",
+        "version": "1"
+      },
+      "workload": {
+        "context": "requested 2K, 8K, and 16K tiers",
+        "identity": "pinned LLMTraceFX workload catalog",
+        "request": "four measured runs per tier; thinking disabled"
+      }
+    },
+    {
+      "artifact_set_hash": "sha256:1096de514bcdd74201d367d098352da831efa9f21d85aa2993af0e2787c56030",
+      "budget": {
+        "authorized_usd": null,
+        "inferred_usd": null,
+        "limitation": "Local execution did not record cost.",
+        "planned_usd": null,
+        "reported_usd": null,
+        "scope": "not_applicable"
+      },
+      "bundle_schema_version": "1",
+      "captured_at": "2026-09-01T17:45:36.921331Z",
+      "claims": {
+        "cost": {
+          "provenance": "local execution has no spend claim",
+          "state": "not_applicable"
+        },
+        "deployment_readiness": {
+          "provenance": "OOM autopsy does not assess deployment readiness",
+          "state": "unsupported"
+        },
+        "memory": {
+          "provenance": "separate MLX allocator, RSS, swap, and headroom scopes",
+          "state": "supported"
+        },
+        "model_fit": {
+          "provenance": "clean-boot OOM for the exact checkpoint and t256 workload",
+          "state": "supported"
+        },
+        "process_attribution": {
+          "provenance": "single autopsy child process",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "no first token or evaluator result exists",
+          "state": "unsupported"
+        },
+        "timing": {
+          "provenance": "stage-boundary host wall-clock observations",
+          "state": "supported"
+        }
+      },
+      "dependencies": [
+        {
+          "evidence_id": "qwen38-27b-m5-pro-lab-oom-20260831",
+          "relation": "same_model_as"
+        },
+        {
+          "evidence_id": "qwen38-27b-m5-pro-fit-frontier-20260901",
+          "relation": "same_model_as"
+        }
+      ],
+      "evidence_id": "qwen38-27b-m5-pro-clean-boot-autopsy-20260901",
+      "hardware": {
+        "architecture": "arm64",
+        "system": "Apple M5 Pro, 24 GiB unified memory"
+      },
+      "kind": "oom_autopsy",
+      "limitations": [
+        "Bounded to one exact checkpoint, runtime, machine state, and workload.",
+        "Discrete checkpoints do not provide causal allocation attribution."
+      ],
+      "measurements": [
+        {
+          "provenance": "MLX allocator; non-additive with RSS and swap",
+          "scope": "MLX active/cache/peak allocator counters"
+        },
+        {
+          "provenance": "host process current/max RSS",
+          "scope": "process RSS"
+        },
+        {
+          "provenance": "sysctl and macOS memory_pressure",
+          "scope": "system swap and approximate headroom"
+        }
+      ],
+      "model": {
+        "id": "mlx-community/Qwen3.8-27B-4bit",
+        "quantization": "MLX affine 4-bit, group size 64",
+        "revision": "3e6447f082e89cc7f0bc6e5441afd38dfce760ff"
+      },
+      "outcome": "oom",
+      "public_path": "examples/optimizer/m5-pro-qwen3.8-27b-oom-autopsy/publication",
+      "runtime": {
+        "name": "mlx-vlm",
+        "provider": "local",
+        "version": "0.6.8"
+      },
+      "source_commit": "2519bc8da309656d2e2ce2a7063f19b0dfb4c9ed",
+      "status": "verified",
+      "supported_claims": [
+        "The exact checkpoint OOMed before first token at t256 after clean boot.",
+        "MLX allocator, RSS, swap, and headroom scopes remain non-additive."
+      ],
+      "unsupported_claims": [
+        "universal memory-capacity or 24 GiB boundary",
+        "causal allocation attribution",
+        "quality, throughput, utilization, power, energy, or kernel time"
+      ],
+      "verifier": {
+        "name": "oom-autopsy.verify_bundle",
+        "version": "1"
+      },
+      "workload": {
+        "context": "t256; 256 actual prompt tokens",
+        "identity": "m5-pro-qwen3.8-27b-oom-autopsy-v1",
+        "request": "clean-boot publication autopsy"
+      }
+    },
+    {
+      "artifact_set_hash": "sha256:3585e3ccade81de3e91ee3b88c5be533a6c0e5a1fe28194d93639f6ec6af38b4",
+      "budget": {
+        "authorized_usd": null,
+        "inferred_usd": null,
+        "limitation": "Local execution did not record cost.",
+        "planned_usd": null,
+        "reported_usd": null,
+        "scope": "not_applicable"
+      },
+      "bundle_schema_version": "1",
+      "captured_at": "2026-09-01T05:30:24.941062Z",
+      "claims": {
+        "cost": {
+          "provenance": "local execution has no spend claim",
+          "state": "not_applicable"
+        },
+        "deployment_readiness": {
+          "provenance": "exploratory frontier is not a deployment assessment",
+          "state": "unsupported"
+        },
+        "memory": {
+          "provenance": "approximate system headroom and swap; not GPU memory",
+          "state": "supported"
+        },
+        "model_fit": {
+          "provenance": "bounded t256 OOM in the recorded host state",
+          "state": "supported"
+        },
+        "process_attribution": {
+          "provenance": "single local model run",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "no quality result was produced",
+          "state": "unsupported"
+        },
+        "timing": {
+          "provenance": "host wall-clock total before OOM",
+          "state": "supported"
+        }
+      },
+      "dependencies": [
+        {
+          "evidence_id": "qwen38-27b-m5-pro-lab-oom-20260831",
+          "relation": "same_model_as"
+        }
+      ],
+      "evidence_id": "qwen38-27b-m5-pro-fit-frontier-20260901",
+      "hardware": {
+        "architecture": "arm64",
+        "system": "Apple M5 Pro, 24 GiB unified memory"
+      },
+      "kind": "fit_frontier",
+      "limitations": [
+        "Exploratory run without a clean-boot assertion.",
+        "Available memory is approximate system headroom, not GPU memory."
+      ],
+      "measurements": [
+        {
+          "provenance": "measured_wall_clock",
+          "scope": "host wall-clock total"
+        },
+        {
+          "provenance": "macOS memory_pressure and sysctl",
+          "scope": "approximate system headroom and swap"
+        }
+      ],
+      "model": {
+        "id": "mlx-community/Qwen3.8-27B-4bit",
+        "quantization": "MLX affine 4-bit, group size 64",
+        "revision": "3e6447f082e89cc7f0bc6e5441afd38dfce760ff"
+      },
+      "outcome": "oom",
+      "public_path": "examples/optimizer/m5-pro-qwen3.8-27b-fit-frontier/exploratory",
+      "runtime": {
+        "name": "mlx-vlm",
+        "provider": "local",
+        "version": "0.6.8"
+      },
+      "source_commit": null,
+      "status": "verified",
+      "supported_claims": [
+        "The exact checkpoint OOMed at t256 in the recorded machine state.",
+        "Larger frontier tiers were skipped after the stop gate."
+      ],
+      "unsupported_claims": [
+        "universal memory-capacity boundary",
+        "peak system or GPU memory",
+        "quality, utilization, bandwidth, power, energy, or kernel time"
+      ],
+      "verifier": {
+        "name": "historical-immutable-artifact-set",
+        "version": "1"
+      },
+      "workload": {
+        "context": "t256 attempted; larger tiers skipped",
+        "identity": "m5-pro-qwen3.8-27b-fit-frontier-v1",
+        "request": "bounded exploratory fit-frontier row"
+      }
+    },
+    {
+      "artifact_set_hash": "sha256:bcd3b3765c2a61041cd2cab0ef2cddb0ca7532ad2c685cb69e07aac9147008e6",
+      "budget": {
+        "authorized_usd": null,
+        "inferred_usd": null,
+        "limitation": "Local execution did not record cost.",
+        "planned_usd": null,
+        "reported_usd": null,
+        "scope": "not_applicable"
+      },
+      "bundle_schema_version": "1",
+      "captured_at": "2026-08-31T14:57:58.660151Z",
+      "claims": {
+        "cost": {
+          "provenance": "local execution has no spend claim",
+          "state": "not_applicable"
+        },
+        "deployment_readiness": {
+          "provenance": "a failed exploratory warmup is not a deployment assessment",
+          "state": "unsupported"
+        },
+        "memory": {
+          "provenance": "system memory pressure and swap; MLX peak is unavailable",
+          "state": "supported"
+        },
+        "model_fit": {
+          "provenance": "OOM during the exact recorded warmup and host state",
+          "state": "supported"
+        },
+        "process_attribution": {
+          "provenance": "single local model run",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "no evaluator result was produced",
+          "state": "unsupported"
+        },
+        "timing": {
+          "provenance": "host wall-clock total before OOM",
+          "state": "supported"
+        }
+      },
+      "dependencies": [],
+      "evidence_id": "qwen38-27b-m5-pro-lab-oom-20260831",
+      "hardware": {
+        "architecture": "arm64",
+        "system": "Apple M5 Pro, 24 GiB unified memory"
+      },
+      "kind": "model_lab",
+      "limitations": [
+        "Exploratory host state; no clean-boot assertion.",
+        "Peak memory is unavailable for the failed attempt."
+      ],
+      "measurements": [
+        {
+          "provenance": "measured_wall_clock",
+          "scope": "host wall-clock total"
+        },
+        {
+          "provenance": "macOS memory_pressure and sysctl",
+          "scope": "system memory pressure and swap"
+        }
+      ],
+      "model": {
+        "id": "mlx-community/Qwen3.8-27B-4bit",
+        "quantization": "MLX affine 4-bit, group size 64",
+        "revision": "3e6447f082e89cc7f0bc6e5441afd38dfce760ff"
+      },
+      "outcome": "oom",
+      "public_path": "examples/optimizer/m5-pro-qwen3.8-27b",
+      "runtime": {
+        "name": "mlx-vlm",
+        "provider": "local",
+        "version": "0.6.8"
+      },
+      "source_commit": null,
+      "status": "verified",
+      "supported_claims": [
+        "The exact 27B checkpoint OOMed during the recorded 2K warmup.",
+        "No 8K or 16K tier was attempted after the failure."
+      ],
+      "unsupported_claims": [
+        "universal 24 GiB capacity boundary",
+        "quality, throughput, GPU utilization, power, or kernel timing",
+        "causal allocation attribution"
+      ],
+      "verifier": {
+        "name": "historical-immutable-artifact-set",
+        "version": "1"
+      },
+      "workload": {
+        "context": "2K tier; 1,657 actual input tokens",
+        "identity": "structured-json-profile-extraction warmup",
+        "request": "96 maximum output tokens"
+      }
+    }
+  ],
+  "generator": {
+    "determinism": "source-only; no clock, cwd, host, network, or model state",
+    "name": "llmtracefx-evidence",
+    "version": "1"
+  },
+  "registry_hash": "sha256:cee6ede6921228c203ce07bfcb82a4f5a5ef1439f848b3cd0e577e0419278699",
+  "schema_version": "1",
+  "unregistered_candidates": []
+}

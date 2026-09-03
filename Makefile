@@ -1,6 +1,6 @@
 # LLMTraceFX Makefile
 
-.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan cloudrift-plan test-deploy metal-evidence m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication m5-autopsy m5-autopsy-run m5-autopsy-publication m5-autopsy-evidence-verify m5-control-plan m5-control-convert m5-control-bind m5-control-run m5-control-verify m5-control-report
+.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan cloudrift-plan test-deploy metal-evidence evidence-catalog evidence-catalog-verify m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication m5-autopsy m5-autopsy-run m5-autopsy-publication m5-autopsy-evidence-verify m5-control-plan m5-control-convert m5-control-bind m5-control-run m5-control-verify m5-control-report
 
 help:  ## Show this help message
 	@echo "LLMTraceFX - evidence-first inference toolkit"
@@ -199,6 +199,13 @@ m5-control-report:  ## Rebuild self-contained control/tune/compare reports
 metal-evidence:  ## Capture privacy-safe Metal evidence (requires OUTPUT_DIR)
 	@test -n "$(OUTPUT_DIR)" || { echo "OUTPUT_DIR is required" >&2; exit 2; }
 	uv run python examples/metal_evidence/evidence_demo.py capture --output-dir "$(OUTPUT_DIR)"
+
+evidence-catalog:  ## Deterministically regenerate and verify the offline evidence catalog
+	uv run llmtracefx-evidence index
+	uv run llmtracefx-evidence verify
+
+evidence-catalog-verify:  ## Verify the committed catalog and every public bundle
+	uv run llmtracefx-evidence verify
 
 # Documentation
 docs:  ## Build documentation

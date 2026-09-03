@@ -1,0 +1,720 @@
+{
+  "$defs": {
+    "budget": {
+      "additionalProperties": false,
+      "properties": {
+        "authorized_usd": {
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "inferred_usd": {
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "limitation": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "planned_usd": {
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "reported_usd": {
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "scope": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "scope",
+        "authorized_usd",
+        "planned_usd",
+        "reported_usd",
+        "inferred_usd",
+        "limitation"
+      ],
+      "type": "object"
+    },
+    "dependency": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_id": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "type": "string"
+        },
+        "relation": {
+          "enum": [
+            "compares",
+            "derived_from",
+            "same_model_as",
+            "supersedes",
+            "uses_workload_contract"
+          ]
+        }
+      },
+      "required": [
+        "evidence_id",
+        "relation"
+      ],
+      "type": "object"
+    },
+    "edge": {
+      "additionalProperties": false,
+      "properties": {
+        "relation": {
+          "enum": [
+            "compares",
+            "derived_from",
+            "same_model_as",
+            "supersedes",
+            "uses_workload_contract"
+          ]
+        },
+        "source": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "type": "string"
+        },
+        "target": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "target",
+        "relation"
+      ],
+      "type": "object"
+    },
+    "entry": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_set_hash": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "budget": {
+          "$ref": "#/$defs/budget"
+        },
+        "bundle_schema_version": {
+          "const": "1"
+        },
+        "captured_at": {
+          "anyOf": [
+            {
+              "format": "date"
+            },
+            {
+              "format": "date-time"
+            }
+          ],
+          "maxLength": 32768,
+          "minLength": 10,
+          "type": "string"
+        },
+        "claims": {
+          "additionalProperties": false,
+          "properties": {
+            "cost": {
+              "additionalProperties": false,
+              "properties": {
+                "provenance": {
+                  "maxLength": 32768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "not_applicable",
+                    "supported",
+                    "unsupported"
+                  ]
+                }
+              },
+              "required": [
+                "state",
+                "provenance"
+              ],
+              "type": "object"
+            },
+            "deployment_readiness": {
+              "additionalProperties": false,
+              "properties": {
+                "provenance": {
+                  "maxLength": 32768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "not_applicable",
+                    "supported",
+                    "unsupported"
+                  ]
+                }
+              },
+              "required": [
+                "state",
+                "provenance"
+              ],
+              "type": "object"
+            },
+            "memory": {
+              "additionalProperties": false,
+              "properties": {
+                "provenance": {
+                  "maxLength": 32768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "not_applicable",
+                    "supported",
+                    "unsupported"
+                  ]
+                }
+              },
+              "required": [
+                "state",
+                "provenance"
+              ],
+              "type": "object"
+            },
+            "model_fit": {
+              "additionalProperties": false,
+              "properties": {
+                "provenance": {
+                  "maxLength": 32768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "not_applicable",
+                    "supported",
+                    "unsupported"
+                  ]
+                }
+              },
+              "required": [
+                "state",
+                "provenance"
+              ],
+              "type": "object"
+            },
+            "process_attribution": {
+              "additionalProperties": false,
+              "properties": {
+                "provenance": {
+                  "maxLength": 32768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "not_applicable",
+                    "supported",
+                    "unsupported"
+                  ]
+                }
+              },
+              "required": [
+                "state",
+                "provenance"
+              ],
+              "type": "object"
+            },
+            "quality": {
+              "additionalProperties": false,
+              "properties": {
+                "provenance": {
+                  "maxLength": 32768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "not_applicable",
+                    "supported",
+                    "unsupported"
+                  ]
+                }
+              },
+              "required": [
+                "state",
+                "provenance"
+              ],
+              "type": "object"
+            },
+            "timing": {
+              "additionalProperties": false,
+              "properties": {
+                "provenance": {
+                  "maxLength": 32768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "not_applicable",
+                    "supported",
+                    "unsupported"
+                  ]
+                }
+              },
+              "required": [
+                "state",
+                "provenance"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "timing",
+            "quality",
+            "cost",
+            "memory",
+            "process_attribution",
+            "model_fit",
+            "deployment_readiness"
+          ],
+          "type": "object"
+        },
+        "dependencies": {
+          "items": {
+            "$ref": "#/$defs/dependency"
+          },
+          "maxItems": 128,
+          "type": "array"
+        },
+        "evidence_id": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+          "type": "string"
+        },
+        "hardware": {
+          "$ref": "#/$defs/hardware"
+        },
+        "kind": {
+          "enum": [
+            "fit_frontier",
+            "hosted_comparison",
+            "metal_attribution",
+            "model_lab",
+            "oom_autopsy",
+            "positive_control",
+            "provider_preflight"
+          ]
+        },
+        "limitations": {
+          "$ref": "#/$defs/stringList"
+        },
+        "measurements": {
+          "items": {
+            "$ref": "#/$defs/measurement"
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "type": "array"
+        },
+        "model": {
+          "$ref": "#/$defs/model"
+        },
+        "outcome": {
+          "enum": [
+            "comparison",
+            "completed",
+            "oom",
+            "refused"
+          ]
+        },
+        "public_path": {
+          "maxLength": 512,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?/)(?!.*\\\\)[A-Za-z0-9._/-]+$",
+          "type": "string"
+        },
+        "runtime": {
+          "$ref": "#/$defs/runtime"
+        },
+        "source_commit": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "verified"
+          ]
+        },
+        "supported_claims": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/stringList"
+            }
+          ],
+          "minItems": 1
+        },
+        "unsupported_claims": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/stringList"
+            }
+          ],
+          "minItems": 1
+        },
+        "verifier": {
+          "$ref": "#/$defs/verifier"
+        },
+        "workload": {
+          "$ref": "#/$defs/workload"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "kind",
+        "status",
+        "outcome",
+        "public_path",
+        "bundle_schema_version",
+        "verifier",
+        "artifact_set_hash",
+        "captured_at",
+        "source_commit",
+        "model",
+        "runtime",
+        "hardware",
+        "workload",
+        "measurements",
+        "claims",
+        "supported_claims",
+        "unsupported_claims",
+        "budget",
+        "dependencies",
+        "limitations"
+      ],
+      "type": "object"
+    },
+    "hardware": {
+      "additionalProperties": false,
+      "properties": {
+        "architecture": {
+          "maxLength": 32768,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "system": {
+          "maxLength": 32768,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "system",
+        "architecture"
+      ],
+      "type": "object"
+    },
+    "measurement": {
+      "additionalProperties": false,
+      "properties": {
+        "provenance": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "scope": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "scope",
+        "provenance"
+      ],
+      "type": "object"
+    },
+    "model": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 32768,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "quantization": {
+          "maxLength": 32768,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revision": {
+          "maxLength": 32768,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "quantization"
+      ],
+      "type": "object"
+    },
+    "nonEmptyString": {
+      "maxLength": 32768,
+      "minLength": 1,
+      "type": "string"
+    },
+    "runtime": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 32768,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "maxLength": 32768,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "maxLength": 32768,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "provider"
+      ],
+      "type": "object"
+    },
+    "stringList": {
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      },
+      "maxItems": 4096,
+      "minItems": 1,
+      "type": "array"
+    },
+    "verifier": {
+      "oneOf": [
+        {
+          "const": {
+            "name": "cloudrift-preflight.verify",
+            "version": "1"
+          }
+        },
+        {
+          "const": {
+            "name": "historical-immutable-artifact-set",
+            "version": "1"
+          }
+        },
+        {
+          "const": {
+            "name": "metal-evidence.verify_public_bundle",
+            "version": "1"
+          }
+        },
+        {
+          "const": {
+            "name": "modal-preflight.verify",
+            "version": "1"
+          }
+        },
+        {
+          "const": {
+            "name": "oom-autopsy.verify_bundle",
+            "version": "1"
+          }
+        },
+        {
+          "const": {
+            "name": "openrouter-glm.verify",
+            "version": "1"
+          }
+        },
+        {
+          "const": {
+            "name": "sha256-allowlist",
+            "version": "1"
+          }
+        }
+      ]
+    },
+    "workload": {
+      "additionalProperties": false,
+      "properties": {
+        "context": {
+          "maxLength": 32768,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "identity": {
+          "maxLength": 32768,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request": {
+          "maxLength": 32768,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "identity",
+        "context",
+        "request"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/Siddhant-K-code/LLMTraceFX/evidence-catalog-v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "catalog_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "claim_dimensions": {
+      "items": false,
+      "maxItems": 7,
+      "minItems": 7,
+      "prefixItems": [
+        {
+          "const": "timing"
+        },
+        {
+          "const": "quality"
+        },
+        {
+          "const": "cost"
+        },
+        {
+          "const": "memory"
+        },
+        {
+          "const": "process_attribution"
+        },
+        {
+          "const": "model_fit"
+        },
+        {
+          "const": "deployment_readiness"
+        }
+      ],
+      "type": "array"
+    },
+    "edges": {
+      "items": {
+        "$ref": "#/$defs/edge"
+      },
+      "maxItems": 4096,
+      "type": "array"
+    },
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/entry"
+      },
+      "maxItems": 256,
+      "minItems": 1,
+      "type": "array"
+    },
+    "generator": {
+      "additionalProperties": false,
+      "properties": {
+        "determinism": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "name": {
+          "const": "llmtracefx-evidence"
+        },
+        "version": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "determinism"
+      ],
+      "type": "object"
+    },
+    "registry_hash": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1"
+    },
+    "unregistered_candidates": {
+      "items": {
+        "maxLength": 512,
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?/)(?!.*\\\\)[A-Za-z0-9._/-]+$",
+        "type": "string"
+      },
+      "maxItems": 4096,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "generator",
+    "registry_hash",
+    "claim_dimensions",
+    "entries",
+    "edges",
+    "unregistered_candidates",
+    "catalog_hash"
+  ],
+  "title": "LLMTraceFX offline evidence catalog",
+  "type": "object"
+}

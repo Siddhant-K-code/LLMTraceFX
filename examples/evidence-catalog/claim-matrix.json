@@ -1,0 +1,286 @@
+{
+  "dimensions": [
+    "timing",
+    "quality",
+    "cost",
+    "memory",
+    "process_attribution",
+    "model_fit",
+    "deployment_readiness"
+  ],
+  "rows": [
+    {
+      "claims": {
+        "cost": {
+          "provenance": "planned caps and inferred zero spend; no provider usage",
+          "state": "supported"
+        },
+        "deployment_readiness": {
+          "provenance": "preflight refusal and exact stop gates are recorded",
+          "state": "supported"
+        },
+        "memory": {
+          "provenance": "aggregate listed V100 memory and exact model inventory comparison",
+          "state": "supported"
+        },
+        "model_fit": {
+          "provenance": "available V100 memory was below the exact model inventory",
+          "state": "supported"
+        },
+        "process_attribution": {
+          "provenance": "no process ran",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "no model output exists",
+          "state": "unsupported"
+        },
+        "timing": {
+          "provenance": "no deployment or request ran",
+          "state": "unsupported"
+        }
+      },
+      "evidence_id": "cloudrift-glm53flash-preflight-20260902",
+      "outcome": "refused"
+    },
+    {
+      "claims": {
+        "cost": {
+          "provenance": "local trace capture has no spend claim",
+          "state": "not_applicable"
+        },
+        "deployment_readiness": {
+          "provenance": "not a deployment run",
+          "state": "not_applicable"
+        },
+        "memory": {
+          "provenance": "GPU memory footprint was not measured",
+          "state": "unsupported"
+        },
+        "model_fit": {
+          "provenance": "no model was loaded",
+          "state": "not_applicable"
+        },
+        "process_attribution": {
+          "provenance": "target-process interval counts and trace-wide counts",
+          "state": "supported"
+        },
+        "quality": {
+          "provenance": "no model output was evaluated",
+          "state": "not_applicable"
+        },
+        "timing": {
+          "provenance": "interval counts are not utilization or time",
+          "state": "unsupported"
+        }
+      },
+      "evidence_id": "metal-attribution-m5-pro-20260831",
+      "outcome": "completed"
+    },
+    {
+      "claims": {
+        "cost": {
+          "provenance": "modeled cost and inferred zero spend are distinct scopes",
+          "state": "supported"
+        },
+        "deployment_readiness": {
+          "provenance": "preflight refusal and exact stop gates are recorded",
+          "state": "supported"
+        },
+        "memory": {
+          "provenance": "no runtime memory was measured",
+          "state": "unsupported"
+        },
+        "model_fit": {
+          "provenance": "planned hardware fit was not proven",
+          "state": "unsupported"
+        },
+        "process_attribution": {
+          "provenance": "no process ran",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "no model output exists",
+          "state": "unsupported"
+        },
+        "timing": {
+          "provenance": "no deployment or request ran",
+          "state": "unsupported"
+        }
+      },
+      "evidence_id": "modal-glm53flash-preflight-20260902",
+      "outcome": "refused"
+    },
+    {
+      "claims": {
+        "cost": {
+          "provenance": "provider usage, plan, and account delta remain separate scopes",
+          "state": "supported"
+        },
+        "deployment_readiness": {
+          "provenance": "comparison does not establish production readiness",
+          "state": "unsupported"
+        },
+        "memory": {
+          "provenance": "provider memory was not exposed",
+          "state": "unsupported"
+        },
+        "model_fit": {
+          "provenance": "hosted completion does not prove hardware fit",
+          "state": "unsupported"
+        },
+        "process_attribution": {
+          "provenance": "hosted provider internals",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "pinned evaluators for eight completed requests",
+          "state": "supported"
+        },
+        "timing": {
+          "provenance": "client-observed hosted request timing",
+          "state": "supported"
+        }
+      },
+      "evidence_id": "openrouter-glm-2k-comparison-20260902",
+      "outcome": "comparison"
+    },
+    {
+      "claims": {
+        "cost": {
+          "provenance": "local execution has no spend claim",
+          "state": "not_applicable"
+        },
+        "deployment_readiness": {
+          "provenance": "exploratory benchmark is not a deployment assessment",
+          "state": "unsupported"
+        },
+        "memory": {
+          "provenance": "MLX allocator counters; not RSS or swap",
+          "state": "supported"
+        },
+        "model_fit": {
+          "provenance": "this self-converted 8B checkpoint completed through requested 16K",
+          "state": "supported"
+        },
+        "process_attribution": {
+          "provenance": "single isolated row process",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "pinned evaluator pass rate and score",
+          "state": "supported"
+        },
+        "timing": {
+          "provenance": "host wall-clock prefill/decode/total",
+          "state": "supported"
+        }
+      },
+      "evidence_id": "qwen3-8b-m5-pro-control-20260902",
+      "outcome": "completed"
+    },
+    {
+      "claims": {
+        "cost": {
+          "provenance": "local execution has no spend claim",
+          "state": "not_applicable"
+        },
+        "deployment_readiness": {
+          "provenance": "OOM autopsy does not assess deployment readiness",
+          "state": "unsupported"
+        },
+        "memory": {
+          "provenance": "separate MLX allocator, RSS, swap, and headroom scopes",
+          "state": "supported"
+        },
+        "model_fit": {
+          "provenance": "clean-boot OOM for the exact checkpoint and t256 workload",
+          "state": "supported"
+        },
+        "process_attribution": {
+          "provenance": "single autopsy child process",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "no first token or evaluator result exists",
+          "state": "unsupported"
+        },
+        "timing": {
+          "provenance": "stage-boundary host wall-clock observations",
+          "state": "supported"
+        }
+      },
+      "evidence_id": "qwen38-27b-m5-pro-clean-boot-autopsy-20260901",
+      "outcome": "oom"
+    },
+    {
+      "claims": {
+        "cost": {
+          "provenance": "local execution has no spend claim",
+          "state": "not_applicable"
+        },
+        "deployment_readiness": {
+          "provenance": "exploratory frontier is not a deployment assessment",
+          "state": "unsupported"
+        },
+        "memory": {
+          "provenance": "approximate system headroom and swap; not GPU memory",
+          "state": "supported"
+        },
+        "model_fit": {
+          "provenance": "bounded t256 OOM in the recorded host state",
+          "state": "supported"
+        },
+        "process_attribution": {
+          "provenance": "single local model run",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "no quality result was produced",
+          "state": "unsupported"
+        },
+        "timing": {
+          "provenance": "host wall-clock total before OOM",
+          "state": "supported"
+        }
+      },
+      "evidence_id": "qwen38-27b-m5-pro-fit-frontier-20260901",
+      "outcome": "oom"
+    },
+    {
+      "claims": {
+        "cost": {
+          "provenance": "local execution has no spend claim",
+          "state": "not_applicable"
+        },
+        "deployment_readiness": {
+          "provenance": "a failed exploratory warmup is not a deployment assessment",
+          "state": "unsupported"
+        },
+        "memory": {
+          "provenance": "system memory pressure and swap; MLX peak is unavailable",
+          "state": "supported"
+        },
+        "model_fit": {
+          "provenance": "OOM during the exact recorded warmup and host state",
+          "state": "supported"
+        },
+        "process_attribution": {
+          "provenance": "single local model run",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "no evaluator result was produced",
+          "state": "unsupported"
+        },
+        "timing": {
+          "provenance": "host wall-clock total before OOM",
+          "state": "supported"
+        }
+      },
+      "evidence_id": "qwen38-27b-m5-pro-lab-oom-20260831",
+      "outcome": "oom"
+    }
+  ],
+  "schema_version": "1"
+}

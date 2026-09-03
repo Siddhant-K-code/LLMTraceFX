@@ -1,0 +1,136 @@
+{
+  "catalog_hash": "sha256:ae2dfd29754788d6a305347e0718af43dc2f8c7d2753221591bcaf83737bea5f",
+  "edges": [
+    {
+      "relation": "same_model_as",
+      "source": "cloudrift-glm53flash-preflight-20260902",
+      "target": "modal-glm53flash-preflight-20260902"
+    },
+    {
+      "relation": "compares",
+      "source": "openrouter-glm-2k-comparison-20260902",
+      "target": "qwen3-8b-m5-pro-control-20260902"
+    },
+    {
+      "relation": "same_model_as",
+      "source": "qwen38-27b-m5-pro-clean-boot-autopsy-20260901",
+      "target": "qwen38-27b-m5-pro-fit-frontier-20260901"
+    },
+    {
+      "relation": "same_model_as",
+      "source": "qwen38-27b-m5-pro-clean-boot-autopsy-20260901",
+      "target": "qwen38-27b-m5-pro-lab-oom-20260831"
+    },
+    {
+      "relation": "same_model_as",
+      "source": "qwen38-27b-m5-pro-fit-frontier-20260901",
+      "target": "qwen38-27b-m5-pro-lab-oom-20260831"
+    }
+  ],
+  "nodes": [
+    {
+      "evidence_id": "cloudrift-glm53flash-preflight-20260902",
+      "kind": "provider_preflight",
+      "model": "zai-org/GLM-5.3-Flash",
+      "outcome": "refused",
+      "status": "verified",
+      "supported_claim_scope": [
+        "cost",
+        "memory",
+        "model_fit",
+        "deployment_readiness"
+      ],
+      "system": "observed 8x V100; required 8x H200 unavailable"
+    },
+    {
+      "evidence_id": "metal-attribution-m5-pro-20260831",
+      "kind": "metal_attribution",
+      "model": null,
+      "outcome": "completed",
+      "status": "verified",
+      "supported_claim_scope": [
+        "process_attribution"
+      ],
+      "system": "Apple M5 Pro"
+    },
+    {
+      "evidence_id": "modal-glm53flash-preflight-20260902",
+      "kind": "provider_preflight",
+      "model": "zai-org/GLM-5.3-Flash",
+      "outcome": "refused",
+      "status": "verified",
+      "supported_claim_scope": [
+        "cost",
+        "deployment_readiness"
+      ],
+      "system": "planned 4x H200; not provisioned"
+    },
+    {
+      "evidence_id": "openrouter-glm-2k-comparison-20260902",
+      "kind": "hosted_comparison",
+      "model": "z-ai/glm-5.3 and z-ai/glm-5.3-flash",
+      "outcome": "comparison",
+      "status": "verified",
+      "supported_claim_scope": [
+        "timing",
+        "quality",
+        "cost"
+      ],
+      "system": "provider managed and undisclosed"
+    },
+    {
+      "evidence_id": "qwen3-8b-m5-pro-control-20260902",
+      "kind": "positive_control",
+      "model": "Qwen/Qwen3-8B",
+      "outcome": "completed",
+      "status": "verified",
+      "supported_claim_scope": [
+        "timing",
+        "quality",
+        "memory",
+        "model_fit"
+      ],
+      "system": "Apple M5 Pro, 24 GiB unified memory"
+    },
+    {
+      "evidence_id": "qwen38-27b-m5-pro-clean-boot-autopsy-20260901",
+      "kind": "oom_autopsy",
+      "model": "mlx-community/Qwen3.8-27B-4bit",
+      "outcome": "oom",
+      "status": "verified",
+      "supported_claim_scope": [
+        "timing",
+        "memory",
+        "model_fit"
+      ],
+      "system": "Apple M5 Pro, 24 GiB unified memory"
+    },
+    {
+      "evidence_id": "qwen38-27b-m5-pro-fit-frontier-20260901",
+      "kind": "fit_frontier",
+      "model": "mlx-community/Qwen3.8-27B-4bit",
+      "outcome": "oom",
+      "status": "verified",
+      "supported_claim_scope": [
+        "timing",
+        "memory",
+        "model_fit"
+      ],
+      "system": "Apple M5 Pro, 24 GiB unified memory"
+    },
+    {
+      "evidence_id": "qwen38-27b-m5-pro-lab-oom-20260831",
+      "kind": "model_lab",
+      "model": "mlx-community/Qwen3.8-27B-4bit",
+      "outcome": "oom",
+      "status": "verified",
+      "supported_claim_scope": [
+        "timing",
+        "memory",
+        "model_fit"
+      ],
+      "system": "Apple M5 Pro, 24 GiB unified memory"
+    }
+  ],
+  "schema_version": "1"
+}
