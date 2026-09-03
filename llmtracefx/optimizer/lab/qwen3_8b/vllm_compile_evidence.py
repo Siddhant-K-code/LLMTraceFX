@@ -1359,7 +1359,7 @@ def _report_html(break_even: Mapping[str, Any]) -> str:
             crossing(pair["extrapolated_requests"], comparable=pair["comparable"])
         )
         + "</td><td>"
-        + html.escape(pair["initialization_penalty_seconds"])
+        + html.escape(pair["initialization_delta_seconds"])
         + "</td><td>"
         + html.escape(pair["full_cycle_request_saving_seconds"])
         + "</td><td>"
