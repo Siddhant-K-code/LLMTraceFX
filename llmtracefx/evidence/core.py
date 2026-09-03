@@ -237,7 +237,9 @@ def _load_json(path: Path, max_bytes: int = MAX_METADATA_ARTIFACT_BYTES) -> Any:
     try:
         text = read_bounded_regular_text(path, max_bytes)
         value = json.loads(text, parse_constant=reject_non_finite_json_constant)
-    except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+    except RecursionError as exc:
+        raise CatalogError(f"{path.name} exceeds maximum JSON depth") from exc
+    except (OSError, UnicodeError, ValueError) as exc:
         raise CatalogError(
             f"could not load bounded strict JSON {path.name}: {exc}"
         ) from exc
