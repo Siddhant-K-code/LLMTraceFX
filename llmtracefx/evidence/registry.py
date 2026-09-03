@@ -879,6 +879,11 @@ SOURCES: tuple[dict[str, Any], ...] = (
             "Break-even at request 113 is modeled from repeated exact-cycle savings.",
             "Compilation and CUDA graph component durations were not retained.",
             "Provider-reported spend and provisioning-to-boot cost are unavailable.",
+            (
+                "The measured runner independently verified retained staging and "
+                "prompt receipts, but did not rehash the live model or cross-check "
+                "both receipt hashes before each cell."
+            ),
             "MLX results are an incompatible scope and are not ranked here.",
         ),
     },

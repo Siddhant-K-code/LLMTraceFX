@@ -30,6 +30,10 @@
       "rtx4090-compiled"
     ]
   },
+  "limitations": [
+    "The measured runner verified the staging and prompt receipts independently and mounted model and state read-only, but it did not rehash the live model or cross-check both receipt hashes before each measured cell.",
+    "Compilation and CUDA graph component durations were not retained and remain null."
+  ],
   "model": {
     "file_count": 15,
     "id": "Qwen/Qwen3-8B",

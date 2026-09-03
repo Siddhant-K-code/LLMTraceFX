@@ -1,5 +1,5 @@
 {
-  "catalog_hash": "sha256:9a0c57a1da212ef2e1aa7e39a756324067331a6d13d7573fd1d1ae1579556cd5",
+  "catalog_hash": "sha256:976cf37b3de15808d4e8f1447dc60aeed265663717a7f352b452520973922298",
   "claim_dimensions": [
     "timing",
     "quality",
@@ -440,7 +440,7 @@
       }
     },
     {
-      "artifact_set_hash": "sha256:9fc8c4d07dc7e8779a388275132f6ebb9fe5f5a97b940efe9f3d9e08673c5df3",
+      "artifact_set_hash": "sha256:29151e2241e47f10c4a465492fa21c9e44d7535259344cd6cf9e11dcb4bab519",
       "budget": {
         "authorized_usd": 5.0,
         "inferred_usd": 0.484358,
@@ -497,6 +497,7 @@
         "Break-even at request 113 is modeled from repeated exact-cycle savings.",
         "Compilation and CUDA graph component durations were not retained.",
         "Provider-reported spend and provisioning-to-boot cost are unavailable.",
+        "The measured runner independently verified retained staging and prompt receipts, but did not rehash the live model or cross-check both receipt hashes before each cell.",
         "MLX results are an incompatible scope and are not ranked here."
       ],
       "measurements": [
@@ -964,7 +965,7 @@
     "name": "llmtracefx-evidence",
     "version": "1"
   },
-  "registry_hash": "sha256:57d6626a8b9ed729fc19bbdfaa8cfe0b1be0e71a3b5cda30598685eca1b30954",
+  "registry_hash": "sha256:b7001de1081a5f6e66614120ab959efeb53c6747731685453498f5c085a277a9",
   "schema_version": "1",
   "unregistered_candidates": []
 }

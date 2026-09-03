@@ -22,6 +22,17 @@ def load(name: str) -> dict:
     return json.loads((PUBLIC / name).read_text(encoding="utf-8"))
 
 
+def reseal(bundle: Path) -> None:
+    checksums = [
+        f"{evidence._sha256_bytes((bundle / name).read_bytes())}  {name}"
+        for name in evidence.HASHED_FILES
+    ]
+    (bundle / "SHA256SUMS").write_text(
+        "\n".join(checksums) + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_committed_bundle_verifies() -> None:
     evidence.verify_bundle(PUBLIC)
 
@@ -34,16 +45,95 @@ def test_verifier_rejects_resealed_execution_config_drift(tmp_path: Path) -> Non
     )
     contract["cells"][1]["compilation_mode"] = "NONE"
     evidence._write_json(bundle / "experiment-contract.json", contract)
-    checksums = [
-        f"{evidence._sha256_bytes((bundle / name).read_bytes())}  {name}"
-        for name in evidence.HASHED_FILES
-    ]
-    (bundle / "SHA256SUMS").write_text(
-        "\n".join(checksums) + "\n",
-        encoding="utf-8",
-    )
+    reseal(bundle)
 
     with pytest.raises(evidence.CloudRiftEvidenceError, match="contract binding"):
+        evidence.verify_bundle(bundle)
+
+
+def test_verifier_rejects_resealed_prompt_token_drift(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    shutil.copytree(PUBLIC, bundle)
+    workload = json.loads(
+        (bundle / "workload-contract.json").read_text(encoding="utf-8")
+    )
+    workload["prompts"]["2k/structured-json-profile-extraction"][0] += 1
+    workload["prompt_ids_sha256"] = evidence._sha256_json(
+        {"schema_version": "1", "prompts": workload["prompts"]}
+    )
+    evidence._write_json(bundle / "workload-contract.json", workload)
+    reseal(bundle)
+
+    with pytest.raises(evidence.CloudRiftEvidenceError, match="prompt token identity"):
+        evidence.verify_bundle(bundle)
+
+
+def test_verifier_rejects_resealed_inventory_hash_drift(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    shutil.copytree(PUBLIC, bundle)
+    inventory = json.loads(
+        (bundle / "model-inventory.json").read_text(encoding="utf-8")
+    )
+    inventory["files"][0]["sha256"] = "0" * 64
+    evidence._write_json(bundle / "model-inventory.json", inventory)
+    reseal(bundle)
+
+    with pytest.raises(evidence.CloudRiftEvidenceError, match="inventory binding"):
+        evidence.verify_bundle(bundle)
+
+
+def test_verifier_rejects_resealed_cost_scope_drift(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    shutil.copytree(PUBLIC, bundle)
+    cost = json.loads((bundle / "cost-ledger.json").read_text(encoding="utf-8"))
+    cost["console_terminated_at"] = "2026-09-03T22:20:00+05:30"
+    evidence._write_json(bundle / "cost-ledger.json", cost)
+    reseal(bundle)
+
+    with pytest.raises(evidence.CloudRiftEvidenceError, match="cost scopes"):
+        evidence.verify_bundle(bundle)
+
+
+def test_verifier_rejects_resealed_claim_matrix_drift(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    shutil.copytree(PUBLIC, bundle)
+    claims = json.loads((bundle / "claim-matrix.json").read_text(encoding="utf-8"))
+    claims["claims"][0]["state"] = "unsupported"
+    evidence._write_json(bundle / "claim-matrix.json", claims)
+    reseal(bundle)
+
+    with pytest.raises(evidence.CloudRiftEvidenceError, match="claim matrix"):
+        evidence.verify_bundle(bundle)
+
+
+def test_verifier_rejects_resealed_compile_timing_drift(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    shutil.copytree(PUBLIC, bundle)
+    lifecycle = [
+        json.loads(line)
+        for line in (bundle / "lifecycle-records.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    lifecycle[1]["compilation_seconds"] = 0
+    evidence._write_jsonl(bundle / "lifecycle-records.jsonl", lifecycle)
+    reseal(bundle)
+
+    with pytest.raises(evidence.CloudRiftEvidenceError, match="lifecycle measurement"):
+        evidence.verify_bundle(bundle)
+
+
+def test_verifier_rejects_resealed_generated_report_drift(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    shutil.copytree(PUBLIC, bundle)
+    report = bundle / "report.html"
+    report.write_text(
+        report.read_text(encoding="utf-8").replace("113.</p>", "114.</p>"),
+        encoding="utf-8",
+    )
+    reseal(bundle)
+
+    with pytest.raises(evidence.CloudRiftEvidenceError, match="HTML report"):
         evidence.verify_bundle(bundle)
 
 

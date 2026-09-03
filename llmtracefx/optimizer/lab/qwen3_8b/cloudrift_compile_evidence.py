@@ -64,6 +64,37 @@ COLLECTION_SOURCE_COMMIT = "9c0879351cc3e4f294b5c827d74dfc00182d53bb"
 EXECUTED_RUNNER_SHA256 = (
     "sha256:42e3414895133a39a48996543ef0f980e02c12699b3d923e7c6c75819ca290fb"
 )
+EXPECTED_PROMPT_IDENTITIES = {
+    "2k/structured-json-profile-extraction": (
+        1611,
+        "sha256:22ccec7442fcd2e0b3f1c4cb06adc68bef8b398b7cf6c4d86cd689140682b59a",
+    ),
+    "2k/prose-reasoning-two-train-gap": (
+        1615,
+        "sha256:adab92bdf2ab2e0f3cafd7b55748c2ac8833bf77d63eb1bd06f5c623c511971b",
+    ),
+    "8k/structured-json-profile-extraction": (
+        6371,
+        "sha256:cca1d3efb2b208bf207ce57cd1354be1fa950062aef41cd7294d72229d8a64c5",
+    ),
+    "8k/prose-reasoning-two-train-gap": (
+        6375,
+        "sha256:58dfa54afd6ca927b45c6b2334506796627099b9b89e5e94fb4a156d30242009",
+    ),
+    "16k/structured-json-profile-extraction": (
+        12695,
+        "sha256:c8990da4edda07fd4866c77f55363ae28d58cb15f38f92cf047694c9ca56477b",
+    ),
+    "16k/prose-reasoning-two-train-gap": (
+        12699,
+        "sha256:b1ca08f9a8af3588794a5022765bfcce6ea95faeae07d5fb7653144519af6842",
+    ),
+}
+MEASURED_RUNNER_LIMITATION = (
+    "The measured runner verified the staging and prompt receipts independently "
+    "and mounted model and state read-only, but it did not rehash the live model "
+    "or cross-check both receipt hashes before each measured cell."
+)
 PROVENANCE = (
     "client_observed",
     "vllm",
@@ -109,6 +140,12 @@ the provisioning-to-boot interval is unavailable. Provider-reported spend is
 unavailable. The experiment containers, GPU processes, model data, runtime
 images, result caches, and temporary public key were removed before shutdown.
 The user confirmed CloudRift console termination separately.
+
+The collection runner verified the staging and prompt receipts independently,
+and both cells mounted the model and state read-only. It did not rehash the live
+16 GB model or cross-check the two receipt hashes before each measured cell.
+The public verifier binds the retained inventory, prompt arrays, and collection
+source, but this collection limitation cannot be retroactively removed.
 
 Run `python evidence_bundle.py verify` from this directory to verify the closed
 file set, checksums, privacy rules, model and runtime pins, request contract,
@@ -156,6 +193,27 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise CloudRiftEvidenceError(f"{path.name} must contain an object")
     return value
+
+
+def _official_inventory_files() -> list[dict[str, Any]]:
+    manifest = _read_json(
+        Path(__file__).parent / "data" / "qwen3-8b-conversion-manifest-v1.json"
+    )
+    source = manifest["source"]
+    if not isinstance(source, dict):
+        raise CloudRiftEvidenceError("packaged official source manifest is invalid")
+    if (
+        source["official_id"] != MODEL_ID
+        or source["official_revision"] != MODEL_REVISION
+        or source["expected_source_bytes"] != EXPECTED_MODEL_BYTES
+    ):
+        raise CloudRiftEvidenceError(
+            "packaged official source manifest identity mismatch"
+        )
+    files = source["files"]
+    if not isinstance(files, list) or any(not isinstance(item, dict) for item in files):
+        raise CloudRiftEvidenceError("packaged official inventory is invalid")
+    return [dict(item) for item in files]
 
 
 def _verify_seal(value: Mapping[str, Any], field: str) -> None:
@@ -269,6 +327,39 @@ def _request_records(
                 }
             )
     return records, evaluations
+
+
+def _correctness_report(
+    requests: Sequence[Mapping[str, Any]],
+    evaluations: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    by_mode = {
+        mode: [record for record in requests if record["mode"] == mode]
+        for mode in ("eager", "compiled")
+    }
+    pairs = zip(by_mode["eager"], by_mode["compiled"], strict=True)
+    mismatches = [
+        eager["ordinal"]
+        for eager, compiled in pairs
+        if eager["output_token_ids"] != compiled["output_token_ids"]
+    ]
+    return {
+        "schema_version": "1",
+        "total_requests": len(evaluations),
+        "successful_requests": sum(item["success"] for item in evaluations),
+        "all_requests_correct": all(item["success"] for item in evaluations),
+        "successful_requests_by_mode": {
+            mode: sum(
+                item["success"]
+                for item in evaluations
+                if item["cell_id"] == f"rtx4090-{mode}"
+            )
+            for mode in ("eager", "compiled")
+        },
+        "paired_output_token_identity_matches": 12 - len(mismatches),
+        "paired_output_token_identity_mismatched_ordinals": mismatches,
+        "evaluations": list(evaluations),
+    }
 
 
 def _lifecycle_records(
@@ -472,6 +563,94 @@ def _render_svg(break_even: Mapping[str, Any]) -> str:
 """
 
 
+def _cost_ledger() -> dict[str, Any]:
+    scheduled_seconds = int((_dt(SHUTDOWN_SCHEDULED_AT) - _dt(BOOT_AT)).total_seconds())
+    scheduled_inferred = RATE_USD_PER_HOUR * Decimal(scheduled_seconds) / Decimal(3600)
+    console_seconds = int((_dt(CONSOLE_TERMINATED_AT) - _dt(BOOT_AT)).total_seconds())
+    console_inferred = RATE_USD_PER_HOUR * Decimal(console_seconds) / Decimal(3600)
+    return {
+        "schema_version": "1",
+        "rate_source": "user-observed CloudRift console screenshot",
+        "usd_per_hour": "0.390000",
+        "vm_boot_at": BOOT_AT,
+        "os_shutdown_scheduled_at": SHUTDOWN_SCHEDULED_AT,
+        "accounted_seconds_through_scheduled_shutdown_boundary": scheduled_seconds,
+        "inferred_spend_usd_through_scheduled_shutdown_boundary": (
+            f"{scheduled_inferred:.6f}"
+        ),
+        "inferred_spend_scope": "scheduled-shutdown-boundary list-rate lower bound",
+        "provider_reported_spend_usd": None,
+        "console_terminated_at": CONSOLE_TERMINATED_AT,
+        "accounted_seconds_boot_to_console_termination": console_seconds,
+        "final_inferred_spend_through_console_termination_usd": (
+            f"{console_inferred:.6f}"
+        ),
+        "final_inferred_spend_scope": (
+            "boot-to-console-termination list-rate lower bound"
+        ),
+        "hard_cap_usd": "5.000000",
+        "eight_hour_cutoff_cost_usd": "3.120000",
+        "remaining_hard_cap_at_console_termination_usd": (
+            f"{HARD_CAP_USD - console_inferred:.6f}"
+        ),
+        "credits_treated_as_zero_spend": False,
+        "limitation": (
+            "The provider did not report spend, and the provisioning-to-boot "
+            "interval is unavailable."
+        ),
+    }
+
+
+def _claim_matrix() -> dict[str, Any]:
+    return {
+        "schema_version": "1",
+        "claims": [
+            {
+                "claim": "Compilation did not break even through request 12.",
+                "state": "supported",
+                "provenance": "derived",
+                "artifact": "break-even.json",
+            },
+            {
+                "claim": "The exact repeated cycle crosses at request 113.",
+                "state": "modeled",
+                "provenance": "derived",
+                "artifact": "break-even.json",
+            },
+            {
+                "claim": "Twenty-two of 24 bounded responses passed evaluation.",
+                "state": "supported",
+                "provenance": "derived",
+                "artifact": "correctness-report.json",
+            },
+            {
+                "claim": "Eight of 12 paired outputs had identical token IDs.",
+                "state": "supported",
+                "provenance": "model_reported",
+                "artifact": "correctness-report.json",
+            },
+            {
+                "claim": "Peak GPU memory was measured for both cells.",
+                "state": "supported",
+                "provenance": "cuda",
+                "artifact": "lifecycle-records.jsonl",
+            },
+            {
+                "claim": "Provider-reported CloudRift spend is known.",
+                "state": "unsupported",
+                "provenance": "cloudrift_user_observed",
+                "artifact": "cost-ledger.json",
+            },
+            {
+                "claim": "CloudRift console termination is confirmed.",
+                "state": "supported",
+                "provenance": "cloudrift_user_observed",
+                "artifact": "teardown-report.json",
+            },
+        ],
+    }
+
+
 def build_bundle(raw_dir: Path, output_dir: Path) -> None:
     """Build a deterministic sanitized bundle from the sealed private records."""
     staging = _read_json(raw_dir / "staging-receipt.json")
@@ -566,6 +745,13 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
             "/output/<cell>.json",
         ],
         "provenance_domains": list(PROVENANCE),
+        "limitations": [
+            MEASURED_RUNNER_LIMITATION,
+            (
+                "Compilation and CUDA graph component durations were not retained "
+                "and remain null."
+            ),
+        ],
     }
     pricing = {
         "schema_version": "1",
@@ -619,68 +805,9 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
     }
     lifecycle = _lifecycle_records(cells)
     requests, evaluations = _request_records(cells)
-    correctness = {
-        "schema_version": "1",
-        "total_requests": len(evaluations),
-        "successful_requests": sum(item["success"] for item in evaluations),
-        "all_requests_correct": all(item["success"] for item in evaluations),
-        "successful_requests_by_mode": {
-            mode: sum(
-                item["success"]
-                for item in evaluations
-                if item["cell_id"] == f"rtx4090-{mode}"
-            )
-            for mode in ("eager", "compiled")
-        },
-        "paired_output_token_identity_matches": sum(
-            eager_request["output_token_ids"] == compiled_request["output_token_ids"]
-            for eager_request, compiled_request in zip(
-                eager["requests"], compiled["requests"], strict=True
-            )
-        ),
-        "paired_output_token_identity_mismatched_ordinals": [
-            eager_request["ordinal"]
-            for eager_request, compiled_request in zip(
-                eager["requests"], compiled["requests"], strict=True
-            )
-            if eager_request["output_token_ids"] != compiled_request["output_token_ids"]
-        ],
-        "evaluations": evaluations,
-    }
+    correctness = _correctness_report(requests, evaluations)
     break_even = _break_even(cells)
-    seconds = int((_dt(SHUTDOWN_SCHEDULED_AT) - _dt(BOOT_AT)).total_seconds())
-    inferred = RATE_USD_PER_HOUR * Decimal(seconds) / Decimal(3600)
-    console_seconds = int((_dt(CONSOLE_TERMINATED_AT) - _dt(BOOT_AT)).total_seconds())
-    console_inferred = RATE_USD_PER_HOUR * Decimal(console_seconds) / Decimal(3600)
-    cost = {
-        "schema_version": "1",
-        "rate_source": "user-observed CloudRift console screenshot",
-        "usd_per_hour": "0.390000",
-        "vm_boot_at": BOOT_AT,
-        "os_shutdown_scheduled_at": SHUTDOWN_SCHEDULED_AT,
-        "accounted_seconds_through_os_shutdown": seconds,
-        "inferred_spend_usd_through_scheduled_shutdown_boundary": f"{inferred:.6f}",
-        "inferred_spend_scope": "list-rate lower bound",
-        "provider_reported_spend_usd": None,
-        "console_terminated_at": CONSOLE_TERMINATED_AT,
-        "accounted_seconds_boot_to_console_termination": console_seconds,
-        "final_inferred_spend_through_console_termination_usd": (
-            f"{console_inferred:.6f}"
-        ),
-        "final_inferred_spend_scope": (
-            "boot-to-console-termination list-rate lower bound"
-        ),
-        "hard_cap_usd": "5.000000",
-        "eight_hour_cutoff_cost_usd": "3.120000",
-        "remaining_hard_cap_at_console_termination_usd": (
-            f"{HARD_CAP_USD - console_inferred:.6f}"
-        ),
-        "credits_treated_as_zero_spend": False,
-        "limitation": (
-            "The provider did not report spend, and the provisioning-to-boot "
-            "interval is unavailable."
-        ),
-    }
+    cost = _cost_ledger()
     teardown = {
         "schema_version": "1",
         "cleanup_ended_at": teardown_private["cleanup_ended_at"],
@@ -712,53 +839,7 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
         ),
         "status": "complete",
     }
-    claims = {
-        "schema_version": "1",
-        "claims": [
-            {
-                "claim": "Compilation did not break even through request 12.",
-                "state": "supported",
-                "provenance": "derived",
-                "artifact": "break-even.json",
-            },
-            {
-                "claim": "The exact repeated cycle crosses at request 113.",
-                "state": "modeled",
-                "provenance": "derived",
-                "artifact": "break-even.json",
-            },
-            {
-                "claim": "Twenty-two of 24 bounded responses passed evaluation.",
-                "state": "supported",
-                "provenance": "derived",
-                "artifact": "correctness-report.json",
-            },
-            {
-                "claim": "Eight of 12 paired outputs had identical token IDs.",
-                "state": "supported",
-                "provenance": "model_reported",
-                "artifact": "correctness-report.json",
-            },
-            {
-                "claim": "Peak GPU memory was measured for both cells.",
-                "state": "supported",
-                "provenance": "cuda",
-                "artifact": "lifecycle-records.jsonl",
-            },
-            {
-                "claim": "Provider-reported CloudRift spend is known.",
-                "state": "unsupported",
-                "provenance": "cloudrift_user_observed",
-                "artifact": "cost-ledger.json",
-            },
-            {
-                "claim": "CloudRift console termination is confirmed.",
-                "state": "supported",
-                "provenance": "cloudrift_user_observed",
-                "artifact": "teardown-report.json",
-            },
-        ],
-    }
+    claims = _claim_matrix()
     for name, value in (
         ("experiment-contract.json", contract),
         ("pricing-snapshot.json", pricing),
@@ -868,6 +949,14 @@ def verify_bundle(root: Path) -> None:
         or contract["cells"] != expected_cells
         or contract["request_count_per_cell"] != 12
         or contract["sampling"] != SAMPLING
+        or contract["limitations"]
+        != [
+            MEASURED_RUNNER_LIMITATION,
+            (
+                "Compilation and CUDA graph component durations were not retained "
+                "and remain null."
+            ),
+        ]
         or contract["isolation"]
         != {
             "sequence": ["rtx4090-eager", "rtx4090-compiled"],
@@ -890,6 +979,17 @@ def verify_bundle(root: Path) -> None:
     if len(requests) != 24:
         raise CloudRiftEvidenceError("exactly 24 request records are required")
     for expected_cell, record in zip(expected_cells, lifecycle, strict=True):
+        expected_reasons = {
+            "eager": (
+                "not_applicable_eager_mode",
+                "not_applicable_eager_mode",
+            ),
+            "compiled": (
+                "vllm_compilation_time_not_exposed_or_nonpositive",
+                "stable_component_timing_not_exposed",
+            ),
+        }
+        compilation_reason, graph_reason = expected_reasons[record["mode"]]
         if (
             record["cell_id"] != expected_cell["cell_id"]
             or record["mode"] != expected_cell["mode"]
@@ -899,8 +999,27 @@ def verify_bundle(root: Path) -> None:
                 "compilation_mode": expected_cell["compilation_mode"],
                 "cuda_graph_mode": expected_cell["cuda_graph_mode"],
             }
+            or record["compilation_seconds"] is not None
+            or record["cuda_graph_seconds"] is not None
+            or record["compilation_seconds_unobservable_reason"] != compilation_reason
+            or record["cuda_graph_seconds_unobservable_reason"] != graph_reason
+            or record["initialization_seconds"]
+            != {"eager": 64.600270, "compiled": 119.143334}[record["mode"]]
+            or record["initialization_seconds"]
+            != (
+                _dt(record["initialization_ready_at"])
+                - _dt(record["initialization_started_at"])
+            ).total_seconds()
+            or record["host_lifecycle_seconds"]
+            != (
+                _dt(record["ended_at"]) - _dt(record["host_invocation_started_at"])
+            ).total_seconds()
+            or record["request_phase_seconds"]
+            != (
+                _dt(record["ended_at"]) - _dt(record["initialization_ready_at"])
+            ).total_seconds()
         ):
-            raise CloudRiftEvidenceError("lifecycle execution config drifted")
+            raise CloudRiftEvidenceError("lifecycle measurement binding drifted")
     if any(not item["terminal"] for item in lifecycle + requests):
         raise CloudRiftEvidenceError("all records must be terminal")
     if any(item["ttft_seconds"] is None for item in requests):
@@ -920,6 +1039,17 @@ def verify_bundle(root: Path) -> None:
         != _sha256_json({"schema_version": "1", "prompts": prompts})
     ):
         raise CloudRiftEvidenceError("prompt token seal does not verify")
+    if set(prompts) != set(EXPECTED_PROMPT_IDENTITIES):
+        raise CloudRiftEvidenceError("prompt identity set drifted")
+    for key, (expected_count, expected_hash) in EXPECTED_PROMPT_IDENTITIES.items():
+        token_ids = prompts[key]
+        if (
+            not isinstance(token_ids, list)
+            or any(type(token_id) is not int or token_id < 0 for token_id in token_ids)
+            or len(token_ids) != expected_count
+            or _sha256_json(token_ids) != expected_hash
+        ):
+            raise CloudRiftEvidenceError(f"prompt token identity drifted: {key}")
     expected_evaluations: list[dict[str, Any]] = []
     by_mode: dict[str, list[dict[str, Any]]] = {}
     for mode in ("eager", "compiled"):
@@ -935,9 +1065,25 @@ def verify_bundle(root: Path) -> None:
             key = f"{descriptor.context_tier}/{descriptor.workload_id}"
             token_ids = prompts[key]
             if (
-                request["input_token_count"] != len(token_ids)
+                request["cell_id"] != f"rtx4090-{mode}"
+                or request["terminal"] is not True
+                or request["warmup"] is not False
+                or request["input_token_count"] != len(token_ids)
                 or request["input_token_ids_sha256"] != _sha256_json(token_ids)
                 or request["output_token_count"] != len(request["output_token_ids"])
+                or any(
+                    type(token_id) is not int or token_id < 0
+                    for token_id in request["output_token_ids"]
+                )
+                or not math.isclose(
+                    request["latency_seconds"],
+                    (
+                        _dt(request["ended_at"]) - _dt(request["started_at"])
+                    ).total_seconds(),
+                    rel_tol=0,
+                    abs_tol=0.001,
+                )
+                or not 0 <= request["ttft_seconds"] <= request["latency_seconds"]
             ):
                 raise CloudRiftEvidenceError("request token identity drifted")
             expected_rate = request["output_token_count"] / request["latency_seconds"]
@@ -991,6 +1137,14 @@ def verify_bundle(root: Path) -> None:
         or correctness["evaluations"] != expected_evaluations
     ):
         raise CloudRiftEvidenceError("correctness report does not recompute")
+    if (
+        correctness["successful_requests"] != 22
+        or correctness["successful_requests_by_mode"] != {"compiled": 12, "eager": 10}
+        or correctness["paired_output_token_identity_matches"] != 8
+        or correctness["paired_output_token_identity_mismatched_ordinals"]
+        != [7, 8, 11, 12]
+    ):
+        raise CloudRiftEvidenceError("headline correctness result drifted")
     break_even = _read_json(root / "break-even.json")
     reconstructed_cells = [
         {
@@ -1001,18 +1155,17 @@ def verify_bundle(root: Path) -> None:
     ]
     if break_even != _break_even(reconstructed_cells):
         raise CloudRiftEvidenceError("break-even result does not verify")
-    cost = _read_json(root / "cost-ledger.json")
-    inferred = Decimal(cost["inferred_spend_usd_through_scheduled_shutdown_boundary"])
-    final_inferred = Decimal(
-        cost["final_inferred_spend_through_console_termination_usd"]
-    )
     if (
-        inferred != Decimal("0.393033")
-        or final_inferred != Decimal("0.484358")
-        or final_inferred >= HARD_CAP_USD
-        or inferred >= HARD_CAP_USD
-        or cost["provider_reported_spend_usd"] is not None
+        break_even["observed_break_even_request_count"] is not None
+        or break_even["observed_lower_bound_request_count"] != 12
+        or break_even["modeled_repeated_cycle_break_even_request_count"] != 113
+        or break_even["modeled_repeated_cycle_break_even_cost_crossing_request_count"]
+        != 113
+        or break_even["initialization_penalty_seconds"] != 54.543064
     ):
+        raise CloudRiftEvidenceError("headline break-even result drifted")
+    cost = _read_json(root / "cost-ledger.json")
+    if cost != _cost_ledger():
         raise CloudRiftEvidenceError("cost scopes are invalid")
     teardown = _read_json(root / "teardown-report.json")
     if (
@@ -1055,21 +1208,44 @@ def verify_bundle(root: Path) -> None:
     if (
         inventory["model_id"] != MODEL_ID
         or inventory["revision"] != MODEL_REVISION
+        or inventory["license"] != "Apache-2.0"
         or inventory["file_count"] != EXPECTED_MODEL_FILE_COUNT
         or inventory["total_bytes"] != EXPECTED_MODEL_BYTES
-        or len(inventory["files"]) != EXPECTED_MODEL_FILE_COUNT
-        or sum(item["size_bytes"] for item in inventory["files"])
-        != EXPECTED_MODEL_BYTES
+        or inventory["files"] != _official_inventory_files()
+        or inventory["verification"] != "size and SHA-256 verified after download"
     ):
         raise CloudRiftEvidenceError("model inventory binding drifted")
     pricing = _read_json(root / "pricing-snapshot.json")
-    if (
-        pricing["usd_per_hour"] != "0.390000"
-        or pricing["hard_cap_usd"] != "5.000000"
-        or pricing["experiment_cutoff_hours"] != "8.000000"
-        or pricing["cutoff_cost_usd"] != "3.120000"
-    ):
+    if pricing != {
+        "schema_version": "1",
+        "source": "user-observed CloudRift console screenshot",
+        "observed_at": "2026-09-03",
+        "public_api_quote": False,
+        "region": "ap-east-tw-kn-1",
+        "shape": {
+            "gpu": "NVIDIA GeForce RTX 4090",
+            "gpu_memory_gb_displayed": 24,
+            "ram_gb_displayed": 47,
+            "disk_gb_displayed": 280,
+            "shared_public_ip": True,
+        },
+        "usd_per_hour": "0.390000",
+        "hard_cap_usd": "5.000000",
+        "experiment_cutoff_hours": "8.000000",
+        "cutoff_cost_usd": "3.120000",
+        "contingency_usd": "1.880000",
+    }:
         raise CloudRiftEvidenceError("pricing contract drifted")
+    if _read_json(root / "claim-matrix.json") != _claim_matrix():
+        raise CloudRiftEvidenceError("claim matrix drifted")
+    if (root / "README.md").read_text(encoding="utf-8") != README:
+        raise CloudRiftEvidenceError("README drifted")
+    if (root / "report.html").read_text(encoding="utf-8") != _render_report(
+        lifecycle, break_even, correctness, cost
+    ):
+        raise CloudRiftEvidenceError("HTML report drifted")
+    if (root / "break-even.svg").read_text(encoding="utf-8") != _render_svg(break_even):
+        raise CloudRiftEvidenceError("SVG report drifted")
     for document in (
         lifecycle,
         requests,
