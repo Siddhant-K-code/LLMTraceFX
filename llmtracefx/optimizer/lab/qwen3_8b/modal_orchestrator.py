@@ -95,12 +95,24 @@ _CREDENTIAL = re.compile(
 )
 _PRIVATE_ID = re.compile(r"^(?:ap|vo|ta|ct|ac|us)-[A-Za-z0-9_-]{8,}$")
 
-RATE_RESOURCES: dict[str, tuple[str, str]] = {
-    "gpu_l40s": ("l40s_gpu_second_usd", "gpu_second"),
-    "gpu_h100": ("h100_gpu_second_usd", "gpu_second"),
-    "cpu": ("cpu_core_second_usd", "core_second"),
-    "memory": ("memory_gib_second_usd", "gib_second"),
-    "volume": ("volume_gib_month_usd", "gib_month"),
+RATE_RESOURCES: dict[str, tuple[str, str, Decimal]] = {
+    "gpu_hour_cost_l40s": (
+        "l40s_gpu_second_usd",
+        "gpu_second",
+        Decimal(3600),
+    ),
+    "gpu_hour_cost_h100": (
+        "h100_gpu_second_usd",
+        "gpu_second",
+        Decimal(3600),
+    ),
+    "cpu_hour_cost": ("cpu_core_second_usd", "core_second", Decimal(3600)),
+    "mem_gib_hour_cost": ("memory_gib_second_usd", "gib_second", Decimal(3600)),
+    "volume_storage_gib_month_cost": (
+        "volume_gib_month_usd",
+        "gib_month",
+        Decimal(1),
+    ),
 }
 _APP_STATES = frozenset(
     {
@@ -397,7 +409,7 @@ def parse_billing_rates(response: RawJSON) -> dict[str, str]:
     if not isinstance(payload, dict):
         raise ModalOrchestratorError("billing rates must be an object")
     parsed: dict[str, str] = {}
-    for resource, (field, _unit) in RATE_RESOURCES.items():
+    for resource, (field, _unit, divisor) in RATE_RESOURCES.items():
         value = payload.get(resource)
         if isinstance(value, bool) or not isinstance(value, (str, int, Decimal)):
             raise ModalOrchestratorError(f"billing price is invalid for {resource}")
@@ -407,7 +419,7 @@ def parse_billing_rates(response: RawJSON) -> dict[str, str]:
             raise ModalOrchestratorError("billing price is not decimal") from exc
         if not decimal.is_finite() or decimal <= 0:
             raise ModalOrchestratorError("billing price must be finite and positive")
-        parsed[field] = canonical_decimal(decimal)
+        parsed[field] = canonical_decimal(decimal / divisor)
     return parsed
 
 

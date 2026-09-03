@@ -80,11 +80,11 @@ def raw(payload: Any, marker: bytes = b"provider-json") -> controller.RawJSON:
 
 def rates(multiplier: Decimal = Decimal(1)) -> controller.RawJSON:
     baseline = {
-        "gpu_l40s": Decimal("0.000542"),
-        "gpu_h100": Decimal("0.001097"),
-        "cpu": Decimal("0.0000131"),
-        "memory": Decimal("0.00000222"),
-        "volume": Decimal("0.09"),
+        "gpu_hour_cost_l40s": Decimal("1.95000"),
+        "gpu_hour_cost_h100": Decimal("3.95000"),
+        "cpu_hour_cost": Decimal("0.04730"),
+        "mem_gib_hour_cost": Decimal("0.00800"),
+        "volume_storage_gib_month_cost": Decimal("0.09000"),
     }
     return raw(
         {resource: str(value * multiplier) for resource, value in baseline.items()},
@@ -713,13 +713,25 @@ def test_live_rate_increase_recalculates_and_refuses_before_paid_command(
 def test_rate_parser_refuses_nonexact_modal_schema(mutation: str) -> None:
     response = rates()
     if mutation == "missing":
-        response.payload.pop("gpu_l40s")
+        response.payload.pop("gpu_hour_cost_l40s")
     elif mutation == "invalid":
-        response.payload["gpu_l40s"] = "NaN"
+        response.payload["gpu_hour_cost_l40s"] = "NaN"
     else:
         response = raw([])
     with pytest.raises(controller.ModalOrchestratorError):
         controller.parse_billing_rates(response)
+
+
+def test_rate_parser_converts_hourly_modal_rates_to_plan_units() -> None:
+    parsed = controller.parse_billing_rates(rates())
+
+    assert parsed == {
+        "l40s_gpu_second_usd": "0.0005416666666666666666666666667",
+        "h100_gpu_second_usd": "0.001097222222222222222222222222",
+        "cpu_core_second_usd": "0.00001313888888888888888888888889",
+        "memory_gib_second_usd": "0.000002222222222222222222222222222",
+        "volume_gib_month_usd": "0.09",
+    }
 
 
 @pytest.mark.parametrize("failure", ["stage", "cell", "provider"])
