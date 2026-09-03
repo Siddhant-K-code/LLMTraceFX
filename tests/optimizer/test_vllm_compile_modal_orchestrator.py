@@ -734,6 +734,12 @@ def test_rate_parser_converts_hourly_modal_rates_to_plan_units() -> None:
     }
 
 
+@pytest.mark.parametrize("prefix", ["ak-", "as-"])
+def test_persistence_scanner_rejects_modal_credential_shapes(prefix: str) -> None:
+    with pytest.raises(controller.ModalOrchestratorError, match="credential-shaped"):
+        controller._scan_persistable({"diagnostic": prefix + "A1b2C3d4E5f6G7h8I9j0"})
+
+
 @pytest.mark.parametrize("failure", ["stage", "cell", "provider"])
 def test_teardown_is_mandatory_and_original_failure_preserved(
     paths: dict[str, Path], failure: str

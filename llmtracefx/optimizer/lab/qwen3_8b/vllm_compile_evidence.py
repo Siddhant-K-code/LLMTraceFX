@@ -130,7 +130,7 @@ _PROVIDER_ID = re.compile(r"\b(?:ap|vo|ta|ct|ac|us)-[A-Za-z0-9_-]{8,}\b")
 _CREDENTIAL = re.compile(
     r"(?<![A-Za-z0-9])(?:hf_[A-Za-z0-9_-]{8,}|"
     r"gh[pousr]_[A-Za-z0-9_-]{8,}|github_pat_[A-Za-z0-9_-]{8,}|"
-    r"sk-[A-Za-z0-9_-]{16,}|AKIA[0-9A-Z]{16}|"
+    r"sk-[A-Za-z0-9_-]{16,}|(?:ak|as)-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|"
     r"modal[_-](?:token|secret)[A-Za-z0-9_-]{8,})",
     re.I,
 )
@@ -550,13 +550,26 @@ def _validate_staging(
     return dict(value), prompt_map
 
 
-def _validate_lifecycle(value: Any, cell_index: int) -> dict[str, Any]:
+def _validate_lifecycle(
+    value: Any,
+    cell_index: int,
+    *,
+    plan_sha256: str,
+    experiment_id: str,
+) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise VLLMCompileEvidenceError("lifecycle record is invalid")
     if "artifact_sha256" not in value:
         raise VLLMCompileEvidenceError("lifecycle record seal is missing")
     _verify_seal(value, "artifact_sha256")
-    required = {"function", "started_at", "events", "ended_at"}
+    required = {
+        "experiment_id",
+        "plan_sha256",
+        "function",
+        "started_at",
+        "events",
+        "ended_at",
+    }
     if set(value) - {"artifact_sha256"} != required:
         raise VLLMCompileEvidenceError("lifecycle record schema is not exact")
     expected_function = (
@@ -568,7 +581,9 @@ def _validate_lifecycle(value: Any, cell_index: int) -> dict[str, Any]:
     events = value["events"]
     duration = _duration(value["started_at"], value["ended_at"], "cell lifecycle")
     if (
-        value["function"] != expected_function
+        value["experiment_id"] != experiment_id
+        or value["plan_sha256"] != plan_sha256
+        or value["function"] != expected_function
         or duration <= 0
         or not isinstance(events, list)
         or not events
@@ -600,6 +615,8 @@ def _validate_lifecycle(value: Any, cell_index: int) -> dict[str, Any]:
         raise VLLMCompileEvidenceError("lifecycle terminal boundaries are invalid")
     first_event_at = public_events[0]["received_at"]
     return {
+        "experiment_id": experiment_id,
+        "plan_sha256": plan_sha256,
         "cell_id": CELLS[cell_index].cell_id,
         "function": expected_function,
         "started_at": value["started_at"],
@@ -1631,7 +1648,12 @@ def build_bundle(
     if len(cell_records) != 4 or len(lifecycle_records) != 4:
         raise VLLMCompileEvidenceError("exactly four cells and lifecycles are required")
     lifecycles = [
-        _validate_lifecycle(value, index)
+        _validate_lifecycle(
+            value,
+            index,
+            plan_sha256=plan.content_sha256,
+            experiment_id=contract["experiment_id"],
+        )
         for index, value in enumerate(lifecycle_records)
     ]
     summaries: list[dict[str, Any]] = []
@@ -2108,6 +2130,8 @@ def verify_bundle(directory: str | Path) -> dict[str, Any]:
         _strict_keys(
             lifecycle,
             {
+                "experiment_id",
+                "plan_sha256",
                 "cell_id",
                 "function",
                 "started_at",
@@ -2122,7 +2146,9 @@ def verify_bundle(directory: str | Path) -> dict[str, Any]:
             "public lifecycle",
         )
         if (
-            lifecycle["cell_id"] != CELLS[index].cell_id
+            lifecycle["experiment_id"] != contract["experiment_id"]
+            or lifecycle["plan_sha256"] != plan.content_sha256
+            or lifecycle["cell_id"] != CELLS[index].cell_id
             or lifecycle["function"]
             != (
                 "l40s_eager",

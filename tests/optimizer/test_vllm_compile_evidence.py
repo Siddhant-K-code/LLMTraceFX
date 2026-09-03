@@ -235,6 +235,8 @@ def synthetic() -> dict[str, Any]:
         lifecycle_records.append(
             seal(
                 {
+                    "experiment_id": "run-01",
+                    "plan_sha256": plan.content_sha256,
                     "function": function,
                     "started_at": iso(100 + cell_index * 40),
                     "events": [
@@ -578,6 +580,18 @@ def test_lifecycle_accounting_must_cover_measured_work(artifact_root: Path) -> N
         build(artifact_root / "bundle", inputs)
 
 
+@pytest.mark.parametrize("field", ["experiment_id", "plan_sha256"])
+def test_lifecycle_must_be_bound_to_execution(artifact_root: Path, field: str) -> None:
+    inputs = synthetic()
+    lifecycle = inputs["lifecycle_records"][0]
+    lifecycle.pop("artifact_sha256")
+    lifecycle[field] = "run-02" if field == "experiment_id" else "sha256:" + "0" * 64
+    inputs["lifecycle_records"][0] = seal(lifecycle, "artifact_sha256")
+
+    with pytest.raises(evidence.VLLMCompileEvidenceError, match="lifecycle identity"):
+        build(artifact_root / "bundle", inputs)
+
+
 def test_paired_hardware_mismatch_rejects_bundle(artifact_root: Path) -> None:
     inputs = synthetic()
     compiled = inputs["cell_records"][1]
@@ -732,6 +746,12 @@ def test_private_provider_identifiers_reject(prefix: str) -> None:
 def test_hex_shaped_secret_rejects() -> None:
     with pytest.raises(evidence.VLLMCompileEvidenceError, match="credential"):
         evidence._walk_safe("sk-" + "a" * 64)
+
+
+@pytest.mark.parametrize("prefix", ["ak-", "as-"])
+def test_modal_credential_shape_rejects(prefix: str) -> None:
+    with pytest.raises(evidence.VLLMCompileEvidenceError, match="credential"):
+        evidence._walk_safe(prefix + "A1b2C3d4E5f6G7h8I9j0")
 
 
 def test_incomplete_teardown_rejects(artifact_root: Path) -> None:

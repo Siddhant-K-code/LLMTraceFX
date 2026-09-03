@@ -90,6 +90,7 @@ _SAFE_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,31}[a-z0-9])?$")
 _CREDENTIAL = re.compile(
     r"(?<![A-Za-z0-9])(?:hf_[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_-]{8,}|"
     r"github_pat_[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{16,}|"
+    r"(?:ak|as)-[A-Za-z0-9]{20,}|"
     r"modal[_-]token[A-Za-z0-9_-]{8,}|AKIA[0-9A-Z]{16})",
     re.IGNORECASE,
 )
@@ -1500,6 +1501,8 @@ def execute(
 
             for index, function_name in enumerate(CELL_FUNCTIONS):
                 invocation: dict[str, Any] = {
+                    "experiment_id": config.experiment_id,
+                    "plan_sha256": plan.content_sha256,
                     "function": function_name,
                     "started_at": _now(),
                     "events": [],
