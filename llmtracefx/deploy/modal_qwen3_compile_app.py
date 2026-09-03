@@ -192,7 +192,10 @@ PLAN, APP_NAME, VOLUME_NAME, EXPERIMENT_TAG = _load_import_config(os.environ)
 try:
     import modal
 except ModuleNotFoundError as exc:  # pragma: no cover - only a real entrypoint failure
-    raise SystemExit("Install llmtracefx's optional `modal` dependency.") from exc
+    raise SystemExit(
+        "Install the Modal dependency with `uv sync --extra modal` or "
+        "`pip install 'llmtracefx[modal]'`."
+    ) from exc
 
 BAKED_ENVIRONMENT = {
     PLAN_JSON_ENV: PLAN.to_json(),

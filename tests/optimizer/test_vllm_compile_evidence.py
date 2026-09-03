@@ -276,7 +276,7 @@ def synthetic() -> dict[str, Any]:
             "experiment_id": "run-01",
             "git_head": HEAD,
             "approved_plan_sha256": APPROVED_PLAN_SHA256,
-            "safe_command_argv": [
+            "reproduction_command_argv": [
                 "uv",
                 "run",
                 "python",
@@ -524,7 +524,7 @@ def test_large_token_arrays_and_hyphenated_prose_pass_privacy_scan() -> None:
         ),
         (
             "cost-ledger.json",
-            lambda value: value.__setitem__("inferred_cell_total_usd", "9"),
+            lambda value: value.__setitem__("inferred_cell_lifecycle_total_usd", "9"),
         ),
         (
             "break-even.json",

@@ -613,7 +613,7 @@ def _harness_environment(
     }
 
 
-def _safe_execution_command(config: ExecutionConfig) -> list[str]:
+def _reproduction_command(config: ExecutionConfig) -> list[str]:
     return [
         "uv",
         "run",
@@ -1167,7 +1167,7 @@ def execute(
             "experiment_id": config.experiment_id,
             "git_head": config.git_head,
             "approved_plan_sha256": approval_sha256,
-            "safe_command_argv": _safe_execution_command(config),
+            "reproduction_command_argv": _reproduction_command(config),
             "plan": plan.to_dict(),
         },
     )
@@ -1530,7 +1530,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 git=SubprocessGitInspector(),
             )
     except (ModalOrchestratorError, VLLMCompileContractError) as exc:
-        print(f"qwen3-vllm-modal-run: refused ({type(exc).__name__})", file=sys.stderr)
+        outcome = (
+            "failed after provider execution"
+            if isinstance(exc, ModalOrchestratorError) and exc.teardown
+            else "refused before provider execution"
+        )
+        print(f"qwen3-vllm-modal-run: {outcome}: {exc}", file=sys.stderr)
         return 2
     return 0
 

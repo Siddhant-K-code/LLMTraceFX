@@ -163,11 +163,17 @@ evaluators. Model output is never executed.
 
 Break-even results compare eager and compiled execution on the same accelerator.
 Each pair is comparable only when eager and compiled produce identical output
-token IDs for every request and compiled correctness is not worse. Each cold
-cell is observed once, so initialization deltas have no variance estimate.
+token counts for every request and compiled correctness is not worse. Exact
+token-ID divergence is reported separately. Each cold cell is observed once,
+so initialization deltas have no variance estimate.
 The compiled mode combines vLLM compilation and CUDA graph capture. Component
 timings remain null when vLLM does not expose them, and warm compile caches are
 outside scope.
+
+Observed crossings are limited to the 12 measured requests. A modeled crossing
+is published only when no observed crossing exists and positive savings from an
+exact repetition of that 12-request cycle would repay the measured initialization
+penalty. Modeled crossings are not observations.
 
 List-rate estimates are inferred from observed client lifecycle duration and the
 pinned pricing snapshot. Provider account billing remains separate and may be
@@ -358,7 +364,7 @@ def _validate_contract(value: Any) -> tuple[dict[str, Any], VLLMCompilePlan]:
             "experiment_id",
             "git_head",
             "approved_plan_sha256",
-            "safe_command_argv",
+            "reproduction_command_argv",
             "plan",
         },
         "execution contract",
@@ -393,8 +399,8 @@ def _validate_contract(value: Any) -> tuple[dict[str, Any], VLLMCompilePlan]:
         "--experiment-id",
         contract["experiment_id"],
     ]
-    if contract["safe_command_argv"] != expected_argv:
-        raise VLLMCompileEvidenceError("safe execution command is invalid")
+    if contract["reproduction_command_argv"] != expected_argv:
+        raise VLLMCompileEvidenceError("reproduction command is invalid")
     try:
         plan = VLLMCompilePlan.from_dict(contract["plan"])
     except (ValueError, TypeError) as exc:
@@ -996,14 +1002,14 @@ def _billing_delta(
     before: Mapping[str, Any], after: Mapping[str, Any]
 ) -> dict[str, Any]:
     if before["facts"] is None or after["facts"] is None:
-        return {"delta_usd": None, "unavailable_reason": "unavailable_or_lagged"}
+        return {"delta_usd": None, "unavailable_reason": "not_comparable"}
     first = before["facts"].get("metered_cost")
     last = after["facts"].get("metered_cost")
     if first is None or last is None:
-        return {"delta_usd": None, "unavailable_reason": "unavailable_or_lagged"}
+        return {"delta_usd": None, "unavailable_reason": "not_comparable"}
     delta = _decimal(last, "billing after") - _decimal(first, "billing before")
     if delta < 0:
-        return {"delta_usd": None, "unavailable_reason": "unavailable_or_lagged"}
+        return {"delta_usd": None, "unavailable_reason": "not_comparable"}
     return {"delta_usd": canonical_decimal(delta), "unavailable_reason": None}
 
 
@@ -1152,7 +1158,11 @@ def _cost_report(
         "reservation_revision": ledger["revision"],
         "reservations": ledger["lines"],
         "inferred_cells": cells,
-        "inferred_cell_total_usd": canonical_decimal(total),
+        "inferred_cell_lifecycle_total_usd": canonical_decimal(total),
+        "inferred_scope": (
+            "four observed cell lifecycles only; excludes image preparation, "
+            "staging, and retained storage"
+        ),
         "provider_billing_before": billing_before,
         "provider_billing_after": billing_after,
         "provider_account_billing": _billing_delta(billing_before, billing_after),
@@ -1220,7 +1230,7 @@ def _break_even_pair(
             list_observed = index
     cycle_saving = prefix_savings[-1]
     overhead = compiled_init - eager_init
-    extrapolated: int | None = observed
+    extrapolated: int | None = None
     if comparable and observed is None and cycle_saving > 0:
         candidates: list[int] = []
         for prefix, saving in enumerate(prefix_savings, start=1):
@@ -1352,6 +1362,8 @@ def _report_html(break_even: Mapping[str, Any]) -> str:
         + html.escape(pair["initialization_penalty_seconds"])
         + "</td><td>"
         + html.escape(pair["full_cycle_request_saving_seconds"])
+        + "</td><td>"
+        + html.escape(str(pair["no_measured_cold_start_penalty"]).lower())
         + "</td></tr>"
         for pair in break_even["pairs"]
     )
@@ -1360,8 +1372,10 @@ def _report_html(break_even: Mapping[str, Any]) -> str:
         "<title>Qwen3 compilation evidence</title><body>"
         "<h1>Qwen3 8B vLLM compilation evidence</h1>"
         "<table><thead><tr><th>Accelerator</th><th>Observed crossing</th>"
-        "<th>Extrapolated crossing</th><th>Cold-start penalty (s)</th>"
-        "<th>12-request saving (s)</th></tr></thead><tbody>"
+        f"<th>Modeled crossing by repeated {REQUESTS_PER_CELL}-request cycles</th>"
+        "<th>Compiled initialization delta (s)</th>"
+        f"<th>{REQUESTS_PER_CELL}-request saving (s)</th>"
+        "<th>No measured cold-start penalty</th></tr></thead><tbody>"
         + rows
         + "</tbody></table><p>MLX is outside the compatible ranking scope.</p>"
         "</body></html>\n"
@@ -1372,16 +1386,17 @@ def _svg(break_even: Mapping[str, Any]) -> str:
     def label(pair: Mapping[str, Any]) -> str:
         if not pair["comparable"]:
             return "not comparable"
-        value = pair["observed_requests"] or pair["extrapolated_requests"]
-        if value is None or Decimal(pair["full_cycle_request_saving_seconds"]) <= 0:
-            return "no repayment"
-        return f"{value} requests"
+        if pair["observed_requests"] is not None:
+            return f"observed {pair['observed_requests']}"
+        if pair["extrapolated_requests"] is not None:
+            return f"modeled {pair['extrapolated_requests']}"
+        return "no repayment"
 
     labels = [label(pair) for pair in break_even["pairs"]]
     values = [
         (
             pair["observed_requests"] or pair["extrapolated_requests"] or 0
-            if label(pair).endswith("requests")
+            if label(pair).startswith(("observed", "modeled"))
             else 0
         )
         for pair in break_even["pairs"]
@@ -1389,7 +1404,8 @@ def _svg(break_even: Mapping[str, Any]) -> str:
     widths = [min(360, int(value) * 10) for value in values]
     return (
         '<svg xmlns="http://www.w3.org/2000/svg" width="520" height="150" '
-        'viewBox="0 0 520 150" role="img" aria-label="Break-even requests">\n'
+        'viewBox="0 0 520 150" role="img" '
+        'aria-label="Observed or modeled break-even requests">\n'
         '<rect width="520" height="150" fill="white"/>\n'
         '<text x="10" y="22" font-family="sans-serif" font-size="16">'
         "Break-even request count</text>\n"
@@ -2149,7 +2165,8 @@ def verify_bundle(directory: str | Path) -> dict[str, Any]:
             "reservation_revision",
             "reservations",
             "inferred_cells",
-            "inferred_cell_total_usd",
+            "inferred_cell_lifecycle_total_usd",
+            "inferred_scope",
             "provider_billing_before",
             "provider_billing_after",
             "provider_account_billing",
@@ -2184,7 +2201,8 @@ def verify_bundle(directory: str | Path) -> dict[str, Any]:
         "reservation_revision",
         "reservations",
         "inferred_cells",
-        "inferred_cell_total_usd",
+        "inferred_cell_lifecycle_total_usd",
+        "inferred_scope",
         "provider_billing_before",
         "provider_billing_after",
         "provider_account_billing",

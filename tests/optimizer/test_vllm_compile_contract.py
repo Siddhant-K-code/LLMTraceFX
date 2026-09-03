@@ -341,7 +341,7 @@ def test_break_even_observed_prefix_crossing() -> None:
 
     assert result.observed_requests == 3
     assert result.observed_lower_bound_requests is None
-    assert result.extrapolated_requests == 3
+    assert result.extrapolated_requests is None
     assert result.full_cycle_saving_seconds == Decimal("12")
 
 

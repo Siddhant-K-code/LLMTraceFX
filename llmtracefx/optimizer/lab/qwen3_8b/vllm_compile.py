@@ -939,7 +939,7 @@ def calculate_break_even(
             if observed is None and cumulative >= compilation_overhead_seconds:
                 observed = index
         cycle_saving = prefix_savings[-1]
-        extrapolated = observed
+        extrapolated: int | None = None
         if observed is None and cycle_saving > 0:
             # Find the first repeated cycle/prefix whose exact accumulated
             # saving repays the one-time compilation overhead.
@@ -961,7 +961,7 @@ def calculate_break_even(
             observed_lower_bound_requests=(
                 REQUESTS_PER_CELL if observed is None else None
             ),
-            extrapolated_requests=extrapolated if cycle_saving > 0 else None,
+            extrapolated_requests=extrapolated,
             full_cycle_saving_seconds=cycle_saving,
         )
 
