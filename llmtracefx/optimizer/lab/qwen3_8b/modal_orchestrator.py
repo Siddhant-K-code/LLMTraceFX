@@ -27,6 +27,7 @@ from typing import Any, Protocol
 
 from ...collectors._shared import atomic_write_text
 from .vllm_compile import (
+    APPROVED_PLAN_SHA256,
     CELLS,
     CURRENT_RATES,
     EXPECTED_MODEL_BYTES,
@@ -59,9 +60,6 @@ FORBIDDEN_ENVIRONMENT_NAMES = frozenset(
 OFFICIAL_PRICING_URL = "https://modal.com/pricing"
 OFFICIAL_VOLUMES_URL = "https://modal.com/docs/guide/volumes"
 PROVIDER_RATE_SOURCE = "modal-cli://billing/rates/1.5.4"
-APPROVED_PLAN_SHA256 = (
-    "sha256:cf11310288784e10ccbb364bca6874ac53100b747b0b76375524b4b4ae013ec0"
-)
 RUNTIME_PINS = {
     "python_version": "3.12",
     "vllm_version": "0.28.0",
@@ -615,6 +613,30 @@ def _harness_environment(
     }
 
 
+def _safe_execution_command(config: ExecutionConfig) -> list[str]:
+    return [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "llmtracefx.optimizer.lab.qwen3_8b.modal_orchestrator",
+        "--approval",
+        "<approved-plan-path>",
+        "--approval-sha256",
+        config.approval_sha256,
+        "--git-head",
+        config.git_head,
+        "--workspace",
+        "<repository-root>",
+        "--output-dir",
+        "<private-output-directory>",
+        "--ledger",
+        "<private-ledger-path>",
+        "--experiment-id",
+        config.experiment_id,
+    ]
+
+
 def _verify_remote_seal(payload: Mapping[str, Any], field: str) -> None:
     material = dict(payload)
     expected = material.pop(field, None)
@@ -1138,6 +1160,45 @@ def execute(
         "status": "running",
     }
     _persist_verified(config.output_dir / "execution-state.json", state)
+    _persist_verified(
+        config.output_dir / "evidence-contract-input.json",
+        {
+            "schema_version": "1",
+            "experiment_id": config.experiment_id,
+            "git_head": config.git_head,
+            "approved_plan_sha256": approval_sha256,
+            "safe_command_argv": _safe_execution_command(config),
+            "plan": plan.to_dict(),
+        },
+    )
+    _persist_verified(
+        config.output_dir / "pricing-snapshot-input.json",
+        {
+            "schema_version": "1",
+            "retrieved_date": retrieval_date,
+            "pricing_page": page_facts["pricing"],
+            "volumes_page": page_facts["volumes"],
+            "rates_response_sha256": rate_response.response_sha256,
+        },
+    )
+    _persist_verified(config.output_dir / "billing-before-input.json", billing_before)
+    _persist_verified(
+        config.output_dir / "ledger-projection-input.json",
+        {
+            "schema_version": "1",
+            "plan_sha256": plan.content_sha256,
+            "revision": ledger_snapshot["revision"],
+            "reserved_usd": ledger_snapshot["reserved_usd"],
+            "remaining_usd": ledger_snapshot["remaining_usd"],
+            "lines": [
+                {
+                    "line_id": line.line_id,
+                    "reserved_usd": canonical_decimal(line.amount_usd),
+                }
+                for line in plan.lines
+            ],
+        },
+    )
 
     volume_creation_attempted = False
     app_started = False

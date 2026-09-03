@@ -17,6 +17,7 @@ import pytest
 
 from llmtracefx.optimizer.lab.qwen3_8b import vllm_compile_evidence as evidence
 from llmtracefx.optimizer.lab.qwen3_8b.vllm_compile import (
+    APPROVED_PLAN_SHA256,
     CELLS,
     CURRENT_RATES,
     EXPECTED_GPU_NAMES,
@@ -274,6 +275,28 @@ def synthetic() -> dict[str, Any]:
             "schema_version": "1",
             "experiment_id": "run-01",
             "git_head": HEAD,
+            "approved_plan_sha256": APPROVED_PLAN_SHA256,
+            "safe_command_argv": [
+                "uv",
+                "run",
+                "python",
+                "-m",
+                "llmtracefx.optimizer.lab.qwen3_8b.modal_orchestrator",
+                "--approval",
+                "<approved-plan-path>",
+                "--approval-sha256",
+                APPROVED_PLAN_SHA256,
+                "--git-head",
+                HEAD,
+                "--workspace",
+                "<repository-root>",
+                "--output-dir",
+                "<private-output-directory>",
+                "--ledger",
+                "<private-ledger-path>",
+                "--experiment-id",
+                "run-01",
+            ],
             "plan": plan.to_dict(),
         },
         "pricing_snapshot": {
@@ -311,6 +334,10 @@ def build(path: Path, inputs: dict[str, Any]) -> None:
     evidence.build_bundle(path, **inputs)
 
 
+def write_canonical(path: Path, value: dict[str, Any]) -> None:
+    path.write_text(evidence.canonical_json(value), encoding="utf-8")
+
+
 def refresh_checksums(path: Path) -> None:
     lines = []
     for name in sorted(set(evidence.BUNDLE_FILES) - {"SHA256SUMS"}):
@@ -342,6 +369,35 @@ def test_render_is_deterministic_and_observed_break_even(
     assert all(
         item["relation"] == "uses_workload_contract" for item in claims["claims"]
     )
+
+
+def test_builds_from_complete_orchestrator_directory(artifact_root: Path) -> None:
+    inputs = synthetic()
+    raw = artifact_root / "raw"
+    bundle = artifact_root / "bundle"
+    raw.mkdir()
+    bundle.mkdir()
+    for filename, key in (
+        ("evidence-contract-input.json", "execution_contract"),
+        ("pricing-snapshot-input.json", "pricing_snapshot"),
+        ("billing-before-input.json", "billing_before"),
+        ("ledger-projection-input.json", "ledger_snapshot"),
+    ):
+        write_canonical(raw / filename, seal(inputs[key], "artifact_sha256"))
+    write_canonical(raw / "staging-receipt.json", inputs["staging_receipt"])
+    for name, cell, lifecycle in zip(
+        evidence._FUNCTIONS,
+        inputs["cell_records"],
+        inputs["lifecycle_records"],
+        strict=True,
+    ):
+        write_canonical(raw / f"{name}-terminal.json", cell)
+        write_canonical(raw / f"{name}-lifecycle.json", lifecycle)
+    write_canonical(raw / "teardown-report.json", inputs["teardown_report"])
+
+    evidence.build_from_execution_directory(raw, bundle)
+
+    assert evidence.verify_bundle(bundle)["requests_verified"] == 48
 
 
 @pytest.mark.parametrize(

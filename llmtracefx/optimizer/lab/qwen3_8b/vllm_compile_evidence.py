@@ -19,6 +19,7 @@ from ...workloads.catalog import workload_by_id
 from ...workloads.evaluators import evaluate_workload
 from ...workloads.schema import WorkloadCategory
 from .vllm_compile import (
+    APPROVED_PLAN_SHA256,
     CELLS,
     EXPECTED_MODEL_BYTES,
     EXPECTED_MODEL_FILE_COUNT,
@@ -152,6 +153,7 @@ _PRIVATE_KEYS = frozenset(
     }
 )
 _FINISH_REASONS = frozenset({"stop", "length"})
+_FUNCTIONS = ("l40s_eager", "l40s_compiled", "h100_eager", "h100_compiled")
 
 README = """# Qwen3 8B vLLM compilation evidence
 
@@ -351,7 +353,14 @@ def _harness_hashes() -> tuple[str, str]:
 def _validate_contract(value: Any) -> tuple[dict[str, Any], VLLMCompilePlan]:
     contract = _strict_keys(
         value,
-        {"schema_version", "experiment_id", "git_head", "plan"},
+        {
+            "schema_version",
+            "experiment_id",
+            "git_head",
+            "approved_plan_sha256",
+            "safe_command_argv",
+            "plan",
+        },
         "execution contract",
     )
     if (
@@ -360,8 +369,32 @@ def _validate_contract(value: Any) -> tuple[dict[str, Any], VLLMCompilePlan]:
         or not _SAFE_ID.fullmatch(contract["experiment_id"])
         or not isinstance(contract["git_head"], str)
         or not _GIT_HEAD.fullmatch(contract["git_head"])
+        or contract["approved_plan_sha256"] != APPROVED_PLAN_SHA256
     ):
         raise VLLMCompileEvidenceError("execution contract identity is invalid")
+    expected_argv = [
+        "uv",
+        "run",
+        "python",
+        "-m",
+        "llmtracefx.optimizer.lab.qwen3_8b.modal_orchestrator",
+        "--approval",
+        "<approved-plan-path>",
+        "--approval-sha256",
+        APPROVED_PLAN_SHA256,
+        "--git-head",
+        contract["git_head"],
+        "--workspace",
+        "<repository-root>",
+        "--output-dir",
+        "<private-output-directory>",
+        "--ledger",
+        "<private-ledger-path>",
+        "--experiment-id",
+        contract["experiment_id"],
+    ]
+    if contract["safe_command_argv"] != expected_argv:
+        raise VLLMCompileEvidenceError("safe execution command is invalid")
     try:
         plan = VLLMCompilePlan.from_dict(contract["plan"])
     except (ValueError, TypeError) as exc:
@@ -1550,6 +1583,77 @@ def _read_file(path: Path) -> bytes:
     if size > MAX_FILE_BYTES:
         raise VLLMCompileEvidenceError(f"{path.name} exceeds size bound")
     return path.read_bytes()
+
+
+def _load_private_sealed(
+    path: Path, *, seal_field: str = "artifact_sha256", keep_seal: bool = False
+) -> dict[str, Any]:
+    raw = _read_file(path)
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            parse_constant=lambda token: (_ for _ in ()).throw(ValueError(token)),
+        )
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise VLLMCompileEvidenceError(f"{path.name} is invalid JSON") from exc
+    if not isinstance(value, dict) or raw.decode("utf-8") != canonical_json(value):
+        raise VLLMCompileEvidenceError(f"{path.name} is not canonical")
+    _verify_seal(value, seal_field)
+    _walk_safe(value)
+    if keep_seal:
+        return value
+    result = dict(value)
+    result.pop(seal_field)
+    return result
+
+
+def build_from_execution_directory(
+    execution_dir: str | Path, output_dir: str | Path
+) -> dict[str, str]:
+    """Build the public bundle from one complete orchestrator output directory."""
+
+    root = Path(execution_dir)
+    if not root.is_dir() or root.is_symlink():
+        raise VLLMCompileEvidenceError("execution directory must be regular")
+    contract = _load_private_sealed(root / "evidence-contract-input.json")
+    pricing = _load_private_sealed(root / "pricing-snapshot-input.json")
+    billing_before = _load_private_sealed(root / "billing-before-input.json")
+    ledger = _load_private_sealed(root / "ledger-projection-input.json")
+    receipt = _load_private_sealed(
+        root / "staging-receipt.json",
+        seal_field="receipt_sha256",
+        keep_seal=True,
+    )
+    cells = [
+        _load_private_sealed(
+            root / f"{name}-terminal.json",
+            seal_field="cell_sha256",
+            keep_seal=True,
+        )
+        for name in _FUNCTIONS
+    ]
+    lifecycles = [
+        _load_private_sealed(root / f"{name}-lifecycle.json", keep_seal=True)
+        for name in _FUNCTIONS
+    ]
+    teardown = _load_private_sealed(root / "teardown-report.json", keep_seal=True)
+    billing_after = {
+        "facts": teardown["billing_after"],
+        "unavailable_reason": teardown["billing_after_unavailable_reason"],
+        "unsupported_fields": teardown["billing_unsupported_fields"],
+    }
+    return build_bundle(
+        output_dir,
+        execution_contract=contract,
+        pricing_snapshot=pricing,
+        staging_receipt=receipt,
+        cell_records=cells,
+        lifecycle_records=lifecycles,
+        ledger_snapshot=ledger,
+        billing_before=billing_before,
+        billing_after=billing_after,
+        teardown_report=teardown,
+    )
 
 
 def _load_json_file(path: Path) -> Any:
