@@ -387,6 +387,9 @@ def test_render_is_deterministic_and_observed_break_even(
     report = (first / "report.html").read_text()
     assert "Transient crossing requests" in report
     assert "Sustained through observed window" in report
+    assert "runtime, quantization, and hardware scope are incompatible" in report
+    readme = (first / "README.md").read_text()
+    assert "angle-bracketed redaction placeholders" in readme
     lifecycle = json.loads(
         (first / "lifecycle-records.jsonl").read_text().splitlines()[0]
     )

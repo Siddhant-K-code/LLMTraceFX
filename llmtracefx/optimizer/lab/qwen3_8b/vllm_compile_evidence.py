@@ -183,6 +183,9 @@ unavailable or delayed.
 Lifecycle records split measured initialization plus request time from remaining
 client-observed time so billed and measured windows reconcile.
 
+The reproduction command uses angle-bracketed redaction placeholders for
+private local paths. Replace those placeholders before running the command.
+
 MLX results are outside this comparison because their runtime, quantization, and
 hardware scope are incompatible. They are not included in rankings.
 """
@@ -1511,7 +1514,8 @@ def _report_html(break_even: Mapping[str, Any]) -> str:
         f"<th>{REQUESTS_PER_CELL}-request saving (s)</th>"
         "<th>No measured cold-start penalty</th></tr></thead><tbody>"
         + rows
-        + "</tbody></table><p>MLX is outside the compatible ranking scope.</p>"
+        + "</tbody></table><p>MLX is excluded from rankings because its runtime, "
+        "quantization, and hardware scope are incompatible.</p>"
         "</body></html>\n"
     )
 
