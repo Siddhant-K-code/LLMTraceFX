@@ -15,6 +15,7 @@
       "mode": "compiled"
     }
   ],
+  "collection_source_commit": "9c0879351cc3e4f294b5c827d74dfc00182d53bb",
   "collection_source_sha256": "sha256:42e3414895133a39a48996543ef0f980e02c12699b3d923e7c6c75819ca290fb",
   "execution_base_head": "741dc5b27a4603a9d9d93f531d4de4f31703ac6e",
   "isolation": {

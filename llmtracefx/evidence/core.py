@@ -533,7 +533,7 @@ def _verify_source_bindings(repo_root: Path, source: Mapping[str, Any]) -> None:
         ]
         schema = contract["schema_version"]
         captured = lifecycle[-1]["ended_at"]
-        source_commit = contract["execution_base_head"]
+        source_commit = contract["collection_source_commit"]
         model_id = inventory["model_id"]
         model_revision = inventory["revision"]
     else:  # pragma: no cover - SOURCES is a closed registry

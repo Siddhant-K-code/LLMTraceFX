@@ -43,17 +43,18 @@ def test_cost_scopes_and_teardown_are_not_overstated() -> None:
     cost = load("cost-ledger.json")
     teardown = load("teardown-report.json")
 
-    assert cost["inferred_spend_usd_through_os_shutdown"] == "0.393033"
+    assert cost["inferred_spend_usd_through_scheduled_shutdown_boundary"] == "0.393033"
     assert cost["provider_reported_spend_usd"] is None
     assert cost["final_inferred_spend_through_console_termination_usd"] is None
     assert teardown["experiment_containers_remaining"] == 0
     assert teardown["gpu_processes_remaining"] == 0
     assert teardown["temporary_public_key_removed"] is True
-    assert teardown["os_reachable_after_shutdown"] is False
+    assert teardown["os_shutdown_observed"] is None
+    assert teardown["os_shutdown_observation_unavailable_reason"]
     assert teardown["provider_console_termination_confirmed"] is False
 
 
-def test_all_requests_are_terminal_correct_and_have_real_ttft() -> None:
+def test_all_requests_are_terminal_and_have_real_ttft() -> None:
     requests = [
         json.loads(line)
         for line in (PUBLIC / "request-records.jsonl")
@@ -62,7 +63,8 @@ def test_all_requests_are_terminal_correct_and_have_real_ttft() -> None:
     ]
 
     assert len(requests) == 24
-    assert all(item["terminal"] and item["correctness"] for item in requests)
+    assert all(item["terminal"] for item in requests)
+    assert sum(item["correctness"] for item in requests) == 22
     assert all(0 < item["ttft_seconds"] <= item["latency_seconds"] for item in requests)
     assert all(item["output_token_ids"] for item in requests)
     assert all(item["finish_reason"] in {"stop", "length"} for item in requests)
@@ -81,6 +83,24 @@ def test_missing_compile_components_remain_null() -> None:
     assert compiled["cuda_graph_seconds"] is None
     assert compiled["compilation_seconds_unobservable_reason"]
     assert compiled["cuda_graph_seconds_unobservable_reason"]
+
+
+def test_correctness_and_output_identity_are_mode_specific() -> None:
+    correctness = load("correctness-report.json")
+
+    assert correctness["successful_requests"] == 22
+    assert correctness["all_requests_correct"] is False
+    assert correctness["successful_requests_by_mode"] == {
+        "compiled": 12,
+        "eager": 10,
+    }
+    assert correctness["paired_output_token_identity_matches"] == 8
+    assert correctness["paired_output_token_identity_mismatched_ordinals"] == [
+        7,
+        8,
+        11,
+        12,
+    ]
 
 
 def test_documented_verifier_command_works() -> None:
@@ -160,3 +180,24 @@ def test_resolved_configuration_is_mode_specific() -> None:
 
     assert runner._resolved(eager, False)["enforce_eager"] is True
     assert runner._resolved(compiled, True)["enforce_eager"] is False
+
+
+def test_runner_binds_prompts_and_live_inventory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    inventory = [{"path": "config.json", "size_bytes": 1, "sha256": "a" * 64}]
+    staging = {
+        "model_revision": runner.MODEL_REVISION,
+        "prompt_ids_sha256": "sha256:" + "b" * 64,
+        "inventory": inventory,
+    }
+    prompts = {"prompt_ids_sha256": staging["prompt_ids_sha256"]}
+    monkeypatch.setattr(runner, "_inventory", lambda _: inventory)
+
+    runner._verify_staging_binding(staging, prompts, tmp_path)
+    with pytest.raises(runner.VLLMCompileContractError, match="prompt receipts"):
+        runner._verify_staging_binding(
+            staging,
+            {"prompt_ids_sha256": "sha256:" + "c" * 64},
+            tmp_path,
+        )

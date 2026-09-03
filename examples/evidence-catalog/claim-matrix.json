@@ -168,7 +168,7 @@
           "state": "not_applicable"
         },
         "quality": {
-          "provenance": "24 deterministic workload evaluator results",
+          "provenance": "22 of 24 deterministic workload evaluator results passed",
           "state": "supported"
         },
         "timing": {

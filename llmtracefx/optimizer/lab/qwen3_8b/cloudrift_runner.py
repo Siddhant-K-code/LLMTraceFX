@@ -410,6 +410,19 @@ def _resolved(llm: Any, compiled: bool) -> dict[str, Any]:
     return observed
 
 
+def _verify_staging_binding(
+    staging: Mapping[str, Any],
+    prompts: Mapping[str, Any],
+    model_path: Path,
+) -> None:
+    if staging["model_revision"] != MODEL_REVISION:
+        raise VLLMCompileContractError("staging receipt is stale")
+    if staging["prompt_ids_sha256"] != prompts["prompt_ids_sha256"]:
+        raise VLLMCompileContractError("staging and prompt receipts differ")
+    if staging["inventory"] != _inventory(model_path):
+        raise VLLMCompileContractError("live model inventory differs from staging")
+
+
 def run_cell(mode: str, model_path: Path, state_path: Path, output: Path) -> None:
     from vllm import LLM, SamplingParams  # type: ignore[import-not-found]
     from vllm.config import CompilationConfig  # type: ignore[import-not-found]
@@ -430,8 +443,7 @@ def run_cell(mode: str, model_path: Path, state_path: Path, output: Path) -> Non
     prompts = _read_json(state_path / PROMPT_FILE)
     _verify_seal(staging, "receipt_sha256")
     _verify_seal(prompts, "prompt_ids_sha256")
-    if staging["model_revision"] != MODEL_REVISION:
-        raise VLLMCompileContractError("staging receipt is stale")
+    _verify_staging_binding(staging, prompts, model_path)
     prompt_ids = prompts["prompts"]
     maximum = max(len(ids) for ids in prompt_ids.values()) + SAMPLING["max_tokens"]
     process_started_at = _now()

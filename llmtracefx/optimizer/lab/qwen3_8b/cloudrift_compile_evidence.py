@@ -59,6 +59,10 @@ EXPERIMENT_CUTOFF_HOURS = Decimal("8")
 BOOT_AT = "2026-09-03T15:34:29Z"
 SHUTDOWN_SCHEDULED_AT = "2026-09-03T16:34:57Z"
 EXECUTION_BASE_HEAD = "741dc5b27a4603a9d9d93f531d4de4f31703ac6e"
+COLLECTION_SOURCE_COMMIT = "9c0879351cc3e4f294b5c827d74dfc00182d53bb"
+EXECUTED_RUNNER_SHA256 = (
+    "sha256:42e3414895133a39a48996543ef0f980e02c12699b3d923e7c6c75819ca290fb"
+)
 PROVENANCE = (
     "client_observed",
     "vllm",
@@ -95,10 +99,13 @@ requests. Repeating the exact request sequence without any other change yields
 a modeled crossing at request 113. That crossing is an extrapolation, not an
 observed request.
 
-All 24 responses passed their deterministic workload evaluators. The measured
-VM accounting window through scheduled OS shutdown is a $0.393033 list-rate
-lower bound. Provider-reported spend and final spend through console termination
-are unavailable. The experiment containers, GPU processes, model data, runtime
+Twenty-two of 24 responses passed their deterministic workload evaluators.
+Eager execution returned an incorrect `3.5` answer for both 16K prose requests;
+compiled execution returned correct answers for all 12 requests. Eight of 12
+paired outputs had identical token IDs. The accounting window through the
+scheduled shutdown boundary is a $0.393033 list-rate lower bound.
+Provider-reported spend and final spend through console termination are
+unavailable. The experiment containers, GPU processes, model data, runtime
 images, result caches, and temporary public key were removed before shutdown.
 CloudRift console termination remains unconfirmed and billing may continue.
 
@@ -427,8 +434,9 @@ def _render_report(
     <tbody>{''.join(rows)}</tbody>
   </table>
   <p>Correct responses: {correctness['successful_requests']} of
-  {correctness['total_requests']}. List-rate lower bound through scheduled OS
-  shutdown: ${cost['inferred_spend_usd_through_os_shutdown']}.</p>
+  {correctness['total_requests']}. List-rate lower bound through the scheduled
+  shutdown boundary:
+  ${cost['inferred_spend_usd_through_scheduled_shutdown_boundary']}.</p>
   <p>Provider-reported spend and final spend through console termination are
   unavailable. CloudRift console termination is not confirmed.</p>
 </body>
@@ -476,6 +484,13 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
     cells = [eager, compiled]
     if [cell["mode"] for cell in cells] != ["eager", "compiled"]:
         raise CloudRiftEvidenceError("exactly eager then compiled cells are required")
+    gpu_identities = {
+        cell["hardware"].get("gpu_uuid_sha256")
+        for cell in cells
+        if isinstance(cell.get("hardware"), dict)
+    }
+    if len(gpu_identities) != 1 or None in gpu_identities:
+        raise CloudRiftEvidenceError("cells do not share one private GPU identity")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     contract = {
@@ -483,8 +498,8 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
         "provider": "CloudRift",
         "scope": "single fixed RTX 4090 VM",
         "execution_base_head": EXECUTION_BASE_HEAD,
-        "collection_source_sha256": "sha256:"
-        + _sha256_bytes(Path(__file__).with_name("cloudrift_runner.py").read_bytes()),
+        "collection_source_commit": COLLECTION_SOURCE_COMMIT,
+        "collection_source_sha256": EXECUTED_RUNNER_SHA256,
         "model": {
             "id": MODEL_ID,
             "revision": MODEL_REVISION,
@@ -588,6 +603,7 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
         "gpu": "NVIDIA GeForce RTX 4090",
         "gpu_memory_mib": 24564,
         "driver_version": "580.159.03",
+        "same_private_gpu_identity_verified": True,
     }
     workload = {
         "schema_version": "1",
@@ -606,6 +622,27 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
         "total_requests": len(evaluations),
         "successful_requests": sum(item["success"] for item in evaluations),
         "all_requests_correct": all(item["success"] for item in evaluations),
+        "successful_requests_by_mode": {
+            mode: sum(
+                item["success"]
+                for item in evaluations
+                if item["cell_id"] == f"rtx4090-{mode}"
+            )
+            for mode in ("eager", "compiled")
+        },
+        "paired_output_token_identity_matches": sum(
+            eager_request["output_token_ids"] == compiled_request["output_token_ids"]
+            for eager_request, compiled_request in zip(
+                eager["requests"], compiled["requests"], strict=True
+            )
+        ),
+        "paired_output_token_identity_mismatched_ordinals": [
+            eager_request["ordinal"]
+            for eager_request, compiled_request in zip(
+                eager["requests"], compiled["requests"], strict=True
+            )
+            if eager_request["output_token_ids"] != compiled_request["output_token_ids"]
+        ],
         "evaluations": evaluations,
     }
     break_even = _break_even(cells)
@@ -618,7 +655,7 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
         "vm_boot_at": BOOT_AT,
         "os_shutdown_scheduled_at": SHUTDOWN_SCHEDULED_AT,
         "accounted_seconds_through_os_shutdown": seconds,
-        "inferred_spend_usd_through_os_shutdown": f"{inferred:.6f}",
+        "inferred_spend_usd_through_scheduled_shutdown_boundary": f"{inferred:.6f}",
         "inferred_spend_scope": "list-rate lower bound",
         "provider_reported_spend_usd": None,
         "final_inferred_spend_through_console_termination_usd": None,
@@ -647,8 +684,14 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
         "temporary_public_key_removed": teardown_private[
             "temporary_public_key_removed"
         ],
+        "capture_sha256": "sha256:"
+        + _sha256_bytes((raw_dir / "teardown-final.json").read_bytes()),
         "os_shutdown_scheduled": teardown_private["os_shutdown_scheduled"],
-        "os_reachable_after_shutdown": False,
+        "os_shutdown_observed": None,
+        "os_shutdown_observation_unavailable_reason": (
+            "The temporary key was removed before the scheduled shutdown, so "
+            "subsequent SSH failure cannot distinguish shutdown from denied access."
+        ),
         "provider_console_termination_confirmed": False,
         "status": "vm_cleanup_complete_provider_termination_unconfirmed",
     }
@@ -668,9 +711,15 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
                 "artifact": "break-even.json",
             },
             {
-                "claim": "All 24 bounded responses passed evaluation.",
+                "claim": "Twenty-two of 24 bounded responses passed evaluation.",
                 "state": "supported",
                 "provenance": "derived",
+                "artifact": "correctness-report.json",
+            },
+            {
+                "claim": "Eight of 12 paired outputs had identical token IDs.",
+                "state": "supported",
+                "provenance": "model_reported",
                 "artifact": "correctness-report.json",
             },
             {
@@ -771,6 +820,14 @@ def verify_bundle(root: Path) -> None:
         )
         if (root / name).read_text(encoding="utf-8") != expected:
             raise CloudRiftEvidenceError(f"{name} is not canonical JSON")
+    contract = _read_json(root / "experiment-contract.json")
+    if (
+        contract["collection_source_commit"] != COLLECTION_SOURCE_COMMIT
+        or contract["collection_source_sha256"] != EXECUTED_RUNNER_SHA256
+        or [cell["mode"] for cell in contract["cells"]] != ["eager", "compiled"]
+        or contract["request_count_per_cell"] != 12
+    ):
+        raise CloudRiftEvidenceError("experiment contract binding drifted")
     lifecycle = _load_jsonl(root / "lifecycle-records.jsonl")
     requests = _load_jsonl(root / "request-records.jsonl")
     if len(lifecycle) != 2 or [item["mode"] for item in lifecycle] != [
@@ -784,27 +841,99 @@ def verify_bundle(root: Path) -> None:
         raise CloudRiftEvidenceError("all records must be terminal")
     if any(item["ttft_seconds"] is None for item in requests):
         raise CloudRiftEvidenceError("request TTFT is incomplete")
-    if any(
-        item["ttft_seconds"] > item["latency_seconds"] or not item["correctness"]
-        for item in requests
-    ):
-        raise CloudRiftEvidenceError("request timing or correctness is invalid")
+    if any(item["ttft_seconds"] > item["latency_seconds"] for item in requests):
+        raise CloudRiftEvidenceError("request timing is invalid")
     correctness = _read_json(root / "correctness-report.json")
+    workload = _read_json(root / "workload-contract.json")
+    prompts = workload["prompts"]
+    if workload["prompt_ids_sha256"] != _sha256_json(
+        {"schema_version": "1", "prompts": prompts}
+    ):
+        raise CloudRiftEvidenceError("prompt token seal does not verify")
+    expected_evaluations: list[dict[str, Any]] = []
+    by_mode: dict[str, list[dict[str, Any]]] = {}
+    descriptors = workload_descriptors()
+    for mode in ("eager", "compiled"):
+        mode_requests = [item for item in requests if item["mode"] == mode]
+        if len(mode_requests) != 12:
+            raise CloudRiftEvidenceError("request modes are incomplete")
+        by_mode[mode] = mode_requests
+        for descriptor, request in zip(descriptors, mode_requests, strict=True):
+            if any(
+                request[key] != value for key, value in descriptor.to_dict().items()
+            ):
+                raise CloudRiftEvidenceError("request descriptor drifted")
+            key = f"{descriptor.context_tier}/{descriptor.workload_id}"
+            token_ids = prompts[key]
+            if (
+                request["input_token_count"] != len(token_ids)
+                or request["input_token_ids_sha256"] != _sha256_json(token_ids)
+                or request["output_token_count"] != len(request["output_token_ids"])
+            ):
+                raise CloudRiftEvidenceError("request token identity drifted")
+            expected_rate = request["output_token_count"] / request["latency_seconds"]
+            if not math.isclose(
+                request["output_tokens_per_second"],
+                expected_rate,
+                rel_tol=0,
+                abs_tol=1e-12,
+            ):
+                raise CloudRiftEvidenceError("request output rate drifted")
+            outcome = evaluate_workload(
+                workload_by_id(descriptor.workload_id),
+                request["decoded_output"],
+            )
+            if request["correctness"] != outcome.success:
+                raise CloudRiftEvidenceError("request correctness drifted")
+            expected_evaluations.append(
+                {
+                    "cell_id": request["cell_id"],
+                    "ordinal": descriptor.ordinal,
+                    "request_id": descriptor.request_id,
+                    "success": outcome.success,
+                    "quality_score": outcome.quality_score,
+                    "quality_metric": outcome.quality_metric,
+                    "notes": outcome.notes,
+                    "evaluator": "evaluate_workload",
+                }
+            )
+    expected_successes = sum(item["success"] for item in expected_evaluations)
+    expected_by_mode = {
+        mode: sum(item["correctness"] for item in mode_requests)
+        for mode, mode_requests in by_mode.items()
+    }
+    expected_matches = sum(
+        eager["output_token_ids"] == compiled["output_token_ids"]
+        for eager, compiled in zip(by_mode["eager"], by_mode["compiled"], strict=True)
+    )
+    expected_mismatches = [
+        eager["ordinal"]
+        for eager, compiled in zip(by_mode["eager"], by_mode["compiled"], strict=True)
+        if eager["output_token_ids"] != compiled["output_token_ids"]
+    ]
     if (
         correctness["total_requests"] != 24
-        or correctness["successful_requests"] != 24
-        or not correctness["all_requests_correct"]
+        or correctness["successful_requests"] != expected_successes
+        or correctness["all_requests_correct"] != (expected_successes == 24)
+        or correctness["successful_requests_by_mode"] != expected_by_mode
+        or correctness["paired_output_token_identity_matches"] != expected_matches
+        or correctness["paired_output_token_identity_mismatched_ordinals"]
+        != expected_mismatches
+        or correctness["evaluations"] != expected_evaluations
     ):
-        raise CloudRiftEvidenceError("correctness report is incomplete")
+        raise CloudRiftEvidenceError("correctness report does not recompute")
     break_even = _read_json(root / "break-even.json")
-    if (
-        break_even["observed_break_even_request_count"] is not None
-        or break_even["observed_lower_bound_request_count"] != 12
-        or break_even["modeled_repeated_cycle_break_even_request_count"] != 113
-    ):
+    reconstructed_cells = [
+        {
+            **record,
+            "requests": by_mode[record["mode"]],
+        }
+        for record in lifecycle
+    ]
+    if break_even != _break_even(reconstructed_cells):
         raise CloudRiftEvidenceError("break-even result does not verify")
     cost = _read_json(root / "cost-ledger.json")
-    inferred = Decimal(cost["inferred_spend_usd_through_os_shutdown"])
+    inferred = Decimal(cost["inferred_spend_usd_through_scheduled_shutdown_boundary"])
     if (
         inferred != Decimal("0.393033")
         or inferred >= HARD_CAP_USD
@@ -816,8 +945,16 @@ def verify_bundle(root: Path) -> None:
     if (
         teardown["experiment_containers_remaining"] != 0
         or teardown["gpu_processes_remaining"] != 0
+        or not teardown["experiment_directory_removed"]
+        or not teardown["model_cache_removed"]
+        or not teardown["runtime_images_removed"]
+        or not teardown["result_cache_removed"]
         or not teardown["temporary_public_key_removed"]
+        or not teardown["os_shutdown_scheduled"]
+        or teardown["os_shutdown_observed"] is not None
+        or not teardown["os_shutdown_observation_unavailable_reason"]
         or teardown["provider_console_termination_confirmed"]
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", teardown["capture_sha256"]) is None
     ):
         raise CloudRiftEvidenceError("teardown status is invalid")
     for item in lifecycle:
@@ -827,6 +964,9 @@ def verify_bundle(root: Path) -> None:
             raise CloudRiftEvidenceError("GPU UUID derivative is forbidden")
         if item["runtime"] != RUNTIME_PINS:
             raise CloudRiftEvidenceError("runtime identity drifted")
+    runtime = _read_json(root / "runtime-image.json")
+    if not runtime["same_private_gpu_identity_verified"]:
+        raise CloudRiftEvidenceError("same-GPU binding is missing")
     for document in (
         lifecycle,
         requests,

@@ -9,10 +9,13 @@ requests. Repeating the exact request sequence without any other change yields
 a modeled crossing at request 113. That crossing is an extrapolation, not an
 observed request.
 
-All 24 responses passed their deterministic workload evaluators. The measured
-VM accounting window through scheduled OS shutdown is a $0.393033 list-rate
-lower bound. Provider-reported spend and final spend through console termination
-are unavailable. The experiment containers, GPU processes, model data, runtime
+Twenty-two of 24 responses passed their deterministic workload evaluators.
+Eager execution returned an incorrect `3.5` answer for both 16K prose requests;
+compiled execution returned correct answers for all 12 requests. Eight of 12
+paired outputs had identical token IDs. The accounting window through the
+scheduled shutdown boundary is a $0.393033 list-rate lower bound.
+Provider-reported spend and final spend through console termination are
+unavailable. The experiment containers, GPU processes, model data, runtime
 images, result caches, and temporary public key were removed before shutdown.
 CloudRift console termination remains unconfirmed and billing may continue.
 

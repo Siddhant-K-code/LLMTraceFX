@@ -435,6 +435,14 @@ def test_evaluate_prose_reasoning_fails_wrong_answer():
     assert outcome.notes
 
 
+def test_evaluate_prose_reasoning_rejects_decimal_prefix_match():
+    outcome = evaluate_prose_reasoning(
+        PROSE_REASONING_TRAIN_PROBLEM.spec,
+        "3.5 hours.",
+    )
+    assert outcome.success is False
+
+
 # --- Dispatch ---------------------------------------------------------------
 
 

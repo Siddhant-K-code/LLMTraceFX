@@ -1,5 +1,5 @@
 {
-  "all_requests_correct": true,
+  "all_requests_correct": false,
   "evaluations": [
     {
       "cell_id": "rtx4090-eager",
@@ -104,22 +104,22 @@
     {
       "cell_id": "rtx4090-eager",
       "evaluator": "evaluate_workload",
-      "notes": null,
+      "notes": "expected answer pattern not found in response",
       "ordinal": 11,
       "quality_metric": "exact_answer_pattern_match",
-      "quality_score": 1.0,
+      "quality_score": 0.0,
       "request_id": "16k-prose-reasoning-two-train-gap-rep-01",
-      "success": true
+      "success": false
     },
     {
       "cell_id": "rtx4090-eager",
       "evaluator": "evaluate_workload",
-      "notes": null,
+      "notes": "expected answer pattern not found in response",
       "ordinal": 12,
       "quality_metric": "exact_answer_pattern_match",
-      "quality_score": 1.0,
+      "quality_score": 0.0,
       "request_id": "16k-prose-reasoning-two-train-gap-rep-02",
-      "success": true
+      "success": false
     },
     {
       "cell_id": "rtx4090-compiled",
@@ -242,7 +242,18 @@
       "success": true
     }
   ],
+  "paired_output_token_identity_matches": 8,
+  "paired_output_token_identity_mismatched_ordinals": [
+    7,
+    8,
+    11,
+    12
+  ],
   "schema_version": "1",
-  "successful_requests": 24,
+  "successful_requests": 22,
+  "successful_requests_by_mode": {
+    "compiled": 12,
+    "eager": 10
+  },
   "total_requests": 24
 }

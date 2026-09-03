@@ -789,7 +789,7 @@ SOURCES: tuple[dict[str, Any], ...] = (
             "workload-contract.json",
         ),
         "captured_at": "2026-09-03T16:30:38.954381+00:00",
-        "source_commit": "741dc5b27a4603a9d9d93f531d4de4f31703ac6e",
+        "source_commit": "9c0879351cc3e4f294b5c827d74dfc00182d53bb",
         "model": {
             "id": "Qwen/Qwen3-8B",
             "revision": "b968826d9c46dd6066d109eabc6255188de91218",
@@ -830,7 +830,7 @@ SOURCES: tuple[dict[str, Any], ...] = (
             ),
             quality=(
                 "supported",
-                "24 deterministic workload evaluator results",
+                "22 of 24 deterministic workload evaluator results passed",
             ),
             cost=(
                 "supported",
@@ -847,7 +847,9 @@ SOURCES: tuple[dict[str, Any], ...] = (
         "supported_claims": (
             "Compilation did not repay initialization through request 12.",
             "Exact-sequence repeated-cycle extrapolation crosses at request 113.",
-            "All 24 bounded responses passed deterministic evaluation.",
+            "Twenty-two of 24 bounded responses passed deterministic evaluation.",
+            "Compiled output passed 12 of 12; eager output passed 10 of 12.",
+            "Eight of 12 paired outputs had identical token IDs.",
             "Both isolated cells completed on the fixed RTX 4090.",
         ),
         "unsupported_claims": (

@@ -78,7 +78,7 @@ PROSE_REASONING_TRAIN_PROBLEM = Workload(
         "hours as a single number, followed by a one sentence "
         "explanation.\n"
     ),
-    spec=ProseReasoningSpec(expected_answer_pattern=r"\b3(\.0+)?\b"),
+    spec=ProseReasoningSpec(expected_answer_pattern=r"(?<![\d.])3(?:\.0+)?(?![\d.])"),
 )
 
 WORKLOADS: tuple[Workload, ...] = (

@@ -5,7 +5,7 @@
   "final_inferred_spend_through_console_termination_usd": null,
   "hard_cap_usd": "5.000000",
   "inferred_spend_scope": "list-rate lower bound",
-  "inferred_spend_usd_through_os_shutdown": "0.393033",
+  "inferred_spend_usd_through_scheduled_shutdown_boundary": "0.393033",
   "limitation": "Billing may continue after OS shutdown until CloudRift console termination; console termination time is unconfirmed.",
   "os_shutdown_scheduled_at": "2026-09-03T16:34:57Z",
   "provider_reported_spend_usd": null,

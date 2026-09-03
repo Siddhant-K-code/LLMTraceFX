@@ -1,10 +1,12 @@
 {
+  "capture_sha256": "sha256:2e049a0662c6c009fc2123f3c421438db8d4859a25c93cce240c6ebe488e0d4f",
   "cleanup_ended_at": "2026-09-03T16:33:57Z",
   "experiment_containers_remaining": 0,
   "experiment_directory_removed": true,
   "gpu_processes_remaining": 0,
   "model_cache_removed": true,
-  "os_reachable_after_shutdown": false,
+  "os_shutdown_observation_unavailable_reason": "The temporary key was removed before the scheduled shutdown, so subsequent SSH failure cannot distinguish shutdown from denied access.",
+  "os_shutdown_observed": null,
   "os_shutdown_scheduled": true,
   "provider_console_termination_confirmed": false,
   "result_cache_removed": true,

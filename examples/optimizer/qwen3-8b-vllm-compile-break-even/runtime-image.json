@@ -15,5 +15,6 @@
     "typing_extensions_version": "4.15.0",
     "vllm_version": "0.28.0"
   },
+  "same_private_gpu_identity_verified": true,
   "schema_version": "1"
 }
