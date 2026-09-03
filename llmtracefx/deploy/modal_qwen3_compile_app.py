@@ -95,6 +95,8 @@ OUTPUT_CONTRACT: dict[str, Any] = {
     "output_count_source": "request_output_token_ids",
     "decoded_output_max_utf8_bytes": MAX_DECODED_OUTPUT_BYTES,
     "remote_correctness_evaluation": False,
+    "resolved_execution_config_required": True,
+    "missing_timing_reason_required": True,
     "provenance_domains": sorted(_PROVENANCE_DOMAINS),
 }
 
@@ -742,18 +744,18 @@ def _request_record(
 
 
 def _construct_llm(vllm_module: Any, cell: ExperimentCell, model_path: Path) -> Any:
+    from vllm.config import CompilationConfig
+    from vllm.config.compilation import (
+        CompilationMode,
+        CUDAGraphMode,
+    )
+
     kwargs: dict[str, Any] = {
         "model": str(model_path),
         "disable_log_stats": False,
         "gpu_memory_utilization": 0.85,
     }
     if cell.compile_enabled:
-        from vllm.config import CompilationConfig
-        from vllm.config.compilation import (
-            CompilationMode,
-            CUDAGraphMode,
-        )
-
         kwargs.update(
             enforce_eager=False,
             compilation_config=CompilationConfig(
@@ -762,8 +764,52 @@ def _construct_llm(vllm_module: Any, cell: ExperimentCell, model_path: Path) -> 
             ),
         )
     else:
-        kwargs["enforce_eager"] = True
+        kwargs.update(
+            enforce_eager=True,
+            compilation_config=CompilationConfig(
+                mode=CompilationMode.NONE,
+                cudagraph_mode=CUDAGraphMode.NONE,
+            ),
+        )
     return vllm_module.LLM(**kwargs)
+
+
+def _enum_name(value: Any) -> str:
+    name = getattr(value, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    if isinstance(value, str) and value:
+        return value.rsplit(".", 1)[-1]
+    raise VLLMCompileContractError("resolved vLLM mode is unavailable")
+
+
+def _resolved_execution_config(llm: Any, cell: ExperimentCell) -> dict[str, Any]:
+    config = getattr(getattr(llm, "llm_engine", None), "vllm_config", None)
+    model_config = getattr(config, "model_config", None)
+    compilation = getattr(config, "compilation_config", None)
+    resolved = {
+        "enforce_eager": getattr(model_config, "enforce_eager", None),
+        "compilation_mode": _enum_name(getattr(compilation, "mode", None)),
+        "cuda_graph_mode": _enum_name(getattr(compilation, "cudagraph_mode", None)),
+    }
+    expected = (
+        {
+            "enforce_eager": False,
+            "compilation_mode": "VLLM_COMPILE",
+            "cuda_graph_mode": "FULL_AND_PIECEWISE",
+        }
+        if cell.compile_enabled
+        else {
+            "enforce_eager": True,
+            "compilation_mode": "NONE",
+            "cuda_graph_mode": "NONE",
+        }
+    )
+    if resolved != expected:
+        raise VLLMCompileContractError(
+            f"resolved vLLM execution config mismatch: {resolved!r} != {expected!r}"
+        )
+    return resolved
 
 
 def _observed_compilation_seconds(llm: Any) -> float | None:
@@ -832,6 +878,7 @@ def _run_cell(
     )
     try:
         llm = llm_factory(vllm_module, cell, mount_path / MODEL_DIRECTORY)
+        resolved_execution_config = _resolved_execution_config(llm, cell)
         initialization_ready = _now()
         yield _event(
             "initialization_ready",
@@ -881,6 +928,15 @@ def _run_cell(
     compilation_seconds = (
         _observed_compilation_seconds(llm) if cell.compile_enabled else None
     )
+    compilation_seconds_unobservable_reason = (
+        None
+        if compilation_seconds is not None
+        else (
+            "vllm_compilation_time_not_exposed_or_nonpositive"
+            if cell.compile_enabled
+            else "not_applicable_eager_mode"
+        )
+    )
     terminal = _seal(
         {
             "schema_version": "1",
@@ -893,10 +949,19 @@ def _run_cell(
             "image_sha256": IMAGE_CONTRACT_SHA256,
             "hardware": hardware,
             "runtime": observed_runtime,
+            "resolved_execution_config": resolved_execution_config,
             "initialization_started_at": initialization_started,
             "initialization_ready_at": initialization_ready,
             "compilation_seconds": compilation_seconds,
+            "compilation_seconds_unobservable_reason": (
+                compilation_seconds_unobservable_reason
+            ),
             "cuda_graph_seconds": None,
+            "cuda_graph_seconds_unobservable_reason": (
+                "stable_component_timing_not_exposed"
+                if cell.compile_enabled
+                else "not_applicable_eager_mode"
+            ),
             "peak_gpu_memory_mib": sampler.peak_mib,
             "requests": records,
             "correctness_evaluated_remotely": False,

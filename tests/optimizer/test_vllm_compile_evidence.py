@@ -193,10 +193,31 @@ def synthetic() -> dict[str, Any]:
                         "memory_used_mib": 100.0,
                     },
                     "runtime": evidence.RUNTIME_PINS,
+                    "resolved_execution_config": (
+                        {
+                            "enforce_eager": False,
+                            "compilation_mode": "VLLM_COMPILE",
+                            "cuda_graph_mode": "FULL_AND_PIECEWISE",
+                        }
+                        if cell.compile_enabled
+                        else {
+                            "enforce_eager": True,
+                            "compilation_mode": "NONE",
+                            "cuda_graph_mode": "NONE",
+                        }
+                    ),
                     "initialization_started_at": iso(20),
                     "initialization_ready_at": iso(20 + init_durations[cell_index]),
                     "compilation_seconds": (None if not cell.compile_enabled else 2.0),
+                    "compilation_seconds_unobservable_reason": (
+                        None if cell.compile_enabled else "not_applicable_eager_mode"
+                    ),
                     "cuda_graph_seconds": None,
+                    "cuda_graph_seconds_unobservable_reason": (
+                        "stable_component_timing_not_exposed"
+                        if cell.compile_enabled
+                        else "not_applicable_eager_mode"
+                    ),
                     "peak_gpu_memory_mib": 12_000.0,
                     "requests": requests,
                     "correctness_evaluated_remotely": False,
@@ -361,6 +382,8 @@ def test_render_is_deterministic_and_observed_break_even(
     assert result["requests_verified"] == 48
     crossing = json.loads((first / "break-even.json").read_text())
     assert [item["observed_requests"] for item in crossing["pairs"]] == [2, 2]
+    assert all(not item["transient_crossing_requests"] for item in crossing["pairs"])
+    assert all(item["sustained_through_observed_window"] for item in crossing["pairs"])
     correctness = json.loads((first / "correctness-report.json").read_text())
     assert correctness["failed"] > 0
     assert correctness["model_output_executed"] is False
@@ -428,6 +451,40 @@ def test_no_observed_crossing_extrapolates_only_positive_cycle(
     assert all(item["observed_requests"] is None for item in pairs)
     assert all(item["observed_lower_bound_requests"] == 12 for item in pairs)
     assert all(item["extrapolated_requests"] == expected for item in pairs)
+
+
+def test_break_even_marks_a_crossing_that_does_not_persist() -> None:
+    eager_requests = [
+        {
+            "latency_seconds": "2" if index == 0 else "10",
+            "output_token_count": 2,
+            "output_token_ids": [1, 2],
+            "correctness": True,
+        }
+        for index in range(12)
+    ]
+    compiled_requests = [
+        {
+            "latency_seconds": "1" if index == 0 else "20",
+            "output_token_count": 2,
+            "output_token_ids": [1, 2],
+            "correctness": True,
+        }
+        for index in range(12)
+    ]
+
+    pair = evidence._break_even_pair(
+        {"initialization_seconds": "1"},
+        {"initialization_seconds": "2"},
+        eager_requests,
+        compiled_requests,
+        eager_rate=Decimal("1"),
+        compiled_rate=Decimal("1"),
+    )
+
+    assert pair["observed_requests"] == 1
+    assert pair["transient_crossing_requests"] == [1]
+    assert pair["sustained_through_observed_window"] is False
 
 
 def test_output_count_divergence_suppresses_break_even(artifact_root: Path) -> None:
@@ -598,6 +655,17 @@ def test_unsafe_or_ambiguous_inputs_reject(artifact_root: Path, kind: str) -> No
     path.mkdir()
     with pytest.raises(evidence.VLLMCompileEvidenceError):
         evidence.build_bundle(path, **inputs)
+
+
+@pytest.mark.parametrize("prefix", ["ap", "vo", "ta", "ct", "ac", "us"])
+def test_private_provider_identifiers_reject(prefix: str) -> None:
+    with pytest.raises(evidence.VLLMCompileEvidenceError, match="private"):
+        evidence._walk_safe(f"{prefix}-" + "x" * 8)
+
+
+def test_hex_shaped_secret_rejects() -> None:
+    with pytest.raises(evidence.VLLMCompileEvidenceError, match="credential"):
+        evidence._walk_safe("sk-" + "a" * 64)
 
 
 def test_incomplete_teardown_rejects(artifact_root: Path) -> None:

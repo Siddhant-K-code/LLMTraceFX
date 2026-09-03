@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from llmtracefx.optimizer.lab.qwen3_8b import modal_orchestrator as controller
+from llmtracefx.optimizer.lab.qwen3_8b import vllm_compile_evidence as evidence
 from llmtracefx.optimizer.lab.qwen3_8b.vllm_compile import (
     CELLS,
     EXPECTED_MODEL_BYTES,
@@ -241,6 +242,7 @@ def staging(plan: Any) -> dict[str, Any]:
             "model_bytes": EXPECTED_MODEL_BYTES,
             "inventory": controller._expected_model_inventory(),
             "prompts": prompts,
+            "staged_at": "2026-09-03T00:00:00+00:00",
             "prompt_ids_sha256": controller._sha256_json(
                 {
                     "schema_version": "1",
@@ -279,8 +281,15 @@ def terminal(plan: Any, receipt: dict[str, Any], index: int) -> dict[str, Any]:
                 "output_tokens_per_second": 2.0,
                 "output_rate_basis": "output_tokens_per_complete_response_second",
                 "decoded_output": "evaluate locally",
-                "started_at": "2026-09-03T00:00:00+00:00",
-                "ended_at": "2026-09-03T00:00:01+00:00",
+                "evaluator_input": {
+                    "workload_id": descriptor.workload_id,
+                    "context_tier": descriptor.context_tier,
+                    "decoded_output": "evaluate locally",
+                    "output_token_ids": [1, 2],
+                },
+                "provenance": "model_reported",
+                "started_at": (f"2026-09-03T00:00:{descriptor.ordinal + 2:02d}+00:00"),
+                "ended_at": (f"2026-09-03T00:00:{descriptor.ordinal + 3:02d}+00:00"),
                 "wall_clock_seconds": 1.0,
                 "ttft_seconds": None,
                 "field_provenance": {
@@ -324,12 +333,38 @@ def terminal(plan: Any, receipt: dict[str, Any], index: int) -> dict[str, Any]:
             "hardware": {
                 "gpu_name": ("NVIDIA L40S" if index < 2 else "NVIDIA H100 80GB HBM3"),
                 "gpu_count": 1,
+                "driver_version": "570.1",
+                "memory_total_mib": 48_000.0 if index < 2 else 80_000.0,
+                "memory_used_mib": 100.0,
             },
             "runtime": controller.RUNTIME_PINS,
+            "resolved_execution_config": (
+                {
+                    "enforce_eager": False,
+                    "compilation_mode": "VLLM_COMPILE",
+                    "cuda_graph_mode": "FULL_AND_PIECEWISE",
+                }
+                if CELLS[index].compile_enabled
+                else {
+                    "enforce_eager": True,
+                    "compilation_mode": "NONE",
+                    "cuda_graph_mode": "NONE",
+                }
+            ),
             "initialization_started_at": "2026-09-03T00:00:00+00:00",
             "initialization_ready_at": "2026-09-03T00:00:02+00:00",
             "compilation_seconds": None,
+            "compilation_seconds_unobservable_reason": (
+                "vllm_compilation_time_not_exposed_or_nonpositive"
+                if CELLS[index].compile_enabled
+                else "not_applicable_eager_mode"
+            ),
             "cuda_graph_seconds": None,
+            "cuda_graph_seconds_unobservable_reason": (
+                "stable_component_timing_not_exposed"
+                if CELLS[index].compile_enabled
+                else "not_applicable_eager_mode"
+            ),
             "peak_gpu_memory_mib": 1024.0,
             "terminal": True,
             "correctness_evaluated_remotely": False,
@@ -532,6 +567,49 @@ def test_reserves_every_line_before_create_and_runs_sequentially(
         "secrets",
         "billing",
     ]
+
+
+def test_real_orchestrator_output_builds_public_bundle(
+    paths: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(evidence, "APPROVED_PLAN_SHA256", APPROVAL_SHA256)
+    execute_ok(paths, FakeProvider(), FakeHarnessLoader())
+    bundle = paths["output"].parent / "public-bundle"
+    bundle.mkdir()
+
+    evidence.build_from_execution_directory(paths["output"], bundle)
+
+    assert evidence.verify_bundle(bundle)["requests_verified"] == 48
+
+
+def test_teardown_inventory_excludes_unrelated_account_resources(
+    paths: dict[str, Path],
+) -> None:
+    class ProviderWithUnrelatedResources(FakeProvider):
+        def app_inventory(self) -> controller.RawJSON:
+            self.calls.append("apps")
+            return raw([{"description": "unrelated-app", "state": "deployed"}])
+
+        def volume_inventory(self) -> controller.RawJSON:
+            self.calls.append("volumes")
+            return raw([{"name": "unrelated-volume"}])
+
+        def container_inventory(self) -> controller.RawJSON:
+            self.calls.append("containers")
+            return raw([{"app_name": "unrelated-app"}])
+
+        def secret_inventory(self) -> controller.RawJSON:
+            self.calls.append("secrets")
+            return raw([{"name": "unrelated-secret"}])
+
+    execute_ok(paths, ProviderWithUnrelatedResources(), FakeHarnessLoader())
+    teardown = json.loads((paths["output"] / "teardown-report.json").read_text())
+
+    assert teardown["complete"] is True
+    assert teardown["provider_inventory_after"] == {
+        kind: {"count": 0, "status_counts": {}}
+        for kind in ("apps", "volumes", "containers", "secrets")
+    }
 
 
 def test_live_rate_increase_recalculates_and_refuses_before_paid_command(

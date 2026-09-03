@@ -107,6 +107,8 @@ def _hashes() -> tuple[str, str]:
                 "output_count_source": "request_output_token_ids",
                 "decoded_output_max_utf8_bytes": 65536,
                 "remote_correctness_evaluation": False,
+                "resolved_execution_config_required": True,
+                "missing_timing_reason_required": True,
                 "provenance_domains": domains,
             }
         ),
@@ -367,14 +369,6 @@ def test_exact_eager_and_compiled_constructor_configuration() -> None:
         llm_calls: list[dict[str, Any]] = []
         fake_vllm = SimpleNamespace(LLM=lambda **kwargs: llm_calls.append(kwargs))
 
-        module._construct_llm(fake_vllm, module.CELLS[0], Path("/model"))
-        assert llm_calls.pop() == {
-            "model": "/model",
-            "disable_log_stats": False,
-            "gpu_memory_utilization": 0.85,
-            "enforce_eager": True,
-        }
-
         config_module = ModuleType("vllm.config")
         compilation_module = ModuleType("vllm.config.compilation")
 
@@ -385,16 +379,17 @@ def test_exact_eager_and_compiled_constructor_configuration() -> None:
 
         config_module.CompilationConfig = CompilationConfig  # type: ignore[attr-defined]
         compilation_module.CompilationMode = SimpleNamespace(  # type: ignore[attr-defined]
-            VLLM_COMPILE="VLLM_COMPILE"
+            NONE="NONE", VLLM_COMPILE="VLLM_COMPILE"
         )
         compilation_module.CUDAGraphMode = SimpleNamespace(  # type: ignore[attr-defined]
-            FULL_AND_PIECEWISE="FULL_AND_PIECEWISE"
+            NONE="NONE", FULL_AND_PIECEWISE="FULL_AND_PIECEWISE"
         )
         saved_config = sys.modules.get("vllm.config")
         saved_compilation = sys.modules.get("vllm.config.compilation")
         sys.modules["vllm.config"] = config_module
         sys.modules["vllm.config.compilation"] = compilation_module
         try:
+            module._construct_llm(fake_vllm, module.CELLS[0], Path("/model"))
             module._construct_llm(fake_vllm, module.CELLS[1], Path("/model"))
         finally:
             if saved_config is None:
@@ -405,7 +400,11 @@ def test_exact_eager_and_compiled_constructor_configuration() -> None:
                 sys.modules.pop("vllm.config.compilation", None)
             else:
                 sys.modules["vllm.config.compilation"] = saved_compilation
-        compiled = llm_calls.pop()
+        eager, compiled = llm_calls
+        assert eager["enforce_eager"] is True
+        assert eager["compilation_config"] == CompilationConfig(
+            mode="NONE", cudagraph_mode="NONE"
+        )
         assert compiled["enforce_eager"] is False
         assert compiled["compilation_config"] == CompilationConfig(
             mode="VLLM_COMPILE", cudagraph_mode="FULL_AND_PIECEWISE"
@@ -462,7 +461,12 @@ def test_cell_uses_exact_order_and_persists_only_complete_terminal(
         class FakeLLM:
             llm_engine = SimpleNamespace(
                 vllm_config=SimpleNamespace(
-                    compilation_config=SimpleNamespace(compilation_time=0.0)
+                    model_config=SimpleNamespace(enforce_eager=True),
+                    compilation_config=SimpleNamespace(
+                        compilation_time=0.0,
+                        mode="NONE",
+                        cudagraph_mode="NONE",
+                    ),
                 )
             )
 
@@ -516,6 +520,15 @@ def test_cell_uses_exact_order_and_persists_only_complete_terminal(
         assert terminal["correctness_evaluated_remotely"] is False
         assert terminal["compilation_seconds"] is None
         assert terminal["cuda_graph_seconds"] is None
+        assert terminal["resolved_execution_config"] == {
+            "enforce_eager": True,
+            "compilation_mode": "NONE",
+            "cuda_graph_mode": "NONE",
+        }
+        assert (
+            terminal["compilation_seconds_unobservable_reason"]
+            == "not_applicable_eager_mode"
+        )
         assert all(request["correctness"] is None for request in terminal["requests"])
         module._verify_seal(terminal, "cell_sha256")
         assert all(

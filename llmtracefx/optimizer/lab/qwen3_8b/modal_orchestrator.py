@@ -92,7 +92,7 @@ _CREDENTIAL = re.compile(
     r"modal[_-]token[A-Za-z0-9_-]{8,}|AKIA[0-9A-Z]{16})",
     re.IGNORECASE,
 )
-_PRIVATE_ID = re.compile(r"^(?:ap|vo|ct|ac|us)-[A-Za-z0-9_-]{8,}$")
+_PRIVATE_ID = re.compile(r"^(?:ap|vo|ta|ct|ac|us)-[A-Za-z0-9_-]{8,}$")
 
 RATE_RESOURCES: dict[str, tuple[str, str]] = {
     "gpu_l40s": ("l40s_gpu_second_usd", "gpu_second"),
@@ -141,6 +141,8 @@ _HARNESS_OUTPUT_PAYLOAD = {
     "output_count_source": "request_output_token_ids",
     "decoded_output_max_utf8_bytes": MAX_OUTPUT_BYTES,
     "remote_correctness_evaluation": False,
+    "resolved_execution_config_required": True,
+    "missing_timing_reason_required": True,
     "provenance_domains": sorted(PROVENANCE_DOMAINS),
 }
 _REQUEST_FIELD_PROVENANCE = {
@@ -437,6 +439,23 @@ def _inventory_facts(items: Sequence[_InventoryItem]) -> dict[str, Any]:
     return {"count": len(items), "status_counts": statuses}
 
 
+def _experiment_inventory_facts(
+    items: Sequence[_InventoryItem],
+    *,
+    app_name: str,
+    volume_name: str,
+    experiment_id: str,
+) -> dict[str, Any]:
+    scoped = [
+        item
+        for item in items
+        if item.name in {app_name, volume_name}
+        or item.experiment_tag == experiment_id
+        or experiment_id in item.name
+    ]
+    return _inventory_facts(scoped)
+
+
 def _reject_stale(
     inventories: Mapping[str, Sequence[_InventoryItem]],
     *,
@@ -685,7 +704,27 @@ def _expected_model_inventory() -> list[dict[str, Any]]:
 def _validate_staging(receipt: Any, plan: VLLMCompilePlan) -> dict[str, Any]:
     if not isinstance(receipt, dict) or receipt.get("schema_version") != "1":
         raise ModalOrchestratorError("staging receipt schema is invalid")
+    if set(receipt) != {
+        "schema_version",
+        "plan_sha256",
+        "workload_sha256",
+        "output_contract_sha256",
+        "runtime_sha256",
+        "image_sha256",
+        "image_digest",
+        "model_id",
+        "model_revision",
+        "model_file_count",
+        "model_bytes",
+        "inventory",
+        "prompts",
+        "prompt_ids_sha256",
+        "staged_at",
+        "receipt_sha256",
+    }:
+        raise ModalOrchestratorError("staging receipt fields are invalid")
     _verify_remote_seal(receipt, "receipt_sha256")
+    _utc_timestamp(receipt.get("staged_at"))
     required = {
         "plan_sha256": plan.content_sha256,
         "workload_sha256": _sha256_json(_HARNESS_WORKLOAD_PAYLOAD),
@@ -716,6 +755,15 @@ def _validate_staging(receipt: Any, plan: VLLMCompilePlan) -> dict[str, Any]:
     for item in prompts:
         if (
             not isinstance(item, dict)
+            or set(item)
+            != {
+                "key",
+                "prompt_sha256",
+                "prompt_token_ids_sha256",
+                "prompt_token_ids",
+                "input_token_count",
+                "decoded_prompt_sha256",
+            }
             or not isinstance(item.get("key"), str)
             or item["key"] in seen
             or not _SHA256.fullmatch(str(item.get("prompt_token_ids_sha256")))
@@ -770,6 +818,31 @@ def _validate_cell_terminal(
     if not isinstance(record, dict) or record.get("schema_version") != "1":
         raise ModalOrchestratorError("cell terminal record schema is invalid")
     _verify_remote_seal(record, "cell_sha256")
+    if set(record) != {
+        "schema_version",
+        "cell",
+        "plan_sha256",
+        "staging_receipt_sha256",
+        "workload_sha256",
+        "output_contract_sha256",
+        "runtime_sha256",
+        "image_sha256",
+        "hardware",
+        "runtime",
+        "resolved_execution_config",
+        "initialization_started_at",
+        "initialization_ready_at",
+        "compilation_seconds",
+        "compilation_seconds_unobservable_reason",
+        "cuda_graph_seconds",
+        "cuda_graph_seconds_unobservable_reason",
+        "peak_gpu_memory_mib",
+        "requests",
+        "correctness_evaluated_remotely",
+        "terminal",
+        "cell_sha256",
+    }:
+        raise ModalOrchestratorError("cell terminal record fields are invalid")
     cell = CELLS[cell_index]
     if record.get("cell") != cell.to_dict():
         raise ModalOrchestratorError("cell terminal identity mismatch")
@@ -788,7 +861,13 @@ def _validate_cell_terminal(
     ):
         raise ModalOrchestratorError("cell terminal contract binding mismatch")
     hardware = record.get("hardware")
-    if not isinstance(hardware, dict):
+    if not isinstance(hardware, dict) or set(hardware) != {
+        "gpu_name",
+        "driver_version",
+        "memory_total_mib",
+        "memory_used_mib",
+        "gpu_count",
+    }:
         raise ModalOrchestratorError("cell hardware evidence is missing")
     try:
         validate_hardware_identity(
@@ -797,14 +876,52 @@ def _validate_cell_terminal(
         )
     except (KeyError, VLLMCompileContractError) as exc:
         raise ModalOrchestratorError("cell hardware identity is invalid") from exc
+    if (
+        not isinstance(hardware["driver_version"], str)
+        or not hardware["driver_version"]
+        or _finite_metric(hardware["memory_total_mib"], optional=False) is None
+        or hardware["memory_total_mib"] <= 0
+        or _finite_metric(hardware["memory_used_mib"], optional=False) is None
+        or hardware["memory_used_mib"] < 0
+        or hardware["memory_used_mib"] > hardware["memory_total_mib"]
+    ):
+        raise ModalOrchestratorError("cell hardware evidence is invalid")
     if record.get("runtime") != RUNTIME_PINS:
         raise ModalOrchestratorError("cell runtime identity is invalid")
+    expected_execution_config = (
+        {
+            "enforce_eager": False,
+            "compilation_mode": "VLLM_COMPILE",
+            "cuda_graph_mode": "FULL_AND_PIECEWISE",
+        }
+        if cell.compile_enabled
+        else {
+            "enforce_eager": True,
+            "compilation_mode": "NONE",
+            "cuda_graph_mode": "NONE",
+        }
+    )
+    if record.get("resolved_execution_config") != expected_execution_config:
+        raise ModalOrchestratorError("cell resolved execution config is invalid")
     initialized = _utc_timestamp(record.get("initialization_started_at"))
     ready = _utc_timestamp(record.get("initialization_ready_at"))
     if ready < initialized:
         raise ModalOrchestratorError("cell initialization boundaries are reversed")
-    _finite_metric(record.get("compilation_seconds"))
-    _finite_metric(record.get("cuda_graph_seconds"))
+    compilation_seconds = _finite_metric(record.get("compilation_seconds"))
+    cuda_graph_seconds = _finite_metric(record.get("cuda_graph_seconds"))
+    compilation_reason = record.get("compilation_seconds_unobservable_reason")
+    cuda_graph_reason = record.get("cuda_graph_seconds_unobservable_reason")
+    if (compilation_seconds is None) != (
+        isinstance(compilation_reason, str) and bool(compilation_reason)
+    ) or (cuda_graph_seconds is None) != (
+        isinstance(cuda_graph_reason, str) and bool(cuda_graph_reason)
+    ):
+        raise ModalOrchestratorError("cell component timing observability is invalid")
+    if not cell.compile_enabled and (
+        compilation_reason != "not_applicable_eager_mode"
+        or cuda_graph_reason != "not_applicable_eager_mode"
+    ):
+        raise ModalOrchestratorError("eager cell component timing reason is invalid")
     peak_memory = _finite_metric(record.get("peak_gpu_memory_mib"), optional=False)
     if peak_memory is None or peak_memory <= 0:
         raise ModalOrchestratorError("cell peak GPU memory is missing")
@@ -825,6 +942,27 @@ def _validate_cell_terminal(
         key = f"{descriptor.context_tier}/{descriptor.workload_id}"
         if (
             not isinstance(request, dict)
+            or set(request)
+            != set(descriptor.to_dict())
+            | {
+                "terminal",
+                "started_at",
+                "ended_at",
+                "wall_clock_seconds",
+                "input_token_count",
+                "input_token_ids_sha256",
+                "output_token_count",
+                "output_tokens_per_second",
+                "output_rate_basis",
+                "output_token_ids",
+                "decoded_output",
+                "finish_reason",
+                "ttft_seconds",
+                "evaluator_input",
+                "correctness",
+                "provenance",
+                "field_provenance",
+            }
             or request.get("request_id") != descriptor.request_id
             or request.get("terminal") is not True
             or request.get("finish_reason") not in {"stop", "length"}
@@ -841,6 +979,14 @@ def _validate_cell_terminal(
             or len(output_ids) > 96
             or not isinstance(request.get("decoded_output"), str)
             or len(request["decoded_output"].encode()) > MAX_OUTPUT_BYTES
+            or request.get("provenance") != "model_reported"
+            or request.get("evaluator_input")
+            != {
+                "workload_id": descriptor.workload_id,
+                "context_tier": descriptor.context_tier,
+                "decoded_output": request.get("decoded_output"),
+                "output_token_ids": output_ids,
+            }
         ):
             raise ModalOrchestratorError("cell contains an invalid terminal request")
         wall_clock = _finite_metric(request.get("wall_clock_seconds"), optional=False)
@@ -1389,7 +1535,13 @@ def execute(
                     experiment_id=config.experiment_id,
                 )
                 teardown["provider_inventory_after"] = {
-                    key: _inventory_facts(value) for key, value in after.items()
+                    key: _experiment_inventory_facts(
+                        value,
+                        app_name=app_name,
+                        volume_name=volume_name,
+                        experiment_id=config.experiment_id,
+                    )
+                    for key, value in after.items()
                 }
                 teardown["inventory_status"] = "complete"
             except BaseException as exc:

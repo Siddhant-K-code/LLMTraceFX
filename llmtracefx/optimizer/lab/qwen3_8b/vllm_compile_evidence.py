@@ -126,7 +126,7 @@ _UUID = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-" r"[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
     re.I,
 )
-_PROVIDER_ID = re.compile(r"\b(?:ap|vo|ta)-[A-Za-z0-9_-]{20,}\b")
+_PROVIDER_ID = re.compile(r"\b(?:ap|vo|ta|ct|ac|us)-[A-Za-z0-9_-]{8,}\b")
 _CREDENTIAL = re.compile(
     r"(?<![A-Za-z0-9])(?:hf_[A-Za-z0-9_-]{8,}|"
     r"gh[pousr]_[A-Za-z0-9_-]{8,}|github_pat_[A-Za-z0-9_-]{8,}|"
@@ -286,14 +286,13 @@ def _walk_safe(value: Any, *, depth: int = 0, counter: list[int] | None = None) 
             or value == IMAGE_REFERENCE
         ):
             return
-        credential_scan = re.sub(r"(?:sha256:)?[0-9a-f]{64}", "", value)
         if (
             "/Users/" in value
             or "/home/" in value
             or _EMAIL.search(value)
             or _UUID.search(value)
             or _PROVIDER_ID.search(value)
-            or _CREDENTIAL.search(credential_scan)
+            or _CREDENTIAL.search(value)
         ):
             raise VLLMCompileEvidenceError("private or credential-shaped content")
         return
@@ -351,6 +350,8 @@ def _harness_hashes() -> tuple[str, str]:
         "output_count_source": "request_output_token_ids",
         "decoded_output_max_utf8_bytes": MAX_OUTPUT_BYTES,
         "remote_correctness_evaluation": False,
+        "resolved_execution_config_required": True,
+        "missing_timing_reason_required": True,
         "provenance_domains": sorted(PROVENANCE),
     }
     return _sha256_json(workload), _sha256_json(output)
@@ -638,10 +639,13 @@ def _validate_cell(
             "image_sha256",
             "hardware",
             "runtime",
+            "resolved_execution_config",
             "initialization_started_at",
             "initialization_ready_at",
             "compilation_seconds",
+            "compilation_seconds_unobservable_reason",
             "cuda_graph_seconds",
+            "cuda_graph_seconds_unobservable_reason",
             "peak_gpu_memory_mib",
             "requests",
             "correctness_evaluated_remotely",
@@ -662,6 +666,19 @@ def _validate_cell(
         "runtime_sha256": _sha256_json(RUNTIME_PINS),
         "image_sha256": _sha256_json({"reference": IMAGE_REFERENCE}),
         "runtime": RUNTIME_PINS,
+        "resolved_execution_config": (
+            {
+                "enforce_eager": False,
+                "compilation_mode": "VLLM_COMPILE",
+                "cuda_graph_mode": "FULL_AND_PIECEWISE",
+            }
+            if cell.compile_enabled
+            else {
+                "enforce_eager": True,
+                "compilation_mode": "NONE",
+                "cuda_graph_mode": "NONE",
+            }
+        ),
         "terminal": True,
         "correctness_evaluated_remotely": False,
     }
@@ -690,7 +707,12 @@ def _validate_cell(
     total_memory = _optional_positive(
         hardware.get("memory_total_mib"), "total GPU memory"
     )
-    _optional_positive(hardware.get("memory_used_mib"), "used GPU memory")
+    used_memory = _decimal(hardware.get("memory_used_mib"), "used GPU memory")
+    if used_memory < 0 or (
+        total_memory is not None
+        and used_memory > _decimal(total_memory, "total memory")
+    ):
+        raise VLLMCompileEvidenceError("used GPU memory is invalid")
     driver = hardware.get("driver_version")
     if driver is not None and (not isinstance(driver, str) or not driver):
         raise VLLMCompileEvidenceError("CUDA driver must be string or null")
@@ -885,8 +907,24 @@ def _validate_cell(
     compilation = _optional_positive(
         value.get("compilation_seconds"), "compilation timing"
     )
+    cuda_graph = _optional_positive(
+        value.get("cuda_graph_seconds"), "CUDA graph timing"
+    )
+    compilation_reason = value.get("compilation_seconds_unobservable_reason")
+    cuda_graph_reason = value.get("cuda_graph_seconds_unobservable_reason")
+    if (compilation is None) != (
+        isinstance(compilation_reason, str) and bool(compilation_reason)
+    ) or (cuda_graph is None) != (
+        isinstance(cuda_graph_reason, str) and bool(cuda_graph_reason)
+    ):
+        raise VLLMCompileEvidenceError("component timing observability is invalid")
     if not cell.compile_enabled and compilation is not None:
         raise VLLMCompileEvidenceError("eager cell cannot report compilation timing")
+    if not cell.compile_enabled and (
+        compilation_reason != "not_applicable_eager_mode"
+        or cuda_graph_reason != "not_applicable_eager_mode"
+    ):
+        raise VLLMCompileEvidenceError("eager component timing reason is invalid")
     summary = {
         "cell": cell.to_dict(),
         "hardware": {
@@ -896,25 +934,29 @@ def _validate_cell(
             "memory_total_mib": total_memory,
         },
         "runtime": RUNTIME_PINS,
+        "resolved_execution_config": value["resolved_execution_config"],
         "image_reference": IMAGE_REFERENCE,
         "initialization_started_at": value["initialization_started_at"],
         "initialization_ready_at": value["initialization_ready_at"],
         "initialization_seconds": canonical_decimal(init_seconds),
         "compilation_seconds": compilation,
-        "cuda_graph_seconds": _optional_positive(
-            value.get("cuda_graph_seconds"), "CUDA graph timing"
-        ),
+        "compilation_seconds_unobservable_reason": compilation_reason,
+        "cuda_graph_seconds": cuda_graph,
+        "cuda_graph_seconds_unobservable_reason": cuda_graph_reason,
         "peak_gpu_memory_mib": peak_memory,
         "terminal_outcome": "complete",
         "field_provenance": {
             "hardware": "cuda",
             "runtime": "vllm",
+            "resolved_execution_config": "vllm",
             "image_reference": "derived",
             "initialization_started_at": "client_observed",
             "initialization_ready_at": "vllm",
             "initialization_seconds": "derived",
             "compilation_seconds": "vllm",
+            "compilation_seconds_unobservable_reason": "derived",
             "cuda_graph_seconds": "vllm",
+            "cuda_graph_seconds_unobservable_reason": "derived",
             "peak_gpu_memory_mib": "cuda",
             "terminal_outcome": "derived",
         },
@@ -1210,6 +1252,7 @@ def _break_even_pair(
     observed: int | None = None
     list_observed: int | None = None
     prefix_savings: list[Decimal] = []
+    cumulative_crossings: list[bool] = []
     cumulative_saving = Decimal()
     for index, (eager, compiled) in enumerate(
         zip(eager_requests, compiled_requests, strict=True), start=1
@@ -1220,6 +1263,9 @@ def _break_even_pair(
         compiled_cumulative += compiled_latency
         cumulative_saving += eager_latency - compiled_latency
         prefix_savings.append(cumulative_saving)
+        cumulative_crossings.append(
+            comparable and compiled_cumulative <= eager_cumulative
+        )
         if comparable and observed is None and compiled_cumulative <= eager_cumulative:
             observed = index
         if (
@@ -1229,6 +1275,14 @@ def _break_even_pair(
         ):
             list_observed = index
     cycle_saving = prefix_savings[-1]
+    transient_crossings = [
+        index
+        for index, crossed in enumerate(cumulative_crossings, start=1)
+        if crossed and not all(cumulative_crossings[index - 1 :])
+    ]
+    sustained_through_window = observed is not None and all(
+        cumulative_crossings[observed - 1 :]
+    )
     overhead = compiled_init - eager_init
     extrapolated: int | None = None
     if comparable and observed is None and cycle_saving > 0:
@@ -1250,6 +1304,8 @@ def _break_even_pair(
         "first_divergent_request_ordinal": first_divergent_request_ordinal,
         "compiled_correctness_not_worse": correctness_not_worse,
         "observed_requests": observed,
+        "transient_crossing_requests": transient_crossings,
+        "sustained_through_observed_window": sustained_through_window,
         "observed_lower_bound_requests": (
             REQUESTS_PER_CELL if comparable and observed is None else None
         ),
@@ -1847,12 +1903,15 @@ def verify_bundle(directory: str | Path) -> dict[str, Any]:
                 "cell",
                 "hardware",
                 "runtime",
+                "resolved_execution_config",
                 "image_reference",
                 "initialization_started_at",
                 "initialization_ready_at",
                 "initialization_seconds",
                 "compilation_seconds",
+                "compilation_seconds_unobservable_reason",
                 "cuda_graph_seconds",
+                "cuda_graph_seconds_unobservable_reason",
                 "peak_gpu_memory_mib",
                 "terminal_outcome",
                 "field_provenance",
@@ -1880,6 +1939,20 @@ def verify_bundle(directory: str | Path) -> dict[str, Any]:
         if (
             summary.get("cell") != CELLS[index].to_dict()
             or summary.get("runtime") != RUNTIME_PINS
+            or summary.get("resolved_execution_config")
+            != (
+                {
+                    "enforce_eager": False,
+                    "compilation_mode": "VLLM_COMPILE",
+                    "cuda_graph_mode": "FULL_AND_PIECEWISE",
+                }
+                if CELLS[index].compile_enabled
+                else {
+                    "enforce_eager": True,
+                    "compilation_mode": "NONE",
+                    "cuda_graph_mode": "NONE",
+                }
+            )
             or summary.get("image_reference") != IMAGE_REFERENCE
             or public_hardware.get("gpu_count") != 1
             or summary.get("terminal_outcome") != "complete"
@@ -1887,12 +1960,15 @@ def verify_bundle(directory: str | Path) -> dict[str, Any]:
             != {
                 "hardware": "cuda",
                 "runtime": "vllm",
+                "resolved_execution_config": "vllm",
                 "image_reference": "derived",
                 "initialization_started_at": "client_observed",
                 "initialization_ready_at": "vllm",
                 "initialization_seconds": "derived",
                 "compilation_seconds": "vllm",
+                "compilation_seconds_unobservable_reason": "derived",
                 "cuda_graph_seconds": "vllm",
+                "cuda_graph_seconds_unobservable_reason": "derived",
                 "peak_gpu_memory_mib": "cuda",
                 "terminal_outcome": "derived",
             }
@@ -1926,6 +2002,16 @@ def verify_bundle(directory: str | Path) -> dict[str, Any]:
             and summary["compilation_seconds"] is not None
         ):
             raise VLLMCompileEvidenceError("public eager cell has compilation timing")
+        if (summary["compilation_seconds"] is None) != (
+            isinstance(summary["compilation_seconds_unobservable_reason"], str)
+            and bool(summary["compilation_seconds_unobservable_reason"])
+        ) or (summary["cuda_graph_seconds"] is None) != (
+            isinstance(summary["cuda_graph_seconds_unobservable_reason"], str)
+            and bool(summary["cuda_graph_seconds_unobservable_reason"])
+        ):
+            raise VLLMCompileEvidenceError(
+                "public component timing observability is invalid"
+            )
     if len(lifecycles) != 4 or len(requests) != 48:
         raise VLLMCompileEvidenceError("public cell or request count is invalid")
     for index, lifecycle in enumerate(lifecycles):
@@ -2050,20 +2136,15 @@ def verify_bundle(directory: str | Path) -> dict[str, Any]:
                 or len(request["decoded_output"].encode("utf-8")) > MAX_OUTPUT_BYTES
                 or request.get("output_rate_basis")
                 != "output_tokens_per_complete_response_second"
-                or _duration(
-                    request.get("started_at"),
-                    request.get("ended_at"),
-                    "public request",
+                or abs(
+                    _duration(
+                        request.get("started_at"),
+                        request.get("ended_at"),
+                        "public request",
+                    )
+                    - latency
                 )
-                - latency
-                > Decimal("1")
-                or latency
-                - _duration(
-                    request.get("started_at"),
-                    request.get("ended_at"),
-                    "public request",
-                )
-                > Decimal("1")
+                > max(Decimal("0.05"), latency * Decimal("0.01"))
                 or _decimal(
                     request.get("output_tokens_per_second"),
                     "public output rate",
