@@ -31,7 +31,7 @@
     ]
   },
   "limitations": [
-    "The measured runner verified the staging and prompt receipts independently and mounted model and state read-only, but it did not rehash the live model or cross-check both receipt hashes before each measured cell.",
+    "The measured runner verified the staging and prompt receipts independently, but it did not rehash the live model or cross-check both receipt hashes before each measured cell.",
     "Compilation and CUDA graph component durations were not retained and remain null.",
     "No independent host orchestration receipt was retained for the fresh-container, cache-drop, timeout-wrapper, bind-mount, network, or Docker image-inspection controls. The public records prove ordered non-overlapping processes and no warmup requests, but not those additional host controls."
   ],

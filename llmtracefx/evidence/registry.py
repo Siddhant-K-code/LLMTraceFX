@@ -837,8 +837,14 @@ SOURCES: tuple[dict[str, Any], ...] = (
                 "boot-to-console list-rate inference; provider spend is unavailable",
             ),
             memory=("supported", "sampled peak device memory for both cells"),
-            process_attribution=("not_applicable", "one isolated cell at a time"),
-            model_fit=("supported", "both exact-revision cells completed"),
+            process_attribution=(
+                "not_applicable",
+                "ordered non-overlapping cell processes",
+            ),
+            model_fit=(
+                "supported",
+                "both cells completed; per-cell source binding is limited",
+            ),
             deployment_readiness=(
                 "unsupported",
                 "bounded benchmark is not a production deployment assessment",
@@ -850,11 +856,14 @@ SOURCES: tuple[dict[str, Any], ...] = (
             "Twenty-two of 24 bounded responses passed deterministic evaluation.",
             "Compiled output passed 12 of 12; eager output passed 10 of 12.",
             "Eight of 12 paired outputs had identical token IDs.",
-            "Both isolated cells completed on the fixed RTX 4090.",
+            (
+                "Both ordered, non-overlapping cell processes completed and "
+                "reported the same private GPU identity."
+            ),
             "The user confirmed provider console termination.",
         ),
         "unsupported_claims": (
-            "general break-even outside the exact workload and runtime",
+            "general break-even outside the retained workload and reported runtime",
             "provider-reported spend or provisioning-to-boot cost",
             "production readiness, SLA, power, energy, or bandwidth",
             "direct component timing for compilation or CUDA graph capture",

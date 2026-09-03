@@ -160,11 +160,11 @@
           "state": "supported"
         },
         "model_fit": {
-          "provenance": "both exact-revision cells completed",
+          "provenance": "both cells completed; per-cell source binding is limited",
           "state": "supported"
         },
         "process_attribution": {
-          "provenance": "one isolated cell at a time",
+          "provenance": "ordered non-overlapping cell processes",
           "state": "not_applicable"
         },
         "quality": {

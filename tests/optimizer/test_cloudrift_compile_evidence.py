@@ -51,6 +51,26 @@ def test_verifier_rejects_resealed_execution_config_drift(tmp_path: Path) -> Non
         evidence.verify_bundle(bundle)
 
 
+@pytest.mark.parametrize("mutation", ["representative-command", "extra-field"])
+def test_verifier_rejects_resealed_contract_surface_drift(
+    tmp_path: Path, mutation: str
+) -> None:
+    bundle = tmp_path / "bundle"
+    shutil.copytree(PUBLIC, bundle)
+    contract = json.loads(
+        (bundle / "experiment-contract.json").read_text(encoding="utf-8")
+    )
+    if mutation == "representative-command":
+        contract["representative_safe_command"][1] = "3600"
+    else:
+        contract["unbound_claim"] = True
+    evidence._write_json(bundle / "experiment-contract.json", contract)
+    reseal(bundle)
+
+    with pytest.raises(evidence.CloudRiftEvidenceError, match="contract binding"):
+        evidence.verify_bundle(bundle)
+
+
 def test_verifier_rejects_resealed_prompt_token_drift(tmp_path: Path) -> None:
     bundle = tmp_path / "bundle"
     shutil.copytree(PUBLIC, bundle)

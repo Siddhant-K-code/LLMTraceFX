@@ -100,9 +100,9 @@ EXPECTED_PROMPT_IDENTITIES = {
     ),
 }
 MEASURED_RUNNER_LIMITATION = (
-    "The measured runner verified the staging and prompt receipts independently "
-    "and mounted model and state read-only, but it did not rehash the live model "
-    "or cross-check both receipt hashes before each measured cell."
+    "The measured runner verified the staging and prompt receipts independently, "
+    "but it did not rehash the live model or cross-check both receipt hashes before "
+    "each measured cell."
 )
 HOST_RECEIPT_LIMITATION = (
     "No independent host orchestration receipt was retained for the fresh-container, "
@@ -110,6 +110,45 @@ HOST_RECEIPT_LIMITATION = (
     "controls. The public records prove ordered non-overlapping processes and no "
     "warmup requests, but not those additional host controls."
 )
+REPRESENTATIVE_SAFE_COMMAND = [
+    "timeout",
+    "2700",
+    "docker",
+    "run",
+    "--rm",
+    "--gpus",
+    "device=0",
+    "--cpus",
+    "4",
+    "--memory",
+    "32g",
+    "--shm-size",
+    "8g",
+    "--pids-limit",
+    "4096",
+    "--network",
+    "none",
+    "--env",
+    "CLOUDRIFT_HOST_INVOCATION_STARTED_AT=<utc-timestamp>",
+    "--mount",
+    "type=bind,src=<model>,dst=/model,readonly",
+    "--mount",
+    "type=bind,src=<state>,dst=/state,readonly",
+    "--mount",
+    "type=bind,src=<output>,dst=/output",
+    "--entrypoint",
+    "/usr/bin/python3",
+    "llmtracefx-vllm:0.28.0-te415",
+    "-m",
+    "llmtracefx.optimizer.lab.qwen3_8b.cloudrift_runner",
+    "<eager-or-compiled>",
+    "--model-path",
+    "/model",
+    "--state-path",
+    "/state",
+    "--output",
+    "/output/<cell>.json",
+]
 PROVENANCE = (
     "client_observed",
     "vllm",
@@ -138,8 +177,10 @@ _PRIVATE_PATTERNS = (
 README = """# Qwen3 8B vLLM compilation break-even on CloudRift
 
 This bundle compares eager execution with vLLM compilation and CUDA graphs on
-one fixed CloudRift RTX 4090. Both cells used the same immutable runtime, exact
-model revision, token arrays, request order, and bounded generation settings.
+one fixed CloudRift RTX 4090. Staging hash-verified the exact model revision.
+Both cells reported the same runtime package versions and matching token arrays,
+request order, and bounded generation settings. Per-cell model and image binding
+limitations are stated below.
 
 Compilation did not repay its initialization cost within the 12 observed
 requests. Repeating the exact request sequence without any other change yields
@@ -157,9 +198,9 @@ images, result caches, and temporary public key were removed before the schedule
 OS shutdown. OS shutdown itself was not observed. The user confirmed CloudRift
 console termination separately.
 
-The collection runner verified the staging and prompt receipts independently,
-and both cells mounted the model and state read-only. It did not rehash the live
-16 GB model or cross-check the two receipt hashes before each measured cell.
+The collection runner verified the staging and prompt receipts independently.
+It did not rehash the live 16 GB model or cross-check the two receipt hashes
+before each measured cell.
 The public verifier binds the retained inventory, prompt arrays, and collection
 source, but this collection limitation cannot be retroactively removed.
 No independent host orchestration receipt was retained for the fresh-container,
@@ -538,8 +579,9 @@ def _render_report(
 </head>
 <body>
   <h1>Qwen3 8B vLLM compilation break-even</h1>
-  <p>Scope: one CloudRift RTX 4090 VM, one pinned Qwen3 8B revision, and one
-  exact 12-request sequence in eager and compiled modes. Modal and MLX results
+  <p>Scope: one CloudRift RTX 4090 VM, one staged and hash-verified Qwen3 8B
+  revision, and one exact 12-request sequence in eager and compiled modes.
+  Per-cell live-model binding is limited as stated below. Modal and MLX results
   are excluded from this ranking.</p>
   <p class="finding"><strong>No observed break-even through request 12.</strong>
   Repeating the exact sequence yields a modeled crossing at request
@@ -743,45 +785,7 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
             "model_warmup_requests": 0,
             "public_endpoint": False,
         },
-        "representative_safe_command": [
-            "timeout",
-            "2700",
-            "docker",
-            "run",
-            "--rm",
-            "--gpus",
-            "device=0",
-            "--cpus",
-            "4",
-            "--memory",
-            "32g",
-            "--shm-size",
-            "8g",
-            "--pids-limit",
-            "4096",
-            "--network",
-            "none",
-            "--env",
-            "CLOUDRIFT_HOST_INVOCATION_STARTED_AT=<utc-timestamp>",
-            "--mount",
-            "type=bind,src=<model>,dst=/model,readonly",
-            "--mount",
-            "type=bind,src=<state>,dst=/state,readonly",
-            "--mount",
-            "type=bind,src=<output>,dst=/output",
-            "--entrypoint",
-            "/usr/bin/python3",
-            "llmtracefx-vllm:0.28.0-te415",
-            "-m",
-            "llmtracefx.optimizer.lab.qwen3_8b.cloudrift_runner",
-            "<eager-or-compiled>",
-            "--model-path",
-            "/model",
-            "--state-path",
-            "/state",
-            "--output",
-            "/output/<cell>.json",
-        ],
+        "representative_safe_command": REPRESENTATIVE_SAFE_COMMAND,
         "provenance_domains": list(PROVENANCE),
         "limitations": [
             MEASURED_RUNNER_LIMITATION,
@@ -986,8 +990,31 @@ def verify_bundle(root: Path) -> None:
         },
     ]
     if (
-        contract["collection_source_commit"] != COLLECTION_SOURCE_COMMIT
+        set(contract)
+        != {
+            "cells",
+            "collection_source_commit",
+            "collection_source_sha256",
+            "execution_base_head",
+            "isolation",
+            "limitations",
+            "model",
+            "provenance_domains",
+            "provider",
+            "representative_safe_command",
+            "request_count_per_cell",
+            "sampling",
+            "schema_version",
+            "scope",
+        }
+        or contract["schema_version"] != "1"
+        or contract["provider"] != "CloudRift"
+        or contract["scope"] != "single fixed RTX 4090 VM"
+        or contract["execution_base_head"] != EXECUTION_BASE_HEAD
+        or contract["collection_source_commit"] != COLLECTION_SOURCE_COMMIT
         or contract["collection_source_sha256"] != EXECUTED_RUNNER_SHA256
+        or contract["provenance_domains"] != list(PROVENANCE)
+        or contract["representative_safe_command"] != REPRESENTATIVE_SAFE_COMMAND
         or contract["model"]
         != {
             "id": MODEL_ID,

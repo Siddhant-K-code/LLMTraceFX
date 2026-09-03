@@ -1,8 +1,10 @@
 # Qwen3 8B vLLM compilation break-even on CloudRift
 
 This bundle compares eager execution with vLLM compilation and CUDA graphs on
-one fixed CloudRift RTX 4090. Both cells used the same immutable runtime, exact
-model revision, token arrays, request order, and bounded generation settings.
+one fixed CloudRift RTX 4090. Staging hash-verified the exact model revision.
+Both cells reported the same runtime package versions and matching token arrays,
+request order, and bounded generation settings. Per-cell model and image binding
+limitations are stated below.
 
 Compilation did not repay its initialization cost within the 12 observed
 requests. Repeating the exact request sequence without any other change yields
@@ -20,9 +22,9 @@ images, result caches, and temporary public key were removed before the schedule
 OS shutdown. OS shutdown itself was not observed. The user confirmed CloudRift
 console termination separately.
 
-The collection runner verified the staging and prompt receipts independently,
-and both cells mounted the model and state read-only. It did not rehash the live
-16 GB model or cross-check the two receipt hashes before each measured cell.
+The collection runner verified the staging and prompt receipts independently.
+It did not rehash the live 16 GB model or cross-check the two receipt hashes
+before each measured cell.
 The public verifier binds the retained inventory, prompt arrays, and collection
 source, but this collection limitation cannot be retroactively removed.
 No independent host orchestration receipt was retained for the fresh-container,

@@ -13,8 +13,9 @@
 </head>
 <body>
   <h1>Qwen3 8B vLLM compilation break-even</h1>
-  <p>Scope: one CloudRift RTX 4090 VM, one pinned Qwen3 8B revision, and one
-  exact 12-request sequence in eager and compiled modes. Modal and MLX results
+  <p>Scope: one CloudRift RTX 4090 VM, one staged and hash-verified Qwen3 8B
+  revision, and one exact 12-request sequence in eager and compiled modes.
+  Per-cell live-model binding is limited as stated below. Modal and MLX results
   are excluded from this ranking.</p>
   <p class="finding"><strong>No observed break-even through request 12.</strong>
   Repeating the exact sequence yields a modeled crossing at request
