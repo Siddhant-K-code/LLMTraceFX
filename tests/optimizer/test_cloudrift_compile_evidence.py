@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +24,27 @@ def load(name: str) -> dict:
 
 def test_committed_bundle_verifies() -> None:
     evidence.verify_bundle(PUBLIC)
+
+
+def test_verifier_rejects_resealed_execution_config_drift(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    shutil.copytree(PUBLIC, bundle)
+    contract = json.loads(
+        (bundle / "experiment-contract.json").read_text(encoding="utf-8")
+    )
+    contract["cells"][1]["compilation_mode"] = "NONE"
+    evidence._write_json(bundle / "experiment-contract.json", contract)
+    checksums = [
+        f"{evidence._sha256_bytes((bundle / name).read_bytes())}  {name}"
+        for name in evidence.HASHED_FILES
+    ]
+    (bundle / "SHA256SUMS").write_text(
+        "\n".join(checksums) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(evidence.CloudRiftEvidenceError, match="contract binding"):
+        evidence.verify_bundle(bundle)
 
 
 def test_exact_two_cell_contract_and_break_even() -> None:

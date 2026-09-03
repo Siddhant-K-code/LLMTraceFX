@@ -1,5 +1,5 @@
 {
-  "catalog_hash": "sha256:67c916668f17aa05fc8f938ada5481c42e21f051bb2aa725f72b201638c993e1",
+  "catalog_hash": "sha256:9a0c57a1da212ef2e1aa7e39a756324067331a6d13d7573fd1d1ae1579556cd5",
   "claim_dimensions": [
     "timing",
     "quality",
@@ -447,7 +447,7 @@
         "limitation": "Provider spend and provisioning-to-boot duration are unavailable.",
         "planned_usd": 3.12,
         "reported_usd": null,
-        "scope": "list_rate_lower_bound_through_os_shutdown"
+        "scope": "boot_to_console_termination_list_rate_lower_bound"
       },
       "bundle_schema_version": "1",
       "captured_at": "2026-09-03T16:30:38.954381+00:00",
@@ -510,7 +510,7 @@
         },
         {
           "provenance": "derived lower bound from user-observed console rate",
-          "scope": "list-rate lifecycle cost through OS shutdown"
+          "scope": "boot-to-console-termination list-rate lower bound"
         }
       ],
       "model": {
@@ -964,7 +964,7 @@
     "name": "llmtracefx-evidence",
     "version": "1"
   },
-  "registry_hash": "sha256:de9dd6e6dd729bc2717adf9de1b3d1405096717338e24dc6ac989a53b45a3232",
+  "registry_hash": "sha256:57d6626a8b9ed729fc19bbdfaa8cfe0b1be0e71a3b5cda30598685eca1b30954",
   "schema_version": "1",
   "unregistered_candidates": []
 }

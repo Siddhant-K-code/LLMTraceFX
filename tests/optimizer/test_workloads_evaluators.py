@@ -435,10 +435,11 @@ def test_evaluate_prose_reasoning_fails_wrong_answer():
     assert outcome.notes
 
 
-def test_evaluate_prose_reasoning_rejects_decimal_prefix_match():
+@pytest.mark.parametrize("response", ("3.5 hours.", "-3 hours.", "3e2 hours."))
+def test_evaluate_prose_reasoning_rejects_numeric_prefix_match(response: str):
     outcome = evaluate_prose_reasoning(
         PROSE_REASONING_TRAIN_PROBLEM.spec,
-        "3.5 hours.",
+        response,
     )
     assert outcome.success is False
 

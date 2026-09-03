@@ -819,7 +819,7 @@ SOURCES: tuple[dict[str, Any], ...] = (
                 "provenance": "sampled nvidia-smi used memory",
             },
             {
-                "scope": "list-rate lifecycle cost through OS shutdown",
+                "scope": "boot-to-console-termination list-rate lower bound",
                 "provenance": "derived lower bound from user-observed console rate",
             },
         ),
@@ -860,7 +860,7 @@ SOURCES: tuple[dict[str, Any], ...] = (
             "direct component timing for compilation or CUDA graph capture",
         ),
         "budget": {
-            "scope": "list_rate_lower_bound_through_os_shutdown",
+            "scope": "boot_to_console_termination_list_rate_lower_bound",
             "authorized_usd": 5.0,
             "planned_usd": 3.12,
             "reported_usd": None,

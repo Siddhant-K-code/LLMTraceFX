@@ -904,7 +904,7 @@
         "limitation": "Provider spend and provisioning-to-boot duration are unavailable.",
         "planned_usd": 3.12,
         "reported_usd": null,
-        "scope": "list_rate_lower_bound_through_os_shutdown"
+        "scope": "boot_to_console_termination_list_rate_lower_bound"
       },
       "bundle_schema_version": "1",
       "captured_at": "2026-09-03T16:30:38.954381+00:00",
@@ -967,7 +967,7 @@
         },
         {
           "provenance": "derived lower bound from user-observed console rate",
-          "scope": "list-rate lifecycle cost through OS shutdown"
+          "scope": "boot-to-console-termination list-rate lower bound"
         }
       ],
       "model": {

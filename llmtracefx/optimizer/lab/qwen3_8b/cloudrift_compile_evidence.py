@@ -838,11 +838,46 @@ def verify_bundle(root: Path) -> None:
         if (root / name).read_text(encoding="utf-8") != expected:
             raise CloudRiftEvidenceError(f"{name} is not canonical JSON")
     contract = _read_json(root / "experiment-contract.json")
+    expected_cells = [
+        {
+            "cell_id": "rtx4090-eager",
+            "mode": "eager",
+            "enforce_eager": True,
+            "compilation_mode": "NONE",
+            "cuda_graph_mode": "NONE",
+        },
+        {
+            "cell_id": "rtx4090-compiled",
+            "mode": "compiled",
+            "enforce_eager": False,
+            "compilation_mode": "VLLM_COMPILE",
+            "cuda_graph_mode": "FULL_AND_PIECEWISE",
+        },
+    ]
     if (
         contract["collection_source_commit"] != COLLECTION_SOURCE_COMMIT
         or contract["collection_source_sha256"] != EXECUTED_RUNNER_SHA256
-        or [cell["mode"] for cell in contract["cells"]] != ["eager", "compiled"]
+        or contract["model"]
+        != {
+            "id": MODEL_ID,
+            "revision": MODEL_REVISION,
+            "license": "Apache-2.0",
+            "file_count": EXPECTED_MODEL_FILE_COUNT,
+            "total_bytes": EXPECTED_MODEL_BYTES,
+        }
+        or contract["cells"] != expected_cells
         or contract["request_count_per_cell"] != 12
+        or contract["sampling"] != SAMPLING
+        or contract["isolation"]
+        != {
+            "sequence": ["rtx4090-eager", "rtx4090-compiled"],
+            "max_live_cells": 1,
+            "hard_timeout_seconds_per_cell": 2700,
+            "fresh_container_per_cell": True,
+            "host_page_cache_dropped_between_cells": True,
+            "model_warmup_requests": 0,
+            "public_endpoint": False,
+        }
     ):
         raise CloudRiftEvidenceError("experiment contract binding drifted")
     lifecycle = _load_jsonl(root / "lifecycle-records.jsonl")
@@ -854,6 +889,18 @@ def verify_bundle(root: Path) -> None:
         raise CloudRiftEvidenceError("exactly two ordered cells are required")
     if len(requests) != 24:
         raise CloudRiftEvidenceError("exactly 24 request records are required")
+    for expected_cell, record in zip(expected_cells, lifecycle, strict=True):
+        if (
+            record["cell_id"] != expected_cell["cell_id"]
+            or record["mode"] != expected_cell["mode"]
+            or record["resolved_execution_config"]
+            != {
+                "enforce_eager": expected_cell["enforce_eager"],
+                "compilation_mode": expected_cell["compilation_mode"],
+                "cuda_graph_mode": expected_cell["cuda_graph_mode"],
+            }
+        ):
+            raise CloudRiftEvidenceError("lifecycle execution config drifted")
     if any(not item["terminal"] for item in lifecycle + requests):
         raise CloudRiftEvidenceError("all records must be terminal")
     if any(item["ttft_seconds"] is None for item in requests):
@@ -863,13 +910,18 @@ def verify_bundle(root: Path) -> None:
     correctness = _read_json(root / "correctness-report.json")
     workload = _read_json(root / "workload-contract.json")
     prompts = workload["prompts"]
-    if workload["prompt_ids_sha256"] != _sha256_json(
-        {"schema_version": "1", "prompts": prompts}
+    descriptors = workload_descriptors()
+    if (
+        workload["request_order"]
+        != [descriptor.to_dict() for descriptor in descriptors]
+        or workload["generation"] != SAMPLING
+        or workload["token_identity"] != "exact token ID arrays reused by both cells"
+        or workload["prompt_ids_sha256"]
+        != _sha256_json({"schema_version": "1", "prompts": prompts})
     ):
         raise CloudRiftEvidenceError("prompt token seal does not verify")
     expected_evaluations: list[dict[str, Any]] = []
     by_mode: dict[str, list[dict[str, Any]]] = {}
-    descriptors = workload_descriptors()
     for mode in ("eager", "compiled"):
         mode_requests = [item for item in requests if item["mode"] == mode]
         if len(mode_requests) != 12:
@@ -987,8 +1039,37 @@ def verify_bundle(root: Path) -> None:
         if item["runtime"] != RUNTIME_PINS:
             raise CloudRiftEvidenceError("runtime identity drifted")
     runtime = _read_json(root / "runtime-image.json")
-    if not runtime["same_private_gpu_identity_verified"]:
-        raise CloudRiftEvidenceError("same-GPU binding is missing")
+    if runtime != {
+        "schema_version": "1",
+        "base_image_reference": BASE_IMAGE_REFERENCE,
+        "derived_image_id": DERIVED_IMAGE_ID,
+        "overlay": ["typing_extensions==4.15.0"],
+        "packages": RUNTIME_PINS,
+        "gpu": "NVIDIA GeForce RTX 4090",
+        "gpu_memory_mib": 24564,
+        "driver_version": "580.159.03",
+        "same_private_gpu_identity_verified": True,
+    }:
+        raise CloudRiftEvidenceError("runtime or same-GPU binding drifted")
+    inventory = _read_json(root / "model-inventory.json")
+    if (
+        inventory["model_id"] != MODEL_ID
+        or inventory["revision"] != MODEL_REVISION
+        or inventory["file_count"] != EXPECTED_MODEL_FILE_COUNT
+        or inventory["total_bytes"] != EXPECTED_MODEL_BYTES
+        or len(inventory["files"]) != EXPECTED_MODEL_FILE_COUNT
+        or sum(item["size_bytes"] for item in inventory["files"])
+        != EXPECTED_MODEL_BYTES
+    ):
+        raise CloudRiftEvidenceError("model inventory binding drifted")
+    pricing = _read_json(root / "pricing-snapshot.json")
+    if (
+        pricing["usd_per_hour"] != "0.390000"
+        or pricing["hard_cap_usd"] != "5.000000"
+        or pricing["experiment_cutoff_hours"] != "8.000000"
+        or pricing["cutoff_cost_usd"] != "3.120000"
+    ):
+        raise CloudRiftEvidenceError("pricing contract drifted")
     for document in (
         lifecycle,
         requests,
