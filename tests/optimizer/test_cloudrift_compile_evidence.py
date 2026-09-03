@@ -45,13 +45,14 @@ def test_cost_scopes_and_teardown_are_not_overstated() -> None:
 
     assert cost["inferred_spend_usd_through_scheduled_shutdown_boundary"] == "0.393033"
     assert cost["provider_reported_spend_usd"] is None
-    assert cost["final_inferred_spend_through_console_termination_usd"] is None
+    assert cost["final_inferred_spend_through_console_termination_usd"] == "0.484358"
     assert teardown["experiment_containers_remaining"] == 0
     assert teardown["gpu_processes_remaining"] == 0
     assert teardown["temporary_public_key_removed"] is True
     assert teardown["os_shutdown_observed"] is None
     assert teardown["os_shutdown_observation_unavailable_reason"]
-    assert teardown["provider_console_termination_confirmed"] is False
+    assert teardown["provider_console_termination_confirmed"] is True
+    assert teardown["provider_console_terminated_at"] == "2026-09-03T22:19:00+05:30"
 
 
 def test_all_requests_are_terminal_and_have_real_ttft() -> None:

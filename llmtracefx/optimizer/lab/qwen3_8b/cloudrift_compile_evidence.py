@@ -58,6 +58,7 @@ HARD_CAP_USD = Decimal("5.00")
 EXPERIMENT_CUTOFF_HOURS = Decimal("8")
 BOOT_AT = "2026-09-03T15:34:29Z"
 SHUTDOWN_SCHEDULED_AT = "2026-09-03T16:34:57Z"
+CONSOLE_TERMINATED_AT = "2026-09-03T22:19:00+05:30"
 EXECUTION_BASE_HEAD = "741dc5b27a4603a9d9d93f531d4de4f31703ac6e"
 COLLECTION_SOURCE_COMMIT = "9c0879351cc3e4f294b5c827d74dfc00182d53bb"
 EXECUTED_RUNNER_SHA256 = (
@@ -102,12 +103,12 @@ observed request.
 Twenty-two of 24 responses passed their deterministic workload evaluators.
 Eager execution returned an incorrect `3.5` answer for both 16K prose requests;
 compiled execution returned correct answers for all 12 requests. Eight of 12
-paired outputs had identical token IDs. The accounting window through the
-scheduled shutdown boundary is a $0.393033 list-rate lower bound.
-Provider-reported spend and final spend through console termination are
+paired outputs had identical token IDs. The boot-to-console-termination window
+implies $0.484358 at the observed list rate. This remains a lower bound because
+the provisioning-to-boot interval is unavailable. Provider-reported spend is
 unavailable. The experiment containers, GPU processes, model data, runtime
 images, result caches, and temporary public key were removed before shutdown.
-CloudRift console termination remains unconfirmed and billing may continue.
+The user confirmed CloudRift console termination separately.
 
 Run `python evidence_bundle.py verify` from this directory to verify the closed
 file set, checksums, privacy rules, model and runtime pins, request contract,
@@ -437,8 +438,9 @@ def _render_report(
   {correctness['total_requests']}. List-rate lower bound through the scheduled
   shutdown boundary:
   ${cost['inferred_spend_usd_through_scheduled_shutdown_boundary']}.</p>
-  <p>Provider-reported spend and final spend through console termination are
-  unavailable. CloudRift console termination is not confirmed.</p>
+  <p>Boot-to-console-termination inferred spend:
+  ${cost['final_inferred_spend_through_console_termination_usd']}.
+  Provider-reported spend is unavailable. Console termination is confirmed.</p>
 </body>
 </html>
 """
@@ -648,6 +650,8 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
     break_even = _break_even(cells)
     seconds = int((_dt(SHUTDOWN_SCHEDULED_AT) - _dt(BOOT_AT)).total_seconds())
     inferred = RATE_USD_PER_HOUR * Decimal(seconds) / Decimal(3600)
+    console_seconds = int((_dt(CONSOLE_TERMINATED_AT) - _dt(BOOT_AT)).total_seconds())
+    console_inferred = RATE_USD_PER_HOUR * Decimal(console_seconds) / Decimal(3600)
     cost = {
         "schema_version": "1",
         "rate_source": "user-observed CloudRift console screenshot",
@@ -658,14 +662,23 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
         "inferred_spend_usd_through_scheduled_shutdown_boundary": f"{inferred:.6f}",
         "inferred_spend_scope": "list-rate lower bound",
         "provider_reported_spend_usd": None,
-        "final_inferred_spend_through_console_termination_usd": None,
+        "console_terminated_at": CONSOLE_TERMINATED_AT,
+        "accounted_seconds_boot_to_console_termination": console_seconds,
+        "final_inferred_spend_through_console_termination_usd": (
+            f"{console_inferred:.6f}"
+        ),
+        "final_inferred_spend_scope": (
+            "boot-to-console-termination list-rate lower bound"
+        ),
         "hard_cap_usd": "5.000000",
         "eight_hour_cutoff_cost_usd": "3.120000",
-        "remaining_hard_cap_at_os_shutdown_usd": f"{HARD_CAP_USD - inferred:.6f}",
+        "remaining_hard_cap_at_console_termination_usd": (
+            f"{HARD_CAP_USD - console_inferred:.6f}"
+        ),
         "credits_treated_as_zero_spend": False,
         "limitation": (
-            "Billing may continue after OS shutdown until CloudRift console "
-            "termination; console termination time is unconfirmed."
+            "The provider did not report spend, and the provisioning-to-boot "
+            "interval is unavailable."
         ),
     }
     teardown = {
@@ -692,8 +705,12 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
             "The temporary key was removed before the scheduled shutdown, so "
             "subsequent SSH failure cannot distinguish shutdown from denied access."
         ),
-        "provider_console_termination_confirmed": False,
-        "status": "vm_cleanup_complete_provider_termination_unconfirmed",
+        "provider_console_termination_confirmed": True,
+        "provider_console_terminated_at": CONSOLE_TERMINATED_AT,
+        "provider_console_confirmation_provenance": (
+            "user confirmation relayed by the coordinator"
+        ),
+        "status": "complete",
     }
     claims = {
         "schema_version": "1",
@@ -729,14 +746,14 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
                 "artifact": "lifecycle-records.jsonl",
             },
             {
-                "claim": "Final CloudRift spend is known.",
+                "claim": "Provider-reported CloudRift spend is known.",
                 "state": "unsupported",
                 "provenance": "cloudrift_user_observed",
                 "artifact": "cost-ledger.json",
             },
             {
                 "claim": "CloudRift console termination is confirmed.",
-                "state": "unsupported",
+                "state": "supported",
                 "provenance": "cloudrift_user_observed",
                 "artifact": "teardown-report.json",
             },
@@ -934,11 +951,15 @@ def verify_bundle(root: Path) -> None:
         raise CloudRiftEvidenceError("break-even result does not verify")
     cost = _read_json(root / "cost-ledger.json")
     inferred = Decimal(cost["inferred_spend_usd_through_scheduled_shutdown_boundary"])
+    final_inferred = Decimal(
+        cost["final_inferred_spend_through_console_termination_usd"]
+    )
     if (
         inferred != Decimal("0.393033")
+        or final_inferred != Decimal("0.484358")
+        or final_inferred >= HARD_CAP_USD
         or inferred >= HARD_CAP_USD
         or cost["provider_reported_spend_usd"] is not None
-        or cost["final_inferred_spend_through_console_termination_usd"] is not None
     ):
         raise CloudRiftEvidenceError("cost scopes are invalid")
     teardown = _read_json(root / "teardown-report.json")
@@ -953,7 +974,8 @@ def verify_bundle(root: Path) -> None:
         or not teardown["os_shutdown_scheduled"]
         or teardown["os_shutdown_observed"] is not None
         or not teardown["os_shutdown_observation_unavailable_reason"]
-        or teardown["provider_console_termination_confirmed"]
+        or not teardown["provider_console_termination_confirmed"]
+        or teardown["provider_console_terminated_at"] != CONSOLE_TERMINATED_AT
         or re.fullmatch(r"sha256:[0-9a-f]{64}", teardown["capture_sha256"]) is None
     ):
         raise CloudRiftEvidenceError("teardown status is invalid")

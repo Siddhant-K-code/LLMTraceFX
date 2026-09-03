@@ -8,10 +8,12 @@
   "os_shutdown_observation_unavailable_reason": "The temporary key was removed before the scheduled shutdown, so subsequent SSH failure cannot distinguish shutdown from denied access.",
   "os_shutdown_observed": null,
   "os_shutdown_scheduled": true,
-  "provider_console_termination_confirmed": false,
+  "provider_console_confirmation_provenance": "user confirmation relayed by the coordinator",
+  "provider_console_terminated_at": "2026-09-03T22:19:00+05:30",
+  "provider_console_termination_confirmed": true,
   "result_cache_removed": true,
   "runtime_images_removed": true,
   "schema_version": "1",
-  "status": "vm_cleanup_complete_provider_termination_unconfirmed",
+  "status": "complete",
   "temporary_public_key_removed": true
 }

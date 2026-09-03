@@ -32,7 +32,7 @@
     },
     {
       "artifact": "cost-ledger.json",
-      "claim": "Final CloudRift spend is known.",
+      "claim": "Provider-reported CloudRift spend is known.",
       "provenance": "cloudrift_user_observed",
       "state": "unsupported"
     },
@@ -40,7 +40,7 @@
       "artifact": "teardown-report.json",
       "claim": "CloudRift console termination is confirmed.",
       "provenance": "cloudrift_user_observed",
-      "state": "unsupported"
+      "state": "supported"
     }
   ],
   "schema_version": "1"

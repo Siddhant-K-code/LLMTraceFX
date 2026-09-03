@@ -1,5 +1,5 @@
 {
-  "catalog_hash": "sha256:15c0cae5d6643903e8fb2d59381eb4c4a50af09ddf952df1336db562606dc80c",
+  "catalog_hash": "sha256:67c916668f17aa05fc8f938ada5481c42e21f051bb2aa725f72b201638c993e1",
   "claim_dimensions": [
     "timing",
     "quality",
@@ -440,11 +440,11 @@
       }
     },
     {
-      "artifact_set_hash": "sha256:1f45b0fd4be835051d8fa77ffea7ec64289d2bc2ea2aacd863da7a6195f9fd00",
+      "artifact_set_hash": "sha256:9fc8c4d07dc7e8779a388275132f6ebb9fe5f5a97b940efe9f3d9e08673c5df3",
       "budget": {
         "authorized_usd": 5.0,
-        "inferred_usd": 0.393033,
-        "limitation": "Console termination was unconfirmed, so final spend is unknown.",
+        "inferred_usd": 0.484358,
+        "limitation": "Provider spend and provisioning-to-boot duration are unavailable.",
         "planned_usd": 3.12,
         "reported_usd": null,
         "scope": "list_rate_lower_bound_through_os_shutdown"
@@ -453,7 +453,7 @@
       "captured_at": "2026-09-03T16:30:38.954381+00:00",
       "claims": {
         "cost": {
-          "provenance": "list-rate lower bound only; final provider spend is unavailable",
+          "provenance": "boot-to-console list-rate inference; provider spend is unavailable",
           "state": "supported"
         },
         "deployment_readiness": {
@@ -496,7 +496,7 @@
       "limitations": [
         "Break-even at request 113 is modeled from repeated exact-cycle savings.",
         "Compilation and CUDA graph component durations were not retained.",
-        "Console termination and final provider spend were unconfirmed.",
+        "Provider-reported spend and provisioning-to-boot cost are unavailable.",
         "MLX results are an incompatible scope and are not ranked here."
       ],
       "measurements": [
@@ -533,11 +533,12 @@
         "Twenty-two of 24 bounded responses passed deterministic evaluation.",
         "Compiled output passed 12 of 12; eager output passed 10 of 12.",
         "Eight of 12 paired outputs had identical token IDs.",
-        "Both isolated cells completed on the fixed RTX 4090."
+        "Both isolated cells completed on the fixed RTX 4090.",
+        "The user confirmed provider console termination."
       ],
       "unsupported_claims": [
         "general break-even outside the exact workload and runtime",
-        "provider-reported or final spend through console termination",
+        "provider-reported spend or provisioning-to-boot cost",
         "production readiness, SLA, power, energy, or bandwidth",
         "direct component timing for compilation or CUDA graph capture"
       ],
@@ -963,7 +964,7 @@
     "name": "llmtracefx-evidence",
     "version": "1"
   },
-  "registry_hash": "sha256:084aa4b7c58f31e9c6bbc552387464499872ccaf36d787038cf1d272bb896856",
+  "registry_hash": "sha256:de9dd6e6dd729bc2717adf9de1b3d1405096717338e24dc6ac989a53b45a3232",
   "schema_version": "1",
   "unregistered_candidates": []
 }

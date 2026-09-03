@@ -834,7 +834,7 @@ SOURCES: tuple[dict[str, Any], ...] = (
             ),
             cost=(
                 "supported",
-                "list-rate lower bound only; final provider spend is unavailable",
+                "boot-to-console list-rate inference; provider spend is unavailable",
             ),
             memory=("supported", "sampled peak device memory for both cells"),
             process_attribution=("not_applicable", "one isolated cell at a time"),
@@ -851,10 +851,11 @@ SOURCES: tuple[dict[str, Any], ...] = (
             "Compiled output passed 12 of 12; eager output passed 10 of 12.",
             "Eight of 12 paired outputs had identical token IDs.",
             "Both isolated cells completed on the fixed RTX 4090.",
+            "The user confirmed provider console termination.",
         ),
         "unsupported_claims": (
             "general break-even outside the exact workload and runtime",
-            "provider-reported or final spend through console termination",
+            "provider-reported spend or provisioning-to-boot cost",
             "production readiness, SLA, power, energy, or bandwidth",
             "direct component timing for compilation or CUDA graph capture",
         ),
@@ -863,9 +864,9 @@ SOURCES: tuple[dict[str, Any], ...] = (
             "authorized_usd": 5.0,
             "planned_usd": 3.12,
             "reported_usd": None,
-            "inferred_usd": 0.393033,
+            "inferred_usd": 0.484358,
             "limitation": (
-                "Console termination was unconfirmed, so final spend is unknown."
+                "Provider spend and provisioning-to-boot duration are unavailable."
             ),
         },
         "dependencies": (
@@ -877,7 +878,7 @@ SOURCES: tuple[dict[str, Any], ...] = (
         "limitations": (
             "Break-even at request 113 is modeled from repeated exact-cycle savings.",
             "Compilation and CUDA graph component durations were not retained.",
-            "Console termination and final provider spend were unconfirmed.",
+            "Provider-reported spend and provisioning-to-boot cost are unavailable.",
             "MLX results are an incompatible scope and are not ranked here.",
         ),
     },

@@ -12,12 +12,12 @@ observed request.
 Twenty-two of 24 responses passed their deterministic workload evaluators.
 Eager execution returned an incorrect `3.5` answer for both 16K prose requests;
 compiled execution returned correct answers for all 12 requests. Eight of 12
-paired outputs had identical token IDs. The accounting window through the
-scheduled shutdown boundary is a $0.393033 list-rate lower bound.
-Provider-reported spend and final spend through console termination are
+paired outputs had identical token IDs. The boot-to-console-termination window
+implies $0.484358 at the observed list rate. This remains a lower bound because
+the provisioning-to-boot interval is unavailable. Provider-reported spend is
 unavailable. The experiment containers, GPU processes, model data, runtime
 images, result caches, and temporary public key were removed before shutdown.
-CloudRift console termination remains unconfirmed and billing may continue.
+The user confirmed CloudRift console termination separately.
 
 Run `python evidence_bundle.py verify` from this directory to verify the closed
 file set, checksums, privacy rules, model and runtime pins, request contract,

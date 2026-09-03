@@ -148,7 +148,7 @@
     {
       "claims": {
         "cost": {
-          "provenance": "list-rate lower bound only; final provider spend is unavailable",
+          "provenance": "boot-to-console list-rate inference; provider spend is unavailable",
           "state": "supported"
         },
         "deployment_readiness": {
