@@ -223,6 +223,7 @@ image = (
         IMAGE_REFERENCE,
         setup_dockerfile_commands=["RUN ln -sf /usr/bin/python3 /usr/local/bin/python"],
     )
+    .pip_install("typing_extensions==4.15.0")
     .entrypoint([])
     .env(BAKED_ENVIRONMENT)
     .add_local_dir(
@@ -565,6 +566,7 @@ def _observe_runtime() -> dict[str, str | None]:
         "vllm_version": importlib.metadata.version("vllm"),
         "torch_version": importlib.metadata.version("torch"),
         "cuda_version": getattr(getattr(torch, "version", None), "cuda", None),
+        "typing_extensions_version": importlib.metadata.version("typing_extensions"),
     }
 
 

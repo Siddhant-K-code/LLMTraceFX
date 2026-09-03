@@ -66,6 +66,7 @@ REQUIRED_RUNTIME_PINS = (
     "vllm_version",
     "torch_version",
     "cuda_version",
+    "typing_extensions_version",
 )
 WORKLOAD_IDS = (
     "structured-json-profile-extraction",

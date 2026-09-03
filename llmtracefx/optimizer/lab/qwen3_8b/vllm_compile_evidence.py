@@ -110,6 +110,7 @@ RUNTIME_PINS = {
     "vllm_version": "0.28.0",
     "torch_version": "2.13.0+cu130",
     "cuda_version": "13.0",
+    "typing_extensions_version": "4.15.0",
 }
 IMAGE_REFERENCE = "vllm/vllm-openai:v0.28.0@" + OFFICIAL_VLLM_IMAGE_DIGEST
 MAX_FILE_BYTES = 8 * 1024 * 1024

@@ -46,6 +46,7 @@ def _plan_json() -> str:
             "vllm_version": "0.28.0",
             "torch_version": "2.13.0+cu130",
             "cuda_version": "13.0",
+            "typing_extensions_version": "4.15.0",
         },
         as_of_date="2026-09-03",
     ).to_json()
@@ -179,6 +180,7 @@ def test_registration_is_exact_and_secretless() -> None:
             "RUN ln -sf /usr/bin/python3 /usr/local/bin/python"
         ]
         assert fake._fake_images[0].entrypoint_commands == []
+        assert fake._fake_images[0].pip_packages == ["typing_extensions==4.15.0"]
         assert fake._fake_images[0].local_dir_options == [{"copy": True}]
         assert list(app.registrations) == [
             "stage_qwen3",

@@ -734,6 +734,28 @@ def test_rate_parser_converts_hourly_modal_rates_to_plan_units() -> None:
     }
 
 
+def test_app_inventory_preserves_private_identifier_for_teardown_only() -> None:
+    provider_id = "ap-" + "A1b2C3d4E5f6"
+    parsed = controller._parse_inventory(
+        raw(
+            [
+                {
+                    "app_id": provider_id,
+                    "description": "qwen3-compile-run-01",
+                    "state": "ephemeral",
+                }
+            ]
+        ),
+        "app",
+    )
+
+    assert parsed[0].provider_id == provider_id
+    assert controller._inventory_facts(parsed) == {
+        "count": 1,
+        "status_counts": {"ephemeral": 1},
+    }
+
+
 @pytest.mark.parametrize("prefix", ["ak-", "as-"])
 def test_persistence_scanner_rejects_modal_credential_shapes(prefix: str) -> None:
     with pytest.raises(controller.ModalOrchestratorError, match="credential-shaped"):

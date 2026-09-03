@@ -39,6 +39,7 @@ RUNTIME_PINS = {
     "vllm_version": "0.10.1.1",
     "torch_version": "2.8.0",
     "cuda_version": "12.8",
+    "typing_extensions_version": "4.15.0",
 }
 IMAGE_DIGEST = contract.OFFICIAL_VLLM_IMAGE_DIGEST
 GIT_HEAD = "b" * 40

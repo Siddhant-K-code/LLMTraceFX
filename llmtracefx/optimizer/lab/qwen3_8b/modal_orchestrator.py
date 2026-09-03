@@ -66,6 +66,7 @@ RUNTIME_PINS = {
     "vllm_version": "0.28.0",
     "torch_version": "2.13.0+cu130",
     "cuda_version": "13.0",
+    "typing_extensions_version": "4.15.0",
 }
 CELL_FUNCTIONS = (
     "l40s_eager",
@@ -429,6 +430,7 @@ class _InventoryItem:
     name: str
     status: str
     experiment_tag: str | None
+    provider_id: str | None = None
 
 
 def _parse_inventory(response: RawJSON, kind: str) -> tuple[_InventoryItem, ...]:
@@ -443,17 +445,26 @@ def _parse_inventory(response: RawJSON, kind: str) -> tuple[_InventoryItem, ...]
             name, status = row.get("description"), row.get("state")
             if not isinstance(status, str) or status not in _APP_STATES:
                 raise ModalOrchestratorError("app inventory is ambiguous")
+            provider_id = row.get("app_id")
+            if provider_id is not None and (
+                not isinstance(provider_id, str)
+                or not re.fullmatch(r"ap-[A-Za-z0-9_-]{8,}", provider_id)
+            ):
+                raise ModalOrchestratorError("app inventory is ambiguous")
         elif kind == "volume":
             name, status = row.get("name"), "running"
+            provider_id = None
         elif kind == "container":
             name, status = row.get("app_name"), "running"
+            provider_id = None
         elif kind == "secret":
             name, status = row.get("name"), "running"
+            provider_id = None
         else:
             raise ModalOrchestratorError("unknown inventory kind")
         if not isinstance(name, str) or not name:
             raise ModalOrchestratorError(f"{kind} inventory is ambiguous")
-        items.append(_InventoryItem(name, status, None))
+        items.append(_InventoryItem(name, status, None, provider_id))
     return tuple(items)
 
 
@@ -1593,7 +1604,13 @@ def execute(
                 try:
                     current_apps = _parse_inventory(provider.app_inventory(), "app")
                     if _app_is_live(current_apps, app_name):
-                        provider.stop_app(app_name)
+                        live_app = next(
+                            item
+                            for item in current_apps
+                            if item.name == app_name
+                            and item.status in _LIVE_RESOURCE_STATES
+                        )
+                        provider.stop_app(live_app.provider_id or app_name)
                         status = "complete"
                     else:
                         status = "already_stopped"
