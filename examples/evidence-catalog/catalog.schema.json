@@ -343,7 +343,7 @@
         },
         "public_path": {
           "maxLength": 512,
-          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?/)(?!.*\\\\)[A-Za-z0-9._/-]+$",
+          "pattern": "^(?![A-Za-z]:)[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$",
           "type": "string"
         },
         "runtime": {
@@ -698,7 +698,7 @@
     "unregistered_candidates": {
       "items": {
         "maxLength": 512,
-        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?/)(?!.*\\\\)[A-Za-z0-9._/-]+$",
+        "pattern": "^(?![A-Za-z]:)[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$",
         "type": "string"
       },
       "maxItems": 4096,

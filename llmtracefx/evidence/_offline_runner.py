@@ -67,11 +67,12 @@ def _contained(path: Path, roots: tuple[Path, ...]) -> bool:
     return any(resolved == root or root in resolved.parents for root in roots)
 
 
-def _install_audit_guard(repo_root: Path) -> None:
+def _install_audit_guard(repo_root: Path, runtime_root: Path) -> None:
     roots = tuple(
         path.resolve()
         for path in {
             repo_root,
+            runtime_root,
             Path(sys.prefix),
             Path(sys.base_prefix),
         }
@@ -113,8 +114,15 @@ def main() -> None:
         raise SystemExit("offline verifier script must be inside the repository")
     sys.argv = [str(script), *sys.argv[3:]]
     sys.dont_write_bytecode = True
+    runtime_root = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(runtime_root))
+    if str(repo_root) not in sys.path:
+        # Some reviewed verifier scripts check for this path before inserting it
+        # at index zero. Keeping it present but behind the trusted distribution
+        # makes their imports deterministic without editing historical bundles.
+        sys.path.append(str(repo_root))
     sys.meta_path.insert(0, _BlockedImportFinder())
-    _install_audit_guard(repo_root)
+    _install_audit_guard(repo_root, runtime_root)
     runpy.run_path(str(script), run_name="__main__")
 
 

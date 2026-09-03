@@ -69,6 +69,7 @@ KINDS = {
     "provider_preflight",
 }
 SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+SAFE_PATH_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]*)$")
@@ -254,12 +255,17 @@ def _validate_relative_path(value: str, context: str) -> tuple[str, ...]:
         or len(value) > 512
         or "\\" in value
         or "\x00" in value
+        or value.startswith("/")
+        or re.match(r"^[A-Za-z]:", value) is not None
     ):
         raise CatalogError(f"{context} is not a safe relative path")
-    path = Path(value)
-    if path.is_absolute() or any(part in ("", ".", "..") for part in path.parts):
+    raw_parts = value.split("/")
+    if any(
+        part in ("", ".", "..") or SAFE_PATH_SEGMENT.fullmatch(part) is None
+        for part in raw_parts
+    ):
         raise CatalogError(f"{context} is not a contained relative path")
-    return path.parts
+    return tuple(raw_parts)
 
 
 def _resolve_contained(
@@ -1162,7 +1168,9 @@ def _schema_document() -> dict[str, Any]:
         "required": list(CLAIM_DIMENSIONS),
         "properties": dict.fromkeys(CLAIM_DIMENSIONS, claim),
     }
-    path_pattern = r"^(?!/)(?!.*(?:^|/)\.\.?/)(?!.*\\)[A-Za-z0-9._/-]+$"
+    path_pattern = (
+        r"^(?![A-Za-z]:)[A-Za-z0-9][A-Za-z0-9._-]*" r"(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
+    )
     entry_required = [
         "evidence_id",
         "kind",

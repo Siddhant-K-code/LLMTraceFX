@@ -97,7 +97,19 @@ def test_unknown_verifier_is_rejected() -> None:
         core.validate_catalog_document(_reseal(catalog))
 
 
-@pytest.mark.parametrize("path", ("../escape", "/absolute", "nested\\escape"))
+@pytest.mark.parametrize(
+    "path",
+    (
+        "../escape",
+        "/absolute",
+        "nested\\escape",
+        "a//b",
+        "a/./b",
+        "a/.",
+        "foo/..",
+        "C:/x",
+    ),
+)
 def test_path_escape_is_rejected(path: str) -> None:
     catalog = _catalog()
     catalog["entries"][0]["public_path"] = path
