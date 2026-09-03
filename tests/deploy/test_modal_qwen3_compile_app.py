@@ -226,6 +226,31 @@ def test_registration_is_exact_and_secretless() -> None:
             assert "retries" not in registration.function_kwargs
 
 
+def test_tokenizer_materialization_forces_flat_token_ids() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class Tokenizer:
+        def apply_chat_template(
+            self, _messages: list[dict[str, str]], **kwargs: Any
+        ) -> list[int]:
+            calls.append(kwargs)
+            return [1, 2, 3]
+
+        def decode(self, _ids: list[int], *, skip_special_tokens: bool) -> str:
+            assert skip_special_tokens is False
+            return "decoded prompt"
+
+    with _imported(_environment()) as (module, _):
+        prompts, token_ids = module._materialize_token_ids(
+            Path("/model"),
+            lambda *_args, **_kwargs: Tokenizer(),
+        )
+
+    assert len(prompts) == 6
+    assert len(token_ids) == 6
+    assert all(call["return_dict"] is False for call in calls)
+
+
 def test_real_modal_sdk_accepts_registration_without_provider_access() -> None:
     pytest.importorskip("modal")
     environment = {

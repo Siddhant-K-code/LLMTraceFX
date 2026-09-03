@@ -379,6 +379,7 @@ def _materialize_token_ids(
             tokenize=True,
             add_generation_prompt=True,
             enable_thinking=False,
+            return_dict=False,
         )
         if (
             not isinstance(ids, list)
