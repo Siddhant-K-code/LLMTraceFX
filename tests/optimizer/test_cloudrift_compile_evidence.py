@@ -10,9 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from llmtracefx.optimizer.lab.qwen3_8b import (
-    cloudrift_compile_evidence as evidence,
-)
+from llmtracefx.optimizer.lab.qwen3_8b import cloudrift_compile_evidence as evidence
 from llmtracefx.optimizer.lab.qwen3_8b import cloudrift_runner as runner
 
 ROOT = Path(__file__).parents[2]

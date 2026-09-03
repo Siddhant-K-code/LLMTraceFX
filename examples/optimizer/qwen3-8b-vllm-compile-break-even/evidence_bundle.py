@@ -1,7 +1,7 @@
 """Verify the committed CloudRift vLLM compilation evidence."""
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from llmtracefx.optimizer.lab.qwen3_8b.cloudrift_compile_evidence import verify_bundle
 
