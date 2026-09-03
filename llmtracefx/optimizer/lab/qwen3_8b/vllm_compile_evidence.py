@@ -162,6 +162,8 @@ Correctness is evaluated offline with deterministic structured JSON and prose
 evaluators. Model output is never executed.
 
 Break-even results compare eager and compiled execution on the same accelerator.
+Paired cells must report the same normalized GPU name, driver, and total memory.
+An identity mismatch invalidates the bundle.
 Each pair is comparable only when eager and compiled produce identical output
 token counts for every request and compiled correctness is not worse. Exact
 token-ID divergence is reported separately. Each cold cell is observed once,
@@ -178,6 +180,8 @@ penalty. Modeled crossings are not observations.
 List-rate estimates are inferred from observed client lifecycle duration and the
 pinned pricing snapshot. Provider account billing remains separate and may be
 unavailable or delayed.
+Lifecycle records split measured initialization plus request time from remaining
+client-observed time so billed and measured windows reconcile.
 
 MLX results are outside this comparison because their runtime, quantization, and
 hardware scope are incompatible. They are not included in rankings.
@@ -610,6 +614,33 @@ def _validate_lifecycle(value: Any, cell_index: int) -> dict[str, Any]:
     }
 
 
+def _add_lifecycle_accounting(
+    lifecycle: Mapping[str, Any],
+    summary: Mapping[str, Any],
+    requests: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    accounted = _decimal(
+        summary["initialization_seconds"], "initialization accounting"
+    ) + sum(
+        (
+            _decimal(request["latency_seconds"], "request accounting")
+            for request in requests
+        ),
+        Decimal(),
+    )
+    duration = _decimal(lifecycle["duration_seconds"], "lifecycle accounting")
+    unaccounted = duration - accounted
+    if unaccounted < 0:
+        raise VLLMCompileEvidenceError(
+            "measured cell timings exceed the client-observed lifecycle"
+        )
+    return {
+        **lifecycle,
+        "accounted_seconds": canonical_decimal(accounted),
+        "unaccounted_seconds": canonical_decimal(unaccounted),
+    }
+
+
 def _optional_positive(value: Any, label: str) -> str | None:
     if value is None:
         return None
@@ -704,18 +735,15 @@ def _validate_cell(
         )
     except (KeyError, ValueError) as exc:
         raise VLLMCompileEvidenceError("hardware substitution is forbidden") from exc
-    total_memory = _optional_positive(
-        hardware.get("memory_total_mib"), "total GPU memory"
+    total_memory = canonical_decimal(
+        _decimal(hardware.get("memory_total_mib"), "total GPU memory", positive=True)
     )
     used_memory = _decimal(hardware.get("memory_used_mib"), "used GPU memory")
-    if used_memory < 0 or (
-        total_memory is not None
-        and used_memory > _decimal(total_memory, "total memory")
-    ):
+    if used_memory > _decimal(total_memory, "total memory"):
         raise VLLMCompileEvidenceError("used GPU memory is invalid")
     driver = hardware.get("driver_version")
-    if driver is not None and (not isinstance(driver, str) or not driver):
-        raise VLLMCompileEvidenceError("CUDA driver must be string or null")
+    if not isinstance(driver, str) or not driver:
+        raise VLLMCompileEvidenceError("CUDA driver must be a non-empty string")
     init_seconds = _duration(
         value.get("initialization_started_at"),
         value.get("initialization_ready_at"),
@@ -894,14 +922,11 @@ def _validate_cell(
                 **evaluator,
             }
         )
-    peak_memory = _optional_positive(
-        value.get("peak_gpu_memory_mib"), "peak GPU memory"
+    peak_memory = canonical_decimal(
+        _decimal(value.get("peak_gpu_memory_mib"), "peak GPU memory", positive=True)
     )
-    if (
-        peak_memory is not None
-        and total_memory is not None
-        and _decimal(peak_memory, "peak GPU memory")
-        > _decimal(total_memory, "total GPU memory")
+    if _decimal(peak_memory, "peak GPU memory") > _decimal(
+        total_memory, "total GPU memory"
     ):
         raise VLLMCompileEvidenceError("peak GPU memory exceeds total memory")
     compilation = _optional_positive(
@@ -1220,6 +1245,16 @@ def _break_even_pair(
     eager_rate: Decimal,
     compiled_rate: Decimal,
 ) -> dict[str, Any]:
+    eager_hardware = eager_summary["hardware"]
+    compiled_hardware = compiled_summary["hardware"]
+    paired_hardware_identity_match = (
+        " ".join(eager_hardware["gpu_name"].split())
+        == " ".join(compiled_hardware["gpu_name"].split())
+        and eager_hardware["driver_version"] == compiled_hardware["driver_version"]
+        and eager_hardware["memory_total_mib"] == compiled_hardware["memory_total_mib"]
+    )
+    if not paired_hardware_identity_match:
+        raise VLLMCompileEvidenceError("paired cell hardware identity differs")
     eager_init = _decimal(eager_summary["initialization_seconds"], "eager init")
     compiled_init = _decimal(
         compiled_summary["initialization_seconds"], "compiled init"
@@ -1241,6 +1276,28 @@ def _break_even_pair(
             if eager["output_token_ids"] != compiled["output_token_ids"]
         ),
         None,
+    )
+    first_count_divergent_request_ordinal = next(
+        (
+            index
+            for index, (eager, compiled) in enumerate(
+                zip(eager_requests, compiled_requests, strict=True), start=1
+            )
+            if eager["output_token_count"] != compiled["output_token_count"]
+        ),
+        None,
+    )
+    first_count_divergence = (
+        None
+        if first_count_divergent_request_ordinal is None
+        else {
+            "eager_output_token_count": eager_requests[
+                first_count_divergent_request_ordinal - 1
+            ]["output_token_count"],
+            "compiled_output_token_count": compiled_requests[
+                first_count_divergent_request_ordinal - 1
+            ]["output_token_count"],
+        }
     )
     correctness_not_worse = all(
         not eager["correctness"] or compiled["correctness"]
@@ -1299,9 +1356,14 @@ def _break_even_pair(
         extrapolated = min(candidates)
     return {
         "comparable": comparable,
+        "paired_hardware_identity_match": paired_hardware_identity_match,
         "paired_output_count_parity": output_count_parity,
         "identical_output_token_ids": identical_output_token_ids,
         "first_divergent_request_ordinal": first_divergent_request_ordinal,
+        "first_count_divergent_request_ordinal": (
+            first_count_divergent_request_ordinal
+        ),
+        "first_count_divergence": first_count_divergence,
         "compiled_correctness_not_worse": correctness_not_worse,
         "observed_requests": observed,
         "transient_crossing_requests": transient_crossings,
@@ -1403,12 +1465,26 @@ def _report_html(break_even: Mapping[str, Any]) -> str:
             return "not comparable"
         return str(value) if value is not None else "not observed"
 
+    def transient(pair: Mapping[str, Any]) -> str:
+        if not pair["comparable"]:
+            return "not comparable"
+        values = pair["transient_crossing_requests"]
+        return ", ".join(str(value) for value in values) if values else "none"
+
     rows = "".join(
         "<tr><td>"
         + html.escape(pair["accelerator"])
         + "</td><td>"
         + html.escape(
             crossing(pair["observed_requests"], comparable=pair["comparable"])
+        )
+        + "</td><td>"
+        + html.escape(transient(pair))
+        + "</td><td>"
+        + html.escape(
+            str(pair["sustained_through_observed_window"]).lower()
+            if pair["observed_requests"] is not None
+            else "not applicable"
         )
         + "</td><td>"
         + html.escape(
@@ -1427,7 +1503,9 @@ def _report_html(break_even: Mapping[str, Any]) -> str:
         '<!doctype html>\n<html lang="en"><meta charset="utf-8">'
         "<title>Qwen3 compilation evidence</title><body>"
         "<h1>Qwen3 8B vLLM compilation evidence</h1>"
-        "<table><thead><tr><th>Accelerator</th><th>Observed crossing</th>"
+        "<table><thead><tr><th>Accelerator</th><th>First observed crossing</th>"
+        "<th>Transient crossing requests</th>"
+        "<th>Sustained through observed window</th>"
         f"<th>Modeled crossing by repeated {REQUESTS_PER_CELL}-request cycles</th>"
         "<th>Compiled initialization delta (s)</th>"
         f"<th>{REQUESTS_PER_CELL}-request saving (s)</th>"
@@ -1562,6 +1640,12 @@ def build_bundle(
         summaries.append(summary)
         requests_by_cell.append(requests)
         correctness.extend(evaluations)
+    lifecycles = [
+        _add_lifecycle_accounting(lifecycle, summary, requests)
+        for lifecycle, summary, requests in zip(
+            lifecycles, summaries, requests_by_cell, strict=True
+        )
+    ]
     ledger = _validate_ledger(ledger_snapshot, plan)
     before = _validate_billing(billing_before, "billing before")
     after = _validate_billing(billing_after, "billing after")
@@ -1928,10 +2012,12 @@ def verify_bundle(directory: str | Path) -> dict[str, Any]:
             },
             "public hardware",
         )
-        _optional_positive(
-            public_hardware["memory_total_mib"], "public total GPU memory"
+        _decimal(
+            public_hardware["memory_total_mib"],
+            "public total GPU memory",
+            positive=True,
         )
-        if public_hardware["driver_version"] is not None and (
+        if (
             not isinstance(public_hardware["driver_version"], str)
             or not public_hardware["driver_version"]
         ):
@@ -1994,9 +2080,9 @@ def verify_bundle(directory: str | Path) -> dict[str, Any]:
         for optional in (
             "compilation_seconds",
             "cuda_graph_seconds",
-            "peak_gpu_memory_mib",
         ):
             _optional_positive(summary[optional], optional)
+        _decimal(summary["peak_gpu_memory_mib"], "peak_gpu_memory_mib", positive=True)
         if (
             not CELLS[index].compile_enabled
             and summary["compilation_seconds"] is not None
@@ -2023,6 +2109,8 @@ def verify_bundle(directory: str | Path) -> dict[str, Any]:
                 "started_at",
                 "ended_at",
                 "duration_seconds",
+                "accounted_seconds",
+                "unaccounted_seconds",
                 "first_event_received_at",
                 "invocation_to_first_event_seconds",
                 "events",
@@ -2059,6 +2147,29 @@ def verify_bundle(directory: str | Path) -> dict[str, Any]:
             != lifecycle["events"][0]["received_at"]
         ):
             raise VLLMCompileEvidenceError("public lifecycle does not verify")
+        accounted = _decimal(
+            runtime["cells"][index]["initialization_seconds"],
+            "public initialization accounting",
+        ) + sum(
+            (
+                _decimal(request["latency_seconds"], "public request accounting")
+                for request in requests[
+                    index * REQUESTS_PER_CELL : (index + 1) * REQUESTS_PER_CELL
+                ]
+            ),
+            Decimal(),
+        )
+        duration = _decimal(lifecycle["duration_seconds"], "public lifecycle")
+        if (
+            _decimal(lifecycle["accounted_seconds"], "public accounted time")
+            != accounted
+            or _decimal(lifecycle["unaccounted_seconds"], "public unaccounted time")
+            != duration - accounted
+            or duration - accounted < 0
+        ):
+            raise VLLMCompileEvidenceError(
+                "public lifecycle accounting does not reconcile"
+            )
         for event in lifecycle["events"]:
             _strict_keys(event, {"received_at", "event", "provenance"}, "public event")
             _timestamp(event["received_at"], "public event")

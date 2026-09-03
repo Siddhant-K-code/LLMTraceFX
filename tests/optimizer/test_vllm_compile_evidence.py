@@ -384,6 +384,14 @@ def test_render_is_deterministic_and_observed_break_even(
     assert [item["observed_requests"] for item in crossing["pairs"]] == [2, 2]
     assert all(not item["transient_crossing_requests"] for item in crossing["pairs"])
     assert all(item["sustained_through_observed_window"] for item in crossing["pairs"])
+    report = (first / "report.html").read_text()
+    assert "Transient crossing requests" in report
+    assert "Sustained through observed window" in report
+    lifecycle = json.loads(
+        (first / "lifecycle-records.jsonl").read_text().splitlines()[0]
+    )
+    assert lifecycle["accounted_seconds"] == "25"
+    assert lifecycle["unaccounted_seconds"] == "5"
     correctness = json.loads((first / "correctness-report.json").read_text())
     assert correctness["failed"] > 0
     assert correctness["model_output_executed"] is False
@@ -474,8 +482,22 @@ def test_break_even_marks_a_crossing_that_does_not_persist() -> None:
     ]
 
     pair = evidence._break_even_pair(
-        {"initialization_seconds": "1"},
-        {"initialization_seconds": "2"},
+        {
+            "initialization_seconds": "1",
+            "hardware": {
+                "gpu_name": "NVIDIA L40S",
+                "driver_version": "580.1",
+                "memory_total_mib": "48000",
+            },
+        },
+        {
+            "initialization_seconds": "2",
+            "hardware": {
+                "gpu_name": "NVIDIA L40S",
+                "driver_version": "580.1",
+                "memory_total_mib": "48000",
+            },
+        },
         eager_requests,
         compiled_requests,
         eager_rate=Decimal("1"),
@@ -503,6 +525,11 @@ def test_output_count_divergence_suppresses_break_even(artifact_root: Path) -> N
     pair = json.loads((bundle / "break-even.json").read_text())["pairs"][0]
     assert pair["comparable"] is False
     assert pair["paired_output_count_parity"] is False
+    assert pair["first_count_divergent_request_ordinal"] == 1
+    assert pair["first_count_divergence"] == {
+        "eager_output_token_count": 2,
+        "compiled_output_token_count": 1,
+    }
     assert pair["identical_output_token_ids"] is False
     assert pair["observed_requests"] is None
     assert pair["extrapolated_requests"] is None
@@ -537,6 +564,28 @@ def test_request_clock_mismatch_is_rejected(artifact_root: Path) -> None:
         build(artifact_root / "bundle", inputs)
 
 
+def test_lifecycle_accounting_must_cover_measured_work(artifact_root: Path) -> None:
+    inputs = synthetic()
+    lifecycle = inputs["lifecycle_records"][0]
+    lifecycle.pop("artifact_sha256")
+    lifecycle["ended_at"] = iso(101)
+    inputs["lifecycle_records"][0] = seal(lifecycle, "artifact_sha256")
+
+    with pytest.raises(evidence.VLLMCompileEvidenceError, match="exceed"):
+        build(artifact_root / "bundle", inputs)
+
+
+def test_paired_hardware_mismatch_rejects_bundle(artifact_root: Path) -> None:
+    inputs = synthetic()
+    compiled = inputs["cell_records"][1]
+    compiled.pop("cell_sha256")
+    compiled["hardware"]["driver_version"] = "581.0"
+    inputs["cell_records"][1] = seal(compiled, "cell_sha256")
+
+    with pytest.raises(evidence.VLLMCompileEvidenceError, match="paired cell hardware"):
+        build(artifact_root / "bundle", inputs)
+
+
 def test_negative_initialization_delta_is_labeled_as_no_penalty() -> None:
     requests = [
         {
@@ -548,8 +597,22 @@ def test_negative_initialization_delta_is_labeled_as_no_penalty() -> None:
         for _ in range(12)
     ]
     result = evidence._break_even_pair(
-        {"initialization_seconds": "10"},
-        {"initialization_seconds": "5"},
+        {
+            "initialization_seconds": "10",
+            "hardware": {
+                "gpu_name": "NVIDIA L40S",
+                "driver_version": "580.1",
+                "memory_total_mib": "48000",
+            },
+        },
+        {
+            "initialization_seconds": "5",
+            "hardware": {
+                "gpu_name": "NVIDIA L40S",
+                "driver_version": "580.1",
+                "memory_total_mib": "48000",
+            },
+        },
         requests,
         requests,
         eager_rate=Decimal("1"),

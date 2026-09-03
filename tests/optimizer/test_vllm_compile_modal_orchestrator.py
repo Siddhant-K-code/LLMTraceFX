@@ -7,7 +7,7 @@ import os
 import shutil
 from collections.abc import Iterator, Mapping
 from contextlib import nullcontext
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -262,6 +262,7 @@ def staging(plan: Any) -> dict[str, Any]:
 def terminal(plan: Any, receipt: dict[str, Any], index: int) -> dict[str, Any]:
     counts = {item["key"]: item["input_token_count"] for item in receipt["prompts"]}
     requests = []
+    base = datetime(2026, 9, 3, tzinfo=timezone.utc)
     for descriptor in workload_descriptors():
         key = f"{descriptor.context_tier}/{descriptor.workload_id}"
         requests.append(
@@ -278,7 +279,7 @@ def terminal(plan: Any, receipt: dict[str, Any], index: int) -> dict[str, Any]:
                 ),
                 "output_token_ids": [1, 2],
                 "output_token_count": 2,
-                "output_tokens_per_second": 2.0,
+                "output_tokens_per_second": 2_000_000.0,
                 "output_rate_basis": "output_tokens_per_complete_response_second",
                 "decoded_output": "evaluate locally",
                 "evaluator_input": {
@@ -288,9 +289,13 @@ def terminal(plan: Any, receipt: dict[str, Any], index: int) -> dict[str, Any]:
                     "output_token_ids": [1, 2],
                 },
                 "provenance": "model_reported",
-                "started_at": (f"2026-09-03T00:00:{descriptor.ordinal + 2:02d}+00:00"),
-                "ended_at": (f"2026-09-03T00:00:{descriptor.ordinal + 3:02d}+00:00"),
-                "wall_clock_seconds": 1.0,
+                "started_at": (
+                    base + timedelta(microseconds=descriptor.ordinal + 1)
+                ).isoformat(),
+                "ended_at": (
+                    base + timedelta(microseconds=descriptor.ordinal + 2)
+                ).isoformat(),
+                "wall_clock_seconds": 0.000001,
                 "ttft_seconds": None,
                 "field_provenance": {
                     "started_at": "client_observed",
@@ -351,8 +356,8 @@ def terminal(plan: Any, receipt: dict[str, Any], index: int) -> dict[str, Any]:
                     "cuda_graph_mode": "NONE",
                 }
             ),
-            "initialization_started_at": "2026-09-03T00:00:00+00:00",
-            "initialization_ready_at": "2026-09-03T00:00:02+00:00",
+            "initialization_started_at": base.isoformat(),
+            "initialization_ready_at": (base + timedelta(microseconds=1)).isoformat(),
             "compilation_seconds": None,
             "compilation_seconds_unobservable_reason": (
                 "vllm_compilation_time_not_exposed_or_nonpositive"
@@ -610,6 +615,86 @@ def test_teardown_inventory_excludes_unrelated_account_resources(
         kind: {"count": 0, "status_counts": {}}
         for kind in ("apps", "volumes", "containers", "secrets")
     }
+
+
+def test_teardown_waits_for_stopping_app_to_disappear(
+    paths: dict[str, Path],
+) -> None:
+    class SettlingProvider(FakeProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.app_inventory_calls = 0
+
+        def app_inventory(self) -> controller.RawJSON:
+            self.calls.append("apps")
+            self.app_inventory_calls += 1
+            if self.app_inventory_calls in {2, 3}:
+                return raw(
+                    [
+                        {
+                            "description": "qwen3-compile-run-01",
+                            "state": "stopping...",
+                        }
+                    ]
+                )
+            return empty_inventory()
+
+    sleeps: list[float] = []
+    provider = SettlingProvider()
+    state = controller.execute(
+        config(paths),
+        provider=provider,
+        page_policy=FakePagePolicy(),
+        harness_loader=FakeHarnessLoader(),
+        git=FakeGit(),
+        environ={},
+        today=lambda: date(2026, 9, 3),
+        sleeper=sleeps.append,
+    )
+
+    assert state["status"] == "complete"
+    assert sleeps == [controller.TEARDOWN_SETTLE_SECONDS]
+    assert "stop" in provider.calls
+
+
+def test_teardown_settle_window_is_bounded() -> None:
+    class NeverSettles(FakeProvider):
+        def app_inventory(self) -> controller.RawJSON:
+            return raw(
+                [{"description": "qwen3-compile-run-01", "state": "stopping..."}]
+            )
+
+    sleeps: list[float] = []
+    with pytest.raises(controller.ModalOrchestratorError, match="did not settle"):
+        controller._settle_teardown_inventory(
+            NeverSettles(),
+            app_name="qwen3-compile-run-01",
+            volume_name="qwen3-compile-volume-run-01",
+            experiment_id="run-01",
+            sleeper=sleeps.append,
+        )
+
+    assert len(sleeps) == controller.TEARDOWN_SETTLE_ATTEMPTS - 1
+
+
+def test_paired_hardware_must_match() -> None:
+    eager = {
+        "hardware": {
+            "gpu_name": "NVIDIA L40S",
+            "driver_version": "570.1",
+            "memory_total_mib": 48_000.0,
+        }
+    }
+    compiled = {
+        "hardware": {
+            "gpu_name": " NVIDIA  L40S ",
+            "driver_version": "571.0",
+            "memory_total_mib": 48_000.0,
+        }
+    }
+
+    with pytest.raises(controller.ModalOrchestratorError, match="paired cell"):
+        controller._validate_paired_hardware(eager, compiled)
 
 
 def test_live_rate_increase_recalculates_and_refuses_before_paid_command(

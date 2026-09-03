@@ -266,6 +266,26 @@ def test_hardware_substitution_refuses_before_model_construction() -> None:
         assert constructed is False
 
 
+def test_incomplete_hardware_identity_refuses_before_model_construction() -> None:
+    with _imported(_environment()) as (module, _):
+        events = module._run_cell(
+            module.CELLS[0],
+            command_runner=lambda _: "NVIDIA L40S, [N/A], 46068, 0\n",
+            llm_factory=lambda *_: (_ for _ in ()).throw(AssertionError()),
+        )
+        assert next(events)["event"] == "container_started"
+        with pytest.raises(module.VLLMCompileContractError, match="incomplete"):
+            next(events)
+
+
+def test_memory_sampler_requires_an_initial_observation() -> None:
+    with _imported(_environment()) as (module, _):
+        sampler = module._MemorySampler(lambda _: "[N/A]\n")
+
+        with pytest.raises(module.VLLMCompileContractError, match="memory sample"):
+            sampler.start()
+
+
 def test_terminal_request_uses_token_ids_and_requires_finish_reason() -> None:
     with _imported(_environment()) as (module, _):
         descriptor = module.workload_descriptors()[0]
@@ -496,7 +516,7 @@ def test_cell_uses_exact_order_and_persists_only_complete_terminal(
                 command_runner=lambda argv: (
                     "NVIDIA L40S, 570.1, 46068, 0\n"
                     if "name,driver_version" in argv[1]
-                    else "0\n"
+                    else "1\n"
                 ),
                 runtime_observer=lambda: module.PLAN.runtime_pins.to_dict(),
                 vllm_module=SimpleNamespace(),

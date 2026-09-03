@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -113,6 +114,18 @@ _APP_STATES = frozenset(
         "unknown",
     }
 )
+_LIVE_RESOURCE_STATES = frozenset(
+    {
+        "running",
+        "deployed",
+        "ephemeral",
+        "ephemeral (detached)",
+        "initializing...",
+        "stopping...",
+    }
+)
+TEARDOWN_SETTLE_ATTEMPTS = 30
+TEARDOWN_SETTLE_SECONDS = 2.0
 _OPTIONAL_REASONS = frozenset(
     {"unsupported", "unavailable", "permission_denied", "not_configured"}
 )
@@ -1015,6 +1028,50 @@ def _validate_cell_terminal(
     return dict(record)
 
 
+def _normalized_gpu_name(value: Any) -> str:
+    if not isinstance(value, str) or not value:
+        raise ModalOrchestratorError("paired GPU identity is invalid")
+    return " ".join(value.split())
+
+
+def _validate_paired_hardware(
+    eager: Mapping[str, Any], compiled: Mapping[str, Any]
+) -> None:
+    eager_hardware = eager["hardware"]
+    compiled_hardware = compiled["hardware"]
+    if (
+        _normalized_gpu_name(eager_hardware["gpu_name"])
+        != _normalized_gpu_name(compiled_hardware["gpu_name"])
+        or eager_hardware["driver_version"] != compiled_hardware["driver_version"]
+        or eager_hardware["memory_total_mib"] != compiled_hardware["memory_total_mib"]
+    ):
+        raise ModalOrchestratorError("paired cell hardware identity differs")
+
+
+def _accounted_cell_seconds(record: Mapping[str, Any]) -> float:
+    initialization = (
+        _utc_timestamp(record["initialization_ready_at"])
+        - _utc_timestamp(record["initialization_started_at"])
+    ).total_seconds()
+    request_seconds = sum(
+        float(request["wall_clock_seconds"]) for request in record["requests"]
+    )
+    return initialization + request_seconds
+
+
+def _validate_invocation_accounting(
+    invocation: Mapping[str, Any], record: Mapping[str, Any]
+) -> None:
+    duration = (
+        _utc_timestamp(invocation["ended_at"])
+        - _utc_timestamp(invocation["started_at"])
+    ).total_seconds()
+    if duration <= 0 or _accounted_cell_seconds(record) > duration:
+        raise ModalOrchestratorError(
+            "remote cell timings exceed the client-observed invocation"
+        )
+
+
 def _sanitized_error(error: BaseException) -> dict[str, str]:
     return {"type": type(error).__name__, "reason": "execution_failed"}
 
@@ -1049,14 +1106,6 @@ def _require_no_live_experiment(
     volume_name: str,
     experiment_id: str,
 ) -> None:
-    live_statuses = {
-        "running",
-        "deployed",
-        "ephemeral",
-        "ephemeral (detached)",
-        "initializing...",
-        "stopping...",
-    }
     for items in inventories.values():
         for item in items:
             belongs = (
@@ -1064,17 +1113,53 @@ def _require_no_live_experiment(
                 or item.experiment_tag == experiment_id
                 or experiment_id in item.name
             )
-            if belongs and item.status in live_statuses:
+            if belongs and item.status in _LIVE_RESOURCE_STATES:
                 raise ModalOrchestratorError("live experiment resource remains")
 
 
 def _app_is_live(items: Sequence[_InventoryItem], app_name: str) -> bool:
     return any(
-        item.name == app_name
-        and item.status
-        in {"deployed", "ephemeral", "ephemeral (detached)", "initializing..."}
-        for item in items
+        item.name == app_name and item.status in _LIVE_RESOURCE_STATES for item in items
     )
+
+
+def _provider_inventory(provider: Provider) -> dict[str, tuple[_InventoryItem, ...]]:
+    return {
+        "apps": _parse_inventory(provider.app_inventory(), "app"),
+        "volumes": _parse_inventory(provider.volume_inventory(), "volume"),
+        "containers": _parse_inventory(provider.container_inventory(), "container"),
+        "secrets": _parse_inventory(provider.secret_inventory(), "secret"),
+    }
+
+
+def _settle_teardown_inventory(
+    provider: Provider,
+    *,
+    app_name: str,
+    volume_name: str,
+    experiment_id: str,
+    sleeper: Callable[[float], None],
+) -> dict[str, tuple[_InventoryItem, ...]]:
+    last_error: ModalOrchestratorError | None = None
+    for attempt in range(TEARDOWN_SETTLE_ATTEMPTS):
+        inventory = _provider_inventory(provider)
+        try:
+            _require_no_live_experiment(
+                inventory,
+                app_name=app_name,
+                volume_name=volume_name,
+                experiment_id=experiment_id,
+            )
+        except ModalOrchestratorError as exc:
+            last_error = exc
+            if attempt + 1 < TEARDOWN_SETTLE_ATTEMPTS:
+                sleeper(TEARDOWN_SETTLE_SECONDS)
+                continue
+            break
+        return inventory
+    raise ModalOrchestratorError(
+        "experiment resources did not settle after teardown"
+    ) from last_error
 
 
 class SubprocessGitInspector:
@@ -1235,6 +1320,7 @@ def execute(
     git: GitInspector,
     environ: Mapping[str, str] | None = None,
     today: Callable[[], date] = date.today,
+    sleeper: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     """Execute one sequential first pass and prove teardown."""
 
@@ -1349,6 +1435,7 @@ def execute(
     volume_creation_attempted = False
     app_started = False
     original: BaseException | None = None
+    validated_terminals: list[dict[str, Any]] = []
     teardown: dict[str, Any] = {
         "schema_version": "1",
         "experiment_id": config.experiment_id,
@@ -1468,6 +1555,7 @@ def execute(
                     receipt=receipt,
                     plan=plan,
                 )
+                _validate_invocation_accounting(invocation, terminal)
                 _persist_remote(
                     config.output_dir / f"{function_name}-terminal.json",
                     terminal,
@@ -1479,6 +1567,9 @@ def execute(
                 )
                 state["invocations"].append(invocation)
                 _persist_verified(config.output_dir / "execution-state.json", state)
+                if index % 2 == 1:
+                    _validate_paired_hardware(validated_terminals[-1], terminal)
+                validated_terminals.append(terminal)
     except BaseException as exc:
         original = _original_context(exc)
     finally:
@@ -1520,19 +1611,12 @@ def execute(
                     }
                 )
             try:
-                after = {
-                    "apps": _parse_inventory(provider.app_inventory(), "app"),
-                    "volumes": _parse_inventory(provider.volume_inventory(), "volume"),
-                    "containers": _parse_inventory(
-                        provider.container_inventory(), "container"
-                    ),
-                    "secrets": _parse_inventory(provider.secret_inventory(), "secret"),
-                }
-                _require_no_live_experiment(
-                    after,
+                after = _settle_teardown_inventory(
+                    provider,
                     app_name=app_name,
                     volume_name=volume_name,
                     experiment_id=config.experiment_id,
+                    sleeper=sleeper,
                 )
                 teardown["provider_inventory_after"] = {
                     key: _experiment_inventory_facts(

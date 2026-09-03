@@ -534,12 +534,24 @@ def _query_hardware(command_runner: Callable[[Sequence[str]], str]) -> dict[str,
     def optional_text(value: str) -> str | None:
         return None if value.lower() in {"", "n/a", "[n/a]", "not supported"} else value
 
+    driver_version = optional_text(fields[1])
+    memory_total_mib = optional_number(fields[2])
+    memory_used_mib = optional_number(fields[3])
+    if (
+        driver_version is None
+        or memory_total_mib is None
+        or memory_total_mib <= 0
+        or memory_used_mib is None
+        or memory_used_mib < 0
+        or memory_used_mib > memory_total_mib
+    ):
+        raise VLLMCompileContractError("nvidia-smi hardware identity is incomplete")
     return {
         "gpu_name": fields[0],
         "gpu_count": 1,
-        "driver_version": optional_text(fields[1]),
-        "memory_total_mib": optional_number(fields[2]),
-        "memory_used_mib": optional_number(fields[3]),
+        "driver_version": driver_version,
+        "memory_total_mib": memory_total_mib,
+        "memory_used_mib": memory_used_mib,
     }
 
 
@@ -624,29 +636,52 @@ class _MemorySampler:
         self._thread = threading.Thread(target=self._sample, daemon=True)
         self.peak_mib: float | None = None
 
+    def _observe(self) -> None:
+        output = self._runner(
+            (
+                "nvidia-smi",
+                "--query-gpu=memory.used",
+                "--format=csv,noheader,nounits",
+            )
+        ).strip()
+        try:
+            value = float(output)
+        except (TypeError, ValueError) as exc:
+            raise VLLMCompileContractError("GPU memory sample is invalid") from exc
+        if not math.isfinite(value) or value < 0:
+            raise VLLMCompileContractError("GPU memory sample is invalid")
+        self.peak_mib = value if self.peak_mib is None else max(self.peak_mib, value)
+
     def _sample(self) -> None:
         while not self._stop.wait(0.2):
             try:
-                output = self._runner(
-                    (
-                        "nvidia-smi",
-                        "--query-gpu=memory.used",
-                        "--format=csv,noheader,nounits",
-                    )
-                ).strip()
-                value = float(output)
-            except (OSError, subprocess.SubprocessError, TypeError, ValueError):
+                self._observe()
+            except (
+                OSError,
+                subprocess.SubprocessError,
+                TypeError,
+                ValueError,
+                VLLMCompileContractError,
+            ):
                 continue
-            self.peak_mib = (
-                value if self.peak_mib is None else max(self.peak_mib, value)
-            )
 
     def start(self) -> None:
+        self._observe()
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
         self._thread.join(timeout=2)
+        try:
+            self._observe()
+        except (
+            OSError,
+            subprocess.SubprocessError,
+            TypeError,
+            ValueError,
+            VLLMCompileContractError,
+        ):
+            pass
 
 
 def _metric_ttft(metrics: Any) -> float | None:
@@ -925,6 +960,8 @@ def _run_cell(
         raise VLLMCompileContractError(
             "cell did not produce 12 complete terminal requests"
         )
+    if sampler.peak_mib is None or sampler.peak_mib <= 0:
+        raise VLLMCompileContractError("peak GPU memory is unavailable")
     compilation_seconds = (
         _observed_compilation_seconds(llm) if cell.compile_enabled else None
     )
