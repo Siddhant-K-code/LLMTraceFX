@@ -512,7 +512,10 @@ def test_controlled_cell_uses_exact_sampling_and_records_each_generate(
     assert len(payload["requests"]) == 144
     assert len(FakeLLM.generate_calls) == 144
     assert len(FakeSamplingParams.created) == 1
-    assert FakeSamplingParams.created[0] == contract.CONTROLLED_SAMPLING.to_dict()
+    expected_sampling = contract.CONTROLLED_SAMPLING.to_dict()
+    expected_sampling.pop("best_of")
+    assert FakeSamplingParams.created[0] == expected_sampling
+    assert "best_of" not in FakeSamplingParams.created[0]
     assert FakeLLM.init_kwargs[0]["tensor_parallel_size"] == 1
     assert FakeLLM.init_kwargs[0]["max_num_seqs"] == 1
     assert FakeLLM.init_kwargs[0]["enable_prefix_caching"] is False
@@ -704,7 +707,9 @@ def test_natural_cell_keeps_decoded_text_and_null_metrics(
 
     assert payload["request_count_observed"] == 12
     assert len(FakeLLM.generate_calls) == 12
-    assert FakeSamplingParams.created[0] == contract.NATURAL_SAMPLING.to_dict()
+    expected_sampling = contract.NATURAL_SAMPLING.to_dict()
+    expected_sampling.pop("best_of")
+    assert FakeSamplingParams.created[0] == expected_sampling
     assert payload["runtime"]["resolved_execution_config"] == {
         "enforce_eager": True,
         "compilation_mode": "NONE",

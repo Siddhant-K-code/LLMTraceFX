@@ -159,8 +159,12 @@ receipt and controls Docker only on an already provisioned local host. It
 contains no provider or SSH client. Any temporary public-key access is managed
 out of band; passwords, private keys, API tokens, host addresses, usernames,
 ports, and provider credentials are not accepted. Authorization is
-content-hashed and binds the pinned image, billing start, zero-retry rule, and
-external shutdown deadline.
+content-hashed, bound to the exact resolved workspace, and authenticated with
+an OpenSSH detached signature against an operator-managed authorized-signers
+file. It also binds the pinned image, billing start, zero-retry rule, and
+external shutdown deadline. Every Docker command targets only
+`unix:///var/run/docker.sock`; Docker/SSH routing environment variables are
+rejected and host subprocesses receive a fixed minimal environment.
 
 Only a fully completed 32-cell workspace can be published with
 `llmtracefx-vllm-crossover-results build --workspace ... --output ...`. The

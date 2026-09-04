@@ -696,7 +696,10 @@ def _write_progress(
 
 
 def _sampling_params_kwargs(contract: ModeContract) -> dict[str, Any]:
-    return contract.sampling.to_dict()
+    parameters = contract.sampling.to_dict()
+    if parameters.pop("best_of") != 1:
+        raise VLLMCompileContractError("effective best_of contract must remain one")
+    return parameters
 
 
 def _llm_kwargs(

@@ -19,6 +19,7 @@ def _authorization(
     *,
     head: str = "a" * 40,
     image_id: str = vllm_compile.DERIVED_IMAGE_ID,
+    workspace: Path = Path("."),
 ) -> dict:
     now = datetime.now(timezone.utc).isoformat()
     value = {
@@ -30,6 +31,7 @@ def _authorization(
         "source_head": head,
         "runtime_image_id": image_id,
         "experiment_nonce": "c" * 32,
+        "workspace_sha256": orchestrator._workspace_sha256(workspace),
         "authorized_at": now,
         "billing_started_at": now,
         "scheduled_shutdown_at": (
@@ -45,6 +47,20 @@ def _authorization(
     return value
 
 
+def _signature_arguments(root: Path) -> dict[str, Path]:
+    signature = root / "authorization.sig"
+    authorized_signers = root / "allowed_signers"
+    signature.write_text("test detached signature\n", encoding="utf-8")
+    authorized_signers.write_text(
+        f"{orchestrator.AUTHORIZATION_SIGNER_IDENTITY} ssh-ed25519 TEST\n",
+        encoding="utf-8",
+    )
+    return {
+        "authorization_signature": signature,
+        "authorized_signers": authorized_signers,
+    }
+
+
 class FakeRunner:
     def __init__(
         self,
@@ -53,11 +69,13 @@ class FakeRunner:
         image_id: str,
         output_dir: Path | None = None,
         fail_cell: bool = False,
+        fail_signature: bool = False,
     ) -> None:
         self.head = head
         self.image_id = image_id
         self.output_dir = output_dir
         self.fail_cell = fail_cell
+        self.fail_signature = fail_signature
         self.commands: list[tuple[str, ...]] = []
         self.inputs: list[str | None] = []
         self.timeouts: list[int] = []
@@ -85,9 +103,16 @@ class FakeRunner:
             and command[3] == "status"
         ):
             return orchestrator.CommandResult(0, "", "")
-        if command[:3] == ("docker", "image", "inspect"):
+        if command[:3] == ("ssh-keygen", "-Y", "verify"):
+            if self.fail_signature:
+                return orchestrator.CommandResult(255, "", "bad signature")
+            return orchestrator.CommandResult(0, "Good signature\n", "")
+        docker_prefix = ("docker", "--host", orchestrator.LOCAL_DOCKER_SOCKET)
+        if command[:3] == docker_prefix and command[3:5] == ("info", "--format"):
+            return orchestrator.CommandResult(0, "local-daemon\n", "")
+        if command[:3] == docker_prefix and command[3:5] == ("image", "inspect"):
             return orchestrator.CommandResult(0, self.image_id + "\n", "")
-        if command[:2] == ("docker", "ps"):
+        if command[:3] == docker_prefix and command[3:4] == ("ps",):
             return orchestrator.CommandResult(0, "", "")
         if (
             command
@@ -105,7 +130,7 @@ class FakeRunner:
             )
         if command and command[0] == "nvidia-smi":
             return orchestrator.CommandResult(0, "", "")
-        if command[:2] == ("docker", "run"):
+        if command[:3] == docker_prefix and command[3:4] == ("run",):
             if self.fail_cell:
                 self.fail_cell = False
                 return orchestrator.CommandResult(1, "", "failed")
@@ -147,6 +172,10 @@ def test_offline_plan_is_refusal_and_parser_defaults_to_it() -> None:
             "plan.json",
             "--authorization",
             "authorization.json",
+            "--authorization-signature",
+            "authorization.sig",
+            "--authorized-signers",
+            "allowed_signers",
             "--repository",
             "repo",
             "--workspace",
@@ -213,6 +242,98 @@ def test_credential_environment_is_rejected() -> None:
         orchestrator._reject_credential_environment({"CLOUD_TOKEN": "secret"})
 
 
+@pytest.mark.parametrize(
+    "name",
+    ["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "SSH_AUTH_SOCK"],
+)
+def test_command_routing_environment_is_rejected(name: str) -> None:
+    with pytest.raises(
+        orchestrator.CrossoverOrchestratorError,
+        match="command-routing",
+    ):
+        orchestrator._reject_credential_environment({name: "/hostile"})
+
+
+def test_subprocess_runner_uses_fixed_minimal_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict = {}
+
+    def fake_run(argv: list[str], **kwargs: object) -> object:
+        observed["argv"] = argv
+        observed.update(kwargs)
+        return type(
+            "Completed",
+            (),
+            {"returncode": 0, "stdout": "", "stderr": ""},
+        )()
+
+    monkeypatch.setattr(orchestrator.subprocess, "run", fake_run)
+    result = orchestrator.SubprocessCommandRunner().run(
+        ("docker", "version"),
+        timeout_seconds=3,
+    )
+    assert result.returncode == 0
+    assert observed["env"] == {
+        "PATH": orchestrator._SAFE_EXECUTION_PATH,
+        "LANG": "C",
+        "LC_ALL": "C",
+    }
+    assert observed["shell"] is False
+
+
+def test_authorization_signature_and_workspace_binding_are_required(
+    tmp_path: Path,
+) -> None:
+    plan = vllm_compile.build_default_plan()
+    repository = tmp_path / "repository"
+    model = tmp_path / "model"
+    state = tmp_path / "state"
+    authorized_workspace = tmp_path / "authorized-workspace"
+    replay_workspace = tmp_path / "replay-workspace"
+    for path in (repository, model, state):
+        path.mkdir()
+    authorization = orchestrator.ExecutionAuthorization.from_dict(
+        _authorization(plan, workspace=authorized_workspace)
+    )
+    signature_arguments = _signature_arguments(tmp_path)
+    with pytest.raises(orchestrator.CrossoverOrchestratorError, match="host command"):
+        orchestrator.HostOrchestrator(
+            runner=FakeRunner(
+                head="a" * 40,
+                image_id=vllm_compile.DERIVED_IMAGE_ID,
+                fail_signature=True,
+            ),
+            plan=plan,
+            authorization=authorization,
+            repository=repository,
+            workspace=authorized_workspace,
+            model_path=model,
+            state_path=state,
+            image_reference="local-image",
+            **signature_arguments,
+            environ={},
+        )
+    with pytest.raises(
+        orchestrator.CrossoverOrchestratorError, match="exact workspace"
+    ):
+        orchestrator.HostOrchestrator(
+            runner=FakeRunner(
+                head="a" * 40,
+                image_id=vllm_compile.DERIVED_IMAGE_ID,
+            ),
+            plan=plan,
+            authorization=authorization,
+            repository=repository,
+            workspace=replay_workspace,
+            model_path=model,
+            state_path=state,
+            image_reference="local-image",
+            **signature_arguments,
+            environ={},
+        )
+
+
 def test_host_orchestrator_rejects_nonempty_workspace(tmp_path: Path) -> None:
     plan = vllm_compile.build_default_plan()
     repository = tmp_path / "repository"
@@ -230,13 +351,14 @@ def test_host_orchestrator_rejects_nonempty_workspace(tmp_path: Path) -> None:
             ),
             plan=plan,
             authorization=orchestrator.ExecutionAuthorization.from_dict(
-                _authorization(plan)
+                _authorization(plan, workspace=workspace)
             ),
             repository=repository,
             workspace=workspace,
             model_path=model,
             state_path=state,
             image_reference="local-image",
+            **_signature_arguments(tmp_path),
             environ={},
         )
 
@@ -261,23 +383,22 @@ def test_host_orchestrator_runs_exact_schedule_and_tears_down(
         runner=runner,
         plan=plan,
         authorization=orchestrator.ExecutionAuthorization.from_dict(
-            _authorization(plan)
+            _authorization(plan, workspace=workspace)
         ),
         repository=repository,
         workspace=workspace,
         model_path=model,
         state_path=state,
         image_reference="local-image",
+        **_signature_arguments(tmp_path),
         environ={},
     )
     receipt = host.execute()
-    docker_runs = [
-        command for command in runner.commands if command[:2] == ("docker", "run")
-    ]
+    docker_runs = [command for command in runner.commands if "run" in command[:5]]
     docker_timeouts = [
         timeout
         for command, timeout in zip(runner.commands, runner.timeouts, strict=True)
-        if command[:2] == ("docker", "run")
+        if "run" in command[:5]
     ]
     assert len(docker_runs) == len(plan.schedule) == 32
     assert docker_timeouts == [
@@ -290,6 +411,22 @@ def test_host_orchestrator_runs_exact_schedule_and_tears_down(
         for cell in plan.schedule
     ]
     first_command = docker_runs[0]
+    assert first_command[:3] == (
+        "docker",
+        "--host",
+        orchestrator.LOCAL_DOCKER_SOCKET,
+    )
+    assert any(
+        command[:5]
+        == (
+            "docker",
+            "--host",
+            orchestrator.LOCAL_DOCKER_SOCKET,
+            "info",
+            "--format",
+        )
+        for command in runner.commands
+    )
     assert f"PYTHONHASHSEED={vllm_compile.SAMPLING_SEED}" in first_command
     assert "CUBLAS_WORKSPACE_CONFIG=:4096:8" in first_command
     assert "VLLM_DISABLE_COMPILE_CACHE=1" in first_command
@@ -359,7 +496,7 @@ def test_late_start_refuses_measurement_but_still_runs_teardown(
     billing = datetime.now(timezone.utc) - timedelta(
         seconds=vllm_compile.ACTIVE_PLANNED_SECONDS - 100
     )
-    authorization = _authorization(plan)
+    authorization = _authorization(plan, workspace=workspace)
     authorization["authorized_at"] = billing.isoformat()
     authorization["billing_started_at"] = billing.isoformat()
     authorization["scheduled_shutdown_at"] = (
@@ -385,6 +522,7 @@ def test_late_start_refuses_measurement_but_still_runs_teardown(
         model_path=model,
         state_path=state,
         image_reference="local-image",
+        **_signature_arguments(tmp_path),
         environ={},
     )
     with pytest.raises(orchestrator.CrossoverOrchestratorError, match="incomplete"):
@@ -435,13 +573,14 @@ def test_host_orchestrator_failure_is_sanitized_and_teardown_runs(
         runner=runner,
         plan=plan,
         authorization=orchestrator.ExecutionAuthorization.from_dict(
-            _authorization(plan)
+            _authorization(plan, workspace=workspace)
         ),
         repository=repository,
         workspace=workspace,
         model_path=model,
         state_path=state,
         image_reference="local-image",
+        **_signature_arguments(tmp_path),
         environ={},
     )
     with pytest.raises(orchestrator.CrossoverOrchestratorError, match="incomplete"):
@@ -478,13 +617,14 @@ def test_preflight_failure_still_writes_receipt_and_runs_teardown(
         runner=runner,
         plan=plan,
         authorization=orchestrator.ExecutionAuthorization.from_dict(
-            _authorization(plan)
+            _authorization(plan, workspace=workspace)
         ),
         repository=repository,
         workspace=workspace,
         model_path=model,
         state_path=state,
         image_reference="local-image",
+        **_signature_arguments(tmp_path),
         environ={},
     )
 

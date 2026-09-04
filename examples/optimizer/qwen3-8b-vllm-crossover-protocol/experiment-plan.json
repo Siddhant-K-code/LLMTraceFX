@@ -973,7 +973,7 @@
     "missing_observation_is_not_zero": true,
     "null_requires_explicit_reason": true
   },
-  "plan_sha256": "sha256:041683e8e48de3427958dc175f70546d381a3a8557074be142775ba5654fa14d",
+  "plan_sha256": "sha256:d087f5914e07b597b8e812a0371a07443af39e6327117dd2173cf487b088ad9b",
   "protocol_id": "qwen3-8b-vllm-crossover-v2",
   "provenance_policy": {
     "canonical_json_only": true,
@@ -1408,5 +1408,10 @@
   ],
   "schedule_seed": 20260904,
   "schedule_sha256": "sha256:24110b178d1050cd781f7d272acec990d5bf60357f9ea0d2e970527928085024",
-  "schema_version": "2"
+  "schema_version": "2",
+  "vllm_0_28_sampling_adapter": {
+    "omitted_runtime_arguments": {
+      "best_of": "vLLM 0.28.0 removed the best_of SamplingParams argument; n=1 preserves one effective candidate"
+    }
+  }
 }

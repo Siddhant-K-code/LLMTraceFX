@@ -53,6 +53,10 @@ from .vllm_compile import (
 AUTHORIZATION_SCHEMA_VERSION = "1"
 ORCHESTRATOR_SCHEMA_VERSION = "1"
 RUNNER_MODULE = "llmtracefx.optimizer.lab.qwen3_8b.cloudrift_crossover_runner"
+AUTHORIZATION_SIGNER_IDENTITY = "vllm-crossover-coordinator"
+AUTHORIZATION_SIGNATURE_NAMESPACE = "llmtracefx-vllm-crossover-authorization-v1"
+LOCAL_DOCKER_SOCKET = "unix:///var/run/docker.sock"
+_DOCKER_COMMAND = ("docker", "--host", LOCAL_DOCKER_SOCKET)
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _NONCE = re.compile(r"^[0-9a-f]{32,64}$")
@@ -60,6 +64,19 @@ _CREDENTIAL_ENV = re.compile(
     r"(?:TOKEN|PASSWORD|SECRET|API_KEY|PRIVATE_KEY|CREDENTIAL|COOKIE)",
     re.IGNORECASE,
 )
+_FORBIDDEN_COMMAND_ROUTING_ENV = frozenset(
+    {
+        "CONTAINER_HOST",
+        "DOCKER_CERT_PATH",
+        "DOCKER_CONFIG",
+        "DOCKER_CONTEXT",
+        "DOCKER_HOST",
+        "DOCKER_TLS_VERIFY",
+        "SSH_AGENT_PID",
+        "SSH_AUTH_SOCK",
+    }
+)
+_SAFE_EXECUTION_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 _GPU_OBSERVATION_FIELDS = (
     "name",
     "driver_version",
@@ -96,6 +113,7 @@ class ExecutionAuthorization:
     source_head: str
     runtime_image_id: str
     experiment_nonce: str
+    workspace_sha256: str
     authorized_at: str
     billing_started_at: str
     scheduled_shutdown_at: str
@@ -111,6 +129,7 @@ class ExecutionAuthorization:
             "source_head": self.source_head,
             "runtime_image_id": self.runtime_image_id,
             "experiment_nonce": self.experiment_nonce,
+            "workspace_sha256": self.workspace_sha256,
             "authorized_at": self.authorized_at,
             "billing_started_at": self.billing_started_at,
             "scheduled_shutdown_at": self.scheduled_shutdown_at,
@@ -134,6 +153,7 @@ class ExecutionAuthorization:
             "source_head",
             "runtime_image_id",
             "experiment_nonce",
+            "workspace_sha256",
             "authorized_at",
             "billing_started_at",
             "scheduled_shutdown_at",
@@ -179,6 +199,10 @@ class ExecutionAuthorization:
             data["experiment_nonce"]
         ):
             raise CrossoverOrchestratorError("authorization nonce is invalid")
+        if not isinstance(data["workspace_sha256"], str) or not _SHA256.fullmatch(
+            data["workspace_sha256"]
+        ):
+            raise CrossoverOrchestratorError("authorization workspace hash is invalid")
         authorized_at = _parse_timestamp(
             data["authorized_at"], "authorization authorized_at"
         )
@@ -210,6 +234,7 @@ class ExecutionAuthorization:
             source_head=data["source_head"],
             runtime_image_id=data["runtime_image_id"],
             experiment_nonce=data["experiment_nonce"],
+            workspace_sha256=data["workspace_sha256"],
             authorized_at=data["authorized_at"],
             billing_started_at=data["billing_started_at"],
             scheduled_shutdown_at=data["scheduled_shutdown_at"],
@@ -265,6 +290,7 @@ class SubprocessCommandRunner:
             check=False,
             shell=False,
             timeout=timeout_seconds,
+            env={"PATH": _SAFE_EXECUTION_PATH, "LANG": "C", "LC_ALL": "C"},
         )
         return CommandResult(completed.returncode, completed.stdout, completed.stderr)
 
@@ -289,6 +315,12 @@ def _now() -> str:
 
 def _sha256_text(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    if path.stat().st_size > MAX_METADATA_ARTIFACT_BYTES:
+        raise CrossoverOrchestratorError("authorization trust artifact is oversized")
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _sha256_json(value: Any) -> str:
@@ -344,6 +376,16 @@ def _reject_credential_environment(environ: Mapping[str, str]) -> None:
         raise CrossoverOrchestratorError(
             "credential-shaped environment variables are forbidden: " + ", ".join(names)
         )
+    routing_names = sorted(
+        name
+        for name, value in environ.items()
+        if value and name in _FORBIDDEN_COMMAND_ROUTING_ENV
+    )
+    if routing_names:
+        raise CrossoverOrchestratorError(
+            "command-routing environment variables are forbidden: "
+            + ", ".join(routing_names)
+        )
 
 
 def _require_safe_directory(path: Path, *, label: str, create: bool = False) -> Path:
@@ -352,6 +394,54 @@ def _require_safe_directory(path: Path, *, label: str, create: bool = False) -> 
     if path.is_symlink() or not path.is_dir():
         raise CrossoverOrchestratorError(f"{label} must be a non-symlink directory")
     return path.resolve()
+
+
+def _require_safe_file(path: Path, *, label: str) -> Path:
+    if path.is_symlink() or not path.is_file():
+        raise CrossoverOrchestratorError(f"{label} must be a non-symlink regular file")
+    return path.resolve()
+
+
+def _workspace_sha256(path: Path) -> str:
+    return _sha256_text(str(path.resolve()))
+
+
+def _verify_authorization_signature(
+    runner: CommandRunner,
+    authorization: ExecutionAuthorization,
+    *,
+    signature_path: Path,
+    authorized_signers_path: Path,
+) -> None:
+    signature = _require_safe_file(signature_path, label="authorization signature")
+    authorized_signers = _require_safe_file(
+        authorized_signers_path, label="authorized signers"
+    )
+    message = json.dumps(
+        authorization.to_dict(),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+    _checked(
+        runner,
+        (
+            "ssh-keygen",
+            "-Y",
+            "verify",
+            "-f",
+            str(authorized_signers),
+            "-I",
+            AUTHORIZATION_SIGNER_IDENTITY,
+            "-n",
+            AUTHORIZATION_SIGNATURE_NAMESPACE,
+            "-s",
+            str(signature),
+        ),
+        timeout_seconds=10,
+        input_text=message,
+    )
 
 
 def offline_plan_document() -> dict[str, Any]:
@@ -411,7 +501,7 @@ def _docker_command(
     experiment_nonce: str,
 ) -> tuple[str, ...]:
     return (
-        "docker",
+        *_DOCKER_COMMAND,
         "run",
         "--rm",
         "--name",
@@ -506,6 +596,8 @@ class HostOrchestrator:
         model_path: Path,
         state_path: Path,
         image_reference: str,
+        authorization_signature: Path,
+        authorized_signers: Path,
         environ: Mapping[str, str] | None = None,
     ) -> None:
         self.runner = runner
@@ -515,9 +607,29 @@ class HostOrchestrator:
             authorization.billing_started_at,
             "authorization billing_started_at",
         )
+        _reject_credential_environment(os.environ if environ is None else environ)
+        resolved_workspace = workspace.resolve()
+        if authorization.workspace_sha256 != _workspace_sha256(resolved_workspace):
+            raise CrossoverOrchestratorError(
+                "authorization is not bound to this exact workspace"
+            )
+        _verify_authorization_signature(
+            runner,
+            authorization,
+            signature_path=authorization_signature,
+            authorized_signers_path=authorized_signers,
+        )
+        self.authorization_authentication = {
+            "mechanism": "openssh_detached_signature",
+            "namespace": AUTHORIZATION_SIGNATURE_NAMESPACE,
+            "signer_identity": AUTHORIZATION_SIGNER_IDENTITY,
+            "signature_sha256": _sha256_file(authorization_signature.resolve()),
+            "authorized_signers_sha256": _sha256_file(authorized_signers.resolve()),
+            "verified": True,
+        }
         self.repository = _require_safe_directory(repository, label="repository")
         self.workspace = _require_safe_directory(
-            workspace, label="workspace", create=True
+            resolved_workspace, label="workspace", create=True
         )
         if any(self.workspace.iterdir()):
             raise CrossoverOrchestratorError(
@@ -528,7 +640,6 @@ class HostOrchestrator:
         if not isinstance(image_reference, str) or not image_reference:
             raise CrossoverOrchestratorError("image reference must be non-empty")
         self.image_reference = image_reference
-        _reject_credential_environment(os.environ if environ is None else environ)
         if authorization.plan_sha256 != plan.content_sha256:
             raise CrossoverOrchestratorError("authorization plan hash differs")
         self.output_dir = self.workspace / "raw"
@@ -571,6 +682,15 @@ class HostOrchestrator:
             )
 
     def _preflight(self) -> None:
+        daemon_name = _checked(
+            self.runner,
+            (*_DOCKER_COMMAND, "info", "--format", "{{.Name}}"),
+            timeout_seconds=30,
+        ).stdout.strip()
+        if not daemon_name:
+            raise CrossoverOrchestratorError(
+                "approved local Docker daemon did not identify itself"
+            )
         head = _checked(
             self.runner,
             ("git", "-C", str(self.repository), "rev-parse", "HEAD"),
@@ -587,7 +707,14 @@ class HostOrchestrator:
             raise CrossoverOrchestratorError("execution checkout must be clean")
         image_id = _checked(
             self.runner,
-            ("docker", "image", "inspect", "--format", "{{.Id}}", self.image_reference),
+            (
+                *_DOCKER_COMMAND,
+                "image",
+                "inspect",
+                "--format",
+                "{{.Id}}",
+                self.image_reference,
+            ),
             timeout_seconds=30,
         ).stdout.strip()
         if image_id != self.authorization.runtime_image_id:
@@ -599,7 +726,7 @@ class HostOrchestrator:
         containers = _checked(
             self.runner,
             (
-                "docker",
+                *_DOCKER_COMMAND,
                 "ps",
                 "--filter",
                 f"label=llmtracefx.protocol={PROTOCOL_ID}",
@@ -985,6 +1112,7 @@ class HostOrchestrator:
             "ledger_sha256": _sha256_text(
                 (self.workspace / "budget-ledger.json").read_text(encoding="utf-8")
             ),
+            "authorization_authentication": self.authorization_authentication,
         }
         receipt["orchestration_sha256"] = _sha256_json(receipt)
         _write_json(self.workspace / "orchestration-receipt.json", receipt)
@@ -1030,6 +1158,8 @@ def build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", allow_abbrev=False)
     run.add_argument("--plan", required=True, type=Path)
     run.add_argument("--authorization", required=True, type=Path)
+    run.add_argument("--authorization-signature", required=True, type=Path)
+    run.add_argument("--authorized-signers", required=True, type=Path)
     run.add_argument("--repository", required=True, type=Path)
     run.add_argument("--workspace", required=True, type=Path)
     run.add_argument("--model-path", required=True, type=Path)
@@ -1072,6 +1202,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             model_path=args.model_path,
             state_path=args.state_path,
             image_reference=args.image_reference,
+            authorization_signature=args.authorization_signature,
+            authorized_signers=args.authorized_signers,
         )
         orchestrator.execute()
         return 0

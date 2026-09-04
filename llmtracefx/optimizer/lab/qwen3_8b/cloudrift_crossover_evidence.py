@@ -348,6 +348,8 @@ def _contract(plan: Mapping[str, Any]) -> dict[str, Any]:
             "state": "absent",
             "required_bindings": [
                 "canonical authorization content hash",
+                "OpenSSH detached signature from the authorized coordinator",
+                "exact resolved workspace path hash",
                 "exact plan hash",
                 "exact clean source head",
                 "pinned derived image digest",
@@ -356,6 +358,7 @@ def _contract(plan: Mapping[str, Any]) -> dict[str, Any]:
                 "USD 3 hard cap",
                 "scheduled shutdown at billing start plus 19,680 seconds",
                 "zero automatic retries",
+                "approved local unix:///var/run/docker.sock endpoint",
                 "externally managed provider access",
             ],
         },

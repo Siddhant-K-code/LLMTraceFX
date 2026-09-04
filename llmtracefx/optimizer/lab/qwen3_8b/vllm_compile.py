@@ -1002,6 +1002,14 @@ class VLLMCompilePlan:
             },
             "resource_settings": dict(RESOURCE_SETTINGS),
             "execution_modes": dict(EXECUTION_MODES),
+            "vllm_0_28_sampling_adapter": {
+                "omitted_runtime_arguments": {
+                    "best_of": (
+                        "vLLM 0.28.0 removed the best_of SamplingParams argument; "
+                        "n=1 preserves one effective candidate"
+                    )
+                }
+            },
             "lifecycle_controls": dict(LIFECYCLE_CONTROLS),
             "measurement_contract": dict(MEASUREMENT_CONTRACT),
             "reproducibility": {

@@ -43,6 +43,7 @@ def _authorization(plan: core.VLLMCompilePlan) -> dict:
         "source_head": "a" * 40,
         "runtime_image_id": core.DERIVED_IMAGE_ID,
         "experiment_nonce": "c" * 32,
+        "workspace_sha256": "sha256:" + "3" * 64,
         "authorized_at": "2026-09-04T09:00:00+00:00",
         "billing_started_at": "2026-09-04T09:00:00+00:00",
         "scheduled_shutdown_at": "2026-09-04T14:28:00+00:00",
@@ -482,6 +483,14 @@ def _workspace(tmp_path: Path, *, censored: bool = False) -> Path:
         "source_head": "a" * 40,
         "runtime_image_id": core.DERIVED_IMAGE_ID,
         "authorization_sha256": authorization["authorization_sha256"],
+        "authorization_authentication": {
+            "mechanism": "openssh_detached_signature",
+            "namespace": "llmtracefx-vllm-crossover-authorization-v1",
+            "signer_identity": "vllm-crossover-coordinator",
+            "signature_sha256": "sha256:" + "4" * 64,
+            "authorized_signers_sha256": "sha256:" + "5" * 64,
+            "verified": True,
+        },
         "scheduled_shutdown_at": authorization["scheduled_shutdown_at"],
         "repository_path_sha256": "sha256:" + "2" * 64,
         "workspace_path_sha256": "sha256:" + "3" * 64,
@@ -565,6 +574,9 @@ def test_successful_bundle_is_deterministic_and_verifies(tmp_path: Path) -> None
     }
     results.verify_bundle(first)
     runpy.run_path(str(first / "evidence_bundle.py"))["verify"](first)
+    assert "BOOTSTRAP_RESAMPLES = 40" in (first / "evidence_bundle.py").read_text(
+        encoding="utf-8"
+    )
     protocol = json.loads((first / "protocol.json").read_text(encoding="utf-8"))
     plan_document = core.build_default_plan().to_dict()
     assert protocol["analysis"]["bootstrap_resamples"] == 40
@@ -573,6 +585,14 @@ def test_successful_bundle_is_deterministic_and_verifies(tmp_path: Path) -> None
     assert protocol["quality_preservation"]["executed_resamples"] == 40
     assert protocol["hardware_observations"]["observation_count"] == 65
     assert protocol["bindings_verified"]["operation_receipts"] is True
+    assert protocol["authorization_authentication"] == {
+        "mechanism": "openssh_detached_signature",
+        "namespace": "llmtracefx-vllm-crossover-authorization-v1",
+        "signer_identity": "vllm-crossover-coordinator",
+        "signature_sha256": "sha256:" + "4" * 64,
+        "authorized_signers_sha256": "sha256:" + "5" * 64,
+        "verified": True,
+    }
     for field in (
         "execution_modes",
         "lifecycle_controls",
@@ -800,6 +820,31 @@ def test_pair_effect_tamper_is_rejected_after_reseal(
         results.verify_bundle(bundle)
     standalone_verify = runpy.run_path(str(bundle / "evidence_bundle.py"))["verify"]
     with pytest.raises(ValueError, match="pair effect"):
+        standalone_verify(bundle)
+
+
+def test_resealed_bootstrap_count_downgrade_is_rejected(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    results.build_bundle(_workspace(tmp_path), bundle)
+    protocol_path = bundle / "protocol.json"
+    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    protocol["analysis"]["bootstrap_resamples"] = 1
+    protocol["quality_preservation"]["executed_resamples"] = 1
+    protocol_path.write_text(results._json_text(protocol), encoding="utf-8")
+    analysis_path = bundle / "analysis.json"
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    analysis["controlled"]["resample_count"] = 1
+    analysis_path.write_text(results._json_text(analysis), encoding="utf-8")
+    correctness_path = bundle / "correctness.json"
+    correctness = json.loads(correctness_path.read_text(encoding="utf-8"))
+    correctness["quality_preservation"]["resample_count"] = 1
+    correctness_path.write_text(results._json_text(correctness), encoding="utf-8")
+    _reseal_bundle(bundle)
+
+    with pytest.raises(results.CrossoverResultsError, match="protocol"):
+        results.verify_bundle(bundle)
+    standalone_verify = runpy.run_path(str(bundle / "evidence_bundle.py"))["verify"]
+    with pytest.raises(ValueError, match="bootstrap execution count"):
         standalone_verify(bundle)
 
 
@@ -1085,6 +1130,43 @@ def test_censored_crossing_has_open_endpoints(tmp_path: Path) -> None:
     decision = by_id["fixed-token-count-crossover"]
     assert decision["state"] == "unsupported"
     assert decision["blockers"] == ["controlled_supported_crossing"]
+
+
+def test_resealed_no_crossing_supported_analysis_and_claim_tamper_is_rejected(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "bundle"
+    results.build_bundle(_workspace(tmp_path, censored=True), bundle)
+    analysis_path = bundle / "analysis.json"
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    controlled = analysis["controlled"]
+    controlled["simultaneous_band_sustained_crossing_request_count"] = 1
+    controlled["simultaneous_band_sustained_crossing"] = {
+        "state": "observed",
+        "request_count": 1,
+        "lower_bound": None,
+    }
+    controlled["supported_sustained_crossing"] = dict(
+        controlled["simultaneous_band_sustained_crossing"]
+    )
+    analysis_path.write_text(results._json_text(analysis), encoding="utf-8")
+    claims_path = bundle / "claim-matrix.json"
+    claims = json.loads(claims_path.read_text(encoding="utf-8"))
+    decision = next(
+        claim
+        for claim in claims["claims"]
+        if claim["claim_id"] == "fixed-token-count-crossover"
+    )
+    decision["state"] = "supported"
+    decision["blockers"] = []
+    claims_path.write_text(results._json_text(claims), encoding="utf-8")
+    _reseal_bundle(bundle)
+
+    with pytest.raises(results.CrossoverResultsError, match="analysis"):
+        results.verify_bundle(bundle)
+    standalone_verify = runpy.run_path(str(bundle / "evidence_bundle.py"))["verify"]
+    with pytest.raises(ValueError, match="analysis"):
+        standalone_verify(bundle)
 
 
 def test_private_output_is_refused(tmp_path: Path) -> None:
