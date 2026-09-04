@@ -951,7 +951,7 @@
       },
       "kind": "compile_break_even",
       "limitations": [
-        "The request-113 time crossing freezes and repeats observed outcomes with different output arrays, lengths, and correctness at ordinals 7, 8, 11, and 12.",
+        "The request-113 time crossing freezes and repeats observed outcomes. Output-token arrays and lengths differ at ordinals 7, 8, 11, and 12; correctness differs at ordinals 11 and 12.",
         "Compilation and CUDA graph component durations were not retained.",
         "Provider-reported spend and provisioning-to-boot cost are unavailable.",
         "The measured runner independently verified retained staging and prompt receipts, but did not rehash the live model or cross-check both receipt hashes before each cell.",

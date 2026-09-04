@@ -898,9 +898,9 @@ SOURCES: tuple[dict[str, Any], ...] = (
         ),
         "limitations": (
             (
-                "The request-113 time crossing freezes and repeats observed outcomes "
-                "with different output arrays, lengths, and correctness at ordinals "
-                "7, 8, 11, and 12."
+                "The request-113 time crossing freezes and repeats observed outcomes. "
+                "Output-token arrays and lengths differ at ordinals 7, 8, 11, and 12; "
+                "correctness differs at ordinals 11 and 12."
             ),
             "Compilation and CUDA graph component durations were not retained.",
             "Provider-reported spend and provisioning-to-boot cost are unavailable.",

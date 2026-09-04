@@ -9,12 +9,12 @@ PyTorch 2.13.0+cu130, CUDA 13.0, and Transformers 5.15.1.
 
 The compiled lifecycle did not cross the eager lifecycle time within the 12
 observed requests. Frozen exact-observed-outcome repeated-sequence time arithmetic
-crosses at request 113. It repeats the observed eager and compiled outcomes unchanged,
-including different output token arrays, lengths, and correctness at ordinals 7,
-8, 11, and 12. Eager produced 426 output tokens and compiled produced 444. The
-crossing is not observed, output-controlled, or a causal compilation speedup.
-There is no replicated or counterbalanced lifecycle and no fixed-output-token run.
-It does not establish general break-even.
+crosses at request 113. It repeats the observed eager and compiled outcomes unchanged.
+Output-token arrays and lengths differ at ordinals 7, 8, 11, and 12; correctness
+differs at ordinals 11 and 12. Eager produced 426 output tokens and compiled produced
+444. The crossing is not observed, output-controlled, or a causal compilation
+speedup. There is no replicated or counterbalanced lifecycle and no fixed-output-token
+run. It does not establish general break-even.
 
 Twenty-two of 24 responses passed their deterministic workload evaluators.
 Eager execution returned an incorrect `3.5` answer for both 16K prose requests;

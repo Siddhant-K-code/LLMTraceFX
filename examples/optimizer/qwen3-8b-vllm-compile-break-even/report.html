@@ -17,15 +17,16 @@
   Qwen/Qwen3-8B@b968826d9c46dd6066d109eabc6255188de91218, and one exact 12-request sequence in eager and
   compiled modes. Runtime: vLLM 0.28.0, Python 3.12, PyTorch 2.13.0+cu130,
   CUDA 13.0, and Transformers 5.15.1.
-  Per-cell live-model binding is limited as stated below. Modal and MLX results
-  are excluded from this ranking.</p>
+  Per-cell live-model binding is limited as stated below. Prior Modal attempts
+  produced no benchmark; MLX results are outside this comparison.</p>
   <p class="finding"><strong>No observed time crossing through request 12.</strong>
   Frozen exact-observed-outcome repeated-sequence time arithmetic crosses at
   request
   113.
   This is not an observed, output-controlled, causal, or general break-even.</p>
-  <p>The observed outputs differ at ordinals 7, 8, 11, and 12: eager produced
-  426 output tokens and compiled produced 444. Correctness was
+  <p>Output-token arrays and lengths differ at ordinals 7, 8, 11, and 12;
+  correctness differs at ordinals 11 and 12. Eager produced 426 output tokens
+  and compiled produced 444. Correctness was
   10 of 12 for eager and
   12 of 12 for compiled,
   or 22 of 24
@@ -43,15 +44,16 @@
   <p>The boot-to-console-termination list-rate lower bound is
   $0.484358.
   It excludes the unavailable provisioning-to-boot interval. Provider-reported
-  spend is unavailable, so the remaining-cap figure is only an upper bound.
-  Cleanup completed before OS shutdown was scheduled. OS shutdown was not
-  observed. Provider-console termination is an external user confirmation, not
-  an independently verified provider event.</p>
+  spend is unavailable. The
+  $4.515642 remaining
+  cap is an upper bound. Cleanup completed before the scheduled OS-shutdown time.
+  OS shutdown was not observed. Provider-console termination is an external user
+  confirmation, not an independently verified provider event.</p>
   <p>Collection limitation: the measured runner did not rehash the live model
   or cross-check both retained receipt hashes before each cell. No independent
   host receipt was retained for the fresh-container, cache-drop, timeout,
   bind-mount, network, or Docker image-inspection controls. The verifier checks
   committed metadata and hash consistency, not the underlying private GPU
-  identity or provider event. Prior Modal attempts produced no benchmark.</p>
+  identity or provider event.</p>
 </body>
 </html>

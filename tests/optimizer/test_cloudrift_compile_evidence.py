@@ -256,6 +256,8 @@ def test_correctness_and_output_identity_are_mode_specific() -> None:
         11,
         12,
     ]
+    break_even = load("break-even.json")
+    assert break_even["paired_correctness_mismatched_ordinals"] == [11, 12]
 
 
 def test_documented_verifier_command_works_in_isolated_interpreter(

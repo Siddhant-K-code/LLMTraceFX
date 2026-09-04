@@ -111,10 +111,11 @@ HOST_RECEIPT_LIMITATION = (
     "warmup requests, but not those additional host controls."
 )
 OUTPUT_DIVERGENCE_LIMITATION = (
-    "The request-113 time crossing freezes and repeats observed outcomes with "
-    "different output token arrays, lengths, and correctness at ordinals 7, 8, 11, "
-    "and 12. No replicated, counterbalanced, or fixed-output-token run exists, so "
-    "the crossing is not output-controlled, causal, or general."
+    "The request-113 time crossing freezes and repeats observed outcomes. "
+    "Output-token arrays and lengths differ at ordinals 7, 8, 11, and 12; "
+    "correctness differs at ordinals 11 and 12. No replicated, counterbalanced, "
+    "or fixed-output-token run exists, so the crossing is not output-controlled, "
+    "causal, or general."
 )
 REPRESENTATIVE_SAFE_COMMAND = [
     "timeout",
@@ -191,12 +192,12 @@ PyTorch 2.13.0+cu130, CUDA 13.0, and Transformers 5.15.1.
 
 The compiled lifecycle did not cross the eager lifecycle time within the 12
 observed requests. Frozen exact-observed-outcome repeated-sequence time arithmetic
-crosses at request 113. It repeats the observed eager and compiled outcomes unchanged,
-including different output token arrays, lengths, and correctness at ordinals 7,
-8, 11, and 12. Eager produced 426 output tokens and compiled produced 444. The
-crossing is not observed, output-controlled, or a causal compilation speedup.
-There is no replicated or counterbalanced lifecycle and no fixed-output-token run.
-It does not establish general break-even.
+crosses at request 113. It repeats the observed eager and compiled outcomes unchanged.
+Output-token arrays and lengths differ at ordinals 7, 8, 11, and 12; correctness
+differs at ordinals 11 and 12. Eager produced 426 output tokens and compiled produced
+444. The crossing is not observed, output-controlled, or a causal compilation
+speedup. There is no replicated or counterbalanced lifecycle and no fixed-output-token
+run. It does not establish general break-even.
 
 Twenty-two of 24 responses passed their deterministic workload evaluators.
 Eager execution returned an incorrect `3.5` answer for both 16K prose requests;
@@ -548,6 +549,20 @@ def _break_even(cells: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         )
         if eager_request["output_token_ids"] != compiled_request["output_token_ids"]
     ]
+    correctness_mismatches = [
+        eager_request["ordinal"]
+        for eager_request, compiled_request in zip(
+            eager["requests"], compiled["requests"], strict=True
+        )
+        if evaluate_workload(
+            workload_by_id(eager_request["workload_id"]),
+            eager_request["decoded_output"],
+        ).success
+        != evaluate_workload(
+            workload_by_id(compiled_request["workload_id"]),
+            compiled_request["decoded_output"],
+        ).success
+    ]
     cycle_saving = sum(savings)
     extrapolated: int | None = None
     if initialization_penalty <= 0:
@@ -576,15 +591,17 @@ def _break_even(cells: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             request["output_token_count"] for request in compiled["requests"]
         ),
         "paired_output_token_identity_mismatched_ordinals": output_mismatches,
+        "paired_correctness_mismatched_ordinals": correctness_mismatches,
         "modeled_frozen_observed_outcome_sequence_time_crossing_request_count": (
             extrapolated
         ),
         "output_controlled_comparison": False,
         "causal_compilation_speedup_claim_supported": False,
         "extrapolation_assumption": (
-            "The exact observed eager and compiled outcomes repeat unchanged, "
-            "including different output token arrays, lengths, and correctness at "
-            "ordinals 7, 8, 11, and 12; initialization occurs once per lifecycle."
+            "The exact observed eager and compiled outcomes repeat unchanged. "
+            "Output-token arrays and lengths differ at ordinals 7, 8, 11, and 12; "
+            "correctness differs at ordinals 11 and 12; initialization occurs once "
+            "per lifecycle."
         ),
         "provenance": {
             "observed": "derived",
@@ -631,15 +648,16 @@ def _render_report(
   Qwen/Qwen3-8B@{MODEL_REVISION}, and one exact 12-request sequence in eager and
   compiled modes. Runtime: vLLM 0.28.0, Python 3.12, PyTorch 2.13.0+cu130,
   CUDA 13.0, and Transformers 5.15.1.
-  Per-cell live-model binding is limited as stated below. Modal and MLX results
-  are excluded from this ranking.</p>
+  Per-cell live-model binding is limited as stated below. Prior Modal attempts
+  produced no benchmark; MLX results are outside this comparison.</p>
   <p class="finding"><strong>No observed time crossing through request 12.</strong>
   Frozen exact-observed-outcome repeated-sequence time arithmetic crosses at
   request
   {break_even['modeled_frozen_observed_outcome_sequence_time_crossing_request_count']}.
   This is not an observed, output-controlled, causal, or general break-even.</p>
-  <p>The observed outputs differ at ordinals 7, 8, 11, and 12: eager produced
-  426 output tokens and compiled produced 444. Correctness was
+  <p>Output-token arrays and lengths differ at ordinals 7, 8, 11, and 12;
+  correctness differs at ordinals 11 and 12. Eager produced 426 output tokens
+  and compiled produced 444. Correctness was
   {correctness['successful_requests_by_mode']['eager']} of 12 for eager and
   {correctness['successful_requests_by_mode']['compiled']} of 12 for compiled,
   or {correctness['successful_requests']} of {correctness['total_requests']}
@@ -657,16 +675,17 @@ def _render_report(
   <p>The boot-to-console-termination list-rate lower bound is
   ${cost['final_inferred_spend_through_console_termination_usd']}.
   It excludes the unavailable provisioning-to-boot interval. Provider-reported
-  spend is unavailable, so the remaining-cap figure is only an upper bound.
-  Cleanup completed before OS shutdown was scheduled. OS shutdown was not
-  observed. Provider-console termination is an external user confirmation, not
-  an independently verified provider event.</p>
+  spend is unavailable. The
+  ${cost['remaining_hard_cap_upper_bound_at_console_termination_usd']} remaining
+  cap is an upper bound. Cleanup completed before the scheduled OS-shutdown time.
+  OS shutdown was not observed. Provider-console termination is an external user
+  confirmation, not an independently verified provider event.</p>
   <p>Collection limitation: the measured runner did not rehash the live model
   or cross-check both retained receipt hashes before each cell. No independent
   host receipt was retained for the fresh-container, cache-drop, timeout,
   bind-mount, network, or Docker image-inspection controls. The verifier checks
   committed metadata and hash consistency, not the underlying private GPU
-  identity or provider event. Prior Modal attempts produced no benchmark.</p>
+  identity or provider event.</p>
 </body>
 </html>
 """
@@ -758,9 +777,9 @@ def _claim_matrix() -> dict[str, Any]:
                 "provenance": "derived",
                 "artifact": "break-even.json",
                 "limitation": (
-                    "Output token arrays, lengths, and correctness differ at "
-                    "ordinals 7, 8, 11, and 12; this is not causal or "
-                    "output-controlled."
+                    "Output-token arrays and lengths differ at ordinals 7, 8, 11, "
+                    "and 12; correctness differs at ordinals 11 and 12. This is not "
+                    "causal or output-controlled."
                 ),
             },
             {

@@ -9,7 +9,7 @@
     {
       "artifact": "break-even.json",
       "claim": "Frozen exact-observed-outcome repeated-sequence time arithmetic crosses at request 113.",
-      "limitation": "Output token arrays, lengths, and correctness differ at ordinals 7, 8, 11, and 12; this is not causal or output-controlled.",
+      "limitation": "Output-token arrays and lengths differ at ordinals 7, 8, 11, and 12; correctness differs at ordinals 11 and 12. This is not causal or output-controlled.",
       "provenance": "derived",
       "state": "modeled"
     },

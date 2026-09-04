@@ -80,12 +80,16 @@
   "eager_exact_cycle_request_latency_seconds": 22.86158994800053,
   "exact_cycle_latency_saving_seconds": 5.815559796000798,
   "exact_cycle_request_count": 12,
-  "extrapolation_assumption": "The exact observed eager and compiled outcomes repeat unchanged, including different output token arrays, lengths, and correctness at ordinals 7, 8, 11, and 12; initialization occurs once per lifecycle.",
+  "extrapolation_assumption": "The exact observed eager and compiled outcomes repeat unchanged. Output-token arrays and lengths differ at ordinals 7, 8, 11, and 12; correctness differs at ordinals 11 and 12; initialization occurs once per lifecycle.",
   "initialization_penalty_seconds": 54.543064,
   "modeled_frozen_observed_outcome_sequence_time_crossing_request_count": 113,
   "observed_break_even_request_count": null,
   "observed_lower_bound_request_count": 12,
   "output_controlled_comparison": false,
+  "paired_correctness_mismatched_ordinals": [
+    11,
+    12
+  ],
   "paired_output_token_identity_mismatched_ordinals": [
     7,
     8,

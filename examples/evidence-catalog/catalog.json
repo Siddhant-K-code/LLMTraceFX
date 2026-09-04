@@ -1,5 +1,5 @@
 {
-  "catalog_hash": "sha256:0609ada5bbe943606fdfc2750657e46998f008855486c822a893e9899bc00fdf",
+  "catalog_hash": "sha256:31062849a9ef988a1f5fbcf39abb39a7f2113162e4616be5cc5270f281bb2ce8",
   "claim_dimensions": [
     "timing",
     "quality",
@@ -440,7 +440,7 @@
       }
     },
     {
-      "artifact_set_hash": "sha256:67ad30e8da7e8dd7787a4df0f85158b0eb1237ace048897dc6857c2e8b80fc3f",
+      "artifact_set_hash": "sha256:4fe4c5521e21f23dc7c52f84aaa02fb51fe83513abe11dab9f966e4eabbe9d88",
       "budget": {
         "authorized_usd": 5.0,
         "inferred_usd": 0.484358,
@@ -494,7 +494,7 @@
       },
       "kind": "compile_break_even",
       "limitations": [
-        "The request-113 time crossing freezes and repeats observed outcomes with different output arrays, lengths, and correctness at ordinals 7, 8, 11, and 12.",
+        "The request-113 time crossing freezes and repeats observed outcomes. Output-token arrays and lengths differ at ordinals 7, 8, 11, and 12; correctness differs at ordinals 11 and 12.",
         "Compilation and CUDA graph component durations were not retained.",
         "Provider-reported spend and provisioning-to-boot cost are unavailable.",
         "The measured runner independently verified retained staging and prompt receipts, but did not rehash the live model or cross-check both receipt hashes before each cell.",
@@ -967,7 +967,7 @@
     "name": "llmtracefx-evidence",
     "version": "1"
   },
-  "registry_hash": "sha256:deec4646a298be3b6b6874fc265cd1a2bab7a9b205d4d3d13cebad0a228bf052",
+  "registry_hash": "sha256:c890bfb783125536886b228c6236b6acfceb73e40c510ab8e6b1b5655ead309e",
   "schema_version": "1",
   "unregistered_candidates": []
 }
