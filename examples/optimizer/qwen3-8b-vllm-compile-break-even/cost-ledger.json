@@ -13,7 +13,7 @@
   "os_shutdown_scheduled_at": "2026-09-03T16:34:57Z",
   "provider_reported_spend_usd": null,
   "rate_source": "user-observed CloudRift console screenshot",
-  "remaining_hard_cap_at_console_termination_usd": "4.515642",
+  "remaining_hard_cap_upper_bound_at_console_termination_usd": "4.515642",
   "schema_version": "1",
   "usd_per_hour": "0.390000",
   "vm_boot_at": "2026-09-03T15:34:29Z"

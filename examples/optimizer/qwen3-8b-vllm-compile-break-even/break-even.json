@@ -1,4 +1,7 @@
 {
+  "causal_compilation_speedup_claim_supported": false,
+  "compiled_exact_cycle_output_token_count": 444,
+  "compiled_exact_cycle_request_latency_seconds": 17.04603015199973,
   "cumulative_initialization_to_terminal": [
     {
       "compiled_minus_eager_seconds": 54.15205999999999,
@@ -73,16 +76,24 @@
       "request_count": 12
     }
   ],
+  "eager_exact_cycle_output_token_count": 426,
+  "eager_exact_cycle_request_latency_seconds": 22.86158994800053,
   "exact_cycle_latency_saving_seconds": 5.815559796000798,
   "exact_cycle_request_count": 12,
-  "extrapolation_assumption": "Exact ordered 12-request latency savings repeat unchanged; initialization occurs once per serving lifecycle.",
+  "extrapolation_assumption": "The exact observed eager and compiled outcomes repeat unchanged, including different output token arrays, lengths, and correctness at ordinals 7, 8, 11, and 12; initialization occurs once per lifecycle.",
   "initialization_penalty_seconds": 54.543064,
-  "modeled_repeated_cycle_break_even_cost_crossing_request_count": 113,
-  "modeled_repeated_cycle_break_even_request_count": 113,
+  "modeled_frozen_observed_outcome_sequence_time_crossing_request_count": 113,
   "observed_break_even_request_count": null,
   "observed_lower_bound_request_count": 12,
+  "output_controlled_comparison": false,
+  "paired_output_token_identity_mismatched_ordinals": [
+    7,
+    8,
+    11,
+    12
+  ],
   "provenance": {
-    "modeled_repeated_cycle": "derived",
+    "modeled_frozen_observed_outcome_sequence": "derived",
     "observed": "derived"
   },
   "schema_version": "1"

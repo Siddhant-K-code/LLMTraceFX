@@ -148,7 +148,7 @@ def test_verifier_rejects_resealed_generated_report_drift(tmp_path: Path) -> Non
     shutil.copytree(PUBLIC, bundle)
     report = bundle / "report.html"
     report.write_text(
-        report.read_text(encoding="utf-8").replace("113.</p>", "114.</p>"),
+        report.read_text(encoding="utf-8") + "<!-- drift -->\n",
         encoding="utf-8",
     )
     reseal(bundle)
@@ -170,23 +170,43 @@ def test_exact_two_cell_contract_and_break_even() -> None:
     assert contract["isolation"]["model_warmup_requests"] == 0
     assert result["observed_break_even_request_count"] is None
     assert result["observed_lower_bound_request_count"] == 12
-    assert result["modeled_repeated_cycle_break_even_request_count"] == 113
+    assert (
+        result["modeled_frozen_observed_outcome_sequence_time_crossing_request_count"]
+        == 113
+    )
+    assert result["eager_exact_cycle_output_token_count"] == 426
+    assert result["compiled_exact_cycle_output_token_count"] == 444
+    assert result["paired_output_token_identity_mismatched_ordinals"] == [
+        7,
+        8,
+        11,
+        12,
+    ]
+    assert result["output_controlled_comparison"] is False
+    assert result["causal_compilation_speedup_claim_supported"] is False
 
 
 def test_cost_scopes_and_teardown_are_not_overstated() -> None:
     cost = load("cost-ledger.json")
     teardown = load("teardown-report.json")
+    runtime = load("runtime-image.json")
 
     assert cost["inferred_spend_usd_through_scheduled_shutdown_boundary"] == "0.393033"
     assert cost["provider_reported_spend_usd"] is None
     assert cost["final_inferred_spend_through_console_termination_usd"] == "0.484358"
+    assert (
+        cost["remaining_hard_cap_upper_bound_at_console_termination_usd"] == "4.515642"
+    )
     assert teardown["experiment_containers_remaining"] == 0
     assert teardown["gpu_processes_remaining"] == 0
     assert teardown["temporary_public_key_removed"] is True
     assert teardown["os_shutdown_observed"] is None
     assert teardown["os_shutdown_observation_unavailable_reason"]
-    assert teardown["provider_console_termination_confirmed"] is True
+    assert teardown["provider_console_termination_user_confirmed"] is True
+    assert teardown["provider_console_event_independently_verified"] is False
     assert teardown["provider_console_terminated_at"] == "2026-09-03T22:19:00+05:30"
+    assert runtime["same_private_gpu_identity_attested"] is True
+    assert "same_private_gpu_identity_verified" not in runtime
 
 
 def test_all_requests_are_terminal_and_have_real_ttft() -> None:
@@ -238,10 +258,12 @@ def test_correctness_and_output_identity_are_mode_specific() -> None:
     ]
 
 
-def test_documented_verifier_command_works() -> None:
+def test_documented_verifier_command_works_in_isolated_interpreter(
+    tmp_path: Path,
+) -> None:
     completed = subprocess.run(
-        [sys.executable, str(PUBLIC / "evidence_bundle.py"), "verify"],
-        cwd=ROOT,
+        [sys.executable, "-I", str(PUBLIC / "evidence_bundle.py"), "verify"],
+        cwd=tmp_path,
         check=False,
         capture_output=True,
         text=True,

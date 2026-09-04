@@ -806,7 +806,7 @@ SOURCES: tuple[dict[str, Any], ...] = (
         },
         "workload": {
             "identity": "qwen3-8b-vllm-compile-break-even-v1",
-            "context": "2K, 8K, and 16K tiers; exact pinned token arrays",
+            "context": "2K, 8K, and 16K tiers; exact pinned input-token arrays",
             "request": "12 requests per cell; 96 maximum output tokens",
         },
         "measurements": (
@@ -851,20 +851,30 @@ SOURCES: tuple[dict[str, Any], ...] = (
             ),
         ),
         "supported_claims": (
-            "Compilation did not repay initialization through request 12.",
-            "Exact-sequence repeated-cycle extrapolation crosses at request 113.",
+            (
+                "The compiled lifecycle did not cross the eager lifecycle time "
+                "through request 12."
+            ),
+            (
+                "Frozen exact-observed-outcome repeated-sequence time arithmetic "
+                "crosses at request 113."
+            ),
             "Twenty-two of 24 bounded responses passed deterministic evaluation.",
             "Compiled output passed 12 of 12; eager output passed 10 of 12.",
             "Eight of 12 paired outputs had identical token IDs.",
             (
                 "Both ordered, non-overlapping cell processes completed and "
-                "reported the same private GPU identity."
+                "carried the same privacy-preserving run-time GPU attestation."
             ),
-            "The user confirmed provider console termination.",
+            "The user externally confirmed provider-console termination.",
         ),
         "unsupported_claims": (
-            "general break-even outside the retained workload and reported runtime",
+            (
+                "an output-controlled, causal, or general compilation break-even "
+                "outside the frozen observed outcomes"
+            ),
             "provider-reported spend or provisioning-to-boot cost",
+            "independent verification of the private GPU identity or provider event",
             "production readiness, SLA, power, energy, or bandwidth",
             "direct component timing for compilation or CUDA graph capture",
         ),
@@ -875,7 +885,9 @@ SOURCES: tuple[dict[str, Any], ...] = (
             "reported_usd": None,
             "inferred_usd": 0.484358,
             "limitation": (
-                "Provider spend and provisioning-to-boot duration are unavailable."
+                "Provider spend and provisioning-to-boot duration are unavailable; "
+                "the inferred spend is a lower bound and remaining cap is an upper "
+                "bound."
             ),
         },
         "dependencies": (
@@ -885,7 +897,11 @@ SOURCES: tuple[dict[str, Any], ...] = (
             },
         ),
         "limitations": (
-            "Break-even at request 113 is modeled from repeated exact-cycle savings.",
+            (
+                "The request-113 time crossing freezes and repeats observed outcomes "
+                "with different output arrays, lengths, and correctness at ordinals "
+                "7, 8, 11, and 12."
+            ),
             "Compilation and CUDA graph component durations were not retained.",
             "Provider-reported spend and provisioning-to-boot cost are unavailable.",
             (

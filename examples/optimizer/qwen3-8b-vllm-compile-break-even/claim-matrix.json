@@ -2,13 +2,14 @@
   "claims": [
     {
       "artifact": "break-even.json",
-      "claim": "Compilation did not break even through request 12.",
+      "claim": "The compiled lifecycle did not cross the eager lifecycle time through request 12.",
       "provenance": "derived",
       "state": "supported"
     },
     {
       "artifact": "break-even.json",
-      "claim": "The exact repeated cycle crosses at request 113.",
+      "claim": "Frozen exact-observed-outcome repeated-sequence time arithmetic crosses at request 113.",
+      "limitation": "Output token arrays, lengths, and correctness differ at ordinals 7, 8, 11, and 12; this is not causal or output-controlled.",
       "provenance": "derived",
       "state": "modeled"
     },
@@ -21,7 +22,7 @@
     {
       "artifact": "correctness-report.json",
       "claim": "Eight of 12 paired outputs had identical token IDs.",
-      "provenance": "model_reported",
+      "provenance": "derived",
       "state": "supported"
     },
     {
@@ -38,7 +39,8 @@
     },
     {
       "artifact": "teardown-report.json",
-      "claim": "CloudRift console termination is confirmed.",
+      "claim": "The user reported CloudRift console termination.",
+      "limitation": "The underlying provider event is not independently verifiable from the public bundle.",
       "provenance": "cloudrift_user_observed",
       "state": "supported"
     }

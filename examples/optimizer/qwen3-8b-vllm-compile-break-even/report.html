@@ -13,28 +13,45 @@
 </head>
 <body>
   <h1>Qwen3 8B vLLM compilation break-even</h1>
-  <p>Scope: one CloudRift RTX 4090 VM, one staged and hash-verified Qwen3 8B
-  revision, and one exact 12-request sequence in eager and compiled modes.
+  <p>Scope: one CloudRift RTX 4090 VM, exact model
+  Qwen/Qwen3-8B@b968826d9c46dd6066d109eabc6255188de91218, and one exact 12-request sequence in eager and
+  compiled modes. Runtime: vLLM 0.28.0, Python 3.12, PyTorch 2.13.0+cu130,
+  CUDA 13.0, and Transformers 5.15.1.
   Per-cell live-model binding is limited as stated below. Modal and MLX results
   are excluded from this ranking.</p>
-  <p class="finding"><strong>No observed break-even through request 12.</strong>
-  Repeating the exact sequence yields a modeled crossing at request
-  113.</p>
+  <p class="finding"><strong>No observed time crossing through request 12.</strong>
+  Frozen exact-observed-outcome repeated-sequence time arithmetic crosses at
+  request
+  113.
+  This is not an observed, output-controlled, causal, or general break-even.</p>
+  <p>The observed outputs differ at ordinals 7, 8, 11, and 12: eager produced
+  426 output tokens and compiled produced 444. Correctness was
+  10 of 12 for eager and
+  12 of 12 for compiled,
+  or 22 of 24
+  overall. Paired output-token arrays matched for
+  8 of 12 requests. No
+  replicated, counterbalanced, or fixed-output-token run exists.</p>
   <table>
-    <thead><tr><th>Mode</th><th>Initialization</th><th>Request phase</th><th>Host lifecycle</th><th>Peak GPU memory</th></tr></thead>
-    <tbody><tr><td>eager</td><td>64.600 s</td><td>23.018 s</td><td>132.293 s</td><td>23,707 MiB</td></tr><tr><td>compiled</td><td>119.143 s</td><td>17.189 s</td><td>175.954 s</td><td>21,951 MiB</td></tr></tbody>
+    <thead><tr><th>Mode</th><th>Initialization</th><th>Request-latency sum</th><th>Request-phase wall time (ready to cell end)</th><th>Host lifecycle</th><th>Peak GPU memory</th></tr></thead>
+    <tbody><tr><td>eager</td><td>64.600 s</td><td>22.862 s</td><td>23.018 s</td><td>132.293 s</td><td>23,707 MiB</td></tr><tr><td>compiled</td><td>119.143 s</td><td>17.046 s</td><td>17.189 s</td><td>175.954 s</td><td>21,951 MiB</td></tr></tbody>
   </table>
-  <p>Correct responses: 22 of
-  24. List-rate lower bound through the scheduled
-  shutdown boundary:
+  <p>Compilation and CUDA graph component timings are null because stable
+  component durations were not retained. The list-rate lower bound through the
+  scheduled shutdown boundary is
   $0.393033.</p>
-  <p>Boot-to-console-termination inferred spend:
+  <p>The boot-to-console-termination list-rate lower bound is
   $0.484358.
-  Provider-reported spend is unavailable. Provider-console termination was
-  confirmed by the user; OS shutdown was scheduled but not observed.</p>
+  It excludes the unavailable provisioning-to-boot interval. Provider-reported
+  spend is unavailable, so the remaining-cap figure is only an upper bound.
+  Cleanup completed before OS shutdown was scheduled. OS shutdown was not
+  observed. Provider-console termination is an external user confirmation, not
+  an independently verified provider event.</p>
   <p>Collection limitation: the measured runner did not rehash the live model
   or cross-check both retained receipt hashes before each cell. No independent
   host receipt was retained for the fresh-container, cache-drop, timeout,
-  bind-mount, network, or Docker image-inspection controls.</p>
+  bind-mount, network, or Docker image-inspection controls. The verifier checks
+  committed metadata and hash consistency, not the underlying private GPU
+  identity or provider event. Prior Modal attempts produced no benchmark.</p>
 </body>
 </html>

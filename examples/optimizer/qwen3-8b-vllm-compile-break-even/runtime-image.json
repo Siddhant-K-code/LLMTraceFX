@@ -16,6 +16,7 @@
     "typing_extensions_version": "4.15.0",
     "vllm_version": "0.28.0"
   },
-  "same_private_gpu_identity_verified": true,
+  "same_private_gpu_identity_attestation": "privacy-preserving run-time attestation; the underlying private identifier is not public",
+  "same_private_gpu_identity_attested": true,
   "schema_version": "1"
 }

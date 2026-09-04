@@ -9,11 +9,13 @@
   "os_shutdown_observed": null,
   "os_shutdown_scheduled": true,
   "provider_console_confirmation_provenance": "user confirmation relayed by the coordinator",
+  "provider_console_event_independently_verified": false,
   "provider_console_terminated_at": "2026-09-03T22:19:00+05:30",
-  "provider_console_termination_confirmed": true,
+  "provider_console_termination_user_confirmed": true,
+  "public_verifier_scope": "committed metadata and hash consistency only; the underlying provider event is not independently verified",
   "result_cache_removed": true,
   "runtime_images_removed": true,
   "schema_version": "1",
-  "status": "complete",
+  "status": "local_cleanup_complete_external_termination_user_confirmed",
   "temporary_public_key_removed": true
 }

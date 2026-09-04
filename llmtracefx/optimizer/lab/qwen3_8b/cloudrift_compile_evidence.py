@@ -110,6 +110,12 @@ HOST_RECEIPT_LIMITATION = (
     "controls. The public records prove ordered non-overlapping processes and no "
     "warmup requests, but not those additional host controls."
 )
+OUTPUT_DIVERGENCE_LIMITATION = (
+    "The request-113 time crossing freezes and repeats observed outcomes with "
+    "different output token arrays, lengths, and correctness at ordinals 7, 8, 11, "
+    "and 12. No replicated, counterbalanced, or fixed-output-token run exists, so "
+    "the crossing is not output-controlled, causal, or general."
+)
 REPRESENTATIVE_SAFE_COMMAND = [
     "timeout",
     "2700",
@@ -178,47 +184,61 @@ README = """# Qwen3 8B vLLM compilation break-even on CloudRift
 
 This bundle compares eager execution with vLLM compilation and CUDA graphs on
 one fixed CloudRift RTX 4090. Staging hash-verified the exact model revision.
-Both cells reported the same runtime package versions and matching token arrays,
-request order, and bounded generation settings. Per-cell model and image binding
-limitations are stated below.
+Both cells reported the same runtime package versions and matching input-token
+arrays, request order, and bounded generation settings. Per-cell model and image
+binding limitations are stated below. The runtime was vLLM 0.28.0, Python 3.12,
+PyTorch 2.13.0+cu130, CUDA 13.0, and Transformers 5.15.1.
 
-Compilation did not repay its initialization cost within the 12 observed
-requests. Repeating the exact request sequence without any other change yields
-a modeled crossing at request 113. That crossing is an extrapolation, not an
-observed request.
+The compiled lifecycle did not cross the eager lifecycle time within the 12
+observed requests. Frozen exact-observed-outcome repeated-sequence time arithmetic
+crosses at request 113. It repeats the observed eager and compiled outcomes unchanged,
+including different output token arrays, lengths, and correctness at ordinals 7,
+8, 11, and 12. Eager produced 426 output tokens and compiled produced 444. The
+crossing is not observed, output-controlled, or a causal compilation speedup.
+There is no replicated or counterbalanced lifecycle and no fixed-output-token run.
+It does not establish general break-even.
 
 Twenty-two of 24 responses passed their deterministic workload evaluators.
 Eager execution returned an incorrect `3.5` answer for both 16K prose requests;
 compiled execution returned correct answers for all 12 requests. Eight of 12
 paired outputs had identical token IDs. The boot-to-console-termination window
-implies $0.484358 at the observed list rate. This remains a lower bound because
-the provisioning-to-boot interval is unavailable. Provider-reported spend is
-unavailable. The experiment containers, GPU processes, model data, runtime
-images, result caches, and temporary public key were removed before the scheduled
-OS shutdown. OS shutdown itself was not observed. The user confirmed CloudRift
-console termination separately.
+implies a $0.484358 list-rate lower bound because the provisioning-to-boot
+interval is unavailable. Provider-reported spend is unavailable, so the
+$4.515642 remainder under the $5 cap is an upper bound, not an exact balance.
+The experiment containers, GPU processes, model data, runtime images, result
+caches, and temporary public key were removed before the scheduled OS shutdown.
+OS shutdown itself was not observed. The user externally confirmed CloudRift
+console termination. Prior Modal attempts produced no benchmark and are excluded.
 
 The collection runner verified the staging and prompt receipts independently.
 It did not rehash the live 16 GB model or cross-check the two receipt hashes
 before each measured cell.
-The public verifier binds the retained inventory, prompt arrays, and collection
-source, but this collection limitation cannot be retroactively removed.
+The public verifier binds the committed inventory, prompt arrays, collection
+source, metadata, and hashes. It does not independently verify the underlying
+private GPU identity or provider-console event, and these collection limitations
+cannot be retroactively removed.
 No independent host orchestration receipt was retained for the fresh-container,
 cache-drop, timeout-wrapper, bind-mount, network, or Docker image-inspection
 controls. The records prove ordered non-overlapping processes and no warmup
 requests, but those additional host controls remain unverified.
 
-Run `python evidence_bundle.py verify` from this directory to verify the closed
-file set, checksums, privacy rules, model and runtime pins, request contract,
-correctness, break-even arithmetic, cost scope, and teardown status.
+From a clean checkout, run `uv run python -I evidence_bundle.py verify` in this
+directory. The wrapper resolves the repository root before importing the verifier.
 """
 
 WRAPPER = '''"""Verify the committed CloudRift vLLM compilation evidence."""
 
+import importlib
 import sys
 from pathlib import Path
 
-from llmtracefx.optimizer.lab.qwen3_8b.cloudrift_compile_evidence import verify_bundle
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
+
+verify_bundle = importlib.import_module(
+    "llmtracefx.optimizer.lab.qwen3_8b.cloudrift_compile_evidence"
+).verify_bundle
 
 if __name__ == "__main__":
     if sys.argv[1:] != ["verify"]:
@@ -515,6 +535,19 @@ def _break_even(cells: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             eager["requests"], compiled["requests"], strict=True
         )
     ]
+    eager_cycle_seconds = sum(
+        request["latency_seconds"] for request in eager["requests"]
+    )
+    compiled_cycle_seconds = sum(
+        request["latency_seconds"] for request in compiled["requests"]
+    )
+    output_mismatches = [
+        eager_request["ordinal"]
+        for eager_request, compiled_request in zip(
+            eager["requests"], compiled["requests"], strict=True
+        )
+        if eager_request["output_token_ids"] != compiled_request["output_token_ids"]
+    ]
     cycle_saving = sum(savings)
     extrapolated: int | None = None
     if initialization_penalty <= 0:
@@ -533,16 +566,29 @@ def _break_even(cells: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "cumulative_initialization_to_terminal": cumulative,
         "initialization_penalty_seconds": initialization_penalty,
         "exact_cycle_request_count": 12,
+        "eager_exact_cycle_request_latency_seconds": eager_cycle_seconds,
+        "compiled_exact_cycle_request_latency_seconds": compiled_cycle_seconds,
         "exact_cycle_latency_saving_seconds": cycle_saving,
-        "modeled_repeated_cycle_break_even_request_count": extrapolated,
-        "modeled_repeated_cycle_break_even_cost_crossing_request_count": extrapolated,
+        "eager_exact_cycle_output_token_count": sum(
+            request["output_token_count"] for request in eager["requests"]
+        ),
+        "compiled_exact_cycle_output_token_count": sum(
+            request["output_token_count"] for request in compiled["requests"]
+        ),
+        "paired_output_token_identity_mismatched_ordinals": output_mismatches,
+        "modeled_frozen_observed_outcome_sequence_time_crossing_request_count": (
+            extrapolated
+        ),
+        "output_controlled_comparison": False,
+        "causal_compilation_speedup_claim_supported": False,
         "extrapolation_assumption": (
-            "Exact ordered 12-request latency savings repeat unchanged; "
-            "initialization occurs once per serving lifecycle."
+            "The exact observed eager and compiled outcomes repeat unchanged, "
+            "including different output token arrays, lengths, and correctness at "
+            "ordinals 7, 8, 11, and 12; initialization occurs once per lifecycle."
         ),
         "provenance": {
             "observed": "derived",
-            "modeled_repeated_cycle": "derived",
+            "modeled_frozen_observed_outcome_sequence": "derived",
         },
     }
 
@@ -555,10 +601,12 @@ def _render_report(
 ) -> str:
     rows = []
     for record in lifecycle:
+        mode = str(record["mode"])
         rows.append(
             "<tr>"
-            f"<td>{html.escape(str(record['mode']))}</td>"
+            f"<td>{html.escape(mode)}</td>"
             f"<td>{record['initialization_seconds']:.3f} s</td>"
+            f"<td>{break_even[f'{mode}_exact_cycle_request_latency_seconds']:.3f} s</td>"
             f"<td>{record['request_phase_seconds']:.3f} s</td>"
             f"<td>{record['host_lifecycle_seconds']:.3f} s</td>"
             f"<td>{record['peak_gpu_memory_mib']:,} MiB</td>"
@@ -579,29 +627,46 @@ def _render_report(
 </head>
 <body>
   <h1>Qwen3 8B vLLM compilation break-even</h1>
-  <p>Scope: one CloudRift RTX 4090 VM, one staged and hash-verified Qwen3 8B
-  revision, and one exact 12-request sequence in eager and compiled modes.
+  <p>Scope: one CloudRift RTX 4090 VM, exact model
+  Qwen/Qwen3-8B@{MODEL_REVISION}, and one exact 12-request sequence in eager and
+  compiled modes. Runtime: vLLM 0.28.0, Python 3.12, PyTorch 2.13.0+cu130,
+  CUDA 13.0, and Transformers 5.15.1.
   Per-cell live-model binding is limited as stated below. Modal and MLX results
   are excluded from this ranking.</p>
-  <p class="finding"><strong>No observed break-even through request 12.</strong>
-  Repeating the exact sequence yields a modeled crossing at request
-  {break_even['modeled_repeated_cycle_break_even_request_count']}.</p>
+  <p class="finding"><strong>No observed time crossing through request 12.</strong>
+  Frozen exact-observed-outcome repeated-sequence time arithmetic crosses at
+  request
+  {break_even['modeled_frozen_observed_outcome_sequence_time_crossing_request_count']}.
+  This is not an observed, output-controlled, causal, or general break-even.</p>
+  <p>The observed outputs differ at ordinals 7, 8, 11, and 12: eager produced
+  426 output tokens and compiled produced 444. Correctness was
+  {correctness['successful_requests_by_mode']['eager']} of 12 for eager and
+  {correctness['successful_requests_by_mode']['compiled']} of 12 for compiled,
+  or {correctness['successful_requests']} of {correctness['total_requests']}
+  overall. Paired output-token arrays matched for
+  {correctness['paired_output_token_identity_matches']} of 12 requests. No
+  replicated, counterbalanced, or fixed-output-token run exists.</p>
   <table>
-    <thead><tr><th>Mode</th><th>Initialization</th><th>Request phase</th><th>Host lifecycle</th><th>Peak GPU memory</th></tr></thead>
+    <thead><tr><th>Mode</th><th>Initialization</th><th>Request-latency sum</th><th>Request-phase wall time (ready to cell end)</th><th>Host lifecycle</th><th>Peak GPU memory</th></tr></thead>
     <tbody>{''.join(rows)}</tbody>
   </table>
-  <p>Correct responses: {correctness['successful_requests']} of
-  {correctness['total_requests']}. List-rate lower bound through the scheduled
-  shutdown boundary:
+  <p>Compilation and CUDA graph component timings are null because stable
+  component durations were not retained. The list-rate lower bound through the
+  scheduled shutdown boundary is
   ${cost['inferred_spend_usd_through_scheduled_shutdown_boundary']}.</p>
-  <p>Boot-to-console-termination inferred spend:
+  <p>The boot-to-console-termination list-rate lower bound is
   ${cost['final_inferred_spend_through_console_termination_usd']}.
-  Provider-reported spend is unavailable. Provider-console termination was
-  confirmed by the user; OS shutdown was scheduled but not observed.</p>
+  It excludes the unavailable provisioning-to-boot interval. Provider-reported
+  spend is unavailable, so the remaining-cap figure is only an upper bound.
+  Cleanup completed before OS shutdown was scheduled. OS shutdown was not
+  observed. Provider-console termination is an external user confirmation, not
+  an independently verified provider event.</p>
   <p>Collection limitation: the measured runner did not rehash the live model
   or cross-check both retained receipt hashes before each cell. No independent
   host receipt was retained for the fresh-container, cache-drop, timeout,
-  bind-mount, network, or Docker image-inspection controls.</p>
+  bind-mount, network, or Docker image-inspection controls. The verifier checks
+  committed metadata and hash consistency, not the underlying private GPU
+  identity or provider event. Prior Modal attempts produced no benchmark.</p>
 </body>
 </html>
 """
@@ -660,7 +725,7 @@ def _cost_ledger() -> dict[str, Any]:
         ),
         "hard_cap_usd": "5.000000",
         "eight_hour_cutoff_cost_usd": "3.120000",
-        "remaining_hard_cap_at_console_termination_usd": (
+        "remaining_hard_cap_upper_bound_at_console_termination_usd": (
             f"{HARD_CAP_USD - console_inferred:.6f}"
         ),
         "credits_treated_as_zero_spend": False,
@@ -676,16 +741,27 @@ def _claim_matrix() -> dict[str, Any]:
         "schema_version": "1",
         "claims": [
             {
-                "claim": "Compilation did not break even through request 12.",
+                "claim": (
+                    "The compiled lifecycle did not cross the eager lifecycle time "
+                    "through request 12."
+                ),
                 "state": "supported",
                 "provenance": "derived",
                 "artifact": "break-even.json",
             },
             {
-                "claim": "The exact repeated cycle crosses at request 113.",
+                "claim": (
+                    "Frozen exact-observed-outcome repeated-sequence time "
+                    "arithmetic crosses at request 113."
+                ),
                 "state": "modeled",
                 "provenance": "derived",
                 "artifact": "break-even.json",
+                "limitation": (
+                    "Output token arrays, lengths, and correctness differ at "
+                    "ordinals 7, 8, 11, and 12; this is not causal or "
+                    "output-controlled."
+                ),
             },
             {
                 "claim": "Twenty-two of 24 bounded responses passed evaluation.",
@@ -696,7 +772,7 @@ def _claim_matrix() -> dict[str, Any]:
             {
                 "claim": "Eight of 12 paired outputs had identical token IDs.",
                 "state": "supported",
-                "provenance": "model_reported",
+                "provenance": "derived",
                 "artifact": "correctness-report.json",
             },
             {
@@ -712,10 +788,14 @@ def _claim_matrix() -> dict[str, Any]:
                 "artifact": "cost-ledger.json",
             },
             {
-                "claim": "CloudRift console termination is confirmed.",
+                "claim": "The user reported CloudRift console termination.",
                 "state": "supported",
                 "provenance": "cloudrift_user_observed",
                 "artifact": "teardown-report.json",
+                "limitation": (
+                    "The underlying provider event is not independently verifiable "
+                    "from the public bundle."
+                ),
             },
         ],
     }
@@ -794,6 +874,7 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
                 "and remain null."
             ),
             HOST_RECEIPT_LIMITATION,
+            OUTPUT_DIVERGENCE_LIMITATION,
         ],
     }
     pricing = {
@@ -834,7 +915,11 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
         "gpu": "NVIDIA GeForce RTX 4090",
         "gpu_memory_mib": 24564,
         "driver_version": "580.159.03",
-        "same_private_gpu_identity_verified": True,
+        "same_private_gpu_identity_attested": True,
+        "same_private_gpu_identity_attestation": (
+            "privacy-preserving run-time attestation; the underlying private "
+            "identifier is not public"
+        ),
         "derived_image_id_verification": (
             "runner-reported constant; independent Docker image-inspection receipt "
             "not retained"
@@ -879,12 +964,17 @@ def build_bundle(raw_dir: Path, output_dir: Path) -> None:
             "The temporary key was removed before the scheduled shutdown, so "
             "subsequent SSH failure cannot distinguish shutdown from denied access."
         ),
-        "provider_console_termination_confirmed": True,
+        "provider_console_termination_user_confirmed": True,
+        "provider_console_event_independently_verified": False,
         "provider_console_terminated_at": CONSOLE_TERMINATED_AT,
         "provider_console_confirmation_provenance": (
             "user confirmation relayed by the coordinator"
         ),
-        "status": "complete",
+        "public_verifier_scope": (
+            "committed metadata and hash consistency only; the underlying provider "
+            "event is not independently verified"
+        ),
+        "status": "local_cleanup_complete_external_termination_user_confirmed",
     }
     claims = _claim_matrix()
     for name, value in (
@@ -1034,6 +1124,7 @@ def verify_bundle(root: Path) -> None:
                 "and remain null."
             ),
             HOST_RECEIPT_LIMITATION,
+            OUTPUT_DIVERGENCE_LIMITATION,
         ]
         or contract["isolation"]
         != {
@@ -1238,10 +1329,17 @@ def verify_bundle(root: Path) -> None:
     if (
         break_even["observed_break_even_request_count"] is not None
         or break_even["observed_lower_bound_request_count"] != 12
-        or break_even["modeled_repeated_cycle_break_even_request_count"] != 113
-        or break_even["modeled_repeated_cycle_break_even_cost_crossing_request_count"]
+        or break_even[
+            "modeled_frozen_observed_outcome_sequence_time_crossing_request_count"
+        ]
         != 113
         or break_even["initialization_penalty_seconds"] != 54.543064
+        or break_even["eager_exact_cycle_output_token_count"] != 426
+        or break_even["compiled_exact_cycle_output_token_count"] != 444
+        or break_even["paired_output_token_identity_mismatched_ordinals"]
+        != [7, 8, 11, 12]
+        or break_even["output_controlled_comparison"] is not False
+        or break_even["causal_compilation_speedup_claim_supported"] is not False
     ):
         raise CloudRiftEvidenceError("headline break-even result drifted")
     cost = _read_json(root / "cost-ledger.json")
@@ -1259,13 +1357,20 @@ def verify_bundle(root: Path) -> None:
         or not teardown["os_shutdown_scheduled"]
         or teardown["os_shutdown_observed"] is not None
         or not teardown["os_shutdown_observation_unavailable_reason"]
-        or not teardown["provider_console_termination_confirmed"]
+        or not teardown["provider_console_termination_user_confirmed"]
+        or teardown["provider_console_event_independently_verified"] is not False
         or teardown["provider_console_terminated_at"] != CONSOLE_TERMINATED_AT
         or teardown["capture_sha256"] != EXPECTED_TEARDOWN_CAPTURE_SHA256
         or teardown["cleanup_ended_at"] != "2026-09-03T16:33:57Z"
         or teardown["provider_console_confirmation_provenance"]
         != "user confirmation relayed by the coordinator"
-        or teardown["status"] != "complete"
+        or teardown["public_verifier_scope"]
+        != (
+            "committed metadata and hash consistency only; the underlying provider "
+            "event is not independently verified"
+        )
+        or teardown["status"]
+        != "local_cleanup_complete_external_termination_user_confirmed"
     ):
         raise CloudRiftEvidenceError("teardown status is invalid")
     for item in lifecycle:
@@ -1285,7 +1390,11 @@ def verify_bundle(root: Path) -> None:
         "gpu": "NVIDIA GeForce RTX 4090",
         "gpu_memory_mib": 24564,
         "driver_version": "580.159.03",
-        "same_private_gpu_identity_verified": True,
+        "same_private_gpu_identity_attested": True,
+        "same_private_gpu_identity_attestation": (
+            "privacy-preserving run-time attestation; the underlying private "
+            "identifier is not public"
+        ),
         "derived_image_id_verification": (
             "runner-reported constant; independent Docker image-inspection receipt "
             "not retained"
