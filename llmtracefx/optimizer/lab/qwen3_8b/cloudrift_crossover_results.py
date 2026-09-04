@@ -1066,21 +1066,6 @@ def _observed_request_mean(
     return sum(float(item["value"]) for item in measurements) / len(measurements)
 
 
-def _available_request_mean(
-    requests: Sequence[Mapping[str, Any]],
-    *,
-    container: str,
-    metric: str,
-) -> float | None:
-    values = [
-        float(measurement["value"])
-        for request in requests
-        if (measurement := request[container][metric])["observability_state"]
-        == "observed"
-    ]
-    return sum(values) / len(values) if values else None
-
-
 def _compute_pair_effects(
     eager: Mapping[str, Any],
     compiled: Mapping[str, Any],
@@ -1133,12 +1118,12 @@ def _compute_pair_effects(
                 else None
             ),
         )
-    eager_rate = _available_request_mean(
+    eager_rate = _observed_request_mean(
         eager_requests,
         container="timing",
         metric="output_token_rate_tokens_per_second",
     )
-    compiled_rate = _available_request_mean(
+    compiled_rate = _observed_request_mean(
         compiled_requests,
         container="timing",
         metric="output_token_rate_tokens_per_second",
@@ -1151,7 +1136,7 @@ def _compute_pair_effects(
             else compiled_rate - eager_rate
         ),
         null_reason=(
-            "no_observed_request_rates_in_eager_or_compiled_cell"
+            "not_all_requests_observed_in_both_cells"
             if eager_rate is None or compiled_rate is None
             else None
         ),
@@ -1181,12 +1166,72 @@ def _compute_pair_effects(
 def _validate_public_pair_curves(
     pair_records: Sequence[Mapping[str, Any]],
     requests_by_cell: Mapping[str, Sequence[Mapping[str, Any]]],
+    schedule: Sequence[Mapping[str, Any]],
 ) -> None:
+    expected_pairs: list[dict[str, Any]] = []
+    for lane in core.LANES:
+        for pair_index in range(1, core.PAIRS_PER_LANE + 1):
+            pair_cells = [
+                cell
+                for cell in schedule
+                if cell["lane"] == lane and cell["pair_index"] == pair_index
+            ]
+            if (
+                len(pair_cells) != 2
+                or abs(schedule.index(pair_cells[0]) - schedule.index(pair_cells[1]))
+                != 1
+                or {cell["mode"] for cell in pair_cells} != {"eager", "compiled"}
+                or len({cell["pair_id"] for cell in pair_cells}) != 1
+                or len({cell["order"] for cell in pair_cells}) != 1
+            ):
+                raise CrossoverResultsError(
+                    "canonical lifecycle pair schedule is invalid"
+                )
+            by_mode = {cell["mode"]: cell for cell in pair_cells}
+            expected_pairs.append(
+                {
+                    "lane": lane,
+                    "pair_index": pair_index,
+                    "pair_id": pair_cells[0]["pair_id"],
+                    "order": pair_cells[0]["order"],
+                    "cell_ids_in_execution_order": [
+                        cell["cell_id"] for cell in pair_cells
+                    ],
+                    "eager": by_mode["eager"],
+                    "compiled": by_mode["compiled"],
+                }
+            )
+    if len(pair_records) != len(expected_pairs):
+        raise CrossoverResultsError("public lifecycle pair inventory differs")
+    expected_cell_ids = {cell["cell_id"] for cell in schedule}
+    if set(requests_by_cell) != expected_cell_ids:
+        raise CrossoverResultsError("public request cell inventory differs")
     seen_cells: set[str] = set()
-    for pair in pair_records:
+    for pair, expected in zip(pair_records, expected_pairs, strict=True):
+        for field in (
+            "lane",
+            "pair_index",
+            "pair_id",
+            "order",
+            "cell_ids_in_execution_order",
+        ):
+            if pair.get(field) != expected[field]:
+                raise CrossoverResultsError(
+                    "public lifecycle pair canonical binding differs"
+                )
         for mode in ("eager", "compiled"):
             cell = pair[mode]
+            expected_cell = expected[mode]
             cell_id = cell["cell_id"]
+            if (
+                cell_id != expected_cell["cell_id"]
+                or cell.get("mode") != mode
+                or cell.get("period_index") != expected_cell["period_index"]
+                or cell.get("terminal") is not True
+            ):
+                raise CrossoverResultsError(
+                    "public lifecycle cell canonical binding differs"
+                )
             if cell_id in seen_cells:
                 raise CrossoverResultsError(
                     "public lifecycle cell appears more than once"
@@ -1196,6 +1241,16 @@ def _validate_public_pair_curves(
                 requests_by_cell[cell_id],
                 key=lambda request: request["request_sequence_index"],
             )
+            if len(requests) != expected_cell["requests_per_cell"] or any(
+                request.get("cell_id") != cell_id
+                or request.get("lane") != expected["lane"]
+                or request.get("mode") != mode
+                or request.get("pair_id") != expected["pair_id"]
+                for request in requests
+            ):
+                raise CrossoverResultsError(
+                    "public request canonical role binding differs"
+                )
             if [request["request_sequence_index"] for request in requests] != list(
                 range(1, len(requests) + 1)
             ):
@@ -1360,7 +1415,7 @@ def _claim_matrix_document(
         natural_supported_speedup=analysis["controlled"]["natural_timing"][
             "speedup_supported"
         ],
-        natural_correctness=(
+        natural_absolute_correctness=(
             natural_all_correct and quality_preservation["noninferiority_supported"]
         ),
         component_observability=component_observability,
@@ -2482,6 +2537,7 @@ def _render_svg(analysis: Mapping[str, Any]) -> str:
 
 def _render_report(data: Mapping[str, Any]) -> str:
     controlled = data["analysis"]["controlled"]
+    natural_timing = controlled["natural_timing"]
     quality = data["correctness"]["quality_preservation"]
     claims = data["claims"]["claims"]
     rows = "".join(
@@ -2516,7 +2572,8 @@ def _render_report(data: Mapping[str, Any]) -> str:
 <style>body{{font:15px/1.5 system-ui,sans-serif;max-width:980px;margin:2rem auto;padding:0 1rem;color:#182230}}table{{border-collapse:collapse;width:100%}}th,td{{border-bottom:1px solid #d0d5dd;padding:.5rem;text-align:left}}</style></head>
 <body><h1>Completed Qwen3-8B vLLM crossover</h1>
 <p>Sixteen adjacent eager/compiled lifecycle pairs were completed. The controlled analysis resampled {BOOTSTRAP_RESAMPLES:,} whole pairs and never requests.</p>
-<p>Aggregate sustained crossing: {html.escape(crossing)}.</p>
+<p>Supported sustained crossing: {html.escape(crossing)}. Basis: {html.escape(controlled["supported_crossing_basis"])}. Terminal sign-symmetry p-value: {controlled["terminal_effect_sign_flip_p_value"]:.6f}.</p>
+<p>Natural timing mean compiled-minus-eager terminal effect: {natural_timing["mean_terminal_compiled_minus_eager_seconds"]:.6f} seconds; 95% whole-pair percentile interval [{natural_timing["lower_confidence_endpoint_seconds"]:.6f}, {natural_timing["upper_confidence_endpoint_seconds"]:.6f}]. Causal eligibility: {str(natural_timing["causal_claim_eligible"]).lower()}; causal speedup supported: {str(natural_timing["speedup_supported"]).lower()}.</p>
 <p>Natural quality {quality_summary}. Noninferiority supported: {str(quality["noninferiority_supported"]).lower()}.</p>
 <img src="crossover.svg" alt="Controlled cumulative crossover curve">
 <h2>Claim matrix</h2><table><thead><tr><th>Claim</th><th>State</th><th>Blockers</th></tr></thead><tbody>{rows}</tbody></table>
@@ -2532,6 +2589,7 @@ from pathlib import Path
 BOOTSTRAP_RESAMPLES = __BOOTSTRAP_RESAMPLES__
 CONTROLLED_SIGN_SYMMETRY_ALPHA = __CONTROLLED_SIGN_SYMMETRY_ALPHA__
 CLAIM_REQUIREMENTS = __CLAIM_REQUIREMENTS__
+CANONICAL_SCHEDULE = __CANONICAL_SCHEDULE__
 SUPPORTED_CROSSING_BASIS = "simultaneous_upper_band_sustained_crossing_observed_and_terminal_effect_sign_symmetry_p_value_at_most_0.05"
 FILES = {"SHA256SUMS","analysis.json","budget-teardown.json","claim-matrix.json","correctness.json","crossover.svg","evidence_bundle.py","lifecycle-pairs.json","protocol.json","provenance-null-matrix.json","report.html","request-records.jsonl"}
 HASHED = sorted(FILES-{"SHA256SUMS"})
@@ -2663,9 +2721,9 @@ def full_analysis(pair_records,resamples,natural_identical):
     natural_rng=random.Random(20260905); natural_bootstrap=[sum(natural_effects[natural_rng.randrange(len(natural_effects))] for _ in natural_effects)/len(natural_effects) for _ in range(BOOTSTRAP_RESAMPLES)]; natural_mean=sum(natural_effects)/len(natural_effects); natural_lower=quantile(natural_bootstrap,.025); natural_upper=quantile(natural_bootstrap,.975); natural_supported=natural_identical and natural_mean<0 and natural_upper<=0
     result["natural_timing"]={"causal_claim_eligible":natural_identical,"pair_terminal_compiled_minus_eager_seconds":natural_effects,"mean_terminal_compiled_minus_eager_seconds":natural_mean,"analysis_seed":20260905,"resample_count":BOOTSTRAP_RESAMPLES,"bootstrap_unit":"whole_lifecycle_pair","request_level_resampling":False,"lower_confidence_endpoint_seconds":natural_lower,"upper_confidence_endpoint_seconds":natural_upper,"speedup_supported":natural_supported,"causal_claim_blocker":None if natural_identical else "natural_outputs_differ_across_modes_or_lifecycles"}
     return {"schema_version":"1","controlled":result,"pair_effect_distributions":effect_distributions(pair_records)}
-def claim_matrix(analysis,controlled_identity,natural_identity,natural_correctness,component_observable):
+def claim_matrix(analysis,controlled_identity,natural_identity,natural_absolute_correctness,component_observable):
     controlled=analysis["controlled"]
-    flags={"terminal":True,"completeness":True,"fixed_count":True,"controlled_supported_crossing":controlled["simultaneous_band_sustained_crossing_request_count"] is not None and controlled["terminal_effect_sign_flip_p_value"]<=CONTROLLED_SIGN_SYMMETRY_ALPHA,"controlled_output_identity":controlled_identity["cross_mode_pair_outputs_identical"],"controlled_numeric_reproducibility":controlled_identity["within_mode_lifecycles_identical"],"natural_output_identity":natural_identity["cross_mode_pair_outputs_identical"],"natural_numeric_reproducibility":natural_identity["within_mode_lifecycles_identical"],"natural_supported_speedup":analysis["controlled"]["natural_timing"]["speedup_supported"],"natural_correctness":natural_correctness,"component_observability":component_observable}
+    flags={"terminal":True,"completeness":True,"fixed_count":True,"controlled_supported_crossing":controlled["simultaneous_band_sustained_crossing_request_count"] is not None and controlled["terminal_effect_sign_flip_p_value"]<=CONTROLLED_SIGN_SYMMETRY_ALPHA,"controlled_output_identity":controlled_identity["cross_mode_pair_outputs_identical"],"controlled_numeric_reproducibility":controlled_identity["within_mode_lifecycles_identical"],"natural_output_identity":natural_identity["cross_mode_pair_outputs_identical"],"natural_numeric_reproducibility":natural_identity["within_mode_lifecycles_identical"],"natural_supported_speedup":analysis["controlled"]["natural_timing"]["speedup_supported"],"natural_absolute_correctness":natural_absolute_correctness,"component_observability":component_observable}
     requirements=CLAIM_REQUIREMENTS.items()
     claims=[]
     for claim_id,required in requirements:
@@ -2687,7 +2745,7 @@ def verify(root):
     quality=docs["correctness.json"]["quality_preservation"]
     hardware=protocol["hardware_observations"]
     authentication=protocol["authorization_authentication"]; sha=re.compile(r"^sha256:[0-9a-f]{64}$")
-    if len(protocol["schedule"])!=32 or len(pairs["pairs"])!=16 or protocol["bindings_verified"]["progress_receipts"] is not True or hardware["observation_count"]!=65 or hardware["compute_capability"]!="8.9" or hardware["maximum_baseline_memory_used_mib"]>2048 or hardware["maximum_idle_temperature_c"]>80 or hardware["maximum_idle_utilization_percent"]>5 or set(authentication)!={"mechanism","namespace","signer_identity","signature_sha256","authorized_signers_sha256","verified"} or authentication["mechanism"]!="openssh_detached_signature" or authentication["namespace"]!="llmtracefx-vllm-crossover-authorization-v1" or authentication["signer_identity"]!="vllm-crossover-coordinator" or not sha.fullmatch(authentication["signature_sha256"]) or not sha.fullmatch(authentication["authorized_signers_sha256"]) or authentication["verified"] is not True: raise ValueError("protocol cardinality, authentication, or hardware evidence differs")
+    if protocol["schedule"]!=CANONICAL_SCHEDULE or len(pairs["pairs"])!=16 or protocol["bindings_verified"]["progress_receipts"] is not True or hardware["observation_count"]!=65 or hardware["compute_capability"]!="8.9" or hardware["maximum_baseline_memory_used_mib"]>2048 or hardware["maximum_idle_temperature_c"]>80 or hardware["maximum_idle_utilization_percent"]>5 or set(authentication)!={"mechanism","namespace","signer_identity","signature_sha256","authorized_signers_sha256","verified"} or authentication["mechanism"]!="openssh_detached_signature" or authentication["namespace"]!="llmtracefx-vllm-crossover-authorization-v1" or authentication["signer_identity"]!="vllm-crossover-coordinator" or not sha.fullmatch(authentication["signature_sha256"]) or not sha.fullmatch(authentication["authorized_signers_sha256"]) or authentication["verified"] is not True: raise ValueError("protocol cardinality, authentication, or hardware evidence differs")
     if protocol["analysis"]["bootstrap_resamples"]!=BOOTSTRAP_RESAMPLES or protocol["quality_preservation"]["executed_resamples"]!=BOOTSTRAP_RESAMPLES or quality["resample_count"]!=BOOTSTRAP_RESAMPLES: raise ValueError("bootstrap execution count differs")
     requests=[]
     for line in (root/"request-records.jsonl").read_text(encoding="utf-8").splitlines():
@@ -2699,8 +2757,21 @@ def verify(root):
     for item in requests: requests_by_cell.setdefault(item["cell_id"],[]).append(item)
     for cell_requests in requests_by_cell.values(): cell_requests.sort(key=lambda request:request["request_sequence_index"])
     effect_units={"initialization":"seconds","host_lifecycle":"seconds","request_phase":"seconds","cumulative_init_to_terminal":"seconds","mean_ttft":"seconds","mean_prefill":"seconds","mean_decode":"seconds","mean_output_rate":"tokens_per_second","peak_gpu_memory":"MiB"}
-    if sum(p["lane"]=="controlled" for p in pairs["pairs"])!=8 or sum(p["lane"]=="natural" for p in pairs["pairs"])!=8: raise ValueError("pair lane cardinality differs")
-    for pair in pairs["pairs"]:
+    expected_pairs=[]
+    for lane in ("controlled","natural"):
+        for pair_index in range(1,9):
+            cells=[cell for cell in CANONICAL_SCHEDULE if cell["lane"]==lane and cell["pair_index"]==pair_index]
+            if len(cells)!=2 or abs(CANONICAL_SCHEDULE.index(cells[0])-CANONICAL_SCHEDULE.index(cells[1]))!=1 or {cell["mode"] for cell in cells}!={"eager","compiled"} or len({cell["pair_id"] for cell in cells})!=1 or len({cell["order"] for cell in cells})!=1: raise ValueError("canonical pair schedule invalid")
+            by_mode={cell["mode"]:cell for cell in cells}
+            expected_pairs.append({"lane":lane,"pair_index":pair_index,"pair_id":cells[0]["pair_id"],"order":cells[0]["order"],"cell_ids_in_execution_order":[cell["cell_id"] for cell in cells],"eager":by_mode["eager"],"compiled":by_mode["compiled"]})
+    if len(pairs["pairs"])!=len(expected_pairs) or set(requests_by_cell)!={cell["cell_id"] for cell in CANONICAL_SCHEDULE}: raise ValueError("canonical pair or request inventory differs")
+    for pair,expected_pair in zip(pairs["pairs"],expected_pairs):
+        if any(pair.get(field)!=expected_pair[field] for field in ("lane","pair_index","pair_id","order","cell_ids_in_execution_order")): raise ValueError("pair canonical binding differs")
+        for mode in ("eager","compiled"):
+            cell=pair[mode]; expected_cell=expected_pair[mode]
+            if cell["cell_id"]!=expected_cell["cell_id"] or cell.get("mode")!=mode or cell.get("period_index")!=expected_cell["period_index"] or cell.get("terminal") is not True: raise ValueError("cell canonical binding differs")
+            cell_requests=requests_by_cell[cell["cell_id"]]
+            if len(cell_requests)!=expected_cell["requests_per_cell"] or any(request.get("cell_id")!=cell["cell_id"] or request.get("lane")!=expected_pair["lane"] or request.get("mode")!=mode or request.get("pair_id")!=expected_pair["pair_id"] for request in cell_requests): raise ValueError("request canonical role binding differs")
         eager=pair["eager"]; compiled=pair["compiled"]; eager_requests=requests_by_cell[eager["cell_id"]]; compiled_requests=requests_by_cell[compiled["cell_id"]]; effects=pair["pair_effects"]
         for cell,cell_requests in ((eager,eager_requests),(compiled,compiled_requests)):
             if [request["request_sequence_index"] for request in cell_requests]!=list(range(1,len(cell_requests)+1)): raise ValueError("request sequence differs")
@@ -2716,8 +2787,8 @@ def verify(root):
             eager_values=[r["metrics"][request_metric] for r in eager_requests]; compiled_values=[r["metrics"][request_metric] for r in compiled_requests]; observed=all(v["observability_state"]=="observed" for v in eager_values+compiled_values)
             expected=(sum(v["value"] for v in compiled_values)/len(compiled_values)-sum(v["value"] for v in eager_values)/len(eager_values)) if observed else None
             if (expected is None and (effects[metric]["value"] is not None or effects[metric]["null_reason"] is None)) or (expected is not None and (effects[metric]["null_reason"] is not None or not math.isclose(effects[metric]["value"],expected,abs_tol=1e-12))): raise ValueError("request metric pair effect differs")
-        eager_rates=[r["timing"]["output_token_rate_tokens_per_second"] for r in eager_requests if r["timing"]["output_token_rate_tokens_per_second"]["observability_state"]=="observed"]; compiled_rates=[r["timing"]["output_token_rate_tokens_per_second"] for r in compiled_requests if r["timing"]["output_token_rate_tokens_per_second"]["observability_state"]=="observed"]
-        expected_rate=(sum(v["value"] for v in compiled_rates)/len(compiled_rates)-sum(v["value"] for v in eager_rates)/len(eager_rates)) if eager_rates and compiled_rates else None
+        eager_rates=[r["timing"]["output_token_rate_tokens_per_second"] for r in eager_requests]; compiled_rates=[r["timing"]["output_token_rate_tokens_per_second"] for r in compiled_requests]; rates_observed=all(v["observability_state"]=="observed" for v in eager_rates+compiled_rates)
+        expected_rate=(sum(v["value"] for v in compiled_rates)/len(compiled_rates)-sum(v["value"] for v in eager_rates)/len(eager_rates)) if rates_observed else None
         if (expected_rate is None and (effects["mean_output_rate"]["value"] is not None or effects["mean_output_rate"]["null_reason"] is None)) or (expected_rate is not None and (effects["mean_output_rate"]["null_reason"] is not None or not math.isclose(effects["mean_output_rate"]["value"],expected_rate,abs_tol=1e-12))): raise ValueError("output rate pair effect differs")
         eager_peak=eager["measurements"]["peak_gpu_memory_mib"]; compiled_peak=compiled["measurements"]["peak_gpu_memory_mib"]; peak_observed=eager_peak["observability_state"]=="observed" and compiled_peak["observability_state"]=="observed"; expected_peak=compiled_peak["value"]-eager_peak["value"] if peak_observed else None
         if (expected_peak is None and (effects["peak_gpu_memory"]["value"] is not None or effects["peak_gpu_memory"]["null_reason"] is None)) or (expected_peak is not None and (effects["peak_gpu_memory"]["null_reason"] is not None or not math.isclose(effects["peak_gpu_memory"]["value"],expected_peak,abs_tol=1e-12))): raise ValueError("peak memory pair effect differs")
@@ -2811,6 +2882,10 @@ def _documents(data: Mapping[str, Any]) -> dict[str, bytes]:
                         for claim_id, requirements in core.CLAIM_REQUIREMENTS.items()
                     }
                 ),
+            )
+            .replace(
+                "__CANONICAL_SCHEDULE__",
+                repr([cell.to_dict() for cell in data["plan"].schedule]),
             )
             .encode()
         ),
@@ -2997,7 +3072,9 @@ def verify_bundle(bundle_dir: Path) -> None:
         cell_requests.sort(key=lambda request: request["request_sequence_index"])
     pair_records = pairs["pairs"]
     try:
-        _validate_public_pair_curves(pair_records, requests_by_cell)
+        _validate_public_pair_curves(
+            pair_records, requests_by_cell, protocol["schedule"]
+        )
     except CrossoverResultsError:
         raise
     except (KeyError, TypeError, ValueError) as exc:

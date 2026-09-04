@@ -856,13 +856,13 @@
         "completeness",
         "natural_output_identity",
         "natural_numeric_reproducibility",
-        "natural_correctness",
+        "natural_absolute_correctness",
         "natural_supported_speedup"
       ],
       "natural-output-quality-preserved": [
         "terminal",
         "completeness",
-        "natural_correctness"
+        "natural_absolute_correctness"
       ],
       "numerically-reproducible-generation-crossover": [
         "terminal",
@@ -1033,7 +1033,7 @@
       "missing_observation_is_not_zero": true,
       "null_requires_explicit_reason": true
     },
-    "plan_sha256": "sha256:6ce57c3cef1ed7ea559520f783708866731c2026666370a005cdbdd026f4667d",
+    "plan_sha256": "sha256:af7e7591d17dde8bf43bc5720d8c01c40275f51b08b8ce89aee46f3a785bfa12",
     "protocol_id": "qwen3-8b-vllm-crossover-v2",
     "provenance_policy": {
       "canonical_json_only": true,
@@ -1105,15 +1105,16 @@
     "sample_stopping_rule": {
       "bootstrap_resamples": 20000,
       "bootstrap_unit": "whole_pair",
+      "controlled_small_sample_limitation": "The controlled nonparametric simultaneous band uses eight lifecycle pairs and may under-cover; controlled claim support also requires the sign-symmetry test.",
       "controlled_support_rule": "The simultaneous upper-band sustained crossing is observed and the terminal-effect sign-symmetry permutation p-value is at most 0.05.",
       "crossover_analysis_lane": "controlled",
       "curve_length": 144,
       "first_crossing_rule": "The first request ordinal where compiled_minus_eager cumulative time is less than or equal to zero.",
+      "natural_small_sample_limitation": "The natural timing and nondegenerate quality percentile bootstraps use eight lifecycle pairs, have no sign-symmetry backstop, and may under-cover.",
       "natural_timing_support_rule": "Correct, identical, reproducible natural outputs; negative mean terminal compiled-minus-eager effect; and a whole-pair 95% percentile-bootstrap upper endpoint less than or equal to zero.",
       "pair_count": 8,
       "sign_flip_enumerations": 256,
       "sign_flip_semantics": "Exhaustive sign-symmetry permutation test; not randomized assignment inference and assumes pair effects are sign-symmetric.",
-      "small_sample_limitation": "The nonparametric simultaneous band uses eight lifecycle pairs and may under-cover; supported claims also require the sign-symmetry test.",
       "sustained_crossing_rule": "The first request ordinal where compiled_minus_eager cumulative time is less than or equal to zero for that request and every later request; otherwise the pair is right censored at 144 requests."
     },
     "schedule": [

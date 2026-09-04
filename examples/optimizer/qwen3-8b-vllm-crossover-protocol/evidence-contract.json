@@ -1,9 +1,10 @@
 {
   "bootstrap": {
+    "controlled_small_sample_limitation": "The eight-pair simultaneous band may under-cover; controlled claim support also requires the terminal sign-symmetry test.",
+    "natural_small_sample_limitation": "Natural timing and nondegenerate quality percentile bootstraps use eight pairs, have no sign-symmetry backstop, and may under-cover.",
     "request_level_resampling": false,
     "resamples": 20000,
     "simultaneous_curve_band": true,
-    "small_sample_limitation": "Eight-pair nonparametric simultaneous bands may under-cover; claim support also requires the terminal sign-symmetry test.",
     "unit": "whole_pair"
   },
   "captured_at": "2026-09-04T14:41:34.327+05:30",
@@ -24,13 +25,13 @@
       "completeness",
       "natural_output_identity",
       "natural_numeric_reproducibility",
-      "natural_correctness",
+      "natural_absolute_correctness",
       "natural_supported_speedup"
     ],
     "natural-output-quality-preserved": [
       "terminal",
       "completeness",
-      "natural_correctness"
+      "natural_absolute_correctness"
     ],
     "numerically-reproducible-generation-crossover": [
       "terminal",

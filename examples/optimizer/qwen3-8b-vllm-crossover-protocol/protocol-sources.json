@@ -1,9 +1,9 @@
 {
   "files": [
     {
-      "bytes": 80538,
+      "bytes": 80841,
       "path": "llmtracefx/optimizer/lab/qwen3_8b/vllm_compile.py",
-      "sha256": "sha256:5c6e0d808a8fa5639e758770b90192bb43e7a7ce0ef6ceec9ab1a578efb99774"
+      "sha256": "sha256:a3e1a7e949af8eb147c25d6ba2ad5ad6655fae9ed87f36ae11d15b249bab71ea"
     },
     {
       "bytes": 44191,
@@ -16,17 +16,17 @@
       "sha256": "sha256:2910aa436fb89bfb90559ca2ce1d2d3d6364889bc3b409181eee12988435e639"
     },
     {
-      "bytes": 25303,
+      "bytes": 25548,
       "path": "llmtracefx/optimizer/lab/qwen3_8b/cloudrift_crossover_evidence.py",
-      "sha256": "sha256:db9ae55928f4198affe1de5e6ba5c91ac757f83c72b8fedef39242a163273c53"
+      "sha256": "sha256:018715b12728ddcfa7e0efc5028b79f8a17706b9fc2e53e3f85a637988ce70a7"
     },
     {
-      "bytes": 155783,
+      "bytes": 161118,
       "path": "llmtracefx/optimizer/lab/qwen3_8b/cloudrift_crossover_results.py",
-      "sha256": "sha256:dba7143d114d527ae5179cb7391d133ce98de73daa1ea0bdee769a58af0e0f5d"
+      "sha256": "sha256:f6f12e23275b70088bc0911acfd4960d16e61bf89c0db32b9330c8db5855c257"
     }
   ],
   "implementation_base_head": "266b42bc7659b3ab147f199f293bfc033324f763",
   "schema_version": "1",
-  "source_set_sha256": "sha256:694ba7c696e1cc9de820a2d4d7381c1d4a0f209286e704eb4f617c8823dbe8be"
+  "source_set_sha256": "sha256:c32c175d60d52454c40705fb59441a775b73f411e1dd7a28f71d3f489cea2dfd"
 }

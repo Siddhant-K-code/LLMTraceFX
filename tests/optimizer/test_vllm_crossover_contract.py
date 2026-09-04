@@ -559,7 +559,7 @@ def test_claim_gate_is_mechanical_and_blocks_forward_pass_identity() -> None:
         controlled_numeric_reproducibility=True,
         natural_output_identity=True,
         natural_numeric_reproducibility=True,
-        natural_correctness=True,
+        natural_absolute_correctness=True,
         natural_supported_speedup=True,
         component_observability=False,
     )
@@ -584,7 +584,7 @@ def test_claim_gate_is_mechanical_and_blocks_forward_pass_identity() -> None:
         controlled_numeric_reproducibility=False,
         natural_output_identity=False,
         natural_numeric_reproducibility=False,
-        natural_correctness=False,
+        natural_absolute_correctness=False,
         natural_supported_speedup=False,
         component_observability=False,
     )
@@ -594,7 +594,7 @@ def test_claim_gate_is_mechanical_and_blocks_forward_pass_identity() -> None:
         "completeness",
         "natural_output_identity",
         "natural_numeric_reproducibility",
-        "natural_correctness",
+        "natural_absolute_correctness",
         "natural_supported_speedup",
     )
     with pytest.raises(crossover.VLLMCompileContractError, match="unknown claim_id"):

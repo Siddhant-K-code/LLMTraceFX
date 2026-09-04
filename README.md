@@ -178,6 +178,10 @@ requires correct, identical, reproducible outputs and a whole-pair timing
 interval whose upper endpoint is nonpositive. Identical lifecycle-pair quality
 effects are reported as deterministic observed agreement, not as a zero-width
 confidence interval.
+All bootstrap procedures use only eight independent lifecycle pairs and may
+under-cover; controlled crossover support additionally requires the exhaustive
+sign-symmetry permutation gate, while natural timing and nondegenerate quality
+intervals have no such backstop.
 
 ### Tune within one target
 

@@ -298,9 +298,13 @@ def _contract(plan: Mapping[str, Any]) -> dict[str, Any]:
             "resamples": BOOTSTRAP_RESAMPLES,
             "simultaneous_curve_band": True,
             "request_level_resampling": False,
-            "small_sample_limitation": (
-                "Eight-pair nonparametric simultaneous bands may under-cover; "
+            "controlled_small_sample_limitation": (
+                "The eight-pair simultaneous band may under-cover; controlled "
                 "claim support also requires the terminal sign-symmetry test."
+            ),
+            "natural_small_sample_limitation": (
+                "Natural timing and nondegenerate quality percentile bootstraps "
+                "use eight pairs, have no sign-symmetry backstop, and may under-cover."
             ),
         },
         "sign_flip_enumerations": SIGN_FLIP_ENUMERATIONS,

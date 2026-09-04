@@ -246,9 +246,14 @@ _SAMPLE_STOPPING_RULE = {
         "compiled-minus-eager effect; and a whole-pair 95% percentile-bootstrap "
         "upper endpoint less than or equal to zero."
     ),
-    "small_sample_limitation": (
-        "The nonparametric simultaneous band uses eight lifecycle pairs and may "
-        "under-cover; supported claims also require the sign-symmetry test."
+    "controlled_small_sample_limitation": (
+        "The controlled nonparametric simultaneous band uses eight lifecycle "
+        "pairs and may under-cover; controlled claim support also requires the "
+        "sign-symmetry test."
+    ),
+    "natural_small_sample_limitation": (
+        "The natural timing and nondegenerate quality percentile bootstraps use "
+        "eight lifecycle pairs, have no sign-symmetry backstop, and may under-cover."
     ),
 }
 
@@ -278,14 +283,14 @@ CLAIM_REQUIREMENTS = {
     "natural-output-quality-preserved": (
         "terminal",
         "completeness",
-        "natural_correctness",
+        "natural_absolute_correctness",
     ),
     "natural-end-to-end-causal-speedup": (
         "terminal",
         "completeness",
         "natural_output_identity",
         "natural_numeric_reproducibility",
-        "natural_correctness",
+        "natural_absolute_correctness",
         "natural_supported_speedup",
     ),
     "compile-cuda-graph-component-timing": (
@@ -2023,7 +2028,7 @@ class ClaimGate:
     controlled_numeric_reproducibility: bool
     natural_output_identity: bool
     natural_numeric_reproducibility: bool
-    natural_correctness: bool
+    natural_absolute_correctness: bool
     natural_supported_speedup: bool
     component_observability: bool
 
@@ -2039,7 +2044,7 @@ class ClaimGate:
             ),
             "natural_output_identity": self.natural_output_identity,
             "natural_numeric_reproducibility": self.natural_numeric_reproducibility,
-            "natural_correctness": self.natural_correctness,
+            "natural_absolute_correctness": self.natural_absolute_correctness,
             "natural_supported_speedup": self.natural_supported_speedup,
             "component_observability": self.component_observability,
         }

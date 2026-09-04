@@ -622,6 +622,38 @@ def test_successful_bundle_is_deterministic_and_verifies(tmp_path: Path) -> None
     assert first_effects["mean_prefill"]["value"] is None
     assert first_effects["mean_decode"]["value"] is None
     assert first_effects["mean_output_rate"]["null_reason"] is None
+    request_records = [
+        json.loads(line)
+        for line in (first / "request-records.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    eager_id = pairs["pairs"][0]["eager"]["cell_id"]
+    compiled_id = pairs["pairs"][0]["compiled"]["cell_id"]
+    eager_requests = [
+        request for request in request_records if request["cell_id"] == eager_id
+    ]
+    compiled_requests = [
+        request for request in request_records if request["cell_id"] == compiled_id
+    ]
+    eager_requests[0]["timing"]["output_token_rate_tokens_per_second"].update(
+        {
+            "value": None,
+            "observability_state": "unobservable",
+            "null_reason": "test_unobserved_rate",
+        }
+    )
+    all_or_nothing_effects = results._compute_pair_effects(
+        pairs["pairs"][0]["eager"],
+        pairs["pairs"][0]["compiled"],
+        eager_requests,
+        compiled_requests,
+    )
+    assert all_or_nothing_effects["mean_output_rate"]["value"] is None
+    assert (
+        all_or_nothing_effects["mean_output_rate"]["null_reason"]
+        == "not_all_requests_observed_in_both_cells"
+    )
     memory_series = pairs["pairs"][0]["compiled"]["measurements"]["gpu_memory_series"]
     assert memory_series["clock_domain"] == "same_process_perf_counter_offset_ns"
     assert memory_series["value"][-1]["memory_used_mib"] == 2048
@@ -638,6 +670,12 @@ def test_successful_bundle_is_deterministic_and_verifies(tmp_path: Path) -> None
         "observability_state": "observed",
         "null_reason": None,
     }
+    report = (first / "report.html").read_text(encoding="utf-8")
+    assert "Supported sustained crossing:" in report
+    assert "Terminal sign-symmetry p-value:" in report
+    assert "Natural timing mean compiled-minus-eager terminal effect:" in report
+    assert "95% whole-pair percentile interval" in report
+    assert "Causal eligibility:" in report
     provenance = json.loads(
         (first / "provenance-null-matrix.json").read_text(encoding="utf-8")
     )
@@ -764,6 +802,33 @@ def _reseal_bundle(bundle: Path) -> None:
         for name in results.HASHED_FILES
     )
     (bundle / "SHA256SUMS").write_text(sums + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize("tamper", ["mode_slot_swap", "cross_pair_cell_swap"])
+def test_resealed_pair_role_swap_is_rejected(tmp_path: Path, tamper: str) -> None:
+    bundle = tmp_path / "bundle"
+    results.build_bundle(_workspace(tmp_path), bundle)
+    pairs_path = bundle / "lifecycle-pairs.json"
+    document = json.loads(pairs_path.read_text(encoding="utf-8"))
+    pair_records = document["pairs"]
+    if tamper == "mode_slot_swap":
+        pair_records[0]["eager"], pair_records[0]["compiled"] = (
+            pair_records[0]["compiled"],
+            pair_records[0]["eager"],
+        )
+    else:
+        pair_records[0]["eager"], pair_records[1]["eager"] = (
+            pair_records[1]["eager"],
+            pair_records[0]["eager"],
+        )
+    pairs_path.write_text(results._json_text(document), encoding="utf-8")
+    _reseal_bundle(bundle)
+
+    with pytest.raises(results.CrossoverResultsError, match="canonical binding"):
+        results.verify_bundle(bundle)
+    standalone_verify = runpy.run_path(str(bundle / "evidence_bundle.py"))["verify"]
+    with pytest.raises(ValueError, match="canonical binding"):
+        standalone_verify(bundle)
 
 
 @pytest.mark.parametrize("tamper", ["decoded_output", "success"])
@@ -1234,12 +1299,12 @@ def test_natural_claim_requires_correctness_and_quality_preservation(
     assert by_id["natural-output-quality-preserved"] == {
         "claim_id": "natural-output-quality-preserved",
         "state": "unsupported",
-        "blockers": ["natural_correctness"],
+        "blockers": ["natural_absolute_correctness"],
     }
     assert by_id["natural-end-to-end-causal-speedup"] == {
         "claim_id": "natural-end-to-end-causal-speedup",
         "state": "unsupported",
-        "blockers": ["natural_correctness"],
+        "blockers": ["natural_absolute_correctness"],
     }
     results.verify_bundle(bundle)
     runpy.run_path(str(bundle / "evidence_bundle.py"))["verify"](bundle)
@@ -1341,19 +1406,15 @@ def test_controlled_crossing_also_requires_sign_symmetry_support(
     for compiled_request, eager_request in zip(
         compiled_receipt["requests"], eager_receipt["requests"], strict=True
     ):
-        eager_ns = eager_request["timing"][
-            "cumulative_from_initialization_perf_counter_ns"
-        ]
-        compiled_ns = compiled_request["timing"][
-            "cumulative_from_initialization_perf_counter_ns"
-        ]
+        compiled_timing = compiled_request["timing"]
+        cumulative_key = "cumulative_from_initialization_perf_counter_ns"
+        eager_ns = eager_request["timing"][cumulative_key]
+        compiled_ns = compiled_timing[cumulative_key]
         new_ns = 2 * eager_ns - compiled_ns + 900_000_000
-        compiled_request["timing"][
-            "cumulative_from_initialization_perf_counter_ns"
-        ] = new_ns
-        compiled_request["timing"]["cumulative_from_initialization_seconds"][
-            "value"
-        ] = (new_ns / 1_000_000_000)
+        compiled_timing[cumulative_key] = new_ns
+        compiled_timing["cumulative_from_initialization_seconds"]["value"] = (
+            new_ns / 1_000_000_000
+        )
     compiled_receipt.pop("cell_sha256")
     compiled_receipt["cell_sha256"] = results._sha256_json(compiled_receipt)
     compiled_path.write_text(json.dumps(compiled_receipt), encoding="utf-8")
