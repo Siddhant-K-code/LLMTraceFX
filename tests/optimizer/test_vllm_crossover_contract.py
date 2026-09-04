@@ -213,12 +213,16 @@ def test_default_plan_is_strict_offline_and_rejects_drift() -> None:
         "independent_unit": "adjacent eager-compiled lifecycle pair",
         "effect": "compiled_minus_eager_request_success_rate",
         "noninferiority_margin": "0",
-        "confidence_method": "deterministic_whole_pair_percentile_bootstrap",
+        "inference_method": (
+            "deterministic whole-pair percentile bootstrap unless every pair "
+            "effect is identical; identical effects are reported as a "
+            "deterministic observed-workload fact without CI endpoints"
+        ),
         "confidence_level": "0.95",
         "resamples": 20_000,
         "support_rule": (
-            "lower_confidence_endpoint_greater_than_or_equal_to_"
-            "negative_noninferiority_margin"
+            "lower confidence endpoint >= negative margin; when all pair effects "
+            "are identical, the shared deterministic effect >= negative margin"
         ),
     }
 
@@ -556,6 +560,7 @@ def test_claim_gate_is_mechanical_and_blocks_forward_pass_identity() -> None:
         natural_output_identity=True,
         natural_numeric_reproducibility=True,
         natural_correctness=True,
+        natural_supported_speedup=True,
         component_observability=False,
     )
     states = {decision.claim_id: decision.state for decision in gate.matrix()}
@@ -580,8 +585,17 @@ def test_claim_gate_is_mechanical_and_blocks_forward_pass_identity() -> None:
         natural_output_identity=False,
         natural_numeric_reproducibility=False,
         natural_correctness=False,
+        natural_supported_speedup=False,
         component_observability=False,
     )
     assert degraded.evaluate("forward-pass-identical").state == "not_applicable"
+    assert degraded.evaluate("natural-end-to-end-causal-speedup").blockers == (
+        "terminal",
+        "completeness",
+        "natural_output_identity",
+        "natural_numeric_reproducibility",
+        "natural_correctness",
+        "natural_supported_speedup",
+    )
     with pytest.raises(crossover.VLLMCompileContractError, match="unknown claim_id"):
         degraded.evaluate("impossible-claim")

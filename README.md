@@ -171,6 +171,13 @@ Only a fully completed 32-cell workspace can be published with
 builder revalidates lifecycle, hardware, prompt, output, correctness, budget,
 and teardown evidence; it resamples whole lifecycle pairs and preserves
 unobservable request/compile fields as explicit nulls.
+Serving cumulative time is model initialization plus measured request
+durations; inter-request progress-receipt I/O is excluded and remains visible
+only in host lifecycle time. A natural-lane causal-speedup claim additionally
+requires correct, identical, reproducible outputs and a whole-pair timing
+interval whose upper endpoint is nonpositive. Identical lifecycle-pair quality
+effects are reported as deterministic observed agreement, not as a zero-width
+confidence interval.
 
 ### Tune within one target
 

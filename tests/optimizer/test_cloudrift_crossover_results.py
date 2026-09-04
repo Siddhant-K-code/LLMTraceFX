@@ -548,11 +548,10 @@ def _mutate_request(
             value  # type: ignore[arg-type]
         )
         latency = receipt["requests"][0]["timing"]["latency_seconds"]["value"]
+        output_rate = len(value) / latency  # type: ignore[arg-type]
         receipt["requests"][0]["timing"]["output_token_rate_tokens_per_second"][
             "value"
-        ] = (
-            len(value) / latency
-        )  # type: ignore[arg-type]
+        ] = output_rate
     receipt.pop("cell_sha256")
     receipt["cell_sha256"] = results._sha256_json(receipt)
     path.write_text(json.dumps(receipt), encoding="utf-8")
@@ -848,6 +847,98 @@ def test_resealed_bootstrap_count_downgrade_is_rejected(tmp_path: Path) -> None:
         standalone_verify(bundle)
 
 
+@pytest.mark.parametrize("forgery", ["controlled_derived", "natural_difference"])
+def test_resealed_pair_curve_forgery_is_rejected(tmp_path: Path, forgery: str) -> None:
+    bundle = tmp_path / "bundle"
+    results.build_bundle(_workspace(tmp_path), bundle)
+    pairs_path = bundle / "lifecycle-pairs.json"
+    pair_document = json.loads(pairs_path.read_text(encoding="utf-8"))
+    pair_records = pair_document["pairs"]
+    if forgery == "controlled_derived":
+        pair = next(item for item in pair_records if item["lane"] == "controlled")
+        pair["compiled"]["cumulative_seconds"] = [
+            value + 0.25 for value in pair["compiled"]["cumulative_seconds"]
+        ]
+        pair["compiled_minus_eager_seconds"] = [
+            compiled - eager
+            for eager, compiled in zip(
+                pair["eager"]["cumulative_seconds"],
+                pair["compiled"]["cumulative_seconds"],
+                strict=True,
+            )
+        ]
+        requests = [
+            json.loads(line)
+            for line in (bundle / "request-records.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        requests_by_cell: dict[str, list[dict]] = {}
+        for request in requests:
+            requests_by_cell.setdefault(request["cell_id"], []).append(request)
+        pair["pair_effects"] = results._compute_pair_effects(
+            pair["eager"],
+            pair["compiled"],
+            requests_by_cell[pair["eager"]["cell_id"]],
+            requests_by_cell[pair["compiled"]["cell_id"]],
+        )
+        plan = core.build_default_plan()
+        controlled_identity = results._identity_summary(
+            plan.schedule, requests_by_cell, "controlled"
+        )
+        natural_identity = results._identity_summary(
+            plan.schedule, requests_by_cell, "natural"
+        )
+        curves = [
+            core.PairCurve(
+                pair_id=item["pair_id"],
+                order=item["order"],
+                eager_cumulative=tuple(item["eager"]["cumulative_seconds"]),
+                compiled_cumulative=tuple(item["compiled"]["cumulative_seconds"]),
+            )
+            for item in pair_records
+            if item["lane"] == "controlled"
+        ]
+        analysis = results._analysis_document(
+            curves,
+            natural_identity=natural_identity["all_corresponding_outputs_identical"],
+            natural_terminal_effects=[
+                item["compiled_minus_eager_seconds"][-1]
+                for item in pair_records
+                if item["lane"] == "natural"
+            ],
+            pair_records=pair_records,
+        )
+        (bundle / "analysis.json").write_text(
+            results._json_text(analysis), encoding="utf-8"
+        )
+        correctness = json.loads(
+            (bundle / "correctness.json").read_text(encoding="utf-8")
+        )
+        claims = results._claim_matrix_document(
+            analysis=analysis,
+            controlled_identity=controlled_identity,
+            natural_identity=natural_identity,
+            natural_all_correct=correctness["natural_all_correct"],
+            quality_preservation=correctness["quality_preservation"],
+            component_observability=results._component_observability(pair_records),
+        )
+        (bundle / "claim-matrix.json").write_text(
+            results._json_text(claims), encoding="utf-8"
+        )
+    else:
+        pair = next(item for item in pair_records if item["lane"] == "natural")
+        pair["compiled_minus_eager_seconds"][-1] += 0.25
+    pairs_path.write_text(results._json_text(pair_document), encoding="utf-8")
+    _reseal_bundle(bundle)
+
+    with pytest.raises(results.CrossoverResultsError, match="curve"):
+        results.verify_bundle(bundle)
+    standalone_verify = runpy.run_path(str(bundle / "evidence_bundle.py"))["verify"]
+    with pytest.raises(ValueError, match="curve"):
+        standalone_verify(bundle)
+
+
 def test_missing_terminal_cell_is_rejected_before_publication(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     next((workspace / "raw").iterdir()).unlink()
@@ -976,11 +1067,18 @@ def test_unequal_natural_output_disables_causal_timing(tmp_path: Path) -> None:
     bundle = tmp_path / "bundle"
     results.build_bundle(workspace, bundle)
     analysis = json.loads((bundle / "analysis.json").read_text(encoding="utf-8"))
-    assert analysis["controlled"]["natural_timing"] == {
-        "causal_claim_eligible": False,
-        "mean_terminal_compiled_minus_eager_seconds": None,
-        "null_reason": "natural_outputs_differ_across_modes_or_lifecycles",
-    }
+    natural_timing = analysis["controlled"]["natural_timing"]
+    assert natural_timing["causal_claim_eligible"] is False
+    assert natural_timing[
+        "mean_terminal_compiled_minus_eager_seconds"
+    ] == pytest.approx(-0.2)
+    assert natural_timing["lower_confidence_endpoint_seconds"] == pytest.approx(-0.2)
+    assert natural_timing["upper_confidence_endpoint_seconds"] == pytest.approx(-0.2)
+    assert natural_timing["speedup_supported"] is False
+    assert (
+        natural_timing["causal_claim_blocker"]
+        == "natural_outputs_differ_across_modes_or_lifecycles"
+    )
     claims = json.loads((bundle / "claim-matrix.json").read_text(encoding="utf-8"))
     by_id = {claim["claim_id"]: claim for claim in claims["claims"]}
     assert by_id["natural-end-to-end-causal-speedup"]["state"] == "unsupported"
@@ -988,6 +1086,42 @@ def test_unequal_natural_output_disables_causal_timing(tmp_path: Path) -> None:
         "natural_output_identity"
         in by_id["natural-end-to-end-causal-speedup"]["blockers"]
     )
+
+
+def test_compiled_slower_natural_lane_disables_speedup_claim(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    for cell in core.build_default_plan().schedule:
+        if cell.lane != "natural" or cell.mode != "compiled":
+            continue
+        path = workspace / "raw" / f"{cell.cell_id}.json"
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        for request in receipt["requests"]:
+            timing = request["timing"]
+            timing["cumulative_from_initialization_seconds"]["value"] += 0.5
+            timing["cumulative_from_initialization_perf_counter_ns"] += 500_000_000
+        receipt.pop("cell_sha256")
+        receipt["cell_sha256"] = results._sha256_json(receipt)
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+        _sync_progress(path, receipt)
+    bundle = tmp_path / "bundle"
+    results.build_bundle(workspace, bundle)
+
+    analysis = json.loads((bundle / "analysis.json").read_text(encoding="utf-8"))
+    natural_timing = analysis["controlled"]["natural_timing"]
+    assert natural_timing["causal_claim_eligible"] is True
+    assert natural_timing[
+        "mean_terminal_compiled_minus_eager_seconds"
+    ] == pytest.approx(0.3)
+    assert natural_timing["upper_confidence_endpoint_seconds"] == pytest.approx(0.3)
+    assert natural_timing["speedup_supported"] is False
+    assert natural_timing["causal_claim_blocker"] is None
+    claims = json.loads((bundle / "claim-matrix.json").read_text(encoding="utf-8"))
+    by_id = {claim["claim_id"]: claim for claim in claims["claims"]}
+    assert by_id["natural-end-to-end-causal-speedup"] == {
+        "claim_id": "natural-end-to-end-causal-speedup",
+        "state": "unsupported",
+        "blockers": ["natural_supported_speedup"],
+    }
 
 
 def test_controlled_divergence_downgrades_output_identity_claim(tmp_path: Path) -> None:
@@ -1065,7 +1199,7 @@ def test_natural_correctness_is_recomputed(tmp_path: Path) -> None:
     assert by_id["natural-output-quality-preserved"]["state"] == "unsupported"
 
 
-def test_quality_gate_uses_paired_noninferiority_not_all_success(
+def test_natural_claim_requires_correctness_and_quality_preservation(
     tmp_path: Path,
 ) -> None:
     workspace = _workspace(tmp_path)
@@ -1089,12 +1223,62 @@ def test_quality_gate_uses_paired_noninferiority_not_all_success(
         effect["compiled_minus_eager_request_success_rate"]
         for effect in quality["pair_effects"]
     ] == [0.0] * 8
-    assert quality["lower_confidence_endpoint"] == 0.0
-    assert quality["upper_confidence_endpoint"] == 0.0
+    assert quality["confidence_method"] == "not_applicable_deterministic_pair_effects"
+    assert quality["confidence_level"] is None
+    assert quality["lower_confidence_endpoint"] is None
+    assert quality["upper_confidence_endpoint"] is None
+    assert quality["inference_state"] == "deterministic_complete_agreement"
     assert quality["noninferiority_supported"] is True
     claims = json.loads((bundle / "claim-matrix.json").read_text(encoding="utf-8"))
     by_id = {claim["claim_id"]: claim for claim in claims["claims"]}
-    assert by_id["natural-output-quality-preserved"]["state"] == "supported"
+    assert by_id["natural-output-quality-preserved"] == {
+        "claim_id": "natural-output-quality-preserved",
+        "state": "unsupported",
+        "blockers": ["natural_correctness"],
+    }
+    assert by_id["natural-end-to-end-causal-speedup"] == {
+        "claim_id": "natural-end-to-end-causal-speedup",
+        "state": "unsupported",
+        "blockers": ["natural_correctness"],
+    }
+    results.verify_bundle(bundle)
+    runpy.run_path(str(bundle / "evidence_bundle.py"))["verify"](bundle)
+
+
+def test_deterministic_identical_quality_degradation_has_no_interval(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    for cell in core.build_default_plan().schedule:
+        if cell.lane != "natural" or cell.mode != "compiled":
+            continue
+        path = workspace / "raw" / f"{cell.cell_id}.json"
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        receipt["requests"][0]["decoded_output"] = "invalid compiled output"
+        receipt.pop("cell_sha256")
+        receipt["cell_sha256"] = results._sha256_json(receipt)
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+        _sync_progress(path, receipt)
+    bundle = tmp_path / "bundle"
+    results.build_bundle(workspace, bundle)
+
+    correctness = json.loads((bundle / "correctness.json").read_text(encoding="utf-8"))
+    quality = correctness["quality_preservation"]
+    assert (
+        len(
+            {
+                effect["compiled_minus_eager_request_success_rate"]
+                for effect in quality["pair_effects"]
+            }
+        )
+        == 1
+    )
+    assert quality["confidence_method"] == "not_applicable_deterministic_pair_effects"
+    assert quality["confidence_level"] is None
+    assert quality["lower_confidence_endpoint"] is None
+    assert quality["upper_confidence_endpoint"] is None
+    assert quality["inference_state"] == "deterministic_noninferiority_failed"
+    assert quality["noninferiority_supported"] is False
 
 
 def test_censored_crossing_has_open_endpoints(tmp_path: Path) -> None:
@@ -1110,7 +1294,8 @@ def test_censored_crossing_has_open_endpoints(tmp_path: Path) -> None:
     )
     assert controlled["supported_sustained_crossing"]["state"] == "right_censored"
     assert controlled["supported_crossing_basis"] == (
-        "simultaneous_upper_band_compiled_minus_eager_nonpositive"
+        "simultaneous_upper_band_sustained_crossing_observed_and_"
+        "terminal_effect_sign_symmetry_p_value_at_most_0.05"
     )
     assert controlled["bootstrap_sustained_crossing_interval"]["state"] == "open"
     assert controlled["bootstrap_sustained_crossing_interval"]["lower"]["state"] == (
@@ -1130,6 +1315,69 @@ def test_censored_crossing_has_open_endpoints(tmp_path: Path) -> None:
     decision = by_id["fixed-token-count-crossover"]
     assert decision["state"] == "unsupported"
     assert decision["blockers"] == ["controlled_supported_crossing"]
+
+
+def test_controlled_crossing_also_requires_sign_symmetry_support(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    plan = core.build_default_plan()
+    compiled = next(
+        cell
+        for cell in plan.schedule
+        if cell.lane == "controlled"
+        and cell.mode == "compiled"
+        and cell.pair_index == 1
+    )
+    eager = next(
+        cell
+        for cell in plan.schedule
+        if cell.lane == "controlled" and cell.mode == "eager" and cell.pair_index == 1
+    )
+    compiled_path = workspace / "raw" / f"{compiled.cell_id}.json"
+    eager_path = workspace / "raw" / f"{eager.cell_id}.json"
+    compiled_receipt = json.loads(compiled_path.read_text(encoding="utf-8"))
+    eager_receipt = json.loads(eager_path.read_text(encoding="utf-8"))
+    for compiled_request, eager_request in zip(
+        compiled_receipt["requests"], eager_receipt["requests"], strict=True
+    ):
+        eager_ns = eager_request["timing"][
+            "cumulative_from_initialization_perf_counter_ns"
+        ]
+        compiled_ns = compiled_request["timing"][
+            "cumulative_from_initialization_perf_counter_ns"
+        ]
+        new_ns = 2 * eager_ns - compiled_ns + 900_000_000
+        compiled_request["timing"][
+            "cumulative_from_initialization_perf_counter_ns"
+        ] = new_ns
+        compiled_request["timing"]["cumulative_from_initialization_seconds"][
+            "value"
+        ] = (new_ns / 1_000_000_000)
+    compiled_receipt.pop("cell_sha256")
+    compiled_receipt["cell_sha256"] = results._sha256_json(compiled_receipt)
+    compiled_path.write_text(json.dumps(compiled_receipt), encoding="utf-8")
+    _sync_progress(compiled_path, compiled_receipt)
+
+    bundle = tmp_path / "bundle"
+    results.build_bundle(workspace, bundle)
+    results.verify_bundle(bundle)
+    runpy.run_path(str(bundle / "evidence_bundle.py"))["verify"](bundle)
+
+    analysis = json.loads((bundle / "analysis.json").read_text(encoding="utf-8"))
+    controlled = analysis["controlled"]
+    assert controlled["simultaneous_band_sustained_crossing_request_count"] is not None
+    assert (
+        controlled["terminal_effect_sign_flip_p_value"]
+        > core.CONTROLLED_SIGN_SYMMETRY_ALPHA
+    )
+    claims = json.loads((bundle / "claim-matrix.json").read_text(encoding="utf-8"))
+    by_id = {claim["claim_id"]: claim for claim in claims["claims"]}
+    assert by_id["fixed-token-count-crossover"] == {
+        "claim_id": "fixed-token-count-crossover",
+        "state": "unsupported",
+        "blockers": ["controlled_supported_crossing"],
+    }
 
 
 def test_resealed_no_crossing_supported_analysis_and_claim_tamper_is_rejected(

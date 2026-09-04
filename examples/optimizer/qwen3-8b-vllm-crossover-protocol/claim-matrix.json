@@ -25,7 +25,13 @@
       "state": "unsupported"
     },
     {
-      "claim_id": "forward-pass-identical-crossover",
+      "claim_id": "numerically-reproducible-generation-crossover",
+      "evidence": null,
+      "provenance": "not_observed",
+      "state": "unsupported"
+    },
+    {
+      "claim_id": "forward-pass-identical",
       "evidence": null,
       "provenance": "unsupported_interface",
       "state": "not_applicable"
@@ -37,13 +43,37 @@
       "state": "unsupported"
     },
     {
-      "claim_id": "compile-or-cuda-graph-component-time",
+      "claim_id": "natural-end-to-end-causal-speedup",
       "evidence": null,
       "provenance": "not_observed",
       "state": "unsupported"
     },
     {
-      "claim_id": "provider-reported-spend-or-teardown",
+      "claim_id": "compile-cuda-graph-component-timing",
+      "evidence": null,
+      "provenance": "not_observed",
+      "state": "unsupported"
+    },
+    {
+      "claim_id": "budget-reservations-within-hard-cap",
+      "evidence": null,
+      "provenance": "not_observed",
+      "state": "unsupported"
+    },
+    {
+      "claim_id": "active-operation-list-rate-equivalent-within-hard-cap",
+      "evidence": null,
+      "provenance": "not_observed",
+      "state": "unsupported"
+    },
+    {
+      "claim_id": "provider-billed-cost-within-hard-cap",
+      "evidence": null,
+      "provenance": "not_observed",
+      "state": "unsupported"
+    },
+    {
+      "claim_id": "provider-teardown",
       "evidence": null,
       "provenance": "not_observed",
       "state": "unsupported"

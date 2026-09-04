@@ -225,7 +225,13 @@ def _claim_matrix() -> dict[str, Any]:
                 "evidence": None,
             },
             {
-                "claim_id": "forward-pass-identical-crossover",
+                "claim_id": "numerically-reproducible-generation-crossover",
+                "state": "unsupported",
+                "provenance": "not_observed",
+                "evidence": None,
+            },
+            {
+                "claim_id": "forward-pass-identical",
                 "state": "not_applicable",
                 "provenance": "unsupported_interface",
                 "evidence": None,
@@ -237,13 +243,37 @@ def _claim_matrix() -> dict[str, Any]:
                 "evidence": None,
             },
             {
-                "claim_id": "compile-or-cuda-graph-component-time",
+                "claim_id": "natural-end-to-end-causal-speedup",
                 "state": "unsupported",
                 "provenance": "not_observed",
                 "evidence": None,
             },
             {
-                "claim_id": "provider-reported-spend-or-teardown",
+                "claim_id": "compile-cuda-graph-component-timing",
+                "state": "unsupported",
+                "provenance": "not_observed",
+                "evidence": None,
+            },
+            {
+                "claim_id": "budget-reservations-within-hard-cap",
+                "state": "unsupported",
+                "provenance": "not_observed",
+                "evidence": None,
+            },
+            {
+                "claim_id": "active-operation-list-rate-equivalent-within-hard-cap",
+                "state": "unsupported",
+                "provenance": "not_observed",
+                "evidence": None,
+            },
+            {
+                "claim_id": "provider-billed-cost-within-hard-cap",
+                "state": "unsupported",
+                "provenance": "not_observed",
+                "evidence": None,
+            },
+            {
+                "claim_id": "provider-teardown",
                 "state": "unsupported",
                 "provenance": "not_observed",
                 "evidence": None,
@@ -268,8 +298,17 @@ def _contract(plan: Mapping[str, Any]) -> dict[str, Any]:
             "resamples": BOOTSTRAP_RESAMPLES,
             "simultaneous_curve_band": True,
             "request_level_resampling": False,
+            "small_sample_limitation": (
+                "Eight-pair nonparametric simultaneous bands may under-cover; "
+                "claim support also requires the terminal sign-symmetry test."
+            ),
         },
         "sign_flip_enumerations": SIGN_FLIP_ENUMERATIONS,
+        "sign_flip_semantics": (
+            "Exhaustive sign-symmetry permutation test, not randomized assignment "
+            "inference; validity assumes sign-symmetric lifecycle-pair effects."
+        ),
+        "claim_requirements": plan["claim_requirements"],
         "quality_preservation": plan["quality_preservation"],
         "crossing": {
             "first": "first integer request with cumulative compiled <= eager",

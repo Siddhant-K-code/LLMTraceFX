@@ -42,6 +42,11 @@ from .cloudrift_crossover import (
 
 RESULT_SCHEMA_VERSION = "1"
 BOOTSTRAP_RESAMPLES = core.BOOTSTRAP_RESAMPLES
+CONTROLLED_SIGN_SYMMETRY_ALPHA = core.CONTROLLED_SIGN_SYMMETRY_ALPHA
+SUPPORTED_CROSSING_BASIS = (
+    "simultaneous_upper_band_sustained_crossing_observed_and_"
+    "terminal_effect_sign_symmetry_p_value_at_most_0.05"
+)
 MAX_OUTPUT_BYTES = 8_388_608
 MAX_BUNDLE_FILE_BYTES = 33_554_432
 BUNDLE_FILES = (
@@ -1173,6 +1178,60 @@ def _compute_pair_effects(
     return effects
 
 
+def _validate_public_pair_curves(
+    pair_records: Sequence[Mapping[str, Any]],
+    requests_by_cell: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> None:
+    seen_cells: set[str] = set()
+    for pair in pair_records:
+        for mode in ("eager", "compiled"):
+            cell = pair[mode]
+            cell_id = cell["cell_id"]
+            if cell_id in seen_cells:
+                raise CrossoverResultsError(
+                    "public lifecycle cell appears more than once"
+                )
+            seen_cells.add(cell_id)
+            requests = sorted(
+                requests_by_cell[cell_id],
+                key=lambda request: request["request_sequence_index"],
+            )
+            if [request["request_sequence_index"] for request in requests] != list(
+                range(1, len(requests) + 1)
+            ):
+                raise CrossoverResultsError("public request sequence is not contiguous")
+            curve = [
+                request["cumulative_from_initialization_seconds"]
+                for request in requests
+            ]
+            if (
+                cell["cumulative_seconds"] != curve
+                or not curve
+                or curve[0] < cell["initialization_seconds"]
+                or any(
+                    current <= previous
+                    for previous, current in zip(curve, curve[1:], strict=False)
+                )
+            ):
+                raise CrossoverResultsError(
+                    "public cell cumulative curve does not match requests"
+                )
+        expected_difference = [
+            compiled - eager
+            for eager, compiled in zip(
+                pair["eager"]["cumulative_seconds"],
+                pair["compiled"]["cumulative_seconds"],
+                strict=True,
+            )
+        ]
+        if pair["compiled_minus_eager_seconds"] != expected_difference:
+            raise CrossoverResultsError(
+                "public lifecycle pair difference curve does not recompute"
+            )
+    if len(seen_cells) != len(pair_records) * 2:
+        raise CrossoverResultsError("public lifecycle cell cardinality differs")
+
+
 def _median(values: Sequence[float]) -> float:
     ordered = sorted(values)
     middle = len(ordered) // 2
@@ -1277,6 +1336,7 @@ def _claim_matrix_document(
     analysis: Mapping[str, Any],
     controlled_identity: Mapping[str, Any],
     natural_identity: Mapping[str, Any],
+    natural_all_correct: bool,
     quality_preservation: Mapping[str, Any],
     component_observability: bool,
 ) -> dict[str, Any]:
@@ -1284,9 +1344,8 @@ def _claim_matrix_document(
         terminal=True,
         completeness=True,
         fixed_count=True,
-        controlled_supported_crossing=(
-            analysis["controlled"]["simultaneous_band_sustained_crossing_request_count"]
-            is not None
+        controlled_supported_crossing=_controlled_supported_crossing(
+            analysis["controlled"]
         ),
         controlled_output_identity=controlled_identity[
             "cross_mode_pair_outputs_identical"
@@ -1298,7 +1357,12 @@ def _claim_matrix_document(
         natural_numeric_reproducibility=natural_identity[
             "within_mode_lifecycles_identical"
         ],
-        natural_correctness=quality_preservation["noninferiority_supported"],
+        natural_supported_speedup=analysis["controlled"]["natural_timing"][
+            "speedup_supported"
+        ],
+        natural_correctness=(
+            natural_all_correct and quality_preservation["noninferiority_supported"]
+        ),
         component_observability=component_observability,
     )
     claims = [decision.to_dict() for decision in gate.matrix()]
@@ -1327,6 +1391,14 @@ def _claim_matrix_document(
         ]
     )
     return {"schema_version": RESULT_SCHEMA_VERSION, "claims": claims}
+
+
+def _controlled_supported_crossing(controlled: Mapping[str, Any]) -> bool:
+    return (
+        controlled["simultaneous_band_sustained_crossing_request_count"] is not None
+        and controlled["terminal_effect_sign_flip_p_value"]
+        <= CONTROLLED_SIGN_SYMMETRY_ALPHA
+    )
 
 
 def _analysis_document(
@@ -1364,9 +1436,7 @@ def _analysis_document(
     result["supported_sustained_crossing"] = dict(
         result["simultaneous_band_sustained_crossing"]
     )
-    result["supported_crossing_basis"] = (
-        "simultaneous_upper_band_compiled_minus_eager_nonpositive"
-    )
+    result["supported_crossing_basis"] = SUPPORTED_CROSSING_BASIS
     lower_open = result["bootstrap_sustained_crossing_lower_is_open"]
     upper_open = result["bootstrap_sustained_crossing_upper_is_open"]
     median = result["bootstrap_sustained_crossing_median_request_count"]
@@ -1397,14 +1467,35 @@ def _analysis_document(
     }
     result["bootstrap_unit"] = "whole_lifecycle_pair"
     result["request_level_resampling"] = False
+    natural_rng = random.Random(core.ANALYSIS_SEED)
+    natural_bootstrap = [
+        sum(
+            natural_terminal_effects[
+                natural_rng.randrange(len(natural_terminal_effects))
+            ]
+            for _ in natural_terminal_effects
+        )
+        / len(natural_terminal_effects)
+        for _ in range(BOOTSTRAP_RESAMPLES)
+    ]
+    natural_mean = sum(natural_terminal_effects) / len(natural_terminal_effects)
+    natural_lower = _ordered_quantile(natural_bootstrap, 0.025)
+    natural_upper = _ordered_quantile(natural_bootstrap, 0.975)
+    natural_speedup_supported = (
+        natural_identity and natural_mean < 0 and natural_upper <= 0
+    )
     result["natural_timing"] = {
         "causal_claim_eligible": natural_identity,
-        "mean_terminal_compiled_minus_eager_seconds": (
-            sum(natural_terminal_effects) / len(natural_terminal_effects)
-            if natural_identity
-            else None
-        ),
-        "null_reason": (
+        "pair_terminal_compiled_minus_eager_seconds": list(natural_terminal_effects),
+        "mean_terminal_compiled_minus_eager_seconds": natural_mean,
+        "analysis_seed": core.ANALYSIS_SEED,
+        "resample_count": BOOTSTRAP_RESAMPLES,
+        "bootstrap_unit": "whole_lifecycle_pair",
+        "request_level_resampling": False,
+        "lower_confidence_endpoint_seconds": natural_lower,
+        "upper_confidence_endpoint_seconds": natural_upper,
+        "speedup_supported": natural_speedup_supported,
+        "causal_claim_blocker": (
             None
             if natural_identity
             else "natural_outputs_differ_across_modes_or_lifecycles"
@@ -1471,16 +1562,30 @@ def _quality_preservation(
                 "compiled_minus_eager_request_success_rate": effect,
             }
         )
+    margin = float(core.QUALITY_NONINFERIORITY_MARGIN)
+    support_threshold = 0.0 if margin == 0 else -margin
     rng = random.Random(core.ANALYSIS_SEED)
-    bootstrap: list[float] = []
+    bootstrap = []
     for _ in range(resample_count):
         sampled = [effects[rng.randrange(len(effects))] for _ in effects]
         bootstrap.append(sum(sampled) / len(sampled))
-    lower = _ordered_quantile(bootstrap, 0.025)
-    upper = _ordered_quantile(bootstrap, 0.975)
-    margin = float(core.QUALITY_NONINFERIORITY_MARGIN)
-    support_threshold = 0.0 if margin == 0 else -margin
-    supported = lower >= support_threshold
+    if len(set(effects)) == 1:
+        confidence_method = "not_applicable_deterministic_pair_effects"
+        confidence_level = None
+        lower = upper = None
+        supported = effects[0] >= support_threshold
+        inference_state = (
+            "deterministic_complete_agreement"
+            if supported
+            else "deterministic_noninferiority_failed"
+        )
+    else:
+        lower = _ordered_quantile(bootstrap, 0.025)
+        upper = _ordered_quantile(bootstrap, 0.975)
+        confidence_method = "deterministic_whole_pair_percentile_bootstrap"
+        confidence_level = "0.95"
+        supported = lower >= support_threshold
+        inference_state = "whole_pair_bootstrap"
     return {
         "lane": "natural",
         "evaluator": "evaluate_workload",
@@ -1491,14 +1596,15 @@ def _quality_preservation(
         "noninferiority_margin": core.canonical_decimal(
             core.QUALITY_NONINFERIORITY_MARGIN
         ),
-        "confidence_method": "deterministic_whole_pair_percentile_bootstrap",
-        "confidence_level": "0.95",
+        "confidence_method": confidence_method,
+        "confidence_level": confidence_level,
         "analysis_seed": core.ANALYSIS_SEED,
         "resample_count": resample_count,
         "bootstrap_unit": "whole_lifecycle_pair",
         "request_level_resampling": False,
         "lower_confidence_endpoint": lower,
         "upper_confidence_endpoint": upper,
+        "inference_state": inference_state,
         "support_threshold": support_threshold,
         "noninferiority_supported": supported,
     }
@@ -2049,6 +2155,7 @@ def _validate_workspace(workspace: Path) -> dict[str, Any]:
         analysis=analysis,
         controlled_identity=controlled_identity,
         natural_identity=natural_identity,
+        natural_all_correct=all_natural_correct,
         quality_preservation=quality_preservation,
         component_observability=_component_observability(pair_records),
     )
@@ -2270,7 +2377,7 @@ def _provenance_document(data: Mapping[str, Any]) -> dict[str, Any]:
                 "value_state": (
                     "observed" if natural["causal_claim_eligible"] else "null"
                 ),
-                "null_reason": natural["null_reason"],
+                "null_reason": natural["causal_claim_blocker"],
             },
             {
                 "field": "budget_reservations",
@@ -2391,6 +2498,18 @@ def _render_report(data: Mapping[str, Any]) -> str:
         if sustained["state"] == "observed"
         else f"{sustained['state']} at {sustained['lower_bound']}"
     )
+    if quality["inference_state"] == "whole_pair_bootstrap":
+        quality_summary = (
+            f"paired effect: {quality['mean_pair_effect']:.6f}; "
+            "95% whole-pair percentile interval "
+            f"[{quality['lower_confidence_endpoint']:.6f}, "
+            f"{quality['upper_confidence_endpoint']:.6f}]"
+        )
+    else:
+        quality_summary = (
+            f"deterministic identical pair effect: "
+            f"{quality['mean_pair_effect']:.6f}; confidence interval not applicable"
+        )
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Completed vLLM crossover result</title>
@@ -2398,7 +2517,7 @@ def _render_report(data: Mapping[str, Any]) -> str:
 <body><h1>Completed Qwen3-8B vLLM crossover</h1>
 <p>Sixteen adjacent eager/compiled lifecycle pairs were completed. The controlled analysis resampled {BOOTSTRAP_RESAMPLES:,} whole pairs and never requests.</p>
 <p>Aggregate sustained crossing: {html.escape(crossing)}.</p>
-<p>Natural quality paired effect: {quality["mean_pair_effect"]:.6f}; 95% whole-pair percentile interval [{quality["lower_confidence_endpoint"]:.6f}, {quality["upper_confidence_endpoint"]:.6f}]. Noninferiority supported: {str(quality["noninferiority_supported"]).lower()}.</p>
+<p>Natural quality {quality_summary}. Noninferiority supported: {str(quality["noninferiority_supported"]).lower()}.</p>
 <img src="crossover.svg" alt="Controlled cumulative crossover curve">
 <h2>Claim matrix</h2><table><thead><tr><th>Claim</th><th>State</th><th>Blockers</th></tr></thead><tbody>{rows}</tbody></table>
 </body></html>
@@ -2411,6 +2530,9 @@ from decimal import Decimal
 from pathlib import Path
 
 BOOTSTRAP_RESAMPLES = __BOOTSTRAP_RESAMPLES__
+CONTROLLED_SIGN_SYMMETRY_ALPHA = __CONTROLLED_SIGN_SYMMETRY_ALPHA__
+CLAIM_REQUIREMENTS = __CLAIM_REQUIREMENTS__
+SUPPORTED_CROSSING_BASIS = "simultaneous_upper_band_sustained_crossing_observed_and_terminal_effect_sign_symmetry_p_value_at_most_0.05"
 FILES = {"SHA256SUMS","analysis.json","budget-teardown.json","claim-matrix.json","correctness.json","crossover.svg","evidence_bundle.py","lifecycle-pairs.json","protocol.json","provenance-null-matrix.json","report.html","request-records.jsonl"}
 HASHED = sorted(FILES-{"SHA256SUMS"})
 JSON_FILES = {"analysis.json","budget-teardown.json","claim-matrix.json","correctness.json","lifecycle-pairs.json","protocol.json","provenance-null-matrix.json"}
@@ -2533,16 +2655,18 @@ def full_analysis(pair_records,resamples,natural_identical):
         if abs(total/len(terminals))>=observed_terminal-1e-12: extreme+=1
     aggregate_first=first_crossing(observed); aggregate_sustained=sustained_crossing(observed); band_first=first_crossing(upper); band_sustained=sustained_crossing(upper)
     result={"protocol_id":"qwen3-8b-vllm-crossover-v2","analysis_seed":20260905,"resample_count":resamples,"pair_effects":core_effects,"mean_difference_curve":observed,"simultaneous_band_lower":lower,"simultaneous_band_upper":upper,"aggregate_first_crossing_request_count":aggregate_first,"aggregate_sustained_crossing_request_count":aggregate_sustained,"simultaneous_band_first_crossing_request_count":band_first,"simultaneous_band_sustained_crossing_request_count":band_sustained,"bootstrap_uncensored_resamples":resamples-censored,"bootstrap_censored_resamples":censored,"bootstrap_sustained_crossing_median_request_count":crossing_median if crossing_median<=144 else None,"bootstrap_sustained_crossing_lower_request_count":crossing_lower if crossing_lower<=144 else None,"bootstrap_sustained_crossing_upper_request_count":crossing_upper if crossing_upper<=144 else None,"bootstrap_sustained_crossing_lower_is_open":crossing_lower>144,"bootstrap_sustained_crossing_upper_is_open":crossing_upper>144,"terminal_effect_sign_flip_p_value":extreme/float(1<<len(terminals))}
-    result["aggregate_first_crossing"]=endpoint(aggregate_first,144); result["aggregate_sustained_crossing"]=endpoint(aggregate_sustained,144,True); result["simultaneous_band_first_crossing"]=endpoint(band_first,144); result["simultaneous_band_sustained_crossing"]=endpoint(band_sustained,144,True); result["supported_first_crossing"]=dict(result["simultaneous_band_first_crossing"]); result["supported_sustained_crossing"]=dict(result["simultaneous_band_sustained_crossing"]); result["supported_crossing_basis"]="simultaneous_upper_band_compiled_minus_eager_nonpositive"
+    result["aggregate_first_crossing"]=endpoint(aggregate_first,144); result["aggregate_sustained_crossing"]=endpoint(aggregate_sustained,144,True); result["simultaneous_band_first_crossing"]=endpoint(band_first,144); result["simultaneous_band_sustained_crossing"]=endpoint(band_sustained,144,True); result["supported_first_crossing"]=dict(result["simultaneous_band_first_crossing"]); result["supported_sustained_crossing"]=dict(result["simultaneous_band_sustained_crossing"]); result["supported_crossing_basis"]=SUPPORTED_CROSSING_BASIS
     median_open=crossing_median>144; lower_open=crossing_lower>144; upper_open=crossing_upper>144
     result["bootstrap_sustained_crossing_interval"]={"state":"open" if lower_open and upper_open else ("partially_open" if lower_open or upper_open else "observed"),"lower":interval_endpoint(None if lower_open else crossing_lower,lower_open,144),"median":interval_endpoint(None if median_open else crossing_median,median_open,144),"upper":interval_endpoint(None if upper_open else crossing_upper,upper_open,144),"censor_at_request_count":144,"censor_sentinel_request_count":145}
     result["bootstrap_unit"]="whole_lifecycle_pair"; result["request_level_resampling"]=False
     natural_effects=[pair["compiled_minus_eager_seconds"][-1] for pair in pair_records if pair["lane"]=="natural"]
-    result["natural_timing"]={"causal_claim_eligible":natural_identical,"mean_terminal_compiled_minus_eager_seconds":sum(natural_effects)/len(natural_effects) if natural_identical else None,"null_reason":None if natural_identical else "natural_outputs_differ_across_modes_or_lifecycles"}
+    natural_rng=random.Random(20260905); natural_bootstrap=[sum(natural_effects[natural_rng.randrange(len(natural_effects))] for _ in natural_effects)/len(natural_effects) for _ in range(BOOTSTRAP_RESAMPLES)]; natural_mean=sum(natural_effects)/len(natural_effects); natural_lower=quantile(natural_bootstrap,.025); natural_upper=quantile(natural_bootstrap,.975); natural_supported=natural_identical and natural_mean<0 and natural_upper<=0
+    result["natural_timing"]={"causal_claim_eligible":natural_identical,"pair_terminal_compiled_minus_eager_seconds":natural_effects,"mean_terminal_compiled_minus_eager_seconds":natural_mean,"analysis_seed":20260905,"resample_count":BOOTSTRAP_RESAMPLES,"bootstrap_unit":"whole_lifecycle_pair","request_level_resampling":False,"lower_confidence_endpoint_seconds":natural_lower,"upper_confidence_endpoint_seconds":natural_upper,"speedup_supported":natural_supported,"causal_claim_blocker":None if natural_identical else "natural_outputs_differ_across_modes_or_lifecycles"}
     return {"schema_version":"1","controlled":result,"pair_effect_distributions":effect_distributions(pair_records)}
 def claim_matrix(analysis,controlled_identity,natural_identity,natural_correctness,component_observable):
-    flags={"terminal":True,"completeness":True,"fixed_count":True,"controlled_supported_crossing":analysis["controlled"]["simultaneous_band_sustained_crossing_request_count"] is not None,"controlled_output_identity":controlled_identity["cross_mode_pair_outputs_identical"],"controlled_numeric_reproducibility":controlled_identity["within_mode_lifecycles_identical"],"natural_output_identity":natural_identity["cross_mode_pair_outputs_identical"],"natural_numeric_reproducibility":natural_identity["within_mode_lifecycles_identical"],"natural_correctness":natural_correctness,"component_observability":component_observable}
-    requirements=(("fixed-token-count-crossover",("terminal","completeness","fixed_count","controlled_supported_crossing")),("output-identical-generation-crossover",("terminal","completeness","fixed_count","controlled_supported_crossing","controlled_output_identity","controlled_numeric_reproducibility")),("numerically-reproducible-generation-crossover",("terminal","completeness","fixed_count","controlled_supported_crossing","controlled_output_identity","controlled_numeric_reproducibility")),("natural-output-quality-preserved",("terminal","completeness","natural_correctness")),("natural-end-to-end-causal-speedup",("terminal","completeness","natural_output_identity","natural_numeric_reproducibility")),("compile-cuda-graph-component-timing",("terminal","completeness","component_observability")))
+    controlled=analysis["controlled"]
+    flags={"terminal":True,"completeness":True,"fixed_count":True,"controlled_supported_crossing":controlled["simultaneous_band_sustained_crossing_request_count"] is not None and controlled["terminal_effect_sign_flip_p_value"]<=CONTROLLED_SIGN_SYMMETRY_ALPHA,"controlled_output_identity":controlled_identity["cross_mode_pair_outputs_identical"],"controlled_numeric_reproducibility":controlled_identity["within_mode_lifecycles_identical"],"natural_output_identity":natural_identity["cross_mode_pair_outputs_identical"],"natural_numeric_reproducibility":natural_identity["within_mode_lifecycles_identical"],"natural_supported_speedup":analysis["controlled"]["natural_timing"]["speedup_supported"],"natural_correctness":natural_correctness,"component_observability":component_observable}
+    requirements=CLAIM_REQUIREMENTS.items()
     claims=[]
     for claim_id,required in requirements:
         blockers=[name for name in required if not flags[name]]; claims.append({"claim_id":claim_id,"state":"supported" if not blockers else "unsupported","blockers":blockers})
@@ -2573,10 +2697,17 @@ def verify(root):
     if len(requests)!=2496 or any(r.get("terminal") is not True for r in requests): raise ValueError("request cardinality differs")
     requests_by_cell={}
     for item in requests: requests_by_cell.setdefault(item["cell_id"],[]).append(item)
+    for cell_requests in requests_by_cell.values(): cell_requests.sort(key=lambda request:request["request_sequence_index"])
     effect_units={"initialization":"seconds","host_lifecycle":"seconds","request_phase":"seconds","cumulative_init_to_terminal":"seconds","mean_ttft":"seconds","mean_prefill":"seconds","mean_decode":"seconds","mean_output_rate":"tokens_per_second","peak_gpu_memory":"MiB"}
     if sum(p["lane"]=="controlled" for p in pairs["pairs"])!=8 or sum(p["lane"]=="natural" for p in pairs["pairs"])!=8: raise ValueError("pair lane cardinality differs")
     for pair in pairs["pairs"]:
         eager=pair["eager"]; compiled=pair["compiled"]; eager_requests=requests_by_cell[eager["cell_id"]]; compiled_requests=requests_by_cell[compiled["cell_id"]]; effects=pair["pair_effects"]
+        for cell,cell_requests in ((eager,eager_requests),(compiled,compiled_requests)):
+            if [request["request_sequence_index"] for request in cell_requests]!=list(range(1,len(cell_requests)+1)): raise ValueError("request sequence differs")
+            request_curve=[request["cumulative_from_initialization_seconds"] for request in cell_requests]
+            if cell["cumulative_seconds"]!=request_curve or not request_curve or request_curve[0]<cell["initialization_seconds"] or any(current<=previous for previous,current in zip(request_curve,request_curve[1:])): raise ValueError("cell curve differs from requests")
+        expected_difference=[compiled_value-eager_value for eager_value,compiled_value in zip(eager["cumulative_seconds"],compiled["cumulative_seconds"])]
+        if pair["compiled_minus_eager_seconds"]!=expected_difference: raise ValueError("pair difference curve differs")
         if set(effects)!=set(effect_units) or any(effects[m]["unit"]!=u for m,u in effect_units.items()): raise ValueError("pair effect units differ")
         direct={"initialization":compiled["measurements"]["initialization_seconds"]["value"]-eager["measurements"]["initialization_seconds"]["value"],"host_lifecycle":compiled["measurements"]["host_lifecycle_seconds"]["value"]-eager["measurements"]["host_lifecycle_seconds"]["value"],"request_phase":sum(r["latency_seconds"] for r in compiled_requests)-sum(r["latency_seconds"] for r in eager_requests),"cumulative_init_to_terminal":compiled["cumulative_seconds"][-1]-eager["cumulative_seconds"][-1]}
         for metric,value in direct.items():
@@ -2612,10 +2743,10 @@ def verify(root):
     controlled=analysis["controlled"]
     if controlled["resample_count"]!=BOOTSTRAP_RESAMPLES or controlled["bootstrap_unit"]!="whole_lifecycle_pair" or controlled["request_level_resampling"] is not False: raise ValueError("analysis protocol differs")
     quality_effects=quality["pair_effects"]
-    if len(quality_effects)!=8 or quality["analysis_seed"]!=20260905 or quality["resample_count"]!=BOOTSTRAP_RESAMPLES or quality["bootstrap_unit"]!="whole_lifecycle_pair" or quality["request_level_resampling"] is not False or quality["noninferiority_margin"]!="0" or quality["support_threshold"]!=0.0 or not math.isclose(sum(p["compiled_minus_eager_request_success_rate"] for p in quality_effects)/8,quality["mean_pair_effect"],abs_tol=1e-12) or quality["noninferiority_supported"]!=(quality["lower_confidence_endpoint"]>=0.0): raise ValueError("quality preservation analysis differs")
+    if len(quality_effects)!=8 or quality["analysis_seed"]!=20260905 or quality["resample_count"]!=BOOTSTRAP_RESAMPLES or quality["bootstrap_unit"]!="whole_lifecycle_pair" or quality["request_level_resampling"] is not False or quality["noninferiority_margin"]!="0" or quality["support_threshold"]!=0.0 or not math.isclose(sum(p["compiled_minus_eager_request_success_rate"] for p in quality_effects)/8,quality["mean_pair_effect"],abs_tol=1e-12): raise ValueError("quality preservation analysis differs")
     by_cell={}
     for evaluation in evaluations: by_cell.setdefault(evaluation["cell_id"],[]).append(evaluation)
-    recomputed_effects=[]
+    recomputed_effects=[]; expected_quality_effects=[]
     for pair_index in range(1,9):
         cells=[c for c in protocol["schedule"] if c["lane"]=="natural" and c["pair_index"]==pair_index]
         modes={c["mode"]:c for c in cells}
@@ -2623,14 +2754,22 @@ def verify(root):
         eager_rate=sum(e["success"] for e in eager)/12; compiled_rate=sum(e["success"] for e in compiled)/12
         effect=compiled_rate-eager_rate
         recomputed_effects.append(effect)
+        expected_quality_effects.append({"pair_id":cells[0]["pair_id"],"pair_index":pair_index,"eager_request_success_rate":eager_rate,"compiled_request_success_rate":compiled_rate,"compiled_minus_eager_request_success_rate":effect})
         observed=quality_effects[pair_index-1]
         if not math.isclose(eager_rate,observed["eager_request_success_rate"],abs_tol=1e-12) or not math.isclose(compiled_rate,observed["compiled_request_success_rate"],abs_tol=1e-12) or not math.isclose(effect,observed["compiled_minus_eager_request_success_rate"],abs_tol=1e-12): raise ValueError("quality pair effect differs")
-    rng=random.Random(quality["analysis_seed"])
-    boot=[sum(recomputed_effects[rng.randrange(8)] for _ in range(8))/8 for _ in range(BOOTSTRAP_RESAMPLES)]
-    quantile=lambda q:sorted(boot)[max(0,min(len(boot)-1,math.ceil(q*len(boot))-1))]
-    if not math.isclose(quantile(.025),quality["lower_confidence_endpoint"],abs_tol=1e-12) or not math.isclose(quantile(.975),quality["upper_confidence_endpoint"],abs_tol=1e-12): raise ValueError("quality bootstrap differs")
+    rng=random.Random(20260905); boot=[sum(recomputed_effects[rng.randrange(8)] for _ in range(8))/8 for _ in range(BOOTSTRAP_RESAMPLES)]
+    if len(set(recomputed_effects))==1:
+        expected_supported=recomputed_effects[0]>=0.0; expected_state="deterministic_complete_agreement" if expected_supported else "deterministic_noninferiority_failed"
+        if quality["confidence_method"]!="not_applicable_deterministic_pair_effects" or quality["confidence_level"] is not None or quality["lower_confidence_endpoint"] is not None or quality["upper_confidence_endpoint"] is not None or quality["inference_state"]!=expected_state or quality["noninferiority_supported"] is not expected_supported: raise ValueError("deterministic quality inference differs")
+        expected_method="not_applicable_deterministic_pair_effects"; expected_level=None; lower=upper=None
+    else:
+        lower=quantile(boot,.025); upper=quantile(boot,.975)
+        if quality["confidence_method"]!="deterministic_whole_pair_percentile_bootstrap" or quality["confidence_level"]!="0.95" or quality["inference_state"]!="whole_pair_bootstrap" or not math.isclose(lower,quality["lower_confidence_endpoint"],abs_tol=1e-12) or not math.isclose(upper,quality["upper_confidence_endpoint"],abs_tol=1e-12) or quality["noninferiority_supported"] is not (lower>=0.0): raise ValueError("quality bootstrap differs")
+        expected_supported=lower>=0.0; expected_state="whole_pair_bootstrap"; expected_method="deterministic_whole_pair_percentile_bootstrap"; expected_level="0.95"
+    expected_quality={"lane":"natural","evaluator":"evaluate_workload","independent_unit":"adjacent_eager_compiled_lifecycle_pair","effect":"compiled_minus_eager_request_success_rate","pair_effects":expected_quality_effects,"mean_pair_effect":sum(recomputed_effects)/len(recomputed_effects),"noninferiority_margin":"0","confidence_method":expected_method,"confidence_level":expected_level,"analysis_seed":20260905,"resample_count":BOOTSTRAP_RESAMPLES,"bootstrap_unit":"whole_lifecycle_pair","request_level_resampling":False,"lower_confidence_endpoint":lower,"upper_confidence_endpoint":upper,"inference_state":expected_state,"support_threshold":0.0,"noninferiority_supported":expected_supported}
+    if quality!=expected_quality: raise ValueError("complete quality inference differs")
     component_observable=all(pair["compiled"]["compile_component_measurements"][name]["observability_state"]=="observed" for pair in pairs["pairs"] for name in ("compilation_time_seconds","encoder_compilation_time_seconds","cuda_graph_capture_duration_seconds"))
-    expected_claims=claim_matrix(expected_analysis,controlled_identity,natural_identity,quality["noninferiority_supported"],component_observable)
+    expected_claims=claim_matrix(expected_analysis,controlled_identity,natural_identity,all(e["success"] for e in evaluations) and quality["noninferiority_supported"],component_observable)
     if docs["claim-matrix.json"]!=expected_claims: raise ValueError("complete claim matrix differs")
     budget=docs["budget-teardown.json"]; absent="external_provider_end_receipt_absent"
     budget_keys={"schema_version","hard_cap_usd","reserved_usd","reservations_within_hard_cap","active_operation_seconds","active_operation_list_rate_usd_per_hour","active_operation_list_rate_equivalent_usd","active_operation_equivalent_within_hard_cap","provider_billed_seconds","provider_billed_seconds_null_reason","provider_reported_spend_usd","provider_reported_spend_null_reason","provider_list_rate_cost_usd","provider_list_rate_cost_null_reason","actual_cost_usd","actual_cost_null_reason","automatic_retries","all_lifecycles_completed","local_cleanup","host_shutdown_observed_at","host_shutdown_observed_null_reason","external_provider_console_confirmation","external_provider_console_confirmation_null_reason","independently_verified_provider_termination","independently_verified_provider_termination_null_reason","provider_teardown","provider_teardown_null_reason","provider_teardown_provenance"}
@@ -2658,9 +2797,23 @@ def _documents(data: Mapping[str, Any]) -> dict[str, bytes]:
         "claim-matrix.json": _json_text(data["claims"]).encode(),
         "correctness.json": _json_text(data["correctness"]).encode(),
         "crossover.svg": _render_svg(data["analysis"]).encode(),
-        "evidence_bundle.py": VERIFIER.replace(
-            "__BOOTSTRAP_RESAMPLES__", str(BOOTSTRAP_RESAMPLES)
-        ).encode(),
+        "evidence_bundle.py": (
+            VERIFIER.replace("__BOOTSTRAP_RESAMPLES__", str(BOOTSTRAP_RESAMPLES))
+            .replace(
+                "__CONTROLLED_SIGN_SYMMETRY_ALPHA__",
+                repr(CONTROLLED_SIGN_SYMMETRY_ALPHA),
+            )
+            .replace(
+                "__CLAIM_REQUIREMENTS__",
+                repr(
+                    {
+                        claim_id: tuple(requirements)
+                        for claim_id, requirements in core.CLAIM_REQUIREMENTS.items()
+                    }
+                ),
+            )
+            .encode()
+        ),
         "lifecycle-pairs.json": _json_text(pairs).encode(),
         "protocol.json": _json_text(protocol).encode(),
         "provenance-null-matrix.json": _json_text(provenance).encode(),
@@ -2800,7 +2953,6 @@ def verify_bundle(bundle_dir: Path) -> None:
         raise CrossoverResultsError("bundle protocol semantics differ")
     quality_effects = quality.get("pair_effects")
     mean_pair_effect = quality.get("mean_pair_effect")
-    lower_confidence_endpoint = quality.get("lower_confidence_endpoint")
     support_threshold = quality.get("support_threshold")
     if (
         not isinstance(quality_effects, list)
@@ -2808,9 +2960,6 @@ def verify_bundle(bundle_dir: Path) -> None:
         or isinstance(mean_pair_effect, bool)
         or not isinstance(mean_pair_effect, (int, float))
         or not math.isfinite(mean_pair_effect)
-        or isinstance(lower_confidence_endpoint, bool)
-        or not isinstance(lower_confidence_endpoint, (int, float))
-        or not math.isfinite(lower_confidence_endpoint)
         or isinstance(support_threshold, bool)
         or not isinstance(support_threshold, (int, float))
         or not math.isfinite(support_threshold)
@@ -2823,8 +2972,6 @@ def verify_bundle(bundle_dir: Path) -> None:
             mean_pair_effect,
             abs_tol=1e-12,
         )
-        or quality.get("noninferiority_supported")
-        != (lower_confidence_endpoint >= support_threshold)
     ):
         raise CrossoverResultsError("natural quality preservation analysis differs")
     requests: list[dict[str, Any]] = []
@@ -2846,7 +2993,15 @@ def verify_bundle(bundle_dir: Path) -> None:
     requests_by_cell: dict[str, list[dict[str, Any]]] = {}
     for request in requests:
         requests_by_cell.setdefault(request["cell_id"], []).append(request)
+    for cell_requests in requests_by_cell.values():
+        cell_requests.sort(key=lambda request: request["request_sequence_index"])
     pair_records = pairs["pairs"]
+    try:
+        _validate_public_pair_curves(pair_records, requests_by_cell)
+    except CrossoverResultsError:
+        raise
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CrossoverResultsError("public lifecycle pair curves are invalid") from exc
     try:
         for pair in pair_records:
             eager = pair["eager"]
@@ -2942,6 +3097,7 @@ def verify_bundle(bundle_dir: Path) -> None:
         analysis=expected_analysis,
         controlled_identity=controlled_identity,
         natural_identity=natural_identity,
+        natural_all_correct=all(item["success"] for item in recomputed_evaluations),
         quality_preservation=recomputed_quality,
         component_observability=_component_observability(pair_records),
     )

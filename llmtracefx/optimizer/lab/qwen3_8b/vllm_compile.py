@@ -69,6 +69,7 @@ UNTOUCHED_MARGIN_SECONDS = 8_012
 ABSOLUTE_CEILING_SECONDS = 27_692
 BOOTSTRAP_RESAMPLES = 20_000
 SIGN_FLIP_ENUMERATIONS = 256
+CONTROLLED_SIGN_SYMMETRY_ALPHA = 0.05
 MAX_LEDGER_ARTIFACT_BYTES = 1_048_576
 QUALITY_NONINFERIORITY_MARGIN = Decimal("0")
 EXPECTED_GPU_NAME = "NVIDIA GeForce RTX 4090"
@@ -172,6 +173,10 @@ MEASUREMENT_CONTRACT = {
     "request_terminal_latency": {
         "provenance": "same_process_perf_counter",
     },
+    "cumulative_init_to_terminal": {
+        "provenance": "initialization_plus_sum_of_request_perf_counter_durations",
+        "excludes_inter_request_progress_receipt_io": True,
+    },
     "ttft": {
         "provenance": "version_pinned_vllm_0_28_request_state_stats",
         "missing": "null",
@@ -213,7 +218,7 @@ NULL_POLICY = {
     "missing_observation_is_not_zero": True,
 }
 _SAMPLE_STOPPING_RULE = {
-    "analysis_lane": "controlled",
+    "crossover_analysis_lane": "controlled",
     "pair_count": PAIRS_PER_LANE,
     "curve_length": CONTROLLED_REQUESTS_PER_CELL,
     "first_crossing_rule": (
@@ -228,6 +233,66 @@ _SAMPLE_STOPPING_RULE = {
     "bootstrap_resamples": BOOTSTRAP_RESAMPLES,
     "bootstrap_unit": "whole_pair",
     "sign_flip_enumerations": SIGN_FLIP_ENUMERATIONS,
+    "sign_flip_semantics": (
+        "Exhaustive sign-symmetry permutation test; not randomized assignment "
+        "inference and assumes pair effects are sign-symmetric."
+    ),
+    "controlled_support_rule": (
+        "The simultaneous upper-band sustained crossing is observed and the "
+        "terminal-effect sign-symmetry permutation p-value is at most 0.05."
+    ),
+    "natural_timing_support_rule": (
+        "Correct, identical, reproducible natural outputs; negative mean terminal "
+        "compiled-minus-eager effect; and a whole-pair 95% percentile-bootstrap "
+        "upper endpoint less than or equal to zero."
+    ),
+    "small_sample_limitation": (
+        "The nonparametric simultaneous band uses eight lifecycle pairs and may "
+        "under-cover; supported claims also require the sign-symmetry test."
+    ),
+}
+
+CLAIM_REQUIREMENTS = {
+    "fixed-token-count-crossover": (
+        "terminal",
+        "completeness",
+        "fixed_count",
+        "controlled_supported_crossing",
+    ),
+    "output-identical-generation-crossover": (
+        "terminal",
+        "completeness",
+        "fixed_count",
+        "controlled_supported_crossing",
+        "controlled_output_identity",
+        "controlled_numeric_reproducibility",
+    ),
+    "numerically-reproducible-generation-crossover": (
+        "terminal",
+        "completeness",
+        "fixed_count",
+        "controlled_supported_crossing",
+        "controlled_output_identity",
+        "controlled_numeric_reproducibility",
+    ),
+    "natural-output-quality-preserved": (
+        "terminal",
+        "completeness",
+        "natural_correctness",
+    ),
+    "natural-end-to-end-causal-speedup": (
+        "terminal",
+        "completeness",
+        "natural_output_identity",
+        "natural_numeric_reproducibility",
+        "natural_correctness",
+        "natural_supported_speedup",
+    ),
+    "compile-cuda-graph-component-timing": (
+        "terminal",
+        "completeness",
+        "component_observability",
+    ),
 }
 
 ClaimState = Literal["supported", "unsupported", "not_applicable"]
@@ -1012,6 +1077,10 @@ class VLLMCompilePlan:
             },
             "lifecycle_controls": dict(LIFECYCLE_CONTROLS),
             "measurement_contract": dict(MEASUREMENT_CONTRACT),
+            "claim_requirements": {
+                claim_id: list(requirements)
+                for claim_id, requirements in CLAIM_REQUIREMENTS.items()
+            },
             "reproducibility": {
                 "schedule_seed": SCHEDULE_SEED,
                 "analysis_seed": ANALYSIS_SEED,
@@ -1039,12 +1108,17 @@ class VLLMCompilePlan:
                 "noninferiority_margin": canonical_decimal(
                     QUALITY_NONINFERIORITY_MARGIN
                 ),
-                "confidence_method": "deterministic_whole_pair_percentile_bootstrap",
+                "inference_method": (
+                    "deterministic whole-pair percentile bootstrap unless every "
+                    "pair effect is identical; identical effects are reported as "
+                    "a deterministic observed-workload fact without CI endpoints"
+                ),
                 "confidence_level": "0.95",
                 "resamples": BOOTSTRAP_RESAMPLES,
                 "support_rule": (
-                    "lower_confidence_endpoint_greater_than_or_equal_to_"
-                    "negative_noninferiority_margin"
+                    "lower confidence endpoint >= negative margin; when all pair "
+                    "effects are identical, the shared deterministic effect >= "
+                    "negative margin"
                 ),
             },
             "budget": {
@@ -1950,6 +2024,7 @@ class ClaimGate:
     natural_output_identity: bool
     natural_numeric_reproducibility: bool
     natural_correctness: bool
+    natural_supported_speedup: bool
     component_observability: bool
 
     def _flag_map(self) -> dict[str, bool]:
@@ -1965,60 +2040,23 @@ class ClaimGate:
             "natural_output_identity": self.natural_output_identity,
             "natural_numeric_reproducibility": self.natural_numeric_reproducibility,
             "natural_correctness": self.natural_correctness,
+            "natural_supported_speedup": self.natural_supported_speedup,
             "component_observability": self.component_observability,
         }
 
     def evaluate(self, claim_id: str) -> ClaimDecision:
-        requirements = {
-            "fixed-token-count-crossover": (
-                "terminal",
-                "completeness",
-                "fixed_count",
-                "controlled_supported_crossing",
-            ),
-            "output-identical-generation-crossover": (
-                "terminal",
-                "completeness",
-                "fixed_count",
-                "controlled_supported_crossing",
-                "controlled_output_identity",
-                "controlled_numeric_reproducibility",
-            ),
-            "numerically-reproducible-generation-crossover": (
-                "terminal",
-                "completeness",
-                "fixed_count",
-                "controlled_supported_crossing",
-                "controlled_output_identity",
-                "controlled_numeric_reproducibility",
-            ),
-            "natural-output-quality-preserved": (
-                "terminal",
-                "completeness",
-                "natural_correctness",
-            ),
-            "natural-end-to-end-causal-speedup": (
-                "terminal",
-                "completeness",
-                "natural_output_identity",
-                "natural_numeric_reproducibility",
-            ),
-            "compile-cuda-graph-component-timing": (
-                "terminal",
-                "completeness",
-                "component_observability",
-            ),
-        }
         if claim_id == "forward-pass-identical":
             return ClaimDecision(
                 claim_id=claim_id,
                 state="not_applicable",
                 blockers=("forward_pass_identity_is_out_of_scope",),
             )
-        if claim_id not in requirements:
+        if claim_id not in CLAIM_REQUIREMENTS:
             raise VLLMCompileContractError(f"unknown claim_id {claim_id!r}")
         flags = self._flag_map()
-        blockers = tuple(name for name in requirements[claim_id] if not flags[name])
+        blockers = tuple(
+            name for name in CLAIM_REQUIREMENTS[claim_id] if not flags[name]
+        )
         state: ClaimState = "supported" if not blockers else "unsupported"
         return ClaimDecision(claim_id=claim_id, state=state, blockers=blockers)
 
@@ -2053,11 +2091,13 @@ __all__ = [
     "CONTROLLED_CELL_ALLOWANCE_SECONDS",
     "CONTROLLED_CYCLES_PER_CELL",
     "CONTROLLED_REQUESTS_PER_CELL",
+    "CONTROLLED_SIGN_SYMMETRY_ALPHA",
     "CONTROLLED_SAMPLING",
     "CONTEXT_TIERS",
     "CROSSOVER_SCHEDULE",
     "ClaimDecision",
     "ClaimGate",
+    "CLAIM_REQUIREMENTS",
     "DERIVED_IMAGE_ID",
     "EXPORT_ALLOWANCE_SECONDS",
     "EXPECTED_DRIVER",

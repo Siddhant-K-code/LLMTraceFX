@@ -839,6 +839,48 @@
         "untouched_margin_usd": "0.8679666666666666666666666667"
       }
     },
+    "claim_requirements": {
+      "compile-cuda-graph-component-timing": [
+        "terminal",
+        "completeness",
+        "component_observability"
+      ],
+      "fixed-token-count-crossover": [
+        "terminal",
+        "completeness",
+        "fixed_count",
+        "controlled_supported_crossing"
+      ],
+      "natural-end-to-end-causal-speedup": [
+        "terminal",
+        "completeness",
+        "natural_output_identity",
+        "natural_numeric_reproducibility",
+        "natural_correctness",
+        "natural_supported_speedup"
+      ],
+      "natural-output-quality-preserved": [
+        "terminal",
+        "completeness",
+        "natural_correctness"
+      ],
+      "numerically-reproducible-generation-crossover": [
+        "terminal",
+        "completeness",
+        "fixed_count",
+        "controlled_supported_crossing",
+        "controlled_output_identity",
+        "controlled_numeric_reproducibility"
+      ],
+      "output-identical-generation-crossover": [
+        "terminal",
+        "completeness",
+        "fixed_count",
+        "controlled_supported_crossing",
+        "controlled_output_identity",
+        "controlled_numeric_reproducibility"
+      ]
+    },
     "execution_modes": {
       "compiled": {
         "compilation_mode": "VLLM_COMPILE",
@@ -887,6 +929,10 @@
       "cuda_graph_dispatch_counter": {
         "provenance": "documented_metric_without_stable_offline_snapshot_hook",
         "value": null
+      },
+      "cumulative_init_to_terminal": {
+        "excludes_inter_request_progress_receipt_io": true,
+        "provenance": "initialization_plus_sum_of_request_perf_counter_durations"
       },
       "gpu_memory": {
         "provenance": "sampled_nvidia_smi",
@@ -987,7 +1033,7 @@
       "missing_observation_is_not_zero": true,
       "null_requires_explicit_reason": true
     },
-    "plan_sha256": "sha256:d087f5914e07b597b8e812a0371a07443af39e6327117dd2173cf487b088ad9b",
+    "plan_sha256": "sha256:6ce57c3cef1ed7ea559520f783708866731c2026666370a005cdbdd026f4667d",
     "protocol_id": "qwen3-8b-vllm-crossover-v2",
     "provenance_policy": {
       "canonical_json_only": true,
@@ -998,14 +1044,14 @@
     },
     "quality_preservation": {
       "confidence_level": "0.95",
-      "confidence_method": "deterministic_whole_pair_percentile_bootstrap",
       "effect": "compiled_minus_eager_request_success_rate",
       "evaluator": "evaluate_workload",
       "independent_unit": "adjacent eager-compiled lifecycle pair",
+      "inference_method": "deterministic whole-pair percentile bootstrap unless every pair effect is identical; identical effects are reported as a deterministic observed-workload fact without CI endpoints",
       "lane": "natural",
       "noninferiority_margin": "0",
       "resamples": 20000,
-      "support_rule": "lower_confidence_endpoint_greater_than_or_equal_to_negative_noninferiority_margin"
+      "support_rule": "lower confidence endpoint >= negative margin; when all pair effects are identical, the shared deterministic effect >= negative margin"
     },
     "reproducibility": {
       "analysis_seed": 20260905,
@@ -1057,13 +1103,17 @@
       "vllm_source_commit": "2cf0a6915ce544dc493a0990f2ea38d81601128a"
     },
     "sample_stopping_rule": {
-      "analysis_lane": "controlled",
       "bootstrap_resamples": 20000,
       "bootstrap_unit": "whole_pair",
+      "controlled_support_rule": "The simultaneous upper-band sustained crossing is observed and the terminal-effect sign-symmetry permutation p-value is at most 0.05.",
+      "crossover_analysis_lane": "controlled",
       "curve_length": 144,
       "first_crossing_rule": "The first request ordinal where compiled_minus_eager cumulative time is less than or equal to zero.",
+      "natural_timing_support_rule": "Correct, identical, reproducible natural outputs; negative mean terminal compiled-minus-eager effect; and a whole-pair 95% percentile-bootstrap upper endpoint less than or equal to zero.",
       "pair_count": 8,
       "sign_flip_enumerations": 256,
+      "sign_flip_semantics": "Exhaustive sign-symmetry permutation test; not randomized assignment inference and assumes pair effects are sign-symmetric.",
+      "small_sample_limitation": "The nonparametric simultaneous band uses eight lifecycle pairs and may under-cover; supported claims also require the sign-symmetry test.",
       "sustained_crossing_rule": "The first request ordinal where compiled_minus_eager cumulative time is less than or equal to zero for that request and every later request; otherwise the pair is right censored at 144 requests."
     },
     "schedule": [

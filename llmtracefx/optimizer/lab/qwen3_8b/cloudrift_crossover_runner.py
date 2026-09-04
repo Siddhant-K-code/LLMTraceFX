@@ -751,7 +751,7 @@ def _request_record(
     response: Any,
     started_ns: int,
     ended_ns: int,
-    initialization_started_ns: int,
+    cumulative_measurement_ns: int,
 ) -> dict[str, Any]:
     output_ids = list(completion.token_ids)
     latency_seconds = (ended_ns - started_ns) / 1_000_000_000
@@ -777,16 +777,14 @@ def _request_record(
                 null_reason="same_process_perf_counter_unavailable",
             ),
             "cumulative_from_initialization_seconds": _typed_measurement(
-                value=(ended_ns - initialization_started_ns) / 1_000_000_000,
+                value=cumulative_measurement_ns / 1_000_000_000,
                 unit="seconds",
                 clock_domain="same_process_perf_counter",
                 provenance="measured_perf_counter_ns",
                 null_reason="same_process_perf_counter_unavailable",
             ),
             "latency_perf_counter_ns": ended_ns - started_ns,
-            "cumulative_from_initialization_perf_counter_ns": (
-                ended_ns - initialization_started_ns
-            ),
+            "cumulative_from_initialization_perf_counter_ns": cumulative_measurement_ns,
             "output_token_rate_tokens_per_second": _typed_measurement(
                 value=(
                     len(output_ids) / latency_seconds if latency_seconds > 0 else None
@@ -878,6 +876,7 @@ def run_cell(
         sampling = sampling_params_type(**_sampling_params_kwargs(mode_contract))
         tokens_prompt_type = inputs_module.TokensPrompt
         progress_path = output.with_name(f".{output.stem}-progress.json")
+        cumulative_measurement_ns = initialization_ready_ns - initialization_started_ns
         for request_index, descriptor in enumerate(descriptors, start=1):
             prompt_ids = list(prompt_ids_by_key[_prompt_key(descriptor)])
             started_ns = time.perf_counter_ns()
@@ -893,6 +892,7 @@ def run_cell(
             if len(response.outputs) != 1:
                 raise VLLMCompileContractError("request returned multiple completions")
             completion = response.outputs[0]
+            cumulative_measurement_ns += ended_ns - started_ns
             record = _request_record(
                 cell=cell,
                 descriptor=descriptor,
@@ -902,7 +902,7 @@ def run_cell(
                 response=response,
                 started_ns=started_ns,
                 ended_ns=ended_ns,
-                initialization_started_ns=initialization_started_ns,
+                cumulative_measurement_ns=cumulative_measurement_ns,
             )
             _verify_terminal_shape(cell, record)
             requests.append(record)

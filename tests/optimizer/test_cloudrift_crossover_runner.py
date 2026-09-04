@@ -555,6 +555,7 @@ def test_controlled_cell_uses_exact_sampling_and_records_each_generate(
     assert bundle.torch.matmul_precision == "highest"
 
     first = payload["requests"][0]
+    second = payload["requests"][1]
     last = payload["requests"][-1]
     assert first["cycle_index"] == 1
     assert first["base_ordinal"] == 1
@@ -566,6 +567,11 @@ def test_controlled_cell_uses_exact_sampling_and_records_each_generate(
     assert first["output_token_count"] == 96
     assert len(first["output_token_ids"]) == 96
     assert "decoded_output" not in first
+    assert (
+        second["timing"]["cumulative_from_initialization_perf_counter_ns"]
+        == first["timing"]["cumulative_from_initialization_perf_counter_ns"]
+        + second["timing"]["latency_perf_counter_ns"]
+    )
     assert first["metrics"]["ttft_seconds"] == {
         "value": 0.25,
         "unit": "seconds",
