@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import runpy
 from pathlib import Path
 
@@ -580,6 +581,10 @@ def test_successful_bundle_is_deterministic_and_verifies(tmp_path: Path) -> None
     plan_document = core.build_default_plan().to_dict()
     assert protocol["analysis"]["bootstrap_resamples"] == 40
     assert protocol["analysis"]["request_level_resampling"] is False
+    assert (
+        protocol["sample_stopping_rule"]
+        == core.build_default_plan().to_dict()["sample_stopping_rule"]
+    )
     assert protocol["quality_preservation"]["resamples"] == 20_000
     assert protocol["quality_preservation"]["executed_resamples"] == 40
     assert protocol["hardware_observations"]["observation_count"] == 65
@@ -676,6 +681,8 @@ def test_successful_bundle_is_deterministic_and_verifies(tmp_path: Path) -> None
     assert "Natural timing mean compiled-minus-eager terminal effect:" in report
     assert "95% whole-pair percentile interval" in report
     assert "Causal eligibility:" in report
+    assert "8 pairs per lane" in report
+    assert "intervals may under-cover" in report
     provenance = json.loads(
         (first / "provenance-null-matrix.json").read_text(encoding="utf-8")
     )
@@ -802,6 +809,40 @@ def _reseal_bundle(bundle: Path) -> None:
         for name in results.HASHED_FILES
     )
     (bundle / "SHA256SUMS").write_text(sums + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        "report.html",
+        "crossover.svg",
+        "provenance-null-matrix.json",
+        "evidence_bundle.py",
+    ],
+)
+def test_resealed_derived_artifact_tamper_is_rejected(
+    tmp_path: Path, artifact: str
+) -> None:
+    bundle = tmp_path / "bundle"
+    results.build_bundle(_workspace(tmp_path), bundle)
+    path = bundle / artifact
+    if artifact == "provenance-null-matrix.json":
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["fields"][0]["provenance"] = "tampered"
+        path.write_text(results._json_text(document), encoding="utf-8")
+    else:
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\n<!-- tampered -->\n",
+            encoding="utf-8",
+        )
+    _reseal_bundle(bundle)
+
+    with pytest.raises(results.CrossoverResultsError, match=re.escape(artifact)):
+        results.verify_bundle(bundle)
+    if artifact != "evidence_bundle.py":
+        standalone_verify = runpy.run_path(str(bundle / "evidence_bundle.py"))["verify"]
+        with pytest.raises(ValueError, match=re.escape(artifact)):
+            standalone_verify(bundle)
 
 
 @pytest.mark.parametrize("tamper", ["mode_slot_swap", "cross_pair_cell_swap"])
@@ -1357,7 +1398,13 @@ def test_censored_crossing_has_open_endpoints(tmp_path: Path) -> None:
     assert controlled["simultaneous_band_sustained_crossing"]["state"] == (
         "right_censored"
     )
-    assert controlled["supported_sustained_crossing"]["state"] == "right_censored"
+    assert controlled["supported_crossing_gate_satisfied"] is False
+    assert controlled["supported_sustained_crossing"] == {
+        "state": "unsupported",
+        "request_count": None,
+        "lower_bound": None,
+        "reason": "combined_band_crossing_and_sign_symmetry_gate_not_satisfied",
+    }
     assert controlled["supported_crossing_basis"] == (
         "simultaneous_upper_band_sustained_crossing_observed_and_"
         "terminal_effect_sign_symmetry_p_value_at_most_0.05"
@@ -1432,6 +1479,8 @@ def test_controlled_crossing_also_requires_sign_symmetry_support(
         controlled["terminal_effect_sign_flip_p_value"]
         > core.CONTROLLED_SIGN_SYMMETRY_ALPHA
     )
+    assert controlled["supported_crossing_gate_satisfied"] is False
+    assert controlled["supported_sustained_crossing"]["state"] == "unsupported"
     claims = json.loads((bundle / "claim-matrix.json").read_text(encoding="utf-8"))
     by_id = {claim["claim_id"]: claim for claim in claims["claims"]}
     assert by_id["fixed-token-count-crossover"] == {

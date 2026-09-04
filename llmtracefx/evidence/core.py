@@ -144,8 +144,8 @@ SCRIPT_ADAPTERS = {
         ("verify",),
     ),
     "vllm_crossover_results_v1": (
-        "evidence_bundle.py",
-        ("verify",),
+        "llmtracefx/evidence/vllm_crossover_results_verifier.py",
+        ("verify", "--bundle-dir", "{bundle}"),
     ),
 }
 
@@ -411,8 +411,7 @@ def _run_script_verifier(repo_root: Path, source: Mapping[str, Any]) -> None:
     adapter = source["adapter"]
     script_relative, argument_template = SCRIPT_ADAPTERS[adapter]
     bundle = _resolve_contained(repo_root, source["public_path"], directory=True)
-    script_root = bundle if adapter == "vllm_crossover_results_v1" else repo_root
-    script = _resolve_contained(script_root, script_relative)
+    script = _resolve_contained(repo_root, script_relative)
     arguments = tuple(
         str(bundle) if value == "{bundle}" else value for value in argument_template
     )
