@@ -917,6 +917,112 @@ SOURCES: tuple[dict[str, Any], ...] = (
             "MLX results are an incompatible scope and are not ranked here.",
         ),
     },
+    {
+        "evidence_id": "qwen3-8b-vllm-crossover-protocol-20260904",
+        "kind": "compile_break_even",
+        "status": "verified",
+        "outcome": "refused",
+        "public_path": "examples/optimizer/qwen3-8b-vllm-crossover-protocol",
+        "bundle_schema_version": "1",
+        "adapter": "vllm_crossover_protocol_v1",
+        "artifact_files": (
+            "README.md",
+            "SHA256SUMS",
+            "budget-plan.json",
+            "claim-matrix.json",
+            "evidence-contract.json",
+            "evidence_bundle.py",
+            "experiment-plan.json",
+            "methodology.svg",
+            "offline-preflight.json",
+            "protocol-sources.json",
+            "report.html",
+        ),
+        "captured_at": "2026-09-04T14:41:34.327+05:30",
+        "source_commit": None,
+        "model": {
+            "id": "Qwen/Qwen3-8B",
+            "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+            "quantization": "bfloat16",
+        },
+        "runtime": {
+            "name": "vLLM",
+            "version": "0.28.0",
+            "provider": "CloudRift (planned, not accessed)",
+        },
+        "hardware": {
+            "system": "NVIDIA GeForce RTX 4090, 24,564 MiB (planned, not attested)",
+            "architecture": "CUDA 13.0 (planned)",
+        },
+        "workload": {
+            "identity": "qwen3-8b-vllm-crossover-v2",
+            "context": "2K, 8K, and 16K tiers; exact pinned input-token arrays",
+            "request": (
+                "eight fresh pairs per lane; 144 fixed-count controlled requests "
+                "and 12 natural-output requests per cell"
+            ),
+        },
+        "measurements": (
+            {
+                "scope": "offline protocol generation and refusal state",
+                "provenance": "measured offline process; no provider or GPU operation",
+            },
+            {
+                "scope": "future lifecycle, request, output, quality, and memory fields",
+                "provenance": "preregistered schema only; all observations absent",
+            },
+        ),
+        "claims": _claims(
+            timing=("unsupported", "protocol only; no measured lifecycle exists"),
+            quality=("unsupported", "protocol only; no model output exists"),
+            cost=(
+                "supported",
+                "offline generation records zero spend and no execution authorization",
+            ),
+            memory=("unsupported", "protocol only; no GPU was accessed"),
+            process_attribution=(
+                "unsupported",
+                "lifecycle isolation is planned but was not executed",
+            ),
+            model_fit=("unsupported", "model was not downloaded or loaded"),
+            deployment_readiness=(
+                "unsupported",
+                "a preregistered benchmark is not a deployment assessment",
+            ),
+        ),
+        "supported_claims": (
+            "The versioned crossover methodology and fixed stopping rule are defined.",
+            "The offline bundle was generated without provider access, GPU use, or spend.",
+        ),
+        "unsupported_claims": (
+            "fixed-token-count or output-identical compilation crossover",
+            "natural-output quality preservation or causal serving speedup",
+            "model fit, GPU memory, provider spend, or provider teardown",
+            "general RTX 4090, provider, model-family, deployment, or SLA conclusions",
+        ),
+        "budget": {
+            "scope": "offline_zero_spend_and_future_list_rate_envelope",
+            "authorized_usd": 0.0,
+            "planned_usd": 2.132,
+            "reported_usd": None,
+            "inferred_usd": 0.0,
+            "limitation": (
+                "The USD 2.132 envelope is a future ceiling at USD 0.39/hour, "
+                "not authorization or observed spend."
+            ),
+        },
+        "dependencies": (
+            {
+                "evidence_id": "qwen3-8b-cloudrift-vllm-compile-20260903",
+                "relation": "uses_workload_contract",
+            },
+        ),
+        "limitations": (
+            "No provider lifecycle, container, model, request, or GPU observation exists.",
+            "Fixed token count would not establish output or forward-pass identity.",
+            "A future result remains conditional on one exact VM and runtime.",
+        ),
+    },
 )
 
 ADAPTERS = {
@@ -950,6 +1056,14 @@ ADAPTERS = {
     },
     "cloudrift_compile_v1": {
         "name": "cloudrift-compile.verify",
+        "version": VERIFIER_VERSION,
+    },
+    "vllm_crossover_protocol_v1": {
+        "name": "vllm-crossover-protocol.verify",
+        "version": VERIFIER_VERSION,
+    },
+    "vllm_crossover_results_v1": {
+        "name": "vllm-crossover-results.verify",
         "version": VERIFIER_VERSION,
     },
 }

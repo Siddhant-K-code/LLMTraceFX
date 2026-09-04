@@ -1,6 +1,6 @@
 # LLMTraceFX Makefile
 
-.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan cloudrift-plan test-deploy metal-evidence evidence-catalog evidence-catalog-verify m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication m5-autopsy m5-autopsy-run m5-autopsy-publication m5-autopsy-evidence-verify m5-control-plan m5-control-convert m5-control-bind m5-control-run m5-control-verify m5-control-report
+.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan cloudrift-plan test-deploy metal-evidence evidence-catalog evidence-catalog-verify m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication m5-autopsy m5-autopsy-run m5-autopsy-publication m5-autopsy-evidence-verify m5-control-plan m5-control-convert m5-control-bind m5-control-run m5-control-verify m5-control-report vllm-crossover-plan vllm-crossover-verify
 
 help:  ## Show this help message
 	@echo "LLMTraceFX - evidence-first inference toolkit"
@@ -195,6 +195,14 @@ m5-control-verify:  ## Verify pinned model files and evidence bindings
 
 m5-control-report:  ## Rebuild self-contained control/tune/compare reports
 	uv run --extra mlx llmtracefx-m5-control report --manifest $(M5_CONTROL_MANIFEST) --workspace $(M5_CONTROL_WORKSPACE)
+
+VLLM_CROSSOVER_BUNDLE ?= examples/optimizer/qwen3-8b-vllm-crossover-protocol
+
+vllm-crossover-plan:  ## Print the no-spend controlled vLLM crossover plan
+	uv run --offline --no-sync llmtracefx-vllm-crossover plan
+
+vllm-crossover-verify:  ## Verify the committed offline crossover protocol bundle
+	uv run --offline --no-sync python -I $(VLLM_CROSSOVER_BUNDLE)/evidence_bundle.py verify
 
 metal-evidence:  ## Capture privacy-safe Metal evidence (requires OUTPUT_DIR)
 	@test -n "$(OUTPUT_DIR)" || { echo "OUTPUT_DIR is required" >&2; exit 2; }

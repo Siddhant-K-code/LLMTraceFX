@@ -216,6 +216,40 @@
     {
       "claims": {
         "cost": {
+          "provenance": "offline generation records zero spend and no execution authorization",
+          "state": "supported"
+        },
+        "deployment_readiness": {
+          "provenance": "a preregistered benchmark is not a deployment assessment",
+          "state": "unsupported"
+        },
+        "memory": {
+          "provenance": "protocol only; no GPU was accessed",
+          "state": "unsupported"
+        },
+        "model_fit": {
+          "provenance": "model was not downloaded or loaded",
+          "state": "unsupported"
+        },
+        "process_attribution": {
+          "provenance": "lifecycle isolation is planned but was not executed",
+          "state": "unsupported"
+        },
+        "quality": {
+          "provenance": "protocol only; no model output exists",
+          "state": "unsupported"
+        },
+        "timing": {
+          "provenance": "protocol only; no measured lifecycle exists",
+          "state": "unsupported"
+        }
+      },
+      "evidence_id": "qwen3-8b-vllm-crossover-protocol-20260904",
+      "outcome": "refused"
+    },
+    {
+      "claims": {
+        "cost": {
           "provenance": "local execution has no spend claim",
           "state": "not_applicable"
         },

@@ -1,0 +1,834 @@
+{
+  "actual_spend_usd": "0",
+  "budget": {
+    "lifecycles": [
+      {
+        "ceiling_usd": "0.2925",
+        "cell_id": null,
+        "kind": "preflight",
+        "lifecycle_id": "preflight-01",
+        "line_id": "preflight",
+        "ordinal": 1,
+        "planned_seconds": 2700,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-01-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-01-01",
+        "line_id": "natural-cell",
+        "ordinal": 2,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-01",
+        "line_id": "reset",
+        "ordinal": 3,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-01-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-01-02",
+        "line_id": "natural-cell",
+        "ordinal": 4,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-02",
+        "line_id": "reset",
+        "ordinal": 5,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-01-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-01-01",
+        "line_id": "controlled-cell",
+        "ordinal": 6,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-03",
+        "line_id": "reset",
+        "ordinal": 7,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-01-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-01-02",
+        "line_id": "controlled-cell",
+        "ordinal": 8,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-04",
+        "line_id": "reset",
+        "ordinal": 9,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-02-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-02-01",
+        "line_id": "natural-cell",
+        "ordinal": 10,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-05",
+        "line_id": "reset",
+        "ordinal": 11,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-02-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-02-02",
+        "line_id": "natural-cell",
+        "ordinal": 12,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-06",
+        "line_id": "reset",
+        "ordinal": 13,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-02-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-02-01",
+        "line_id": "controlled-cell",
+        "ordinal": 14,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-07",
+        "line_id": "reset",
+        "ordinal": 15,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-02-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-02-02",
+        "line_id": "controlled-cell",
+        "ordinal": 16,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-08",
+        "line_id": "reset",
+        "ordinal": 17,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-03-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-03-01",
+        "line_id": "natural-cell",
+        "ordinal": 18,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-09",
+        "line_id": "reset",
+        "ordinal": 19,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-03-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-03-02",
+        "line_id": "natural-cell",
+        "ordinal": 20,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-10",
+        "line_id": "reset",
+        "ordinal": 21,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-03-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-03-01",
+        "line_id": "controlled-cell",
+        "ordinal": 22,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-11",
+        "line_id": "reset",
+        "ordinal": 23,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-03-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-03-02",
+        "line_id": "controlled-cell",
+        "ordinal": 24,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-12",
+        "line_id": "reset",
+        "ordinal": 25,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-04-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-04-01",
+        "line_id": "controlled-cell",
+        "ordinal": 26,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-13",
+        "line_id": "reset",
+        "ordinal": 27,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-04-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-04-02",
+        "line_id": "controlled-cell",
+        "ordinal": 28,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-14",
+        "line_id": "reset",
+        "ordinal": 29,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-04-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-04-01",
+        "line_id": "natural-cell",
+        "ordinal": 30,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-15",
+        "line_id": "reset",
+        "ordinal": 31,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-04-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-04-02",
+        "line_id": "natural-cell",
+        "ordinal": 32,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-16",
+        "line_id": "reset",
+        "ordinal": 33,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-05-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-05-01",
+        "line_id": "natural-cell",
+        "ordinal": 34,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-17",
+        "line_id": "reset",
+        "ordinal": 35,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-05-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-05-02",
+        "line_id": "natural-cell",
+        "ordinal": 36,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-18",
+        "line_id": "reset",
+        "ordinal": 37,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-05-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-05-01",
+        "line_id": "controlled-cell",
+        "ordinal": 38,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-19",
+        "line_id": "reset",
+        "ordinal": 39,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-05-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-05-02",
+        "line_id": "controlled-cell",
+        "ordinal": 40,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-20",
+        "line_id": "reset",
+        "ordinal": 41,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-06-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-06-01",
+        "line_id": "controlled-cell",
+        "ordinal": 42,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-21",
+        "line_id": "reset",
+        "ordinal": 43,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-06-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-06-02",
+        "line_id": "controlled-cell",
+        "ordinal": 44,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-22",
+        "line_id": "reset",
+        "ordinal": 45,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-06-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-06-01",
+        "line_id": "natural-cell",
+        "ordinal": 46,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-23",
+        "line_id": "reset",
+        "ordinal": 47,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-06-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-06-02",
+        "line_id": "natural-cell",
+        "ordinal": 48,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-24",
+        "line_id": "reset",
+        "ordinal": 49,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-07-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-07-01",
+        "line_id": "controlled-cell",
+        "ordinal": 50,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-25",
+        "line_id": "reset",
+        "ordinal": 51,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-07-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-07-02",
+        "line_id": "controlled-cell",
+        "ordinal": 52,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-26",
+        "line_id": "reset",
+        "ordinal": 53,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-07-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-07-01",
+        "line_id": "natural-cell",
+        "ordinal": 54,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-27",
+        "line_id": "reset",
+        "ordinal": 55,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-07-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-07-02",
+        "line_id": "natural-cell",
+        "ordinal": 56,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-28",
+        "line_id": "reset",
+        "ordinal": 57,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-08-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-08-01",
+        "line_id": "controlled-cell",
+        "ordinal": 58,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-29",
+        "line_id": "reset",
+        "ordinal": 59,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-08-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-08-02",
+        "line_id": "controlled-cell",
+        "ordinal": 60,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-30",
+        "line_id": "reset",
+        "ordinal": 61,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-08-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-08-01",
+        "line_id": "natural-cell",
+        "ordinal": 62,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-31",
+        "line_id": "reset",
+        "ordinal": 63,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-08-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-08-02",
+        "line_id": "natural-cell",
+        "ordinal": 64,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0975",
+        "cell_id": null,
+        "kind": "export",
+        "lifecycle_id": "export-01",
+        "line_id": "export",
+        "ordinal": 65,
+        "planned_seconds": 900,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.2925",
+        "cell_id": null,
+        "kind": "teardown",
+        "lifecycle_id": "teardown-01",
+        "line_id": "teardown",
+        "ordinal": 66,
+        "planned_seconds": 2700,
+        "rate_usd_per_hour": "0.39"
+      }
+    ],
+    "lines": [
+      {
+        "amount_usd": "0.2925",
+        "kind": "preflight",
+        "lifecycle_ids": [
+          "preflight-01"
+        ],
+        "line_id": "preflight",
+        "occurrences": 1,
+        "rate_usd_per_hour": "0.39",
+        "reservable": true,
+        "seconds_per_occurrence": 2700,
+        "total_seconds": 2700
+      },
+      {
+        "amount_usd": "0.832",
+        "kind": "cell",
+        "lifecycle_ids": [
+          "controlled-cell-01-01",
+          "controlled-cell-01-02",
+          "controlled-cell-02-01",
+          "controlled-cell-02-02",
+          "controlled-cell-03-01",
+          "controlled-cell-03-02",
+          "controlled-cell-04-01",
+          "controlled-cell-04-02",
+          "controlled-cell-05-01",
+          "controlled-cell-05-02",
+          "controlled-cell-06-01",
+          "controlled-cell-06-02",
+          "controlled-cell-07-01",
+          "controlled-cell-07-02",
+          "controlled-cell-08-01",
+          "controlled-cell-08-02"
+        ],
+        "line_id": "controlled-cell",
+        "occurrences": 16,
+        "rate_usd_per_hour": "0.39",
+        "reservable": true,
+        "seconds_per_occurrence": 480,
+        "total_seconds": 7680
+      },
+      {
+        "amount_usd": "0.416",
+        "kind": "cell",
+        "lifecycle_ids": [
+          "natural-cell-01-01",
+          "natural-cell-01-02",
+          "natural-cell-02-01",
+          "natural-cell-02-02",
+          "natural-cell-03-01",
+          "natural-cell-03-02",
+          "natural-cell-04-01",
+          "natural-cell-04-02",
+          "natural-cell-05-01",
+          "natural-cell-05-02",
+          "natural-cell-06-01",
+          "natural-cell-06-02",
+          "natural-cell-07-01",
+          "natural-cell-07-02",
+          "natural-cell-08-01",
+          "natural-cell-08-02"
+        ],
+        "line_id": "natural-cell",
+        "occurrences": 16,
+        "rate_usd_per_hour": "0.39",
+        "reservable": true,
+        "seconds_per_occurrence": 240,
+        "total_seconds": 3840
+      },
+      {
+        "amount_usd": "0.2015",
+        "kind": "reset",
+        "lifecycle_ids": [
+          "reset-01",
+          "reset-02",
+          "reset-03",
+          "reset-04",
+          "reset-05",
+          "reset-06",
+          "reset-07",
+          "reset-08",
+          "reset-09",
+          "reset-10",
+          "reset-11",
+          "reset-12",
+          "reset-13",
+          "reset-14",
+          "reset-15",
+          "reset-16",
+          "reset-17",
+          "reset-18",
+          "reset-19",
+          "reset-20",
+          "reset-21",
+          "reset-22",
+          "reset-23",
+          "reset-24",
+          "reset-25",
+          "reset-26",
+          "reset-27",
+          "reset-28",
+          "reset-29",
+          "reset-30",
+          "reset-31"
+        ],
+        "line_id": "reset",
+        "occurrences": 31,
+        "rate_usd_per_hour": "0.39",
+        "reservable": true,
+        "seconds_per_occurrence": 60,
+        "total_seconds": 1860
+      },
+      {
+        "amount_usd": "0.0975",
+        "kind": "export",
+        "lifecycle_ids": [
+          "export-01"
+        ],
+        "line_id": "export",
+        "occurrences": 1,
+        "rate_usd_per_hour": "0.39",
+        "reservable": true,
+        "seconds_per_occurrence": 900,
+        "total_seconds": 900
+      },
+      {
+        "amount_usd": "0.2925",
+        "kind": "teardown",
+        "lifecycle_ids": [
+          "teardown-01"
+        ],
+        "line_id": "teardown",
+        "occurrences": 1,
+        "rate_usd_per_hour": "0.39",
+        "reservable": true,
+        "seconds_per_occurrence": 2700,
+        "total_seconds": 2700
+      },
+      {
+        "amount_usd": "0.8679666666666666666666666667",
+        "kind": "margin",
+        "lifecycle_ids": [],
+        "line_id": "untouched-margin",
+        "occurrences": 1,
+        "rate_usd_per_hour": "0.39",
+        "reservable": false,
+        "seconds_per_occurrence": 8012,
+        "total_seconds": 8012
+      }
+    ],
+    "summary": {
+      "absolute_ceiling_seconds": 27692,
+      "absolute_ceiling_usd": "2.999966666666666666666666667",
+      "active_planned_seconds": 19680,
+      "active_planned_usd": "2.132",
+      "anticipated_rate_usd_per_hour": "0.39",
+      "hard_cap_usd": "3",
+      "untouched_margin_seconds": 8012,
+      "untouched_margin_usd": "0.8679666666666666666666666667"
+    }
+  },
+  "execution_state": "not_run",
+  "later_authorization_required": true,
+  "provider_reported_spend_null_reason": "no provider operation occurred",
+  "provider_reported_spend_usd": null,
+  "schema_version": "1",
+  "spend_authority": false
+}

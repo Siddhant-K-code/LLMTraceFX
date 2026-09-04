@@ -8,12 +8,14 @@ digraph evidence {
   "openrouter-glm-2k-comparison-20260902" [label="openrouter-glm-2k-comparison-20260902\\ncomparison / verified\\nz-ai/glm-5.3 and z-ai/glm-5.3-flash\\nclaims: timing, quality, cost", fontcolor="#c23d16"];
   "qwen3-8b-cloudrift-vllm-compile-20260903" [label="qwen3-8b-cloudrift-vllm-compile-20260903\\ncomparison / verified\\nQwen/Qwen3-8B\\nclaims: timing, quality, cost, memory, model_fit", fontcolor="#c23d16"];
   "qwen3-8b-m5-pro-control-20260902" [label="qwen3-8b-m5-pro-control-20260902\\ncompleted / verified\\nQwen/Qwen3-8B\\nclaims: timing, quality, memory, model_fit", fontcolor="#17513a"];
+  "qwen3-8b-vllm-crossover-protocol-20260904" [label="qwen3-8b-vllm-crossover-protocol-20260904\\nrefused / verified\\nQwen/Qwen3-8B\\nclaims: cost", fontcolor="#4a5157"];
   "qwen38-27b-m5-pro-clean-boot-autopsy-20260901" [label="qwen38-27b-m5-pro-clean-boot-autopsy-20260901\\noom / verified\\nmlx-community/Qwen3.8-27B-4bit\\nclaims: timing, memory, model_fit", fontcolor="#8c1d28"];
   "qwen38-27b-m5-pro-fit-frontier-20260901" [label="qwen38-27b-m5-pro-fit-frontier-20260901\\noom / verified\\nmlx-community/Qwen3.8-27B-4bit\\nclaims: timing, memory, model_fit", fontcolor="#8c1d28"];
   "qwen38-27b-m5-pro-lab-oom-20260831" [label="qwen38-27b-m5-pro-lab-oom-20260831\\noom / verified\\nmlx-community/Qwen3.8-27B-4bit\\nclaims: timing, memory, model_fit", fontcolor="#8c1d28"];
   "cloudrift-glm53flash-preflight-20260902" -> "modal-glm53flash-preflight-20260902" [label="same_model_as"];
   "openrouter-glm-2k-comparison-20260902" -> "qwen3-8b-m5-pro-control-20260902" [label="compares"];
   "qwen3-8b-cloudrift-vllm-compile-20260903" -> "qwen3-8b-m5-pro-control-20260902" [label="uses_workload_contract"];
+  "qwen3-8b-vllm-crossover-protocol-20260904" -> "qwen3-8b-cloudrift-vllm-compile-20260903" [label="uses_workload_contract"];
   "qwen38-27b-m5-pro-clean-boot-autopsy-20260901" -> "qwen38-27b-m5-pro-fit-frontier-20260901" [label="same_model_as"];
   "qwen38-27b-m5-pro-clean-boot-autopsy-20260901" -> "qwen38-27b-m5-pro-lab-oom-20260831" [label="same_model_as"];
   "qwen38-27b-m5-pro-fit-frontier-20260901" -> "qwen38-27b-m5-pro-lab-oom-20260831" [label="same_model_as"];

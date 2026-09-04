@@ -139,6 +139,14 @@ SCRIPT_ADAPTERS = {
         "examples/optimizer/qwen3-8b-vllm-compile-break-even/evidence_bundle.py",
         ("verify",),
     ),
+    "vllm_crossover_protocol_v1": (
+        "examples/optimizer/qwen3-8b-vllm-crossover-protocol/evidence_bundle.py",
+        ("verify",),
+    ),
+    "vllm_crossover_results_v1": (
+        "evidence_bundle.py",
+        ("verify",),
+    ),
 }
 
 
@@ -402,8 +410,9 @@ def _verify_legacy_pins(repo_root: Path, source: Mapping[str, Any]) -> None:
 def _run_script_verifier(repo_root: Path, source: Mapping[str, Any]) -> None:
     adapter = source["adapter"]
     script_relative, argument_template = SCRIPT_ADAPTERS[adapter]
-    script = _resolve_contained(repo_root, script_relative)
     bundle = _resolve_contained(repo_root, source["public_path"], directory=True)
+    script_root = bundle if adapter == "vllm_crossover_results_v1" else repo_root
+    script = _resolve_contained(script_root, script_relative)
     arguments = tuple(
         str(bundle) if value == "{bundle}" else value for value in argument_template
     )
@@ -536,6 +545,13 @@ def _verify_source_bindings(repo_root: Path, source: Mapping[str, Any]) -> None:
         source_commit = contract["collection_source_commit"]
         model_id = inventory["model_id"]
         model_revision = inventory["revision"]
+    elif evidence_id == "qwen3-8b-vllm-crossover-protocol-20260904":
+        contract = _load_json(bundle / "evidence-contract.json")
+        plan = _load_json(bundle / "experiment-plan.json")
+        schema = contract["schema_version"]
+        captured = contract["captured_at"]
+        model_id = plan["model"]["id"]
+        model_revision = plan["model"]["revision"]
     else:  # pragma: no cover - SOURCES is a closed registry
         raise CatalogError(f"{evidence_id} has no source binding contract")
     if str(schema) != source["bundle_schema_version"]:
@@ -1037,11 +1053,10 @@ def _svg(graph: Mapping[str, Any]) -> str:
         "comparison": "#c23d16",
     }
     parts = [
-        f'<svg viewBox="0 0 {width} {height}" role="img" '
-        'aria-labelledby="title desc">',
+        f'<svg viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
         '<title id="title">LLMTraceFX evidence lineage graph</title>',
         f'<desc id="desc">{len(graph["nodes"])} verified public evidence bundles '
-        f'and {len(graph["edges"])} typed metadata-backed lineage edges.</desc>',
+        f"and {len(graph['edges'])} typed metadata-backed lineage edges.</desc>",
         '<rect width="100%" height="100%" fill="#f4f1ea"/>',
         '<text x="55" y="42" fill="#16181a" font-family="system-ui,sans-serif" '
         'font-size="26" font-weight="700">Evidence lineage</text>',
@@ -1112,7 +1127,7 @@ def _html(catalog: Mapping[str, Any], graph_svg: str) -> str:
             + "</tr>"
         )
     headers = "".join(
-        f"<th scope=\"col\">{html.escape(dimension.replace('_', ' '))}</th>"
+        f'<th scope="col">{html.escape(dimension.replace("_", " "))}</th>'
         for dimension in CLAIM_DIMENSIONS
     )
     tokens = TOKENS_CSS
@@ -1155,7 +1170,7 @@ state supported, unsupported, or not applicable; absence is never converted to y
 <h2 id="matrix-title">Claim matrix</h2>
 <div class="table-wrap"><table>
 <thead><tr><th scope="col">Evidence</th>{headers}</tr></thead>
-<tbody>{''.join(rows)}</tbody>
+<tbody>{"".join(rows)}</tbody>
 </table></div>
 </section>
 </main></body></html>

@@ -1,0 +1,54 @@
+{
+  "claims": [
+    {
+      "claim_id": "offline-protocol-defined",
+      "evidence": "experiment-plan.json",
+      "provenance": "repository",
+      "state": "supported"
+    },
+    {
+      "claim_id": "zero-spend-offline-generation",
+      "evidence": "offline-preflight.json",
+      "provenance": "offline_process",
+      "state": "supported"
+    },
+    {
+      "claim_id": "fixed-token-count-crossover",
+      "evidence": null,
+      "provenance": "not_observed",
+      "state": "unsupported"
+    },
+    {
+      "claim_id": "output-identical-generation-crossover",
+      "evidence": null,
+      "provenance": "not_observed",
+      "state": "unsupported"
+    },
+    {
+      "claim_id": "forward-pass-identical-crossover",
+      "evidence": null,
+      "provenance": "unsupported_interface",
+      "state": "not_applicable"
+    },
+    {
+      "claim_id": "natural-output-quality-preserved",
+      "evidence": null,
+      "provenance": "not_observed",
+      "state": "unsupported"
+    },
+    {
+      "claim_id": "compile-or-cuda-graph-component-time",
+      "evidence": null,
+      "provenance": "not_observed",
+      "state": "unsupported"
+    },
+    {
+      "claim_id": "provider-reported-spend-or-teardown",
+      "evidence": null,
+      "provenance": "not_observed",
+      "state": "unsupported"
+    }
+  ],
+  "execution_state": "not_run",
+  "schema_version": "1"
+}

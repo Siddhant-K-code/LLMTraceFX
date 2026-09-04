@@ -584,6 +584,18 @@
             "name": "sha256-allowlist",
             "version": "1"
           }
+        },
+        {
+          "const": {
+            "name": "vllm-crossover-protocol.verify",
+            "version": "1"
+          }
+        },
+        {
+          "const": {
+            "name": "vllm-crossover-results.verify",
+            "version": "1"
+          }
         }
       ]
     },

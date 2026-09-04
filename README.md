@@ -139,6 +139,35 @@ version, run binding, and artifact hashes still match. A complete hash-matching
 run is resumed by default. Failed, partial, mismatched, and unsupported rows
 remain visible instead of being scored as successes.
 
+### Controlled vLLM crossover protocol
+
+`llmtracefx-vllm-crossover plan` renders the preregistered Qwen3-8B vLLM
+compilation crossover offline. It defines separate fixed-token-count and
+natural-output lanes, eight fresh eager/compiled lifecycle pairs per lane,
+counterbalanced order, whole-pair uncertainty, and a strict list-rate budget.
+
+```bash
+uv run --offline --no-sync llmtracefx-vllm-crossover plan
+make vllm-crossover-verify
+```
+
+These commands do not authenticate, contact CloudRift or Modal, download a
+model, use a GPU, or authorize spend. The controlled lane fixes decode-step
+count, not output identity; unequal output token arrays are never described as
+output-controlled. A paid `run` requires a separate exact-plan authorization
+receipt and controls Docker only on an already provisioned local host. It
+contains no provider or SSH client. Any temporary public-key access is managed
+out of band; passwords, private keys, API tokens, host addresses, usernames,
+ports, and provider credentials are not accepted. Authorization is
+content-hashed and binds the pinned image, billing start, zero-retry rule, and
+external shutdown deadline.
+
+Only a fully completed 32-cell workspace can be published with
+`llmtracefx-vllm-crossover-results build --workspace ... --output ...`. The
+builder revalidates lifecycle, hardware, prompt, output, correctness, budget,
+and teardown evidence; it resamples whole lifecycle pairs and preserves
+unobservable request/compile fields as explicit nulls.
+
 ### Tune within one target
 
 `tune` reads existing `verification.json` and `final_record.json` files. It

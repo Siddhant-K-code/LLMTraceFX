@@ -1,0 +1,32 @@
+{
+  "files": [
+    {
+      "bytes": 78714,
+      "path": "llmtracefx/optimizer/lab/qwen3_8b/vllm_compile.py",
+      "sha256": "sha256:a9a2592a5c3a5a558b4cbd0e96b1656e30e0982efdc8cc369281f8f6d68fc61c"
+    },
+    {
+      "bytes": 39467,
+      "path": "llmtracefx/optimizer/lab/qwen3_8b/cloudrift_crossover.py",
+      "sha256": "sha256:8e413454db00edbf0aa3d2f00a084bc05673523848a652b0ae275f937bcf6aba"
+    },
+    {
+      "bytes": 37245,
+      "path": "llmtracefx/optimizer/lab/qwen3_8b/cloudrift_crossover_runner.py",
+      "sha256": "sha256:b15ba66d35c6002a328995357993392c61816e4b20294f8caf7dc4215e114947"
+    },
+    {
+      "bytes": 23540,
+      "path": "llmtracefx/optimizer/lab/qwen3_8b/cloudrift_crossover_evidence.py",
+      "sha256": "sha256:842405719b4b8c3863c73beec438ca800da32932a80ecc5b34c2ccd2fc241769"
+    },
+    {
+      "bytes": 127439,
+      "path": "llmtracefx/optimizer/lab/qwen3_8b/cloudrift_crossover_results.py",
+      "sha256": "sha256:8f05d40c41d48f8635b87fbf65939cd425093325790a9ace08f7297db78f30a2"
+    }
+  ],
+  "implementation_base_head": "266b42bc7659b3ab147f199f293bfc033324f763",
+  "schema_version": "1",
+  "source_set_sha256": "sha256:34ba6b1a0094f7f39230ea98d1529e116d556fe19c2ed5164ad4c80f90d2153d"
+}

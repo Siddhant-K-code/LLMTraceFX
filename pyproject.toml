@@ -99,6 +99,8 @@ llmtracefx-cloudrift = "llmtracefx.deploy.cloudrift_cli:main"
 llmtracefx-m5-lab = "llmtracefx.optimizer.lab.cli:main"
 llmtracefx-m5-frontier = "llmtracefx.optimizer.lab.frontier:main"
 llmtracefx-m5-control = "llmtracefx.optimizer.lab.qwen3_8b.cli:main"
+llmtracefx-vllm-crossover = "llmtracefx.optimizer.lab.qwen3_8b.cloudrift_crossover:main"
+llmtracefx-vllm-crossover-results = "llmtracefx.optimizer.lab.qwen3_8b.cloudrift_crossover_results:main"
 llmtracefx-evidence = "llmtracefx.evidence.cli:main"
 
 [tool.setuptools.packages.find]

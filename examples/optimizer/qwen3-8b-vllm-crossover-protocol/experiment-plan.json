@@ -1,0 +1,1412 @@
+{
+  "analysis_seed": 20260905,
+  "budget": {
+    "lifecycles": [
+      {
+        "ceiling_usd": "0.2925",
+        "cell_id": null,
+        "kind": "preflight",
+        "lifecycle_id": "preflight-01",
+        "line_id": "preflight",
+        "ordinal": 1,
+        "planned_seconds": 2700,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-01-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-01-01",
+        "line_id": "natural-cell",
+        "ordinal": 2,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-01",
+        "line_id": "reset",
+        "ordinal": 3,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-01-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-01-02",
+        "line_id": "natural-cell",
+        "ordinal": 4,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-02",
+        "line_id": "reset",
+        "ordinal": 5,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-01-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-01-01",
+        "line_id": "controlled-cell",
+        "ordinal": 6,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-03",
+        "line_id": "reset",
+        "ordinal": 7,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-01-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-01-02",
+        "line_id": "controlled-cell",
+        "ordinal": 8,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-04",
+        "line_id": "reset",
+        "ordinal": 9,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-02-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-02-01",
+        "line_id": "natural-cell",
+        "ordinal": 10,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-05",
+        "line_id": "reset",
+        "ordinal": 11,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-02-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-02-02",
+        "line_id": "natural-cell",
+        "ordinal": 12,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-06",
+        "line_id": "reset",
+        "ordinal": 13,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-02-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-02-01",
+        "line_id": "controlled-cell",
+        "ordinal": 14,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-07",
+        "line_id": "reset",
+        "ordinal": 15,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-02-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-02-02",
+        "line_id": "controlled-cell",
+        "ordinal": 16,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-08",
+        "line_id": "reset",
+        "ordinal": 17,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-03-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-03-01",
+        "line_id": "natural-cell",
+        "ordinal": 18,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-09",
+        "line_id": "reset",
+        "ordinal": 19,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-03-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-03-02",
+        "line_id": "natural-cell",
+        "ordinal": 20,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-10",
+        "line_id": "reset",
+        "ordinal": 21,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-03-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-03-01",
+        "line_id": "controlled-cell",
+        "ordinal": 22,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-11",
+        "line_id": "reset",
+        "ordinal": 23,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-03-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-03-02",
+        "line_id": "controlled-cell",
+        "ordinal": 24,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-12",
+        "line_id": "reset",
+        "ordinal": 25,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-04-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-04-01",
+        "line_id": "controlled-cell",
+        "ordinal": 26,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-13",
+        "line_id": "reset",
+        "ordinal": 27,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-04-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-04-02",
+        "line_id": "controlled-cell",
+        "ordinal": 28,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-14",
+        "line_id": "reset",
+        "ordinal": 29,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-04-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-04-01",
+        "line_id": "natural-cell",
+        "ordinal": 30,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-15",
+        "line_id": "reset",
+        "ordinal": 31,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-04-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-04-02",
+        "line_id": "natural-cell",
+        "ordinal": 32,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-16",
+        "line_id": "reset",
+        "ordinal": 33,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-05-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-05-01",
+        "line_id": "natural-cell",
+        "ordinal": 34,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-17",
+        "line_id": "reset",
+        "ordinal": 35,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-05-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-05-02",
+        "line_id": "natural-cell",
+        "ordinal": 36,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-18",
+        "line_id": "reset",
+        "ordinal": 37,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-05-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-05-01",
+        "line_id": "controlled-cell",
+        "ordinal": 38,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-19",
+        "line_id": "reset",
+        "ordinal": 39,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-05-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-05-02",
+        "line_id": "controlled-cell",
+        "ordinal": 40,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-20",
+        "line_id": "reset",
+        "ordinal": 41,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-06-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-06-01",
+        "line_id": "controlled-cell",
+        "ordinal": 42,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-21",
+        "line_id": "reset",
+        "ordinal": 43,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-06-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-06-02",
+        "line_id": "controlled-cell",
+        "ordinal": 44,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-22",
+        "line_id": "reset",
+        "ordinal": 45,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-06-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-06-01",
+        "line_id": "natural-cell",
+        "ordinal": 46,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-23",
+        "line_id": "reset",
+        "ordinal": 47,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-06-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-06-02",
+        "line_id": "natural-cell",
+        "ordinal": 48,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-24",
+        "line_id": "reset",
+        "ordinal": 49,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-07-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-07-01",
+        "line_id": "controlled-cell",
+        "ordinal": 50,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-25",
+        "line_id": "reset",
+        "ordinal": 51,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-07-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-07-02",
+        "line_id": "controlled-cell",
+        "ordinal": 52,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-26",
+        "line_id": "reset",
+        "ordinal": 53,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-07-period-01-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-07-01",
+        "line_id": "natural-cell",
+        "ordinal": 54,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-27",
+        "line_id": "reset",
+        "ordinal": 55,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-07-period-02-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-07-02",
+        "line_id": "natural-cell",
+        "ordinal": 56,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-28",
+        "line_id": "reset",
+        "ordinal": 57,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-08-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-08-01",
+        "line_id": "controlled-cell",
+        "ordinal": 58,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-29",
+        "line_id": "reset",
+        "ordinal": 59,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.052",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-08-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "controlled-cell-08-02",
+        "line_id": "controlled-cell",
+        "ordinal": 60,
+        "planned_seconds": 480,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-30",
+        "line_id": "reset",
+        "ordinal": 61,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-08-period-01-compiled",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-08-01",
+        "line_id": "natural-cell",
+        "ordinal": 62,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0065",
+        "cell_id": null,
+        "kind": "reset",
+        "lifecycle_id": "reset-31",
+        "line_id": "reset",
+        "ordinal": 63,
+        "planned_seconds": 60,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.026",
+        "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-08-period-02-eager",
+        "kind": "cell",
+        "lifecycle_id": "natural-cell-08-02",
+        "line_id": "natural-cell",
+        "ordinal": 64,
+        "planned_seconds": 240,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.0975",
+        "cell_id": null,
+        "kind": "export",
+        "lifecycle_id": "export-01",
+        "line_id": "export",
+        "ordinal": 65,
+        "planned_seconds": 900,
+        "rate_usd_per_hour": "0.39"
+      },
+      {
+        "ceiling_usd": "0.2925",
+        "cell_id": null,
+        "kind": "teardown",
+        "lifecycle_id": "teardown-01",
+        "line_id": "teardown",
+        "ordinal": 66,
+        "planned_seconds": 2700,
+        "rate_usd_per_hour": "0.39"
+      }
+    ],
+    "lines": [
+      {
+        "amount_usd": "0.2925",
+        "kind": "preflight",
+        "lifecycle_ids": [
+          "preflight-01"
+        ],
+        "line_id": "preflight",
+        "occurrences": 1,
+        "rate_usd_per_hour": "0.39",
+        "reservable": true,
+        "seconds_per_occurrence": 2700,
+        "total_seconds": 2700
+      },
+      {
+        "amount_usd": "0.832",
+        "kind": "cell",
+        "lifecycle_ids": [
+          "controlled-cell-01-01",
+          "controlled-cell-01-02",
+          "controlled-cell-02-01",
+          "controlled-cell-02-02",
+          "controlled-cell-03-01",
+          "controlled-cell-03-02",
+          "controlled-cell-04-01",
+          "controlled-cell-04-02",
+          "controlled-cell-05-01",
+          "controlled-cell-05-02",
+          "controlled-cell-06-01",
+          "controlled-cell-06-02",
+          "controlled-cell-07-01",
+          "controlled-cell-07-02",
+          "controlled-cell-08-01",
+          "controlled-cell-08-02"
+        ],
+        "line_id": "controlled-cell",
+        "occurrences": 16,
+        "rate_usd_per_hour": "0.39",
+        "reservable": true,
+        "seconds_per_occurrence": 480,
+        "total_seconds": 7680
+      },
+      {
+        "amount_usd": "0.416",
+        "kind": "cell",
+        "lifecycle_ids": [
+          "natural-cell-01-01",
+          "natural-cell-01-02",
+          "natural-cell-02-01",
+          "natural-cell-02-02",
+          "natural-cell-03-01",
+          "natural-cell-03-02",
+          "natural-cell-04-01",
+          "natural-cell-04-02",
+          "natural-cell-05-01",
+          "natural-cell-05-02",
+          "natural-cell-06-01",
+          "natural-cell-06-02",
+          "natural-cell-07-01",
+          "natural-cell-07-02",
+          "natural-cell-08-01",
+          "natural-cell-08-02"
+        ],
+        "line_id": "natural-cell",
+        "occurrences": 16,
+        "rate_usd_per_hour": "0.39",
+        "reservable": true,
+        "seconds_per_occurrence": 240,
+        "total_seconds": 3840
+      },
+      {
+        "amount_usd": "0.2015",
+        "kind": "reset",
+        "lifecycle_ids": [
+          "reset-01",
+          "reset-02",
+          "reset-03",
+          "reset-04",
+          "reset-05",
+          "reset-06",
+          "reset-07",
+          "reset-08",
+          "reset-09",
+          "reset-10",
+          "reset-11",
+          "reset-12",
+          "reset-13",
+          "reset-14",
+          "reset-15",
+          "reset-16",
+          "reset-17",
+          "reset-18",
+          "reset-19",
+          "reset-20",
+          "reset-21",
+          "reset-22",
+          "reset-23",
+          "reset-24",
+          "reset-25",
+          "reset-26",
+          "reset-27",
+          "reset-28",
+          "reset-29",
+          "reset-30",
+          "reset-31"
+        ],
+        "line_id": "reset",
+        "occurrences": 31,
+        "rate_usd_per_hour": "0.39",
+        "reservable": true,
+        "seconds_per_occurrence": 60,
+        "total_seconds": 1860
+      },
+      {
+        "amount_usd": "0.0975",
+        "kind": "export",
+        "lifecycle_ids": [
+          "export-01"
+        ],
+        "line_id": "export",
+        "occurrences": 1,
+        "rate_usd_per_hour": "0.39",
+        "reservable": true,
+        "seconds_per_occurrence": 900,
+        "total_seconds": 900
+      },
+      {
+        "amount_usd": "0.2925",
+        "kind": "teardown",
+        "lifecycle_ids": [
+          "teardown-01"
+        ],
+        "line_id": "teardown",
+        "occurrences": 1,
+        "rate_usd_per_hour": "0.39",
+        "reservable": true,
+        "seconds_per_occurrence": 2700,
+        "total_seconds": 2700
+      },
+      {
+        "amount_usd": "0.8679666666666666666666666667",
+        "kind": "margin",
+        "lifecycle_ids": [],
+        "line_id": "untouched-margin",
+        "occurrences": 1,
+        "rate_usd_per_hour": "0.39",
+        "reservable": false,
+        "seconds_per_occurrence": 8012,
+        "total_seconds": 8012
+      }
+    ],
+    "summary": {
+      "absolute_ceiling_seconds": 27692,
+      "absolute_ceiling_usd": "2.999966666666666666666666667",
+      "active_planned_seconds": 19680,
+      "active_planned_usd": "2.132",
+      "anticipated_rate_usd_per_hour": "0.39",
+      "hard_cap_usd": "3",
+      "untouched_margin_seconds": 8012,
+      "untouched_margin_usd": "0.8679666666666666666666666667"
+    }
+  },
+  "execution_modes": {
+    "compiled": {
+      "compilation_mode": "VLLM_COMPILE",
+      "cuda_graph_mode": "FULL_AND_PIECEWISE",
+      "enforce_eager": false
+    },
+    "eager": {
+      "compilation_mode": "NONE",
+      "cuda_graph_mode": "NONE",
+      "enforce_eager": true
+    }
+  },
+  "lifecycle_controls": {
+    "adjacent_pair_cells": true,
+    "between_cell_host_page_cache_resets": 31,
+    "cell_unique_cache_directories": [
+      "vllm",
+      "torchinductor",
+      "triton",
+      "cuda",
+      "home",
+      "huggingface",
+      "xdg"
+    ],
+    "fresh_container_per_cell": true,
+    "hidden_generation_warmups": 0,
+    "initial_host_page_cache_resets": 1,
+    "max_num_seqs": 1,
+    "prefix_caching": false,
+    "speculative_decoding": false,
+    "tensor_parallel_size": 1
+  },
+  "measurement_contract": {
+    "compile_time": {
+      "missing": "null",
+      "provenance": "version_pinned_vllm_0_28_internal"
+    },
+    "correctness": {
+      "lane": "natural",
+      "provenance": "pinned_deterministic_evaluator"
+    },
+    "cuda_graph_capture_time": {
+      "provenance": "no_stable_hook",
+      "value": null
+    },
+    "cuda_graph_dispatch_counter": {
+      "provenance": "documented_metric_without_stable_offline_snapshot_hook",
+      "value": null
+    },
+    "gpu_memory": {
+      "provenance": "sampled_nvidia_smi",
+      "scope": "whole_device",
+      "target_interval_ms": 200
+    },
+    "host_lifecycle": {
+      "cross_clock_subtraction": false,
+      "provenance": "host_perf_counter"
+    },
+    "list_rate_cost": {
+      "provenance": "decimal_seconds_times_committed_list_rate"
+    },
+    "output_rate": {
+      "provenance": "exact_token_count_over_same_clock_terminal_latency"
+    },
+    "per_token_decode_series": {
+      "provenance": "no_stable_hook",
+      "value": null
+    },
+    "process_model_initialization": {
+      "includes_required_compile_and_cuda_graph_setup": true,
+      "provenance": "same_process_perf_counter"
+    },
+    "process_tree": {
+      "missing": "null",
+      "provenance": "linux_procfs_stat_without_process_ids"
+    },
+    "provider_lifecycle": {
+      "missing": "null",
+      "provenance": "external_receipt_only"
+    },
+    "queue_prefill_inference_decode_e2e": {
+      "missing": "null",
+      "provenance": "version_pinned_vllm_0_28_request_state_stats"
+    },
+    "request_terminal_latency": {
+      "provenance": "same_process_perf_counter"
+    },
+    "ttft": {
+      "missing": "null",
+      "provenance": "version_pinned_vllm_0_28_request_state_stats"
+    }
+  },
+  "model": {
+    "directory": "model-b968826d9c46dd6066d109eabc6255188de91218",
+    "expected_bytes": 16397461266,
+    "expected_file_count": 15,
+    "id": "Qwen/Qwen3-8B",
+    "revision": "b968826d9c46dd6066d109eabc6255188de91218"
+  },
+  "modes": {
+    "controlled": {
+      "analysis_eligible": true,
+      "base_descriptor_sha256": "sha256:f0e0e4f9bc7c86990b0852e08abffaa74ed16261e00c3f799a416227420b0d31",
+      "base_requests_per_cycle": 12,
+      "cell_descriptor_sha256": "sha256:e63c2c420edb54fca590561f373532dcde5cfe4e2f8e6cc5fe6ffad789950001",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "requests_per_cell": 144,
+      "sampling": {
+        "best_of": 1,
+        "detokenize": false,
+        "ignore_eos": true,
+        "max_tokens": 96,
+        "min_tokens": 96,
+        "n": 1,
+        "seed": 20260831,
+        "stop": [],
+        "temperature": 0,
+        "top_p": 1
+      }
+    },
+    "natural": {
+      "analysis_eligible": false,
+      "base_descriptor_sha256": "sha256:f0e0e4f9bc7c86990b0852e08abffaa74ed16261e00c3f799a416227420b0d31",
+      "base_requests_per_cycle": 12,
+      "cell_descriptor_sha256": "sha256:f0e0e4f9bc7c86990b0852e08abffaa74ed16261e00c3f799a416227420b0d31",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "requests_per_cell": 12,
+      "sampling": {
+        "best_of": 1,
+        "detokenize": true,
+        "ignore_eos": false,
+        "max_tokens": 96,
+        "min_tokens": 0,
+        "n": 1,
+        "seed": 20260831,
+        "stop": [],
+        "temperature": 0,
+        "top_p": 1
+      }
+    }
+  },
+  "null_policy": {
+    "allow_null_unobservable_components": true,
+    "missing_observation_is_not_zero": true,
+    "null_requires_explicit_reason": true
+  },
+  "plan_sha256": "sha256:041683e8e48de3427958dc175f70546d381a3a8557074be142775ba5654fa14d",
+  "protocol_id": "qwen3-8b-vllm-crossover-v2",
+  "provenance_policy": {
+    "canonical_json_only": true,
+    "imports_vllm": false,
+    "offline_only": true,
+    "path_bound": true,
+    "source_head_bound": true
+  },
+  "quality_preservation": {
+    "confidence_level": "0.95",
+    "confidence_method": "deterministic_whole_pair_percentile_bootstrap",
+    "effect": "compiled_minus_eager_request_success_rate",
+    "evaluator": "evaluate_workload",
+    "independent_unit": "adjacent eager-compiled lifecycle pair",
+    "lane": "natural",
+    "noninferiority_margin": "0",
+    "resamples": 20000,
+    "support_rule": "lower_confidence_endpoint_greater_than_or_equal_to_negative_noninferiority_margin"
+  },
+  "reproducibility": {
+    "analysis_seed": 20260905,
+    "cudnn_benchmark": false,
+    "cudnn_deterministic": true,
+    "deterministic_bootstrap": true,
+    "deterministic_schedule": true,
+    "environment": {
+      "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+      "HF_HUB_OFFLINE": "1",
+      "PYTHONDONTWRITEBYTECODE": "1",
+      "PYTHONHASHSEED": "20260831",
+      "TRANSFORMERS_OFFLINE": "1",
+      "VLLM_BATCH_INVARIANT": "0",
+      "VLLM_DISABLE_COMPILE_CACHE": "1",
+      "VLLM_NO_USAGE_STATS": "1"
+    },
+    "float32_matmul_precision": "highest",
+    "local_files_only": true,
+    "sampling_seed": 20260831,
+    "schedule_seed": 20260904,
+    "tf32": false,
+    "torch_deterministic_algorithms": true,
+    "whole_pair_resampling_only": true
+  },
+  "resource_settings": {
+    "concurrency": 1,
+    "cpu_cores": 4,
+    "gpu_count": 1,
+    "max_live_cells": 1,
+    "memory_gib": 32,
+    "network": "none",
+    "retries": 0
+  },
+  "runtime": {
+    "base_image_reference": "vllm/vllm-openai:v0.28.0@sha256:2286e8533ca8b6bc777594bae30524f1426ba46ca21797524e06df6a94b06635",
+    "derived_image_id": "sha256:fd34de17a99d2890ed1031fd32fff4c74837bbc92df7dcb955caf610266cffb3",
+    "expected_driver": "580.159.03",
+    "expected_gpu_name": "NVIDIA GeForce RTX 4090",
+    "expected_memory_mib": 24564,
+    "runtime_pins": {
+      "cuda_version": "13.0",
+      "python_version": "3.12",
+      "torch_version": "2.13.0+cu130",
+      "transformers_version": "5.15.1",
+      "typing_extensions_version": "4.15.0",
+      "vllm_version": "0.28.0"
+    },
+    "vllm_source_commit": "2cf0a6915ce544dc493a0990f2ea38d81601128a"
+  },
+  "sample_stopping_rule": {
+    "analysis_lane": "controlled",
+    "bootstrap_resamples": 20000,
+    "bootstrap_unit": "whole_pair",
+    "curve_length": 144,
+    "first_crossing_rule": "The first request ordinal where compiled_minus_eager cumulative time is less than or equal to zero.",
+    "pair_count": 8,
+    "sign_flip_enumerations": 256,
+    "sustained_crossing_rule": "The first request ordinal where compiled_minus_eager cumulative time is less than or equal to zero for that request and every later request; otherwise the pair is right censored at 144 requests."
+  },
+  "schedule": [
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-01-period-01-eager",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "eager",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-01",
+      "pair_index": 1,
+      "period_index": 1,
+      "requests_per_cell": 12
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-01-period-02-compiled",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "compiled",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-01",
+      "pair_index": 1,
+      "period_index": 2,
+      "requests_per_cell": 12
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-01-period-01-eager",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "eager",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-01",
+      "pair_index": 1,
+      "period_index": 1,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-01-period-02-compiled",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "compiled",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-01",
+      "pair_index": 1,
+      "period_index": 2,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-02-period-01-compiled",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "compiled",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-02",
+      "pair_index": 2,
+      "period_index": 1,
+      "requests_per_cell": 12
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-02-period-02-eager",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "eager",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-02",
+      "pair_index": 2,
+      "period_index": 2,
+      "requests_per_cell": 12
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-02-period-01-compiled",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "compiled",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-02",
+      "pair_index": 2,
+      "period_index": 1,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-02-period-02-eager",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "eager",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-02",
+      "pair_index": 2,
+      "period_index": 2,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-03-period-01-compiled",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "compiled",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-03",
+      "pair_index": 3,
+      "period_index": 1,
+      "requests_per_cell": 12
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-03-period-02-eager",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "eager",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-03",
+      "pair_index": 3,
+      "period_index": 2,
+      "requests_per_cell": 12
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-03-period-01-compiled",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "compiled",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-03",
+      "pair_index": 3,
+      "period_index": 1,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-03-period-02-eager",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "eager",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-03",
+      "pair_index": 3,
+      "period_index": 2,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-04-period-01-eager",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "eager",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-04",
+      "pair_index": 4,
+      "period_index": 1,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-04-period-02-compiled",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "compiled",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-04",
+      "pair_index": 4,
+      "period_index": 2,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-04-period-01-eager",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "eager",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-04",
+      "pair_index": 4,
+      "period_index": 1,
+      "requests_per_cell": 12
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-04-period-02-compiled",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "compiled",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-04",
+      "pair_index": 4,
+      "period_index": 2,
+      "requests_per_cell": 12
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-05-period-01-compiled",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "compiled",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-05",
+      "pair_index": 5,
+      "period_index": 1,
+      "requests_per_cell": 12
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-05-period-02-eager",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "eager",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-05",
+      "pair_index": 5,
+      "period_index": 2,
+      "requests_per_cell": 12
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-05-period-01-compiled",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "compiled",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-05",
+      "pair_index": 5,
+      "period_index": 1,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-05-period-02-eager",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "eager",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-05",
+      "pair_index": 5,
+      "period_index": 2,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-06-period-01-eager",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "eager",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-06",
+      "pair_index": 6,
+      "period_index": 1,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-06-period-02-compiled",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "compiled",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-06",
+      "pair_index": 6,
+      "period_index": 2,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-06-period-01-eager",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "eager",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-06",
+      "pair_index": 6,
+      "period_index": 1,
+      "requests_per_cell": 12
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-06-period-02-compiled",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "compiled",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-06",
+      "pair_index": 6,
+      "period_index": 2,
+      "requests_per_cell": 12
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-07-period-01-eager",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "eager",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-07",
+      "pair_index": 7,
+      "period_index": 1,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-07-period-02-compiled",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "compiled",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-07",
+      "pair_index": 7,
+      "period_index": 2,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-07-period-01-eager",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "eager",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-07",
+      "pair_index": 7,
+      "period_index": 1,
+      "requests_per_cell": 12
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-07-period-02-compiled",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "compiled",
+      "order": "eager-compiled",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-07",
+      "pair_index": 7,
+      "period_index": 2,
+      "requests_per_cell": 12
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-08-period-01-compiled",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "compiled",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-08",
+      "pair_index": 8,
+      "period_index": 1,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-08-period-02-eager",
+      "descriptor_cycles_per_cell": 12,
+      "lane": "controlled",
+      "mode": "eager",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-controlled-pair-08",
+      "pair_index": 8,
+      "period_index": 2,
+      "requests_per_cell": 144
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-08-period-01-compiled",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "compiled",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-08",
+      "pair_index": 8,
+      "period_index": 1,
+      "requests_per_cell": 12
+    },
+    {
+      "cell_id": "qwen3-8b-vllm-crossover-v2-natural-pair-08-period-02-eager",
+      "descriptor_cycles_per_cell": 1,
+      "lane": "natural",
+      "mode": "eager",
+      "order": "compiled-eager",
+      "pair_id": "qwen3-8b-vllm-crossover-v2-natural-pair-08",
+      "pair_index": 8,
+      "period_index": 2,
+      "requests_per_cell": 12
+    }
+  ],
+  "schedule_seed": 20260904,
+  "schedule_sha256": "sha256:24110b178d1050cd781f7d272acec990d5bf60357f9ea0d2e970527928085024",
+  "schema_version": "2"
+}

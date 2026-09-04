@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Controlled vLLM crossover protocol</title>
+  <style>
+    body { color:#17202a; font:16px/1.5 system-ui,sans-serif; margin:2rem auto; max-width:980px; padding:0 1rem; }
+    .notice { background:#fffaeb; border-left:.4rem solid #b54708; padding:1rem; }
+    table { border-collapse:collapse; width:100%; }
+    th,td { border-bottom:1px solid #d0d5dd; padding:.55rem; text-align:left; }
+  </style>
+</head>
+<body>
+  <h1>Controlled Qwen3-8B vLLM crossover protocol</h1>
+  <p class="notice"><strong>Offline protocol only.</strong> No provider access,
+  GPU use, model download, or spend occurred. Crossover and quality claims are
+  unsupported.</p>
+  <p>Two separate lanes each contain 8 adjacent fresh lifecycle
+  pairs. The controlled lane measures 144 sequential
+  requests per cell at a fixed 96-token decode count. The natural lane uses
+  separate fresh lifecycles for bounded output and correctness.</p>
+  <p>The active later-run envelope is 19680 seconds
+  ($2.132) with an untouched
+  8012-second termination margin. This is not
+  spending authority.</p>
+  <p>Offline blockers: 4. Whole lifecycle pairs, not
+  requests, are the inferential unit.</p>
+  <table><thead><tr><th>Claim</th><th>State</th><th>Provenance</th></tr></thead>
+  <tbody><tr><td>offline-protocol-defined</td><td>supported</td><td>repository</td></tr><tr><td>zero-spend-offline-generation</td><td>supported</td><td>offline_process</td></tr><tr><td>fixed-token-count-crossover</td><td>unsupported</td><td>not_observed</td></tr><tr><td>output-identical-generation-crossover</td><td>unsupported</td><td>not_observed</td></tr><tr><td>forward-pass-identical-crossover</td><td>not_applicable</td><td>unsupported_interface</td></tr><tr><td>natural-output-quality-preserved</td><td>unsupported</td><td>not_observed</td></tr><tr><td>compile-or-cuda-graph-component-time</td><td>unsupported</td><td>not_observed</td></tr><tr><td>provider-reported-spend-or-teardown</td><td>unsupported</td><td>not_observed</td></tr></tbody></table>
+</body>
+</html>
