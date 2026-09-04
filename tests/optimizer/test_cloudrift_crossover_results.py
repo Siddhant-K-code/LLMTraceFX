@@ -6,12 +6,16 @@ import hashlib
 import json
 import re
 import runpy
+import sys
 from pathlib import Path
 
 import pytest
 
+from llmtracefx.evidence import core as evidence_core
 from llmtracefx.optimizer.lab.qwen3_8b import cloudrift_crossover_results as results
 from llmtracefx.optimizer.lab.qwen3_8b import vllm_compile as core
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _typed(
@@ -562,6 +566,28 @@ def _mutate_request(
 @pytest.fixture(autouse=True)
 def _fast_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(results, "BOOTSTRAP_RESAMPLES", 40)
+
+
+def test_completed_catalog_adapter_invokes_trusted_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script, arguments = evidence_core.SCRIPT_ADAPTERS["vllm_crossover_results_v1"]
+    observed: list[Path] = []
+    monkeypatch.setattr(results, "verify_bundle", observed.append)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(ROOT / script),
+            *(str(tmp_path) if value == "{bundle}" else value for value in arguments),
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path(str(ROOT / script), run_name="__main__")
+
+    assert exit_info.value.code == 0
+    assert observed == [tmp_path]
 
 
 def test_successful_bundle_is_deterministic_and_verifies(tmp_path: Path) -> None:

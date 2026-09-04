@@ -57,7 +57,7 @@ def test_completed_crossover_adapter_is_closed_but_not_fabricated() -> None:
     assert all(source["adapter"] != "vllm_crossover_results_v1" for source in SOURCES)
     script, arguments = core.SCRIPT_ADAPTERS["vllm_crossover_results_v1"]
     assert script == "llmtracefx/evidence/vllm_crossover_results_verifier.py"
-    assert arguments == ("verify", "--bundle-dir", "{bundle}")
+    assert arguments == ("verify", "--bundle", "{bundle}")
 
 
 def test_generation_is_deterministic_and_matches_committed_files() -> None:

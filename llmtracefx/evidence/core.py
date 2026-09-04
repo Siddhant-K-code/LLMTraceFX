@@ -145,7 +145,7 @@ SCRIPT_ADAPTERS = {
     ),
     "vllm_crossover_results_v1": (
         "llmtracefx/evidence/vllm_crossover_results_verifier.py",
-        ("verify", "--bundle-dir", "{bundle}"),
+        ("verify", "--bundle", "{bundle}"),
     ),
 }
 
