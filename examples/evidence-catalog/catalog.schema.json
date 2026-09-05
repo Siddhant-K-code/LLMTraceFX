@@ -563,6 +563,18 @@
         },
         {
           "const": {
+            "name": "modal-l4-crossover-protocol.verify",
+            "version": "1"
+          }
+        },
+        {
+          "const": {
+            "name": "modal-l4-crossover-results.verify",
+            "version": "1"
+          }
+        },
+        {
+          "const": {
             "name": "modal-preflight.verify",
             "version": "1"
           }

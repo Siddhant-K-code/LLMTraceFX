@@ -1,5 +1,5 @@
 {
-  "catalog_hash": "sha256:0260684ac7d4be0680765d92333c343946a7d3b6f8a91edc173ac5524dbbc383",
+  "catalog_hash": "sha256:982953e63bfc75f9567b45f602f70dc667bbdb77e3bb97e85b649175996bbcc7",
   "claim_dimensions": [
     "timing",
     "quality",
@@ -1075,7 +1075,7 @@
     "name": "llmtracefx-evidence",
     "version": "1"
   },
-  "registry_hash": "sha256:2d0aa3857cf94dca7cdad1ec90cf6a247d0870fd5f68bc7c8eb8a33c43940412",
+  "registry_hash": "sha256:10e3bc53be68ec915979210ce124746681ddf57c7dafd047f9979966dd65ec28",
   "schema_version": "1",
   "unregistered_candidates": []
 }

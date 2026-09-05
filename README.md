@@ -183,6 +183,148 @@ under-cover; controlled crossover support additionally requires the exhaustive
 sign-symmetry permutation gate, while natural timing and nondegenerate quality
 intervals have no such backstop.
 
+### Modal L4 crossover protocol delta
+
+`llmtracefx-modal-l4-crossover plan` renders a separate protocol identity,
+`qwen3-8b-vllm-crossover-modal-l4-v1`, for one future Modal L4 execution of the
+same sealed experiment. The scientific core is unchanged: the same pinned model
+revision and runtime pins, two lanes, eight adjacent eager/compiled pairs per
+lane, the same 32-cell counterbalanced schedule, 144 fixed-token-count
+controlled requests and 12 natural requests per cell, whole-pair statistics
+reusing the existing results core, and no extrapolation.
+
+```bash
+uv run --offline --no-sync llmtracefx-modal-l4-crossover plan
+make modal-l4-crossover-bundle modal-l4-crossover-verify
+```
+
+Neither command imports the Modal SDK, authenticates, creates a container,
+downloads a model, uses a GPU, or authorizes spend. Work would run through
+Modal Functions and RPC only, never a public web endpoint, on one L4 with four
+physical CPU cores and 32 GiB, one live cell, `max_containers=1`,
+`min_containers=0`, single-input concurrency, single-use cell containers, zero
+retries, and an explicit timeout per stage. Any observed second attempt, crash,
+preemption, timeout, or missing terminal receipt invalidates the run and
+triggers teardown.
+
+The priced envelope is 15,240 container seconds ($4.5985056) plus a $0.48
+volume reservation covering one active and four post-delete days, totalling
+$5.0785056 against a $6 hard cap; the $0.9214944 contingency is never spent on
+science. The application ledger is mandatory and is explicitly not provider
+proof: provider-reported spend stays null until an external sanitized receipt
+exists. Before execution the official rates are re-fetched and hashed, and the
+run is refused if any official rate is higher or a new charge appears.
+Authentication uses only the operator's standard local Modal profile;
+`MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET`, profile, config, server, environment,
+and routing overrides plus credential-shaped variables are rejected by name and
+never read.
+
+A fail-closed GPU memory gate precedes the measured cells. Runner arguments
+stay BF16, tensor parallel 1, one sequence, 0.94 utilization, no prefix or
+speculative decoding, and a context length of exactly the longest frozen prompt
+array plus 96. CPU staging verifies 15 files and 16,397,461,266 bytes and seals
+the token arrays; isolated eager and compiled canaries then run the actual
+longest controlled prompt for 96 steps and must observe exactly one L4, the
+pinned runtime, sufficient KV capacity, no OOM, a full terminal completion, and
+a peak at least 512 MiB below total VRAM. Nothing is tuned to make the gate
+pass; a failure publishes a refusal.
+
+Modal exposes no host page-cache drop and no dedicated-host reservation, so
+those CloudRift requirements are removed from this protocol only. Fresh
+single-use containers, unique writable cache directories, a disabled compile
+cache, a read-only shared model volume, and zero hidden warmups remain
+observable; provider placement, physical host reuse and page-cache state, and
+volume/backend caching do not. Results are therefore descriptive,
+provider-conditioned paired comparisons: pure causal compilation and natural
+causal speedup claims are unsupported by construction.
+
+#### Execution surface
+
+`llmtracefx.optimizer.lab.qwen3_8b.modal_l4_app` is the only module in the
+package that imports the Modal SDK. It declares authenticated internal
+Functions over RPC and no web endpoint: a CPU staging Function on a slim image
+pinned to `huggingface_hub==1.29.0`, a CPU verification Function on the
+digest-pinned runtime image that checks 15 files and 16,397,461,266 bytes and
+seals the prompt token arrays, two L4 canary Functions, two L4 cell Functions,
+and a CPU analysis Function. Every Function is declared from the sealed plan
+with four cores, 32 GiB, its own explicit timeout, `retries=0`,
+`max_containers=1`, `min_containers=0`, `buffer_containers=0`, `max_inputs=1`,
+`single_use_containers=True`, and one input at a time. CPU Functions carry no
+accelerator argument at all, accelerated Functions mount the run-scoped model
+volume read-only, and no `modal.Secret` is created or read anywhere.
+
+Measurement is not reimplemented. The cell Function calls the existing
+CloudRift crossover cell runner, so the deterministic environment, the memory
+sampler, the frozen `_llm_kwargs`, the request records, and the terminal-shape
+checks are the same code. The one deliberate difference is the hardware gate:
+the CloudRift gate admits one exact RTX 4090, so this delta has an L4 gate that
+pins the accelerator name and count and records the provider-managed driver
+instead of pinning it.
+
+`llmtracefx-modal-l4-execute preflight` runs every gate and stops before the
+SDK is imported: environment overrides are rejected by name without reading a
+value, the authorization is verified against an OpenSSH detached signature and
+bound to the exact plan hash, source head, nonce, run-scoped names, image
+reference, workspace path, and rate-receipt hash, the official rate documents
+are re-fetched and hashed (never parsed for numbers), and account headroom
+comes from a sanitized control-plane probe or a separately signed operator
+receipt — never from silence. `run` then imports the SDK, probes it against the
+pinned and inspected modal 1.5.5 API surface, and executes staging,
+verification, the eager canary, the compiled canary, the 32 sealed cells only
+if both canaries pass, and the analysis inventory, sequentially, reserving each
+lifecycle in the ledger before every call. A second attempt, crash, preemption,
+timeout, or missing terminal receipt stops the run where it stands, with no
+replacement cells.
+
+Teardown runs in a `finally` on every path: the outstanding call is retained
+until it is cancelled with container termination, the ephemeral app context
+exits (a local action, never claimed as provider deletion proof), function
+autoscaler stats are read as scale-to-zero evidence, the run-scoped volume is
+deleted, and the volume listing — the only named-resource inventory Modal
+exposes — is read back into a sanitized receipt. Modal exposes no per-container
+delete, no `App.stop()`, and no app or container inventory, so none is claimed;
+each is published as an explicit unsupported control, as is the absence of a
+pre-run spend authority, and any ambiguity (a listing that could not be
+performed) fails the teardown closed. A complete run whose teardown is
+incomplete is a refusal, not a result.
+
+The completed run is validated and analyzed by a provider-native results path
+(`modal_l4_crossover_results.analyze_modal_run`): it consumes the orchestration
+receipt and the 32 sealed inner cell receipts, checks schedule, lane, mode and
+pair coverage, one attempt per lifecycle, L4/runtime-pin/driver and nonce-bound
+commitment continuity from both canaries through every cell, per-cell cache
+scope, teardown and budget, and then reuses the CloudRift results core's
+provider-neutral statistical primitives over the inner receipts. It never
+imports the CloudRift-bound public builder, never fabricates a CloudRift
+authorization or host-cache receipt, and never claims host-cache or causal
+control: those claims stay unsupported by construction, while the
+fixed-token-count, provider-conditioned paired result is eligible only when
+every gate passes.
+
+#### Credential exposure gate
+
+A standard-profile credential was exposed outside this system. Provider
+execution is blocked until a coordinator attests, in a closed booleans-only
+schema, that the exposed credential was revoked and that a fresh
+standard-profile credential was created locally and never shared. The gate runs
+first in `preflight`, before the environment check, before authorization
+verification, and before the SDK can be imported; an absent or malformed
+attestation is a refusal, never an assumption of clearance.
+
+The attestation and every stored verdict record status only —
+`exposed_profile_credential_never_used_by_experiment`,
+`exposed_profile_credential_revocation_confirmed`,
+`fresh_local_profile_created_without_sharing`,
+`fresh_profile_shared_anywhere`, a confirmer name, a timestamp, and a short
+reason. Fields whose names look like a token, a secret, a hash, a prefix, a
+fingerprint, an account, or screenshot metadata are refused by name, extra
+fields outside the allowlist are refused, and a reason that looks
+credential-shaped is refused without being stored. No credential value, hash,
+prefix, or derived identifier is ever read or written by this code. The
+authorization receipt binds the hash of that booleans-only attestation
+document, so a cleared gate cannot be swapped for another after signing, and a
+completed result bundle is refused unless its gate verdict is cleared.
+
 ### Tune within one target
 
 `tune` reads existing `verification.json` and `final_record.json` files. It
@@ -295,6 +437,7 @@ uv run llmtracefx-optimizer optimize \
 | Hosted API collection | An HTTPS OpenAI-compatible endpoint and a provider key stored in an environment variable | Use `collect-api --dry-run` before making a request |
 | Modal planning | No Modal account or SDK is required | `uv run llmtracefx-deploy plan --help` |
 | Modal execution | An approved plan, current price inputs, Modal account and auth, optional `modal` extra, proxy auth token, pinned model revision, and pinned serving image | `uv sync --locked --extra modal` |
+| Modal L4 crossover execution | A signed authorization, cleared credential-exposure attestation, fresh rate receipt, and signed headroom, plus the exactly pinned SDK | `uv sync --locked --extra modal-l4-execute` (installs `modal==1.5.5`) |
 
 Hosted API requests, Modal staging, deployment, health checks, and inference can
 incur provider charges. None runs from the quickstart or from

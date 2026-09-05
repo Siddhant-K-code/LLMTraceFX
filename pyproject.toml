@@ -53,6 +53,20 @@ modal = [
     "modal>=1.0.5",
 ]
 
+# Dedicated extra for the Modal L4 crossover *execution* path
+# (`llmtracefx-modal-l4-execute`). Unlike the GLM deployment, whose API
+# surface is stable across the 1.x line and only needs the >=1.0.5 floor
+# above, the L4 crossover orchestrator and its capability probe were written
+# and tested against the exact API of modal 1.5.5 (for example the read-only
+# volume mount `Volume.with_mount_options(read_only=True)` and the
+# `FunctionCall.cancel(terminate_containers=True)` teardown). It is pinned
+# exactly so a silent SDK upgrade cannot move that surface under a paid run.
+# It is a separate extra, not a change to `modal` above, so GLM behaviour is
+# untouched. Install it with `uv sync --extra modal-l4-execute`.
+modal-l4-execute = [
+    "modal==1.5.5",
+]
+
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
@@ -101,6 +115,9 @@ llmtracefx-m5-frontier = "llmtracefx.optimizer.lab.frontier:main"
 llmtracefx-m5-control = "llmtracefx.optimizer.lab.qwen3_8b.cli:main"
 llmtracefx-vllm-crossover = "llmtracefx.optimizer.lab.qwen3_8b.cloudrift_crossover:main"
 llmtracefx-vllm-crossover-results = "llmtracefx.optimizer.lab.qwen3_8b.cloudrift_crossover_results:main"
+llmtracefx-modal-l4-crossover = "llmtracefx.optimizer.lab.qwen3_8b.modal_l4_crossover:main"
+llmtracefx-modal-l4-crossover-evidence = "llmtracefx.optimizer.lab.qwen3_8b.modal_l4_crossover_evidence:main"
+llmtracefx-modal-l4-execute = "llmtracefx.optimizer.lab.qwen3_8b.modal_l4_execute:main"
 llmtracefx-evidence = "llmtracefx.evidence.cli:main"
 
 [tool.setuptools.packages.find]
@@ -181,7 +198,11 @@ ignore_missing_imports = true
 # from a package the type checker was not given, and the rest of the
 # strict settings still apply here.
 [[tool.mypy.overrides]]
-module = ["llmtracefx.deploy.modal_glm_app", "llmtracefx.modal_app"]
+module = [
+    "llmtracefx.deploy.modal_glm_app",
+    "llmtracefx.modal_app",
+    "llmtracefx.optimizer.lab.qwen3_8b.modal_l4_app",
+]
 disallow_untyped_decorators = false
 
 # Pytest configuration

@@ -1066,6 +1066,14 @@ ADAPTERS = {
         "name": "vllm-crossover-results.verify",
         "version": VERIFIER_VERSION,
     },
+    "modal_l4_crossover_protocol_v1": {
+        "name": "modal-l4-crossover-protocol.verify",
+        "version": VERIFIER_VERSION,
+    },
+    "modal_l4_crossover_results_v1": {
+        "name": "modal-l4-crossover-results.verify",
+        "version": VERIFIER_VERSION,
+    },
 }
 
 LEGACY_PINNED_SHA256 = {

@@ -60,6 +60,24 @@ def test_completed_crossover_adapter_is_closed_but_not_fabricated() -> None:
     assert arguments == ("verify", "--bundle", "{bundle}")
 
 
+@pytest.mark.parametrize(
+    ("adapter", "action"),
+    (
+        ("modal_l4_crossover_protocol_v1", "verify-protocol"),
+        ("modal_l4_crossover_results_v1", "verify-results"),
+    ),
+)
+def test_modal_l4_adapters_are_closed_but_not_fabricated(
+    adapter: str, action: str
+) -> None:
+    assert adapter in ADAPTERS
+    assert all(source["adapter"] != adapter for source in SOURCES)
+    script, arguments = core.SCRIPT_ADAPTERS[adapter]
+    assert script == "llmtracefx/evidence/modal_l4_crossover_verifier.py"
+    assert arguments == (action, "--bundle", "{bundle}")
+    assert (ROOT / script).is_file()
+
+
 def test_generation_is_deterministic_and_matches_committed_files() -> None:
     first = core.build_catalog(ROOT)
     second = core.build_catalog(ROOT)

@@ -147,6 +147,14 @@ SCRIPT_ADAPTERS = {
         "llmtracefx/evidence/vllm_crossover_results_verifier.py",
         ("verify", "--bundle", "{bundle}"),
     ),
+    "modal_l4_crossover_protocol_v1": (
+        "llmtracefx/evidence/modal_l4_crossover_verifier.py",
+        ("verify-protocol", "--bundle", "{bundle}"),
+    ),
+    "modal_l4_crossover_results_v1": (
+        "llmtracefx/evidence/modal_l4_crossover_verifier.py",
+        ("verify-results", "--bundle", "{bundle}"),
+    ),
 }
 
 

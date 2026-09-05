@@ -1,6 +1,6 @@
 # LLMTraceFX Makefile
 
-.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan cloudrift-plan test-deploy metal-evidence evidence-catalog evidence-catalog-verify m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication m5-autopsy m5-autopsy-run m5-autopsy-publication m5-autopsy-evidence-verify m5-control-plan m5-control-convert m5-control-bind m5-control-run m5-control-verify m5-control-report vllm-crossover-plan vllm-crossover-verify
+.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan cloudrift-plan test-deploy metal-evidence evidence-catalog evidence-catalog-verify m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication m5-autopsy m5-autopsy-run m5-autopsy-publication m5-autopsy-evidence-verify m5-control-plan m5-control-convert m5-control-bind m5-control-run m5-control-verify m5-control-report vllm-crossover-plan vllm-crossover-verify modal-l4-crossover-plan modal-l4-crossover-bundle modal-l4-crossover-verify modal-l4-crossover-results-bundle modal-l4-crossover-results-verify modal-l4-crossover-preflight
 
 help:  ## Show this help message
 	@echo "LLMTraceFX - evidence-first inference toolkit"
@@ -203,6 +203,54 @@ vllm-crossover-plan:  ## Print the no-spend controlled vLLM crossover plan
 
 vllm-crossover-verify:  ## Verify the committed offline crossover protocol bundle
 	uv run --offline --no-sync python -I $(VLLM_CROSSOVER_BUNDLE)/evidence_bundle.py verify
+
+MODAL_L4_CROSSOVER_BUNDLE ?= build/modal-l4-crossover-protocol
+
+modal-l4-crossover-plan:  ## Print the no-spend Modal L4 crossover protocol delta
+	uv run --offline --no-sync llmtracefx-modal-l4-crossover plan
+
+modal-l4-crossover-bundle:  ## Build the offline Modal L4 preregistration bundle
+	uv run --offline --no-sync llmtracefx-modal-l4-crossover-evidence build \
+		--output-dir $(MODAL_L4_CROSSOVER_BUNDLE) --repo-root .
+
+modal-l4-crossover-verify:  ## Verify an offline Modal L4 preregistration bundle
+	uv run --offline --no-sync llmtracefx-modal-l4-crossover-evidence verify \
+		--bundle-dir $(MODAL_L4_CROSSOVER_BUNDLE) --repo-root .
+
+MODAL_L4_CROSSOVER_RESULT_WORKSPACE ?= build/modal-l4-crossover-run
+MODAL_L4_CROSSOVER_RESULT_BUNDLE ?= build/modal-l4-crossover-results
+
+# Projects a completed, published execution workspace (its sealed orchestration
+# receipt and 32 cell receipts) into the deterministic, closed result bundle:
+# every envelope re-derived and cross-bound, plus analysis.json, claim-matrix
+# .json, report.html, crossover.svg, and SHA256SUMS. No provider SDK import.
+modal-l4-crossover-results-bundle:  ## Build the offline Modal L4 result bundle
+	uv run --offline --no-sync llmtracefx-modal-l4-crossover-evidence build-results \
+		--execution-workspace $(MODAL_L4_CROSSOVER_RESULT_WORKSPACE) \
+		--output-dir $(MODAL_L4_CROSSOVER_RESULT_BUNDLE)
+
+modal-l4-crossover-results-verify:  ## Verify an offline Modal L4 result bundle
+	uv run --offline --no-sync llmtracefx-modal-l4-crossover-evidence verify-results \
+		--bundle-dir $(MODAL_L4_CROSSOVER_RESULT_BUNDLE)
+
+# Runs every gate (coordinator credential-exposure clearance, environment,
+# signed authorization, official rate refresh, signed account headroom) and
+# stops before the provider SDK is imported. Requires EXPOSURE_ATTESTATION,
+# AUTHORIZATION, SIGNATURE, SIGNERS, RATE_RECEIPT, WORKSPACE, and the signed
+# headroom triple HEADROOM, HEADROOM_SIGNATURE and HEADROOM_SIGNERS.
+modal-l4-crossover-preflight:  ## Gate a Modal L4 run without importing the SDK
+	@test -n "$(AUTHORIZATION)" || { echo "AUTHORIZATION is required" >&2; exit 2; }
+	@test -n "$(EXPOSURE_ATTESTATION)" || { echo "EXPOSURE_ATTESTATION is required" >&2; exit 2; }
+	uv run llmtracefx-modal-l4-execute preflight \
+		--credential-exposure-attestation "$(EXPOSURE_ATTESTATION)" \
+		--authorization "$(AUTHORIZATION)" \
+		--authorization-signature "$(SIGNATURE)" \
+		--authorized-signers "$(SIGNERS)" \
+		--rate-receipt "$(RATE_RECEIPT)" \
+		--signed-headroom "$(HEADROOM)" \
+		--headroom-signature "$(HEADROOM_SIGNATURE)" \
+		--headroom-authorized-signers "$(HEADROOM_SIGNERS)" \
+		--workspace "$(WORKSPACE)"
 
 metal-evidence:  ## Capture privacy-safe Metal evidence (requires OUTPUT_DIR)
 	@test -n "$(OUTPUT_DIR)" || { echo "OUTPUT_DIR is required" >&2; exit 2; }

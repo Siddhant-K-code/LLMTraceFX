@@ -16,6 +16,14 @@
       "name": "metal-evidence.verify_public_bundle",
       "version": "1"
     },
+    "modal_l4_crossover_protocol_v1": {
+      "name": "modal-l4-crossover-protocol.verify",
+      "version": "1"
+    },
+    "modal_l4_crossover_results_v1": {
+      "name": "modal-l4-crossover-results.verify",
+      "version": "1"
+    },
     "modal_preflight_v1": {
       "name": "modal-preflight.verify",
       "version": "1"
