@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from decimal import Decimal
+from inspect import signature
 from pathlib import Path
 from typing import Any
 
@@ -521,8 +522,7 @@ class TestDecodeBandwidthFeasibility:
         )
         assert verdict["feasible"] is True
         assert verdict["uses_sealed_constants"] is False
-        with pytest.raises(TypeError, match="unexpected keyword argument"):
-            modal.require_controlled_cell_decode_feasible(verdict=verdict)  # type: ignore[call-arg]
+        assert not signature(modal.require_controlled_cell_decode_feasible).parameters
 
     @pytest.mark.parametrize("field", sorted(("model_bytes", "output_tokens")))
     def test_a_nonpositive_input_is_refused(self, field: str) -> None:

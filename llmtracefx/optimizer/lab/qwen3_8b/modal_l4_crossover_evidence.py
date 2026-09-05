@@ -680,7 +680,7 @@ def _contract(plan: Mapping[str, Any]) -> dict[str, Any]:
                 "re-fetched and hashed official Modal rate receipt",
                 "hash of the coordinator credential-exposure attestation",
                 "hash of the signed operator headroom receipt, itself bound to "
-                "this plan, head, nonce, and execution window",
+                + "this plan, head, nonce, and execution window",
                 "bounded UTC execution window with an explicit maximum duration",
                 "standard local Modal profile with no credential or routing override",
                 "USD 6 hard cap with an untouched contingency margin",
