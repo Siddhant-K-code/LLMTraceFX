@@ -1365,8 +1365,8 @@
       "cache_binding": {
         "adapter_version": "2",
         "backend": "synthetic_reference",
-        "generator_package_digest": "sha256:a0d9ea03f94b12383011d5a03295426cbac3ffc42f40c58b47cf7a36d812f5e3",
-        "implementation_bound_at": "2026-09-05T17:07:59Z",
+        "generator_package_digest": "sha256:c2dd79ce570a348cd74f95f374cbde2dc3fe6d95684d398820f5ed8821b1b91a",
+        "implementation_bound_at": "2026-09-05T17:49:44Z",
         "privacy_status": "verified_public_synthetic",
         "publication_mode": "public_synthetic",
         "workload_digest": "sha256:6b7a8cf4acd60b6f6600104c8284e8251ce5a3b3b8c93f20c6b36f72b3ea5445"
@@ -1460,7 +1460,7 @@
         "provider": "local",
         "version": "1"
       },
-      "source_commit": "a5d63a90a0f31a5c1d6ada571cf98baf42fe308d",
+      "source_commit": "214ee30de6dc59f1c110e8089f45af84cc8f2a08",
       "status": "verified",
       "supported_claims": [
         "The synthetic engine's attested reusable-token counts match the independent exact-token oracle for all nine requests.",

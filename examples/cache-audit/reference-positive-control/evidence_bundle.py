@@ -12,12 +12,12 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-EXPECTED_COMMIT = "a5d63a90a0f31a5c1d6ada571cf98baf42fe308d"
-EXPECTED_COMMIT_AT = "2026-09-05T22:37:54+05:30"
+EXPECTED_COMMIT = "214ee30de6dc59f1c110e8089f45af84cc8f2a08"
+EXPECTED_COMMIT_AT = "2026-09-05T23:19:44+05:30"
 EXPECTED_PACKAGE_DIGEST = (
-    "sha256:a0d9ea03f94b12383011d5a03295426cbac3ffc42f40c58b47cf7a36d812f5e3"
+    "sha256:c2dd79ce570a348cd74f95f374cbde2dc3fe6d95684d398820f5ed8821b1b91a"
 )
-EXPECTED_GENERATED_AT = "2026-09-05T17:07:59Z"
+EXPECTED_GENERATED_AT = "2026-09-05T17:49:44Z"
 BUNDLE_DATA_FILES = (
     "audit-manifest.json",
     "request-evidence.jsonl",
@@ -351,7 +351,9 @@ def commit_matches(root: Path) -> str | None:
     if timestamp.returncode != 0:
         return None
     try:
-        commit_time = datetime.fromisoformat(timestamp.stdout.strip())
+        commit_time = datetime.fromisoformat(
+            timestamp.stdout.strip().replace("Z", "+00:00")
+        )
         generated_time = datetime.fromisoformat(
             EXPECTED_GENERATED_AT.replace("Z", "+00:00")
         )
