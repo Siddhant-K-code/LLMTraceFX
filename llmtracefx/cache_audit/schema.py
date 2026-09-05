@@ -851,13 +851,19 @@ class OutputEvidence:
         }
         _exact(data, keys, "OutputEvidence")
         return cls(
-            output_token_ids=None
-            if data["output_token_ids"] is None
-            else _integers(data["output_token_ids"], "OutputEvidence.output_token_ids"),
-            baseline_token_ids=None
-            if data["baseline_token_ids"] is None
-            else _integers(
-                data["baseline_token_ids"], "OutputEvidence.baseline_token_ids"
+            output_token_ids=(
+                None
+                if data["output_token_ids"] is None
+                else _integers(
+                    data["output_token_ids"], "OutputEvidence.output_token_ids"
+                )
+            ),
+            baseline_token_ids=(
+                None
+                if data["baseline_token_ids"] is None
+                else _integers(
+                    data["baseline_token_ids"], "OutputEvidence.baseline_token_ids"
+                )
             ),
             token_identity=EvidenceFact.from_dict(
                 data["token_identity"], context="OutputEvidence.token_identity"

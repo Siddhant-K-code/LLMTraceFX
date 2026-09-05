@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import shutil
 import subprocess
 import sys
 from dataclasses import replace
@@ -22,6 +23,7 @@ from llmtracefx.cache_audit.bundle import (
     PUBLIC_REDACTED_TIMING_SCOPE,
     PUBLIC_REDACTED_TIMING_UNIT,
     CacheAuditBundleError,
+    _verify_manifest_chronology,
     read_bundle,
     verify_bundle,
     write_bundle,
@@ -29,6 +31,7 @@ from llmtracefx.cache_audit.bundle import (
 from llmtracefx.cache_audit.expected import MLXCacheOracle
 from llmtracefx.cache_audit.runner import run_audit
 from llmtracefx.cache_audit.schema import (
+    AuditManifest,
     CacheConfig,
     CostEvidence,
     EligibilityStatus,
@@ -804,6 +807,180 @@ def test_bundle_rejects_generation_before_capture_and_commit(tmp_path: Path) -> 
             created_at="2000-01-01T00:00:00Z",
             generated_at="2000-01-02T00:00:00Z",
         )
+
+
+def _committed_cache_manifest() -> AuditManifest:
+    return AuditManifest.from_dict(
+        json.loads(
+            Path(
+                "examples/cache-audit/reference-positive-control/audit-manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+    )
+
+
+def test_repository_chronology_corroborates_available_commit() -> None:
+    assert (
+        _verify_manifest_chronology(
+            _committed_cache_manifest(),
+            repository=Path.cwd(),
+        )
+        == "verified"
+    )
+
+
+def test_repository_chronology_rejects_wrong_available_timestamp() -> None:
+    manifest = _committed_cache_manifest()
+    with pytest.raises(
+        CacheAuditBundleError,
+        match="commit timestamp does not match git",
+    ):
+        _verify_manifest_chronology(
+            replace(manifest, generator_commit_at="2026-09-05T16:11:24Z"),
+            repository=Path.cwd(),
+        )
+
+
+def test_repository_chronology_rejects_wrong_available_tree() -> None:
+    manifest = _committed_cache_manifest()
+    wrong_commit = "b84ec2d71ec9e9939be5194e5adf86e24428699c"
+    timestamp = subprocess.run(
+        ["git", "show", "-s", "--format=%cI", wrong_commit],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    with pytest.raises(
+        CacheAuditBundleError,
+        match="package tree does not match package digest",
+    ):
+        _verify_manifest_chronology(
+            replace(
+                manifest,
+                generator_commit=wrong_commit,
+                generator_commit_at=timestamp,
+            ),
+            repository=Path.cwd(),
+        )
+
+
+def test_repository_chronology_rejects_available_non_commit_object(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    object_id = subprocess.run(
+        ["git", "-C", str(repository), "hash-object", "-w", "--stdin"],
+        input="not a commit",
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    manifest = _committed_cache_manifest()
+    with pytest.raises(CacheAuditBundleError, match="object is not a commit"):
+        _verify_manifest_chronology(
+            replace(manifest, generator_commit=object_id),
+            repository=repository,
+        )
+
+
+def test_repository_chronology_is_unavailable_in_shallow_checkout(
+    tmp_path: Path,
+) -> None:
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            Path.cwd().resolve().as_uri(),
+            str(shallow),
+        ],
+        check=True,
+    )
+    assert (
+        _verify_manifest_chronology(
+            _committed_cache_manifest(),
+            repository=shallow,
+        )
+        == "unavailable"
+    )
+
+
+def test_repository_chronology_is_unavailable_without_git(tmp_path: Path) -> None:
+    assert (
+        _verify_manifest_chronology(
+            _committed_cache_manifest(),
+            repository=tmp_path,
+        )
+        == "unavailable"
+    )
+
+
+def test_portable_verifier_accepts_shallow_checkout_without_generator_object(
+    tmp_path: Path,
+) -> None:
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            Path.cwd().resolve().as_uri(),
+            str(shallow),
+        ],
+        check=True,
+    )
+    bundle = Path("examples/cache-audit/reference-positive-control").resolve()
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(bundle / "evidence_bundle.py"),
+            "verify",
+            "--public-dir",
+            str(bundle),
+            "--package-root",
+            str(shallow),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["repository_chronology_corroboration"] == (
+        "unavailable"
+    )
+
+
+def test_portable_verifier_accepts_matching_package_without_git(
+    tmp_path: Path,
+) -> None:
+    installed = tmp_path / "installed"
+    shutil.copytree("llmtracefx", installed / "llmtracefx")
+    bundle = Path("examples/cache-audit/reference-positive-control").resolve()
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(bundle / "evidence_bundle.py"),
+            "verify",
+            "--public-dir",
+            str(bundle),
+            "--package-root",
+            str(installed),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["repository_chronology_corroboration"] == (
+        "unavailable"
+    )
 
 
 def test_portable_verifier_refuses_unrelated_installed_package(tmp_path: Path) -> None:

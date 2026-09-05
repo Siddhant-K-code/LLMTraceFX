@@ -67,9 +67,9 @@ def _block_stored(
             _hash(value)
             for value in (block_hashes if block_hashes is not None else ["h0"])
         ],
-        "parent_block_hash": None
-        if parent_block_hash is None
-        else _hash(parent_block_hash),
+        "parent_block_hash": (
+            None if parent_block_hash is None else _hash(parent_block_hash)
+        ),
         "token_ids": token_ids if token_ids is not None else [1, 2, 3, 4],
         "block_size": block_size,
         "medium": medium,
@@ -655,9 +655,9 @@ def _request_observation(
             if prompt_token_ids is not None
             else [1, 2, 3, 4, 5, 6, 7, 8]
         ),
-        "output_token_ids": output_token_ids
-        if output_token_ids is not None
-        else [9, 10],
+        "output_token_ids": (
+            output_token_ids if output_token_ids is not None else [9, 10]
+        ),
         "num_cached_tokens": num_cached_tokens,
         "num_cache_creation_tokens": num_cache_creation_tokens,
         "finished": finished,

@@ -118,6 +118,21 @@ def _portable_verifier(manifest: AuditManifest) -> str:
         raise CacheAuditBundleError(
             "portable verification requires a generator package digest"
         )
+    commit = (
+        "None"
+        if manifest.generator_commit is None
+        else json.dumps(manifest.generator_commit)
+    )
+    commit_at = (
+        "None"
+        if manifest.generator_commit_at is None
+        else json.dumps(manifest.generator_commit_at)
+    )
+    package_digest = json.dumps(manifest.generator_package_digest)
+    generated_at = json.dumps(manifest.generated_at)
+    bundle_data_files = "\n".join(
+        f"    {json.dumps(name)}," for name in BUNDLE_DATA_FILES
+    )
     return f'''"""Offline verifier bound to one audited source implementation."""
 
 from __future__ import annotations
@@ -132,11 +147,15 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-EXPECTED_COMMIT = {manifest.generator_commit!r}
-EXPECTED_COMMIT_AT = {manifest.generator_commit_at!r}
-EXPECTED_PACKAGE_DIGEST = {manifest.generator_package_digest!r}
-EXPECTED_GENERATED_AT = {manifest.generated_at!r}
-BUNDLE_DATA_FILES = {BUNDLE_DATA_FILES!r}
+EXPECTED_COMMIT = {commit}
+EXPECTED_COMMIT_AT = {commit_at}
+EXPECTED_PACKAGE_DIGEST = (
+    {package_digest}
+)
+EXPECTED_GENERATED_AT = {generated_at}
+BUNDLE_DATA_FILES = (
+{bundle_data_files}
+)
 BUNDLE_FILES = BUNDLE_DATA_FILES + ("SHA256SUMS",)
 MAX_FILE_BYTES = {MAX_EVIDENCE_ARTIFACT_BYTES}
 
@@ -168,13 +187,16 @@ def safe_bytes(path: Path) -> bytes:
             if total > MAX_FILE_BYTES:
                 fail(f"oversized file: {{path}}")
         after = os.fstat(descriptor)
-        signature = lambda value: (
-            value.st_dev,
-            value.st_ino,
-            value.st_mode,
-            value.st_size,
-            value.st_mtime_ns,
-        )
+
+        def signature(value):
+            return (
+                value.st_dev,
+                value.st_ino,
+                value.st_mode,
+                value.st_size,
+                value.st_mtime_ns,
+            )
+
         if signature(before) != signature(after):
             fail(f"file changed while reading: {{path}}")
         return b"".join(chunks)
@@ -192,8 +214,10 @@ def verify_bundle_envelope(bundle: Path) -> None:
     checksums = {{}}
     for line in checksum_lines:
         parts = line.split("  ")
-        if len(parts) != 2 or len(parts[0]) != 64 or any(
-            character not in "0123456789abcdef" for character in parts[0]
+        if (
+            len(parts) != 2
+            or len(parts[0]) != 64
+            or any(character not in "0123456789abcdef" for character in parts[0])
         ):
             fail("invalid checksum manifest")
         digest, name = parts
@@ -311,11 +335,47 @@ def snapshot_package(root: Path) -> tuple[Path, str]:
     return temporary, "sha256:" + digest.hexdigest()
 
 
-def commit_matches(root: Path) -> bool:
-    if EXPECTED_COMMIT is None or not (root / ".git").exists():
-        return True
+def repository_is_incomplete(root: Path) -> bool:
     import subprocess
 
+    shallow = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--is-shallow-repository"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        text=True,
+    )
+    if shallow.returncode != 0 or shallow.stdout.strip() not in {{"true", "false"}}:
+        fail("candidate repository has invalid shallow-checkout metadata")
+    if shallow.stdout.strip() == "true":
+        return True
+    partial = subprocess.run(
+        ["git", "-C", str(root), "config", "--get-regexp", r"^remote\\..*\\.promisor$"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if partial.returncode not in {{0, 1}}:
+        fail("candidate repository has invalid partial-clone metadata")
+    return partial.returncode == 0
+
+
+def commit_matches(root: Path) -> str | None:
+    if EXPECTED_COMMIT is None or not (root / ".git").exists():
+        return "unavailable"
+    import subprocess
+
+    object_type = subprocess.run(
+        ["git", "-C", str(root), "cat-file", "-t", EXPECTED_COMMIT],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        text=True,
+    )
+    if object_type.returncode != 0:
+        return "unavailable" if repository_is_incomplete(root) else None
+    if object_type.stdout.strip() != "commit":
+        return None
     listing = subprocess.run(
         [
             "git",
@@ -333,7 +393,7 @@ def commit_matches(root: Path) -> bool:
         check=False,
     )
     if listing.returncode != 0:
-        return False
+        return None
     timestamp = subprocess.run(
         ["git", "-C", str(root), "show", "-s", "--format=%cI", EXPECTED_COMMIT],
         stdout=subprocess.PIPE,
@@ -342,24 +402,24 @@ def commit_matches(root: Path) -> bool:
         text=True,
     )
     if timestamp.returncode != 0:
-        return False
+        return None
     try:
         commit_time = datetime.fromisoformat(timestamp.stdout.strip())
         generated_time = datetime.fromisoformat(
             EXPECTED_GENERATED_AT.replace("Z", "+00:00")
         )
     except ValueError:
-        return False
+        return None
     if EXPECTED_COMMIT_AT is None:
-        return False
+        return None
     try:
         expected_commit_time = datetime.fromisoformat(
             EXPECTED_COMMIT_AT.replace("Z", "+00:00")
         )
     except ValueError:
-        return False
+        return None
     if commit_time != expected_commit_time or generated_time < commit_time:
-        return False
+        return None
     digest = hashlib.sha256()
     paths = sorted(
         line.decode("utf-8").removeprefix("llmtracefx/")
@@ -380,17 +440,19 @@ def commit_matches(root: Path) -> bool:
             check=False,
         )
         if result.returncode != 0:
-            return False
+            return None
         content = normalized_source(relative_text, result.stdout)
         relative = relative_text.encode("utf-8")
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
-    return "sha256:" + digest.hexdigest() == EXPECTED_PACKAGE_DIGEST
+    if "sha256:" + digest.hexdigest() != EXPECTED_PACKAGE_DIGEST:
+        return None
+    return "verified"
 
 
-def resolve_package(bundle: Path, requested: Path | None) -> Path:
+def resolve_package(bundle: Path, requested: Path | None) -> tuple[Path, str]:
     candidates = [requested.resolve()] if requested is not None else []
     if requested is None:
         candidates.extend((bundle.resolve(), *bundle.resolve().parents))
@@ -399,8 +461,9 @@ def resolve_package(bundle: Path, requested: Path | None) -> Path:
         if package.is_symlink() or not package.is_dir():
             continue
         temporary, digest = snapshot_package(root)
-        if digest == EXPECTED_PACKAGE_DIGEST and commit_matches(root):
-            return temporary
+        corroboration = commit_matches(root)
+        if digest == EXPECTED_PACKAGE_DIGEST and corroboration is not None:
+            return temporary, corroboration
         import shutil
 
         shutil.rmtree(temporary)
@@ -418,11 +481,13 @@ def main() -> None:
     args = parser.parse_args()
     bundle = args.public_dir.resolve()
     verify_bundle_envelope(bundle)
-    snapshot_root = resolve_package(bundle, args.package_root)
+    snapshot_root, corroboration = resolve_package(bundle, args.package_root)
     sys.path.insert(0, str(snapshot_root))
     from llmtracefx.cache_audit.bundle import verify_bundle
 
-    print(json.dumps({{"verified": True, **verify_bundle(bundle)}}, sort_keys=True))
+    result = verify_bundle(bundle)
+    result["repository_chronology_corroboration"] = corroboration
+    print(json.dumps({{"verified": True, **result}}, sort_keys=True))
 
 
 if __name__ == "__main__":
@@ -500,13 +565,103 @@ def _timestamp(value: str, field: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _verify_manifest_chronology(manifest: AuditManifest) -> None:
+def _repository_is_incomplete(repository: Path) -> bool:
+    shallow = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "--is-shallow-repository"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    shallow_value = shallow.stdout.strip()
+    if shallow.returncode != 0 or shallow_value not in {"true", "false"}:
+        raise CacheAuditBundleError("repository has invalid shallow-checkout metadata")
+    if shallow_value == "true":
+        return True
+    partial = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "config",
+            "--get-regexp",
+            r"^remote\..*\.promisor$",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if partial.returncode not in {0, 1}:
+        raise CacheAuditBundleError("repository has invalid partial-clone metadata")
+    return partial.returncode == 0
+
+
+def _git_package_digest(repository: Path, commit: str) -> str:
+    listing = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "ls-tree",
+            "-r",
+            "--name-only",
+            commit,
+            "--",
+            "llmtracefx",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if listing.returncode != 0:
+        raise CacheAuditBundleError("generator commit package tree is unavailable")
+    try:
+        paths = sorted(
+            line.decode("utf-8").removeprefix("llmtracefx/")
+            for line in listing.stdout.splitlines()
+            if line.endswith(b".py")
+        )
+    except UnicodeDecodeError as exc:
+        raise CacheAuditBundleError(
+            "generator commit package tree contains an invalid path"
+        ) from exc
+    if not paths or len(paths) != len(set(paths)):
+        raise CacheAuditBundleError("generator commit package tree is invalid")
+    digest = hashlib.sha256()
+    for relative_text in paths:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "show",
+                f"{commit}:llmtracefx/{relative_text}",
+            ],
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise CacheAuditBundleError(
+                "generator commit package source is unavailable"
+            )
+        content = _normalized_source(relative_text, result.stdout)
+        relative = relative_text.encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return "sha256:" + digest.hexdigest()
+
+
+def _verify_manifest_chronology(
+    manifest: AuditManifest,
+    *,
+    repository: Path | None = None,
+) -> str:
     captured_at = _timestamp(manifest.created_at, "created_at")
     generated_at = _timestamp(manifest.generated_at, "generated_at")
     if generated_at < captured_at:
         raise CacheAuditBundleError("bundle generation predates evidence capture")
     if manifest.generator_commit is None:
-        return
+        return "unavailable"
     if manifest.generator_commit_at is None:
         raise CacheAuditBundleError("generator commit timestamp is unavailable")
     recorded_commit_at = _timestamp(
@@ -515,9 +670,28 @@ def _verify_manifest_chronology(manifest: AuditManifest) -> None:
     )
     if generated_at < recorded_commit_at:
         raise CacheAuditBundleError("bundle generation predates generator commit")
-    repository = Path(__file__).resolve().parents[2]
+    repository = repository or Path(__file__).resolve().parents[2]
     if not (repository / ".git").exists():
-        return
+        return "unavailable"
+    object_type = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "cat-file",
+            "-t",
+            manifest.generator_commit,
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if object_type.returncode != 0:
+        if _repository_is_incomplete(repository):
+            return "unavailable"
+        raise CacheAuditBundleError("generator commit is unavailable for chronology")
+    if object_type.stdout.strip() != "commit":
+        raise CacheAuditBundleError("generator object is not a commit")
     result = subprocess.run(
         [
             "git",
@@ -537,6 +711,16 @@ def _verify_manifest_chronology(manifest: AuditManifest) -> None:
     commit_at = _timestamp(result.stdout.strip(), "generator commit timestamp")
     if recorded_commit_at != commit_at:
         raise CacheAuditBundleError("generator commit timestamp does not match git")
+    if manifest.generator_package_digest is None:
+        raise CacheAuditBundleError("generator package digest is unavailable")
+    if (
+        _git_package_digest(repository, manifest.generator_commit)
+        != manifest.generator_package_digest
+    ):
+        raise CacheAuditBundleError(
+            "generator commit package tree does not match package digest"
+        )
+    return "verified"
 
 
 def _cache_config_digest(manifest: AuditManifest) -> str:
@@ -994,7 +1178,7 @@ def verify_bundle(bundle_dir: Path) -> dict[str, Any]:
         raise CacheAuditBundleError(
             "bundle belongs to a different llmtracefx cache-audit package"
         )
-    _verify_manifest_chronology(manifest)
+    repository_chronology_corroboration = _verify_manifest_chronology(manifest)
     _verify_manifest_backend_contract(manifest)
     records = _load_records(bundle_dir / "request-evidence.jsonl")
     if tuple(record.spec.request_id for record in records) != manifest.request_order:
@@ -1098,6 +1282,7 @@ def verify_bundle(bundle_dir: Path) -> dict[str, Any]:
         "token_identity_reproducible": (
             manifest.publication_mode is not PublicationMode.PUBLIC_REDACTED
         ),
+        "repository_chronology_corroboration": (repository_chronology_corroboration),
     }
 
 

@@ -193,6 +193,13 @@ refuse a `generated_at` timestamp earlier than the generator commit. Catalog
 `captured_at` remains the evidence capture time rather than the later
 implementation-binding time.
 
+Verification reports `repository_chronology_corroboration` as `verified` when
+the exact generator commit is available and its timestamp and package tree
+match. It reports `unavailable` for an installed package without Git metadata
+or a shallow/partial checkout missing that object; the checksum-bound embedded
+timestamps and exact package digest remain mandatory. An available but
+conflicting Git object, timestamp, or tree always fails verification.
+
 The report's primary sentence is:
 
 > The engine reported X cached tokens/blocks. Given the exact input and cache
