@@ -272,8 +272,8 @@ be a different experiment rather than this one. The verdict ships in the
 preregistration bundle as `decode-feasibility.json`, in the plan hash the
 authorization is bound to, and in the claim matrix as
 `controlled-cell-decode-feasible-on-l4`. Note that a canary could never have
-caught this: one 96-token canary needs about 4.47 seconds against its own
-300-second timeout and passes comfortably.
+caught this: one 96-token canary needs about 4.47 seconds against the
+300-second eager and 420-second compiled canary timeouts and passes comfortably.
 
 The durable refusal state records staging `0`, canaries `0/2`, analytic cells
 `0/32`, retries or reschedules `0`, inferred spend `$0`, and provider-reported
@@ -323,7 +323,7 @@ Function returns a value instead of leaving a file on a host, so ordinary and
 out-of-memory failures become terminal refusal receipts rather than a reason
 lost inside a provider stack trace.
 
-`llmtracefx-modal-l4-execute preflight` runs every offline gate and stops before
+`llmtracefx-modal-l4-execute preflight` runs every pre-SDK gate and stops before
 the SDK is imported. The decode-bandwidth feasibility proof above runs first
 and, for the sealed design, ends the run there. Behind it: environment overrides
 are rejected by name without reading a value; the coordinator
@@ -346,8 +346,8 @@ identifier may appear in it.
 `run` would then import the SDK, probe it against the pinned and inspected Modal
 1.5.5 API surface, and validate the standard local Modal profile with a
 read-only probe whose output is discarded, all before the app module is
-imported or any provider call is made. Only then would it execute staging,
-verification, the eager canary, the
+imported or any resource-creating or paid provider operation begins. Only then
+would it execute staging, verification, the eager canary, the
 compiled canary, the 32 sealed cells only if both canaries pass, and the
 analysis inventory, sequentially, reserving each lifecycle in the ledger before
 every call. A second attempt, crash, preemption, timeout, or missing terminal

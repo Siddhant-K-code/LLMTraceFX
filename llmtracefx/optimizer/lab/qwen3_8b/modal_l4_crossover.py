@@ -175,11 +175,9 @@ L4_ADVERTISED_PEAK_BANDWIDTH_BYTES_PER_SECOND = 300_000_000_000
 FEASIBILITY_BANDWIDTH_BYTES_PER_SECOND = 300 * 1024**3
 DECODE_FEASIBILITY_KIND = "modal_l4_decode_bandwidth_feasibility"
 DECODE_FEASIBILITY_SCHEMA_VERSION = "2"
-# Reported rates that do not terminate as decimals are rounded down to this
-# many places. Rounding down understates achievable throughput, so it can only
-# make a *feasible* verdict look worse -- never make an infeasible one pass.
-# The verdict itself is decided by exact integer cross-multiplication and never
-# by a rounded value.
+# Non-terminating presentation values use this precision: achievable throughput
+# rounds down and the timeout ratio rounds up. Neither rounded value participates
+# in the verdict, which uses exact integer cross-multiplication.
 DECODE_RATE_DECIMAL_PLACES = 12
 MODEL_WEIGHT_BYTES_PROVENANCE = (
     "pinned model.safetensors.index.json metadata.total_size "
