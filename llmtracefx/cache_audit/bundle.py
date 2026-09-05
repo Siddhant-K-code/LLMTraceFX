@@ -481,7 +481,9 @@ def commit_matches(root: Path) -> str | None:
     if timestamp.returncode != 0:
         return None
     try:
-        commit_time = datetime.fromisoformat(timestamp.stdout.strip())
+        commit_time = datetime.fromisoformat(
+            timestamp.stdout.strip().replace("Z", "+00:00")
+        )
         generated_time = datetime.fromisoformat(
             EXPECTED_GENERATED_AT.replace("Z", "+00:00")
         )
