@@ -280,11 +280,11 @@ def _validate_orchestration_envelope(
 def _validate_decode_feasibility(orchestration: Mapping[str, Any]) -> dict[str, Any]:
     """Re-derive the decode-bandwidth proof that admitted this run.
 
-    The receipt is not trusted: its own recorded inputs are fed back through
-    the same evaluator and the whole document must recompute byte-for-byte, so
-    a hand-edited verdict, a silently different byte count, or a fabricated
-    bandwidth is terminal. A result can only exist for a run the arithmetic
-    admitted, so an infeasible or absent verdict is refused here.
+    The receipt is not trusted: the sealed defaults are recomputed and the whole
+    document must match byte-for-byte, so a hand-edited verdict, a silently
+    different byte count, or a fabricated bandwidth is terminal. The sealed
+    verdict is infeasible, therefore no result is admissible for this protocol
+    identity.
     """
 
     receipt = orchestration.get("decode_feasibility")

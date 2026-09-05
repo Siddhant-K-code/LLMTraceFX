@@ -245,8 +245,41 @@ class TestOfflineBundle:
         )
         claims = json.loads((bundle / "claim-matrix.json").read_text(encoding="utf-8"))
         assert preflight["execution_authorized"] is False
+        assert preflight["provider_calls_performed"] is False
         assert preflight["provider_sdk_imported"] is False
         assert preflight["spend_usd"] == "0"
+        assert preflight["provider_reported_spend_usd"] is None
+        assert preflight["lifecycle_counts"] == {
+            "staging_completed": 0,
+            "canaries_completed": 0,
+            "canaries_planned": 2,
+            "analytic_cells_completed": 0,
+            "analytic_cells_planned": 32,
+            "retries_or_reschedules_observed": 0,
+        }
+        assert (
+            preflight["resource_state"]["zero_live_resources_by_construction"] is True
+        )
+        assert (
+            preflight["resource_state"]["zero_live_resources_independently_observed"]
+            is False
+        )
+        assert preflight["resource_state"]["teardown_required"] is False
+        assert preflight["prior_process_error"] == {
+            "observed": True,
+            "classification": "auxiliary_agent_configuration",
+            "provider_execution_related": False,
+            "scientific_attempt_started": False,
+            "provider_retry_permission_created": False,
+        }
+        assert preflight["coordinator_reported_credential_status"] == {
+            "exposed_profile_credential_never_used_by_experiment": True,
+            "exposed_profile_credential_revocation_confirmed": True,
+            "fresh_local_profile_created_without_sharing": True,
+            "fresh_profile_shared_anywhere": False,
+            "credential_values_or_derived_identifiers_recorded": False,
+            "execution_gate_artifact_present": False,
+        }
         assert claims["execution_state"] == "not_run"
         states = {item["claim_id"]: item["state"] for item in claims["claims"]}
         assert states["zero-spend-offline-generation"] == "supported"
@@ -290,7 +323,9 @@ class TestOfflineBundle:
         plan = json.loads((bundle / "experiment-plan.json").read_text(encoding="utf-8"))
         assert verdict == modal.evaluate_decode_bandwidth_feasibility()
         assert verdict["feasible"] is False
-        assert verdict["derivation"]["minimum_decode_only_seconds"] == "754.86029303808"
+        assert verdict["derivation"]["minimum_decode_only_seconds"] == (
+            "643.121455078125"
+        )
         assert verdict["derivation"]["required_tokens_per_second"] == "28.8"
         assert preflight["decode_feasibility"] == verdict
         assert preflight["execution_refused_offline"] is True
@@ -303,11 +338,11 @@ class TestOfflineBundle:
 
     def test_the_bundle_readme_states_the_arithmetic(self, bundle: Path) -> None:
         readme = (bundle / "README.md").read_text(encoding="utf-8")
-        assert "16,381,516,776-byte safetensors" in readme
-        assert "300,000,000,000 bytes per second" in readme
-        assert "754.86029303808 seconds" in readme
+        assert "14,985,816,064-byte HBM traffic floor" in readme
+        assert "322,122,547,200 B/s" in readme
+        assert "643.121455078125 seconds" in readme
         assert "480-second" in readme
-        assert "28.8 tokens per second" in readme
+        assert "28.8 tokens/s" in readme
 
     def test_budget_chain_reconciles_to_the_hard_cap(self, bundle: Path) -> None:
         budget = json.loads((bundle / "budget-plan.json").read_text(encoding="utf-8"))
@@ -1001,23 +1036,20 @@ class TestCredentialExposureEvidence:
         )
         assert states["fresh-local-profile-created-without-sharing"] == "unsupported"
 
-    def test_result_contract_lists_the_gate_first(self, bundle: Path) -> None:
+    def test_result_contract_disables_publication_at_the_gate(
+        self, bundle: Path
+    ) -> None:
         contract = json.loads(
             (bundle / "result-contract.json").read_text(encoding="utf-8")
         )
         assert "credential-exposure.json" in contract["modal_envelope_files"]
-        # The feasibility proof and the headroom binding are checked before the
-        # credential-exposure clearance, so the gate is now third rather than
-        # second; it still precedes every statistical step.
-        order = contract["verification_order"]
-        gate_index = next(
-            index for index, step in enumerate(order) if "credential-exposure" in step
-        )
-        assert gate_index == 3
-        assert all(
-            "cell" not in step and "statistic" not in step
-            for step in order[:gate_index]
-        )
+        assert contract["result_publication_enabled_for_this_protocol"] is False
+        assert contract["verification_order"] == [
+            "the exact sealed infeasible verdict rejects this protocol identity"
+        ]
+        dormant = contract["dormant_hypothetical_analysis_checks"]
+        assert any("credential-exposure" in step for step in dormant)
+        assert any("32 sealed inner cell receipts" in step for step in dormant)
 
     def test_a_missing_gate_verdict_refuses_results(self, tmp_path: Path) -> None:
         root = _result_envelope(tmp_path / "results")

@@ -1059,9 +1059,7 @@ class ModalOrchestrator:
             "crashed": outcome.failure == "crash",
             "preempted": outcome.failure == "preemption",
             "timed_out": outcome.failure == "timeout",
-            "terminal_receipt": (
-                outcome.failure is None and receipt.get("terminal") is True
-            ),
+            "terminal_receipt": receipt.get("terminal") is True,
         }
         self.attempt_receipts.append(attempt)
         return attempt
@@ -1153,13 +1151,15 @@ class ModalOrchestrator:
             outcome = self._dispatch(functions[key], step)
             self._settle(call_id, outcome)
             attempt = self._record_attempt(outcome)
+            receipt = outcome.receipt or {}
+            if attempt["terminal_receipt"] and outcome.failure is not None:
+                self.refusal_receipts[str(step["lifecycle_id"])] = receipt
             if outcome.failure is not None or not attempt["terminal_receipt"]:
                 self.status = "invalidated"
                 self.failure = (
                     f"{key} returned {outcome.failure or 'a non-terminal receipt'}"
                 )
                 return
-            receipt = outcome.receipt or {}
             if receipt.get("status") != "completed":
                 self.refusal_receipts[str(step["lifecycle_id"])] = receipt
                 if key in ("eager_canary", "compiled_canary"):

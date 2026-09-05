@@ -131,30 +131,50 @@ MAX_MODEL_LEN_MARGIN_TOKENS = DECODE_STEPS
 #
 # Assumptions, stated so a reviewer can attack them rather than guess them:
 #
-#   1. Batch-1 autoregressive BF16 decoding is memory-bandwidth bound. Every
-#      generated token requires reading at least one full image of the model
-#      weights from device memory. This is a *lower* bound: it ignores the KV
-#      cache, activations, and every non-weight read.
-#   2. The weight image is the exact sum of the five staged safetensors shards.
-#      Tokenizer, config, index, README, and license bytes are excluded because
-#      they are not streamed from HBM for every decode step.
-#   3. The device streams at its advertised peak memory bandwidth. Real
-#      achieved bandwidth is strictly lower, so the derived minimum is
-#      optimistic in favour of feasibility.
+#   1. Requests execute sequentially and speculative decoding is disabled, so
+#      every output token requires a complete batch-1 decoder pass.
+#   2. The pinned safetensors index reports exact tensor payload bytes. The
+#      row-gathered input embedding, every norm tensor, and a generous 128 MiB
+#      persistent on-chip cache allowance are subtracted. Only the remaining
+#      dense projection/MLP/output-matrix bytes form the HBM traffic floor.
+#   3. The calculation grants 300 GiB/s, which is greater than the vendor's
+#      advertised 300 GB/s. Real achieved bandwidth is lower, so the derived
+#      minimum is deliberately optimistic in favour of feasibility.
 #   4. Initialization, weight load, prefill, and (for the compiled mode)
 #      torch.compile / CUDA-graph capture take non-negative time, and are
 #      excluded entirely from the minimum.
 #
-# Sources for the two inputs are recorded, not fetched: the staged byte count
-# is the protocol's own sealed staging inventory, and the L4 peak bandwidth is
-# the vendor-advertised figure for the accelerator this delta pins.
+# Sources for the inputs are recorded, not fetched: the pinned Qwen config and
+# safetensors index establish the tensor accounting, while NVIDIA's L4 product
+# brief and Ada architecture whitepaper establish bandwidth and cache size.
 # ---------------------------------------------------------------------------
 STAGED_MODEL_BYTES = EXPECTED_MODEL_BYTES
-MODEL_WEIGHT_BYTES = 16_381_516_776
+MODEL_TENSOR_BYTES = 16_381_470_720
+MODEL_CONFIG_VOCAB_SIZE = 151_936
+MODEL_CONFIG_HIDDEN_SIZE = 4_096
+MODEL_CONFIG_HIDDEN_LAYERS = 36
+MODEL_CONFIG_HEAD_DIM = 128
+MODEL_CONFIG_TIE_WORD_EMBEDDINGS = False
+BF16_BYTES_PER_ELEMENT = 2
+INPUT_EMBEDDING_BYTES = (
+    MODEL_CONFIG_VOCAB_SIZE * MODEL_CONFIG_HIDDEN_SIZE * BF16_BYTES_PER_ELEMENT
+)
+NON_DENSE_TENSOR_ALLOWANCE_BYTES = 16 * 1024 * 1024
+DENSE_DECODE_WEIGHT_BYTES = (
+    MODEL_TENSOR_BYTES - INPUT_EMBEDDING_BYTES - NON_DENSE_TENSOR_ALLOWANCE_BYTES
+)
+# NVIDIA's Ada whitepaper reports 49,152 KiB of L2 for L4. Grant more than
+# twice that amount to cover L1 and any other persistent on-chip reuse without
+# needing to model cache replacement.
+ON_CHIP_CACHE_ALLOWANCE_BYTES = 128 * 1024 * 1024
+MINIMUM_HBM_WEIGHT_BYTES_PER_TOKEN = (
+    DENSE_DECODE_WEIGHT_BYTES - ON_CHIP_CACHE_ALLOWANCE_BYTES
+)
 CONTROLLED_CELL_OUTPUT_TOKENS = CONTROLLED_REQUESTS_PER_CELL * DECODE_STEPS
 L4_ADVERTISED_PEAK_BANDWIDTH_BYTES_PER_SECOND = 300_000_000_000
+FEASIBILITY_BANDWIDTH_BYTES_PER_SECOND = 300 * 1024**3
 DECODE_FEASIBILITY_KIND = "modal_l4_decode_bandwidth_feasibility"
-DECODE_FEASIBILITY_SCHEMA_VERSION = "1"
+DECODE_FEASIBILITY_SCHEMA_VERSION = "2"
 # Reported rates that do not terminate as decimals are rounded down to this
 # many places. Rounding down understates achievable throughput, so it can only
 # make a *feasible* verdict look worse -- never make an infeasible one pass.
@@ -162,22 +182,27 @@ DECODE_FEASIBILITY_SCHEMA_VERSION = "1"
 # by a rounded value.
 DECODE_RATE_DECIMAL_PLACES = 12
 MODEL_WEIGHT_BYTES_PROVENANCE = (
-    "exact sum of the five safetensors weight shards in the sealed staging "
-    f"inventory ({MODEL_WEIGHT_BYTES} bytes); the full "
-    f"{EXPECTED_MODEL_FILE_COUNT}-file staged inventory is "
-    f"{EXPECTED_MODEL_BYTES} bytes"
+    "pinned model.safetensors.index.json metadata.total_size "
+    f"({MODEL_TENSOR_BYTES} tensor bytes; sha256 "
+    "f9fdbcb91c23971c13ec5d5f2573d2349e8f61f2f049371ec699281748fdb1bc), "
+    "minus the row-gathered input embedding derived from "
+    "the pinned config.json (sha256 "
+    "f7c4eadfbbf522470667b797a3c89be2524832d2d599797248dc304fff447c30), "
+    f"a {NON_DENSE_TENSOR_ALLOWANCE_BYTES}-byte allowance for every norm and "
+    f"other non-dense tensor, and a {ON_CHIP_CACHE_ALLOWANCE_BYTES}-byte "
+    "on-chip cache allowance"
 )
 L4_BANDWIDTH_PROVENANCE = (
-    "NVIDIA L4 advertised peak memory bandwidth, recorded offline as an "
-    "operator-supplied constant and never fetched"
+    "NVIDIA L4 advertises 300 GB/s; the feasibility calculation deliberately "
+    f"inflates that to 300 GiB/s ({FEASIBILITY_BANDWIDTH_BYTES_PER_SECOND} B/s)"
 )
 DECODE_FEASIBILITY_ASSUMPTIONS = (
-    "batch-1 BF16 autoregressive decoding is memory-bandwidth bound and must "
-    "stream at least one full model-weight image per generated token",
-    "the weight image is the exact sum of the five staged safetensors shards; "
-    "non-weight staged files are excluded",
-    "the device sustains its advertised peak memory bandwidth, which no real "
-    "kernel exceeds",
+    "sequential, non-speculative BF16 autoregressive decoding performs one "
+    "batch-1 decoder pass per generated token",
+    "the HBM floor excludes the row-gathered input embedding, grants 16 MiB "
+    "for every norm and other non-dense tensor, excludes safetensors headers, "
+    "and grants 128 MiB of possible on-chip reuse",
+    "the device is granted 300 GiB/s, exceeding its advertised 300 GB/s peak",
     "KV-cache, activation, and every other non-weight read is ignored, so the "
     "derived time is a strict lower bound",
 )
@@ -1610,11 +1635,9 @@ def verify_official_rate_receipt(receipt: Any) -> dict[str, Any]:
 
 def evaluate_decode_bandwidth_feasibility(
     *,
-    model_bytes: int = MODEL_WEIGHT_BYTES,
+    model_bytes: int = MINIMUM_HBM_WEIGHT_BYTES_PER_TOKEN,
     output_tokens: int = CONTROLLED_CELL_OUTPUT_TOKENS,
-    peak_bandwidth_bytes_per_second: int = (
-        L4_ADVERTISED_PEAK_BANDWIDTH_BYTES_PER_SECOND
-    ),
+    peak_bandwidth_bytes_per_second: int = (FEASIBILITY_BANDWIDTH_BYTES_PER_SECOND),
     timeout_seconds: int = CONTROLLED_CELL_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     """Prove offline whether one controlled cell can decode inside its timeout.
@@ -1662,11 +1685,9 @@ def evaluate_decode_bandwidth_feasibility(
         "computed_offline": True,
         "uses_sealed_constants": values
         == {
-            "model_bytes": MODEL_WEIGHT_BYTES,
+            "model_bytes": MINIMUM_HBM_WEIGHT_BYTES_PER_TOKEN,
             "output_tokens": CONTROLLED_CELL_OUTPUT_TOKENS,
-            "peak_bandwidth_bytes_per_second": (
-                L4_ADVERTISED_PEAK_BANDWIDTH_BYTES_PER_SECOND
-            ),
+            "peak_bandwidth_bytes_per_second": (FEASIBILITY_BANDWIDTH_BYTES_PER_SECOND),
             "timeout_seconds": CONTROLLED_CELL_TIMEOUT_SECONDS,
         },
         "inputs": {
@@ -1676,6 +1697,22 @@ def evaluate_decode_bandwidth_feasibility(
             "accelerator": EXPECTED_GPU_NAME,
             "model_bytes_provenance": MODEL_WEIGHT_BYTES_PROVENANCE,
             "peak_bandwidth_provenance": L4_BANDWIDTH_PROVENANCE,
+            "model_architecture_facts": {
+                "revision": MODEL_REVISION,
+                "tensor_payload_bytes": MODEL_TENSOR_BYTES,
+                "vocab_size": MODEL_CONFIG_VOCAB_SIZE,
+                "hidden_size": MODEL_CONFIG_HIDDEN_SIZE,
+                "hidden_layers": MODEL_CONFIG_HIDDEN_LAYERS,
+                "head_dim": MODEL_CONFIG_HEAD_DIM,
+                "tie_word_embeddings": MODEL_CONFIG_TIE_WORD_EMBEDDINGS,
+                "dtype": "bfloat16",
+                "input_embedding_bytes_excluded": INPUT_EMBEDDING_BYTES,
+                "non_dense_tensor_allowance_bytes": (NON_DENSE_TENSOR_ALLOWANCE_BYTES),
+                "on_chip_cache_allowance_bytes": ON_CHIP_CACHE_ALLOWANCE_BYTES,
+                "minimum_hbm_weight_bytes_per_token": (
+                    MINIMUM_HBM_WEIGHT_BYTES_PER_TOKEN
+                ),
+            },
             "decode_execution_contract": {
                 "dtype": "bfloat16",
                 "max_num_seqs": 1,
@@ -2454,8 +2491,9 @@ def offline_plan_document() -> dict[str, Any]:
     feasibility = evaluate_decode_bandwidth_feasibility()
     blockers = [
         (
-            "No coordinator attestation of exposed-credential revocation and "
-            "fresh unshared local profile creation is present."
+            "No signed execution-gate attestation artifact for the "
+            "coordinator-reported credential revocation and replacement status "
+            "is present."
         ),
         "No explicit execution authorization receipt is present.",
         "No re-fetched and hashed official Modal rate receipt is present.",
@@ -2485,14 +2523,55 @@ def offline_plan_document() -> dict[str, Any]:
         "execution_authorized": False,
         "offline_only": True,
         "network_request_performed": False,
+        "provider_calls_performed": False,
         "provider_authentication_used": False,
         "provider_sdk_imported": False,
         "credential_exposure_gate": evaluate_credential_exposure_attestation(None),
+        "coordinator_reported_credential_status": {
+            "exposed_profile_credential_never_used_by_experiment": True,
+            "exposed_profile_credential_revocation_confirmed": True,
+            "fresh_local_profile_created_without_sharing": True,
+            "fresh_profile_shared_anywhere": False,
+            "credential_values_or_derived_identifiers_recorded": False,
+            "execution_gate_artifact_present": False,
+        },
         "exposed_profile_credential_never_used_by_experiment": True,
         "container_created": False,
         "model_downloaded": False,
         "gpu_used": False,
         "spend_usd": "0",
+        "provider_reported_spend_usd": None,
+        "provider_reported_spend_null_reason": "no provider operation occurred",
+        "lifecycle_counts": {
+            "staging_completed": 0,
+            "canaries_completed": 0,
+            "canaries_planned": 2,
+            "analytic_cells_completed": 0,
+            "analytic_cells_planned": 32,
+            "retries_or_reschedules_observed": 0,
+        },
+        "resource_state": {
+            "run_scoped_identity_created": False,
+            "apps_created": 0,
+            "functions_created": 0,
+            "containers_created": 0,
+            "volumes_created": 0,
+            "secrets_created": 0,
+            "teardown_required": False,
+            "zero_live_resources_by_construction": True,
+            "zero_live_resources_independently_observed": False,
+            "independent_observation_null_reason": (
+                "the Modal control plane was never contacted and no run-scoped "
+                "identity existed"
+            ),
+        },
+        "prior_process_error": {
+            "observed": True,
+            "classification": "auxiliary_agent_configuration",
+            "provider_execution_related": False,
+            "scientific_attempt_started": False,
+            "provider_retry_permission_created": False,
+        },
         "decode_feasibility": feasibility,
         "execution_refused_offline": not feasibility["feasible"],
         "blockers": blockers,

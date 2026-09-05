@@ -241,16 +241,20 @@ failure publishes a refusal.
 
 Before any of that, an arithmetic gate decides whether the sealed design can
 run at all, and finds that it cannot. One controlled cell generates 144 x 96 =
-13,824 output tokens. Batch-1 BF16 decoding is memory-bandwidth bound and must
-stream at least one full model-weight image per generated token. The five exact
-safetensors shards total 16,381,516,776 bytes; the staging gate separately
-verifies the complete 15-file, 16,397,461,266-byte inventory. A cell must
-therefore move 226,458,087,911,424 bytes. At the L4's advertised peak memory
-bandwidth of 300,000,000,000 bytes per second that is 754.86029303808 seconds
-of decoding alone, against the sealed 480-second controlled-cell timeout: 1.573
-times over, before container start, weight load, engine initialization,
-prefill, or CUDA-graph capture. Put the other way, the cell needs 28.8 tokens
-per second where the hardware's theoretical ceiling is about 18.313322514769.
+13,824 output tokens. Each sequential, non-speculative BF16 token requires a
+complete batch-1 decoder pass. The pinned safetensors index reports
+16,381,470,720 tensor bytes. The proof excludes the 1,244,659,712-byte
+row-gathered input embedding, grants 16 MiB for every norm and other non-dense
+tensor, excludes safetensors headers, and grants a further 128 MiB on-chip
+cache allowance, leaving a conservative 14,985,816,064-byte HBM traffic floor
+per token. It also grants the L4
+322,122,547,200 bytes/s (300 GiB/s), more than the advertised 300 GB/s. Even
+then a cell must move 207,163,921,268,736 bytes, requiring exactly
+643.121455078125 seconds of decoding alone against the sealed 480-second
+timeout: 1.340 times
+over before container start, weight load, engine initialization, prefill, or
+CUDA-graph capture. The cell needs 28.8 tokens/s while this conservative ceiling
+is 21.495162213676 tokens/s.
 
 Every input is a constant this protocol already pins, every step is exact
 integer arithmetic, and the whole proof runs offline, so
@@ -268,8 +272,17 @@ be a different experiment rather than this one. The verdict ships in the
 preregistration bundle as `decode-feasibility.json`, in the plan hash the
 authorization is bound to, and in the claim matrix as
 `controlled-cell-decode-feasible-on-l4`. Note that a canary could never have
-caught this: one 96-token canary needs about 5.2 seconds against its own
+caught this: one 96-token canary needs about 4.47 seconds against its own
 300-second timeout and passes comfortably.
+
+The durable refusal state records staging `0`, canaries `0/2`, analytic cells
+`0/32`, retries or reschedules `0`, inferred spend `$0`, and provider-reported
+spend `null`. No run-scoped identity, app, function, container, volume, or
+secret was created, so teardown was not required and zero live experiment
+resources is true by construction. It was not independently observed through
+Modal because the control plane was never contacted. A prior process `ERROR`
+was an auxiliary-agent configuration failure, not provider execution, a
+scientific attempt, or permission to retry.
 
 Modal exposes no host page-cache drop and no dedicated-host reservation, so
 those CloudRift requirements are removed from this protocol only. Fresh
@@ -310,29 +323,31 @@ Function returns a value instead of leaving a file on a host, so ordinary and
 out-of-memory failures become terminal refusal receipts rather than a reason
 lost inside a provider stack trace.
 
-`llmtracefx-modal-l4-execute preflight` runs every gate and stops before the
-SDK is imported. The decode-bandwidth feasibility proof above runs first and,
-for the sealed design, ends the run there. Behind it: environment overrides are
-rejected by name without reading a value; the coordinator credential-exposure
-attestation is read and must be cleared; the authorization is verified against
-an OpenSSH detached signature and bound to the exact plan hash, clean source
-head, nonce, run-scoped names, image reference, workspace path, rate-receipt
-hash, credential-exposure attestation hash, and signed-headroom receipt hash,
-inside a bounded UTC `[not_before, expires_at)` window with an explicit maximum
-duration; the source-checkout gate confirms real git is clean at exactly that
-head; a standard local Modal profile is confirmed by a read-only probe whose
-output is discarded; the official rate documents are re-fetched and hashed
-(never parsed for numbers); and account headroom comes from a sanitized
-control-plane probe or a separately signed operator receipt — never from
-silence. That headroom receipt is not a bare dollar figure: it is a closed
-schema carrying the protocol, plan hash, source head, nonce, amount, and its
-own strict UTC validity window, which must cover the whole authorization
+`llmtracefx-modal-l4-execute preflight` runs every offline gate and stops before
+the SDK is imported. The decode-bandwidth feasibility proof above runs first
+and, for the sealed design, ends the run there. Behind it: environment overrides
+are rejected by name without reading a value; the coordinator
+credential-exposure attestation is read and must be cleared; the authorization
+is verified against an OpenSSH detached signature and bound to the exact plan
+hash, clean source head, nonce, run-scoped names, image reference, workspace
+path, rate-receipt hash, credential-exposure attestation hash, and
+signed-headroom receipt hash, inside a bounded UTC `[not_before, expires_at)`
+window with an explicit maximum duration; the source-checkout gate confirms
+real git is clean at exactly that head; the official rate documents are
+re-fetched and hashed (never parsed for numbers); and account headroom comes
+from a sanitized control-plane probe or a separately signed operator receipt —
+never from silence. That headroom receipt is not a bare dollar figure: it is a
+closed schema carrying the protocol, plan hash, source head, nonce, amount, and
+its own strict UTC validity window, which must cover the whole authorization
 window, and the authorization names its exact hash so a receipt signed for one
 run cannot be replayed into another. No account, workspace, or profile
 identifier may appear in it.
 
-`run` then imports the SDK, probes it against the pinned and inspected modal
-1.5.5 API surface, and executes staging, verification, the eager canary, the
+`run` would then import the SDK, probe it against the pinned and inspected Modal
+1.5.5 API surface, and validate the standard local Modal profile with a
+read-only probe whose output is discarded, all before the app module is
+imported or any provider call is made. Only then would it execute staging,
+verification, the eager canary, the
 compiled canary, the 32 sealed cells only if both canaries pass, and the
 analysis inventory, sequentially, reserving each lifecycle in the ledger before
 every call. A second attempt, crash, preemption, timeout, or missing terminal
@@ -377,11 +392,12 @@ fixtures as evidence.
 
 #### Credential exposure gate
 
-A standard-profile credential was exposed outside this system. Provider
-If a future feasible protocol is separately approved, provider execution stays
-blocked until a coordinator attests, in a closed booleans-only
-schema, that the exposed credential was revoked and that a fresh
-standard-profile credential was created locally and never shared. The
+A standard-profile credential was exposed outside this system. The coordinator
+reports that it was never used by the experiment, was revoked, and was replaced
+through the normal local flow without sharing; no value or derived identifier
+was recorded. If a future feasible protocol is separately approved, provider
+execution stays blocked until those facts are supplied as a signed execution
+gate artifact in the closed booleans-only schema. The
 feasibility refusal runs first; the credential gate would run second, before the
 environment check, authorization verification, or SDK import. An absent or
 malformed attestation is a refusal, never an assumption of clearance.
@@ -399,6 +415,10 @@ prefix, or derived identifier is ever read or written by this code. The
 authorization receipt binds the hash of that booleans-only attestation
 document, so a cleared gate cannot be swapped for another after signing, and a
 completed result bundle is refused unless its gate verdict is cleared.
+
+The evidence schema has no separate `refuted` state, so the offline-disproved
+L4 feasibility claim is encoded as `unsupported` with explicit
+`offline_decode_bandwidth_arithmetic` provenance and the arithmetic receipt.
 
 ### Tune within one target
 

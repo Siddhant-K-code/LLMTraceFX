@@ -395,8 +395,8 @@ class TestDecodeBandwidthFeasibility:
     elsewhere in the protocol, so the proof can be re-done by hand:
 
         144 controlled requests x 96 output tokens = 13,824 tokens
-        13,824 tokens x 16,381,516,776 bytes  = 226,458,087,911,424 bytes
-        226,458,087,911,424 / 300,000,000,000 = 754.86029303808 seconds
+        13,824 tokens x 14,985,816,064 bytes  = 207,163,921,268,736 bytes
+        207,163,921,268,736 / 322,122,547,200 = 643.121455078125 seconds
 
     against a sealed 480-second controlled-cell timeout, excluding container
     start, weight load, engine init, prefill, and CUDA-graph capture.
@@ -405,20 +405,57 @@ class TestDecodeBandwidthFeasibility:
     def test_the_sealed_inputs_are_the_protocol_constants(self) -> None:
         assert modal.STAGED_MODEL_BYTES == 16_397_461_266
         assert modal.STAGED_MODEL_BYTES == vllm_compile.EXPECTED_MODEL_BYTES
-        assert modal.MODEL_WEIGHT_BYTES == 16_381_516_776
+        assert modal.MODEL_TENSOR_BYTES == 16_381_470_720
+        assert modal.INPUT_EMBEDDING_BYTES == 1_244_659_712
+        assert modal.NON_DENSE_TENSOR_ALLOWANCE_BYTES == 16 * 1024 * 1024
+        assert modal.DENSE_DECODE_WEIGHT_BYTES == 15_120_033_792
+        assert modal.ON_CHIP_CACHE_ALLOWANCE_BYTES == 128 * 1024 * 1024
+        assert modal.MINIMUM_HBM_WEIGHT_BYTES_PER_TOKEN == 14_985_816_064
         assert modal.CONTROLLED_CELL_OUTPUT_TOKENS == 144 * 96 == 13_824
         assert modal.L4_ADVERTISED_PEAK_BANDWIDTH_BYTES_PER_SECOND == 300_000_000_000
+        assert modal.FEASIBILITY_BANDWIDTH_BYTES_PER_SECOND == 300 * 1024**3
         assert modal.CONTROLLED_CELL_TIMEOUT_SECONDS == 480
+
+    def test_model_facts_are_bound_to_the_pinned_inventory(self) -> None:
+        manifest_path = (
+            Path(__file__).parents[2]
+            / "llmtracefx/optimizer/lab/qwen3_8b/data"
+            / "qwen3-8b-conversion-manifest-v1.json"
+        )
+        source = json.loads(manifest_path.read_text(encoding="utf-8"))["source"]
+        files = {item["path"]: item for item in source["files"]}
+        assert source["official_revision"] == modal.MODEL_REVISION
+        assert files["config.json"]["sha256"] == (
+            "f7c4eadfbbf522470667b797a3c89be2524832d2d599797248dc304fff447c30"
+        )
+        assert files["model.safetensors.index.json"]["sha256"] == (
+            "f9fdbcb91c23971c13ec5d5f2573d2349e8f61f2f049371ec699281748fdb1bc"
+        )
+        facts = modal.evaluate_decode_bandwidth_feasibility()["inputs"][
+            "model_architecture_facts"
+        ]
+        assert facts["tensor_payload_bytes"] == modal.MODEL_TENSOR_BYTES
+        assert facts["input_embedding_bytes_excluded"] == (
+            modal.MODEL_CONFIG_VOCAB_SIZE
+            * modal.MODEL_CONFIG_HIDDEN_SIZE
+            * modal.BF16_BYTES_PER_ELEMENT
+        )
+        assert facts["minimum_hbm_weight_bytes_per_token"] == (
+            modal.MODEL_TENSOR_BYTES
+            - facts["input_embedding_bytes_excluded"]
+            - facts["non_dense_tensor_allowance_bytes"]
+            - facts["on_chip_cache_allowance_bytes"]
+        )
 
     def test_the_derived_arithmetic_is_exact(self) -> None:
         verdict = modal.evaluate_decode_bandwidth_feasibility()
         derivation = verdict["derivation"]
-        assert derivation["weight_bytes_streamed_per_cell"] == 226_458_087_911_424
-        assert derivation["bytes_streamable_within_timeout"] == 144_000_000_000_000
-        assert derivation["minimum_decode_only_seconds"] == "754.86029303808"
+        assert derivation["weight_bytes_streamed_per_cell"] == 207_163_921_268_736
+        assert derivation["bytes_streamable_within_timeout"] == 154_618_822_656_000
+        assert derivation["minimum_decode_only_seconds"] == "643.121455078125"
         assert derivation["required_tokens_per_second"] == "28.8"
-        assert derivation["theoretical_peak_tokens_per_second"] == "18.313322514769"
-        assert derivation["minimum_over_timeout_ratio"] == "1.572625610496"
+        assert derivation["theoretical_peak_tokens_per_second"] == "21.495162213676"
+        assert derivation["minimum_over_timeout_ratio"] == "1.339836364747"
 
     def test_the_sealed_design_is_infeasible(self) -> None:
         verdict = modal.evaluate_decode_bandwidth_feasibility()
@@ -451,10 +488,10 @@ class TestDecodeBandwidthFeasibility:
         with pytest.raises(modal.ModalL4ContractError) as excinfo:
             modal.require_controlled_cell_decode_feasible()
         message = str(excinfo.value)
-        assert "754.86029303808s" in message
+        assert "643.121455078125s" in message
         assert "480s" in message
         assert "28.8" in message
-        assert "18.313322514769" in message
+        assert "21.495162213676" in message
 
     def test_the_eager_canary_alone_could_not_have_caught_this(self) -> None:
         """One 96-token canary fits easily; only the full cell does not.
@@ -468,7 +505,9 @@ class TestDecodeBandwidthFeasibility:
             timeout_seconds=modal.EAGER_CANARY_TIMEOUT_SECONDS,
         )
         assert canary["feasible"] is True
-        assert canary["derivation"]["minimum_decode_only_seconds"] == "5.24208536832"
+        assert canary["derivation"]["minimum_decode_only_seconds"] == (
+            "4.4661212158203125"
+        )
 
     def test_a_faster_hypothetical_device_is_planning_only(self) -> None:
         verdict = modal.evaluate_decode_bandwidth_feasibility(

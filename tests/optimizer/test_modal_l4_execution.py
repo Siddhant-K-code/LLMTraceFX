@@ -1046,9 +1046,10 @@ class TestDecodeFeasibilityGate:
     """The approved design is refused offline, before anything can be spent.
 
     One controlled cell generates 144 x 96 = 13,824 tokens, and batch-1 BF16
-    decoding must stream at least the five 16,381,516,776-byte weight shards per
-    token: 226,458,087,911,424 bytes. At the L4's advertised peak bandwidth of
-    300,000,000,000 bytes/s that is 754.86029303808 seconds of decoding alone,
+    decoding must stream at least 14,985,816,064 HBM bytes per token after
+    excluding embeddings and headers and granting 144 MiB of conservative
+    allowances: 207,163,921,268,736 bytes. Even at 300 GiB/s, that is
+    643.121455078125 seconds,
     against a sealed 480-second controlled-cell timeout -- before container
     start, weight load, engine init, prefill, or CUDA-graph capture. The design
     is therefore infeasible, and preflight says so before it authenticates,
@@ -1095,10 +1096,10 @@ class TestDecodeFeasibilityGate:
                 **files,
             )
         message = str(excinfo.value)
-        assert "754.86029303808s" in message
+        assert "643.121455078125s" in message
         assert "480s ceiling" in message
         assert "28.8 tokens/s" in message
-        assert "18.313322514769 tokens/s" in message
+        assert "21.495162213676 tokens/s" in message
 
     def test_production_run_refuses_without_importing_the_sdk(
         self,
@@ -2109,6 +2110,14 @@ class TestOrchestratorTiming:
         document = orchestrator.execute()
         assert document["status"] == "invalidated"
         assert "lifecycle_ceiling_exceeded" in document["failure"]
+        saved = (
+            tmp_path
+            / "workspace"
+            / execute_module.REFUSAL_EVIDENCE_DIR
+            / "terminal-refusals"
+            / "cpu-stage-01.json"
+        )
+        assert json.loads(saved.read_text(encoding="utf-8"))["terminal"] is True
         aborts = [
             event
             for event in document["ledger"]["events"]
@@ -2802,7 +2811,7 @@ class TestCliPublicationStatus:
         assert code == 1
         error = capsys.readouterr().err
         assert "infeasible" in error
-        assert "754.86029303808s" in error
+        assert "643.121455078125s" in error
         assert "480s ceiling" in error
         assert "Traceback" not in error
 

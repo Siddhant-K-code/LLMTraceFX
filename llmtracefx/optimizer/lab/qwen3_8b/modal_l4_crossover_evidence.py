@@ -189,7 +189,15 @@ zero retries, and an explicit timeout on every stage.
 
 No Modal authentication occurred. The Modal SDK is not imported on any
 planning or verification path. No container was created, model
-downloaded, GPU used, or paid operation performed.
+downloaded, GPU used, or paid operation performed. Staging completed 0
+times, canaries completed 0 of 2, and analytic cells completed 0 of 32.
+Inferred spend is $0; provider-reported spend is null because no provider
+operation occurred. No run-scoped identity or named resource existed, so
+zero live experiment resources is true by construction; it was not
+independently observed through the Modal control plane because contacting
+that control plane was prohibited. A prior process ERROR was an
+auxiliary-agent configuration failure, not provider execution, a
+scientific attempt, a retry, or a reschedule.
 
 Two things this protocol deliberately does not claim. Modal exposes no
 host page-cache control and no dedicated-host reservation, so the
@@ -209,17 +217,20 @@ utilization, no prefix or speculative decoding, and a context length of
 exactly the longest frozen prompt array plus 96. If either canary fails,
 the run publishes a refusal. Nothing is tuned to make it pass.
 
-One further refusal is decided here, offline, before any of that. A
-controlled cell generates 144 x 96 = 13,824 tokens, and batch-1 BF16
-decoding must stream at least the five exact 16,381,516,776-byte safetensors
-weight shards per generated token. At the L4's advertised peak memory bandwidth
-of 300,000,000,000 bytes per second that is 226,458,087,911,424 bytes, or
-754.86029303808 seconds of decoding alone -- against a sealed 480-second
-controlled-cell timeout, and before container start, weight load, engine
-initialization, prefill, or CUDA-graph capture. Sustaining the sealed
-design would need 28.8 tokens per second where the hardware's ceiling is
-about 18.313322514769. The approved design is therefore infeasible on
-this accelerator, and the execution preflight refuses it before
+One further refusal is decided here, offline, before any of that. A controlled
+cell generates 144 x 96 = 13,824 tokens. The proof uses the pinned
+safetensors-index tensor total, then excludes the row-gathered input embedding,
+grants 16 MiB for every norm and other non-dense tensor, excludes safetensors
+headers, and grants 128 MiB of possible on-chip reuse. That leaves a
+14,985,816,064-byte HBM traffic floor per sequential,
+non-speculative BF16 token. It grants the L4 322,122,547,200 B/s (300 GiB/s),
+more than the advertised 300 GB/s. Even then the cell must move
+207,163,921,268,736 bytes, requiring 643.121455078125 seconds of decoding alone against
+the sealed 480-second timeout, before container start, weight load, engine
+initialization, prefill, or CUDA-graph capture. Sustaining the sealed design
+would need 28.8 tokens/s where this conservative ceiling is
+21.495162213676 tokens/s. The approved design is therefore infeasible on this
+accelerator, and the execution preflight refuses it before
 authentication, before the official-rate fetch, before the provider SDK
 is imported, and before any provider call. It is refused rather than
 repaired: lowering the sample size, retuning the runner, extending the
@@ -294,6 +305,50 @@ def _source_document(repo_root: Path) -> dict[str, Any]:
         "protocol_id": PROTOCOL_ID,
         "implementation_base_head": IMPLEMENTATION_BASE_HEAD,
         "reused_statistical_core": DELEGATED_STATISTICAL_VERIFIER,
+        "external_sources": [
+            {
+                "url": (
+                    "https://huggingface.co/Qwen/Qwen3-8B/raw/"
+                    "b968826d9c46dd6066d109eabc6255188de91218/config.json"
+                ),
+                "sha256": (
+                    "sha256:"
+                    "f7c4eadfbbf522470667b797a3c89be2524832d2d599797248dc304fff447c30"
+                ),
+                "facts": (
+                    "BF16, untied embeddings, vocabulary 151936, hidden size "
+                    "4096, 36 layers, head dimension 128"
+                ),
+            },
+            {
+                "url": (
+                    "https://huggingface.co/Qwen/Qwen3-8B/raw/"
+                    "b968826d9c46dd6066d109eabc6255188de91218/"
+                    "model.safetensors.index.json"
+                ),
+                "sha256": (
+                    "sha256:"
+                    "f9fdbcb91c23971c13ec5d5f2573d2349e8f61f2f049371ec699281748fdb1bc"
+                ),
+                "facts": "tensor payload total 16381470720 bytes",
+            },
+            {
+                "url": (
+                    "https://www.nvidia.com/content/dam/en-zz/Solutions/"
+                    "Data-Center/l4/PB-11316-001_v01.pdf"
+                ),
+                "sha256": None,
+                "facts": "L4 peak memory bandwidth 300 GB/s",
+            },
+            {
+                "url": (
+                    "https://images.nvidia.com/aem-dam/Solutions/Data-Center/"
+                    "l4/nvidia-ada-gpu-architecture-whitepaper-V2.02.pdf"
+                ),
+                "sha256": None,
+                "facts": "L4 L2 cache size 49152 KiB",
+            },
+        ],
         "files": files,
         "source_set_sha256": _sha256_uri(_compact_json(files).encode("utf-8")),
     }
@@ -426,6 +481,12 @@ def _claim_matrix() -> dict[str, Any]:
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "protocol_id": PROTOCOL_ID,
         "execution_state": "not_run",
+        "result_publication_enabled_for_this_protocol": False,
+        "result_publication_blocker": (
+            "the exact sealed decode-feasibility verdict is negative; a future "
+            "feasible experiment requires a new protocol identity and an "
+            "external authenticity trust anchor"
+        ),
         "claim_ids": list(PREREGISTERED_CLAIM_IDS),
         "result_claim_ids": list(RESULT_CLAIM_IDS),
         "claims": sorted(claims, key=lambda item: item["claim_id"]),
@@ -468,6 +529,12 @@ def _result_contract(plan: Mapping[str, Any]) -> dict[str, Any]:
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "protocol_id": PROTOCOL_ID,
         "execution_state": "not_run",
+        "result_publication_enabled_for_this_protocol": False,
+        "result_publication_blocker": (
+            "the exact sealed decode-feasibility verdict is negative; a future "
+            "feasible experiment requires a new protocol identity and an "
+            "external authenticity trust anchor"
+        ),
         "orchestration_file": ORCHESTRATION_FILE,
         "cells_directory": CELLS_DIRECTORY,
         "provider_native_results_verifier": DELEGATED_STATISTICAL_VERIFIER,
@@ -476,8 +543,11 @@ def _result_contract(plan: Mapping[str, Any]) -> dict[str, Any]:
         "result_artifact_files": sorted(RESULT_ARTIFACT_FILES),
         "checksum_manifest": RESULT_CHECKSUM_FILE,
         "verification_order": [
+            "the exact sealed infeasible verdict rejects this protocol identity",
+        ],
+        "dormant_hypothetical_analysis_checks": [
             "modal envelope files exist and are canonical",
-            "the decode-bandwidth feasibility verdict recomputes and is feasible",
+            "a new protocol's feasibility verdict recomputes and is feasible",
             "the signed headroom receipt is bound to the authorized execution",
             "the credential-exposure gate is cleared by a coordinator attestation",
             "attempt receipts show one terminal attempt per planned lifecycle",
@@ -825,9 +895,11 @@ def verify_offline_bundle(
     if (
         preflight["execution_authorized"] is not False
         or preflight["offline_only"] is not True
+        or preflight["provider_calls_performed"] is not False
         or preflight["provider_authentication_used"] is not False
         or preflight["provider_sdk_imported"] is not False
         or preflight["spend_usd"] != "0"
+        or preflight["provider_reported_spend_usd"] is not None
         or preflight["gpu_used"] is not False
         or claims["execution_state"] != "not_run"
         or preflight["credential_exposure_gate"]["cleared"] is not False
@@ -839,6 +911,52 @@ def verify_offline_bundle(
         or budget["provider_reported_spend_usd"] is not None
     ):
         raise ModalL4EvidenceError("offline refusal semantics drifted")
+    expected_counts = {
+        "staging_completed": 0,
+        "canaries_completed": 0,
+        "canaries_planned": 2,
+        "analytic_cells_completed": 0,
+        "analytic_cells_planned": 32,
+        "retries_or_reschedules_observed": 0,
+    }
+    expected_resources = {
+        "run_scoped_identity_created": False,
+        "apps_created": 0,
+        "functions_created": 0,
+        "containers_created": 0,
+        "volumes_created": 0,
+        "secrets_created": 0,
+        "teardown_required": False,
+        "zero_live_resources_by_construction": True,
+        "zero_live_resources_independently_observed": False,
+        "independent_observation_null_reason": (
+            "the Modal control plane was never contacted and no run-scoped "
+            "identity existed"
+        ),
+    }
+    expected_process_error = {
+        "observed": True,
+        "classification": "auxiliary_agent_configuration",
+        "provider_execution_related": False,
+        "scientific_attempt_started": False,
+        "provider_retry_permission_created": False,
+    }
+    expected_credential_status = {
+        "exposed_profile_credential_never_used_by_experiment": True,
+        "exposed_profile_credential_revocation_confirmed": True,
+        "fresh_local_profile_created_without_sharing": True,
+        "fresh_profile_shared_anywhere": False,
+        "credential_values_or_derived_identifiers_recorded": False,
+        "execution_gate_artifact_present": False,
+    }
+    if (
+        preflight.get("lifecycle_counts") != expected_counts
+        or preflight.get("resource_state") != expected_resources
+        or preflight.get("prior_process_error") != expected_process_error
+        or preflight.get("coordinator_reported_credential_status")
+        != expected_credential_status
+    ):
+        raise ModalL4EvidenceError("offline attempt-state facts drifted")
     # The preregistered matrix must name exactly the canonical identifiers, and
     # every claim unsupported by construction must carry the shared state and
     # the shared blocking reason, so a preregistered claim and its later result

@@ -235,7 +235,7 @@ modal-l4-crossover-results-verify:  ## Verify an offline Modal L4 result bundle
 
 # Runs every gate and stops before the provider SDK is imported. The first gate
 # is the offline decode-bandwidth feasibility proof, and for the sealed design
-# it refuses there: one controlled cell needs at least 755.59501513728s of
+# it refuses there: one controlled cell needs at least 643.121455078125s of
 # decode-only weight streaming against its sealed 480s timeout on an L4, so the
 # command exits non-zero before authenticating, fetching a rate, or importing
 # the SDK. The remaining gates (coordinator credential-exposure clearance,
