@@ -17,8 +17,8 @@
     {
       "claims": {
         "cache_compute_avoidance": {
-          "provenance": "synthetic model-input counter agrees with the independent remainder",
-          "state": "supported"
+          "provenance": "synthetic policy-operation arithmetic is not observed runtime compute",
+          "state": "unsupported"
         },
         "cache_latency_effect": {
           "provenance": "no timing measurements are emitted by the reference adapter",
@@ -45,8 +45,8 @@
           "state": "not_applicable"
         },
         "memory": {
-          "provenance": "logical synthetic cache bytes only; no allocator or RSS claim",
-          "state": "supported"
+          "provenance": "logical synthetic cache accounting is not a runtime memory effect",
+          "state": "unsupported"
         },
         "model_fit": {
           "provenance": "no model weights were loaded",
@@ -57,8 +57,8 @@
           "state": "not_applicable"
         },
         "quality": {
-          "provenance": "all output tokens match the deterministic no-cache baseline",
-          "state": "supported"
+          "provenance": "deterministic synthetic equivalence is not model quality evidence",
+          "state": "not_applicable"
         },
         "timing": {
           "provenance": "the synthetic reference records no latency",

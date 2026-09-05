@@ -1,5 +1,5 @@
 {
-  "adapter_version": "1",
+  "adapter_version": "2",
   "backend": "synthetic_reference",
   "backend_version": "1",
   "cache_config": {
@@ -14,6 +14,8 @@
     "physical_block_sizes": []
   },
   "created_at": "2026-09-05T09:19:05.277130Z",
+  "generator_commit": "dcc7e865aaa89ce80273ff3cdbf5086e6feae869",
+  "generator_package_digest": "sha256:8e8c97e2da2a28f1017903986c55bfae28875c1478b664263ada6a32a0fcf854",
   "limitations": [],
   "model_artifact_digest": null,
   "model_id": "synthetic-tiny-model",
@@ -29,14 +31,15 @@
     "duplicate",
     "namespace-isolation"
   ],
-  "run_id": "cache-audit-e0a416d3b97b84ee",
+  "run_id": "cache-audit-ed16abcf03ed2912",
   "runtime_identity": {
     "implementation": "CPython",
     "platform": "darwin",
-    "python": "3.13.15"
+    "python": "3.13.15",
+    "synthetic_engine": "independent-state-machine-v2"
   },
-  "schema_version": "1",
+  "schema_version": "2",
   "seed": 20260905,
   "tokenizer_id": "integer-tokenizer-v1",
-  "workload_digest": "sha256:0b85ae62be38647d7432e4bda818b7aee5ed536d8b74ad0b83dd348a103d5abe"
+  "workload_digest": "sha256:6b7a8cf4acd60b6f6600104c8284e8251ce5a3b3b8c93f20c6b36f72b3ea5445"
 }

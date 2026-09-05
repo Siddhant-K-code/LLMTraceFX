@@ -2,15 +2,30 @@
   "limitations": [],
   "paired_deltas": [
     {
-      "first_request_id": "cold",
+      "causal_interpretation_eligible": false,
+      "causal_limitation": "single_pair_has_no_uncertainty_estimate",
+      "compatible": true,
+      "control_request_id": "cold",
+      "eligibility_reasons": [],
       "first_token_delta_ms": null,
+      "memory_basis": {
+        "basis": "unavailable",
+        "scope": "request",
+        "source": "synthetic_reference"
+      },
       "pair_id": "base-pair",
+      "replicate_id": "replicate-0",
+      "run_id": "cache-audit-ed16abcf03ed2912",
       "runtime_peak_delta_bytes": null,
-      "second_request_id": "identical"
+      "sample_count": 1,
+      "timing_basis": "unavailable",
+      "treatment_request_id": "identical",
+      "uncertainty_available": false
     }
   ],
   "request_count": 9,
-  "schema_version": "1",
+  "run_id": "cache-audit-ed16abcf03ed2912",
+  "schema_version": "2",
   "verdict_counts": {
     "partial_reuse": 3,
     "verified_hit": 2,
