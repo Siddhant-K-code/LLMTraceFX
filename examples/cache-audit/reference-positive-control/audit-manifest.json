@@ -1,0 +1,42 @@
+{
+  "adapter_version": "1",
+  "backend": "synthetic_reference",
+  "backend_version": "1",
+  "cache_config": {
+    "cache_salt_relationship": null,
+    "cache_type": "token_trie",
+    "fine_grained_hits": false,
+    "hash_algorithm": null,
+    "hash_block_size": null,
+    "max_bytes": 1073741824,
+    "max_entries": 32,
+    "namespace_id": "synthetic-namespaces",
+    "physical_block_sizes": []
+  },
+  "created_at": "2026-09-05T09:19:05.277130Z",
+  "limitations": [],
+  "model_artifact_digest": null,
+  "model_id": "synthetic-tiny-model",
+  "publication_mode": "public_synthetic",
+  "request_order": [
+    "cold",
+    "identical",
+    "first-token-mutation",
+    "within-block-mutation",
+    "boundary-mutation",
+    "suffix-change",
+    "same-length-different-ids",
+    "duplicate",
+    "namespace-isolation"
+  ],
+  "run_id": "cache-audit-e0a416d3b97b84ee",
+  "runtime_identity": {
+    "implementation": "CPython",
+    "platform": "darwin",
+    "python": "3.13.15"
+  },
+  "schema_version": "1",
+  "seed": 20260905,
+  "tokenizer_id": "integer-tokenizer-v1",
+  "workload_digest": "sha256:0b85ae62be38647d7432e4bda818b7aee5ed536d8b74ad0b83dd348a103d5abe"
+}

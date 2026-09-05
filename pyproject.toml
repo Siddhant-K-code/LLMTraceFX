@@ -123,6 +123,7 @@ llmtracefx-modal-l4-crossover = "llmtracefx.optimizer.lab.qwen3_8b.modal_l4_cros
 llmtracefx-modal-l4-crossover-evidence = "llmtracefx.optimizer.lab.qwen3_8b.modal_l4_crossover_evidence:main"
 llmtracefx-modal-l4-execute = "llmtracefx.optimizer.lab.qwen3_8b.modal_l4_execute:main"
 llmtracefx-evidence = "llmtracefx.evidence.cli:main"
+llmtracefx-cache-audit = "llmtracefx.cache_audit.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

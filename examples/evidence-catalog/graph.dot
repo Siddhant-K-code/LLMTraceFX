@@ -2,6 +2,7 @@ digraph evidence {
   graph [bgcolor="#fbfaf7", rankdir=LR];
   node [shape=box, style="rounded,filled", fillcolor="#f4f1ea", fontname="Helvetica", color="#16181a"];
   edge [fontname="Helvetica", color="#5b6167"];
+  "cache-audit-reference-positive-control-20260905" [label="cache-audit-reference-positive-control-20260905\\ncompleted / verified\\nsynthetic-tiny-model\\nclaims: quality, memory, cache_reuse_identity, cache_compute_avoidance, cache_output_correctness", fontcolor="#17513a"];
   "cloudrift-glm53flash-preflight-20260902" [label="cloudrift-glm53flash-preflight-20260902\\nrefused / verified\\nzai-org/GLM-5.3-Flash\\nclaims: cost, memory, model_fit, deployment_readiness", fontcolor="#4a5157"];
   "metal-attribution-m5-pro-20260831" [label="metal-attribution-m5-pro-20260831\\ncompleted / verified\\nno model\\nclaims: process_attribution", fontcolor="#17513a"];
   "modal-glm53flash-preflight-20260902" [label="modal-glm53flash-preflight-20260902\\nrefused / verified\\nzai-org/GLM-5.3-Flash\\nclaims: cost, deployment_readiness", fontcolor="#4a5157"];
