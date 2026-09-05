@@ -522,7 +522,10 @@ class TestDecodeBandwidthFeasibility:
         )
         assert verdict["feasible"] is True
         assert verdict["uses_sealed_constants"] is False
-        assert not signature(modal.require_controlled_cell_decode_feasible).parameters
+        assert not signature(
+            modal.require_controlled_cell_decode_feasible,
+            follow_wrapped=False,
+        ).parameters
 
     @pytest.mark.parametrize("field", sorted(("model_bytes", "output_tokens")))
     def test_a_nonpositive_input_is_refused(self, field: str) -> None:
