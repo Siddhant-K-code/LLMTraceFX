@@ -1,5 +1,5 @@
 {
-  "catalog_hash": "sha256:dbb62e6348ac2fe55f8ef3fd0291d132fe1f91dac0e08434ef00f56569f692e6",
+  "catalog_hash": "sha256:983534f7052a23b4ca58b50d639d65b1d9ff67cc8d8e68a8dcffc8a9588f3d10",
   "claim_dimensions": [
     "timing",
     "quality",
@@ -53,7 +53,7 @@
   ],
   "entries": [
     {
-      "artifact_set_hash": "sha256:8bcb0b77756de62319e266fc5d40a0b26af3ef94b98066b1fd308e50b2022b58",
+      "artifact_set_hash": "sha256:a97f86b535f8a55c1704b3623126a48dc89fa2cc33646064d191862fb96a2ffb",
       "budget": {
         "authorized_usd": null,
         "inferred_usd": null,
@@ -152,7 +152,7 @@
         "provider": "local",
         "version": "1"
       },
-      "source_commit": "e54395da3bb5493660791b6ee1d435d1d5be765e",
+      "source_commit": "334f0d4f2358fd5a572c824d395fb7193c8a7791",
       "status": "verified",
       "supported_claims": [
         "The synthetic engine's attested reusable-token counts match the independent exact-token oracle for all nine requests.",
@@ -1402,7 +1402,7 @@
     "name": "llmtracefx-evidence",
     "version": "1"
   },
-  "registry_hash": "sha256:395a687837c0b2d08bcf8c5d7b4f30045f34e6a57ead14fdde18ec4e9f038ab3",
+  "registry_hash": "sha256:2ef06ec6eeac1b78ffd76de5d89222172ceb273e73ad7a163d927100beae609b",
   "schema_version": "1",
   "unregistered_candidates": []
 }

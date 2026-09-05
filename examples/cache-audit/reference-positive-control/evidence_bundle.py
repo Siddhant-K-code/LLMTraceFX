@@ -12,11 +12,22 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-EXPECTED_COMMIT = 'e54395da3bb5493660791b6ee1d435d1d5be765e'
-EXPECTED_COMMIT_AT = '2026-09-05T21:41:23+05:30'
-EXPECTED_PACKAGE_DIGEST = 'sha256:1a85dd96d0191193d7390cfa6d2b6f87d25cdc6cc4c91943dc74d1b357a1457f'
-EXPECTED_GENERATED_AT = '2026-09-05T16:11:54Z'
-BUNDLE_DATA_FILES = ('audit-manifest.json', 'request-evidence.jsonl', 'cache-events.jsonl', 'claim-matrix.json', 'summary.json', 'reuse-alignment.svg', 'report.html', 'evidence_bundle.py')
+EXPECTED_COMMIT = "334f0d4f2358fd5a572c824d395fb7193c8a7791"
+EXPECTED_COMMIT_AT = "2026-09-05T22:23:19+05:30"
+EXPECTED_PACKAGE_DIGEST = (
+    "sha256:d21d534869c02871266a79caca19d4de4ce8f91233aa2ed6f34988ab56e33f03"
+)
+EXPECTED_GENERATED_AT = "2026-09-05T16:53:24Z"
+BUNDLE_DATA_FILES = (
+    "audit-manifest.json",
+    "request-evidence.jsonl",
+    "cache-events.jsonl",
+    "claim-matrix.json",
+    "summary.json",
+    "reuse-alignment.svg",
+    "report.html",
+    "evidence_bundle.py",
+)
 BUNDLE_FILES = BUNDLE_DATA_FILES + ("SHA256SUMS",)
 MAX_FILE_BYTES = 67108864
 
@@ -48,13 +59,16 @@ def safe_bytes(path: Path) -> bytes:
             if total > MAX_FILE_BYTES:
                 fail(f"oversized file: {path}")
         after = os.fstat(descriptor)
-        signature = lambda value: (
-            value.st_dev,
-            value.st_ino,
-            value.st_mode,
-            value.st_size,
-            value.st_mtime_ns,
-        )
+
+        def signature(value):
+            return (
+                value.st_dev,
+                value.st_ino,
+                value.st_mode,
+                value.st_size,
+                value.st_mtime_ns,
+            )
+
         if signature(before) != signature(after):
             fail(f"file changed while reading: {path}")
         return b"".join(chunks)
@@ -72,8 +86,10 @@ def verify_bundle_envelope(bundle: Path) -> None:
     checksums = {}
     for line in checksum_lines:
         parts = line.split("  ")
-        if len(parts) != 2 or len(parts[0]) != 64 or any(
-            character not in "0123456789abcdef" for character in parts[0]
+        if (
+            len(parts) != 2
+            or len(parts[0]) != 64
+            or any(character not in "0123456789abcdef" for character in parts[0])
         ):
             fail("invalid checksum manifest")
         digest, name = parts
@@ -191,11 +207,47 @@ def snapshot_package(root: Path) -> tuple[Path, str]:
     return temporary, "sha256:" + digest.hexdigest()
 
 
-def commit_matches(root: Path) -> bool:
-    if EXPECTED_COMMIT is None or not (root / ".git").exists():
-        return True
+def repository_is_incomplete(root: Path) -> bool:
     import subprocess
 
+    shallow = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--is-shallow-repository"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        text=True,
+    )
+    if shallow.returncode != 0 or shallow.stdout.strip() not in {"true", "false"}:
+        fail("candidate repository has invalid shallow-checkout metadata")
+    if shallow.stdout.strip() == "true":
+        return True
+    partial = subprocess.run(
+        ["git", "-C", str(root), "config", "--get-regexp", r"^remote\..*\.promisor$"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if partial.returncode not in {0, 1}:
+        fail("candidate repository has invalid partial-clone metadata")
+    return partial.returncode == 0
+
+
+def commit_matches(root: Path) -> str | None:
+    if EXPECTED_COMMIT is None or not (root / ".git").exists():
+        return "unavailable"
+    import subprocess
+
+    object_type = subprocess.run(
+        ["git", "-C", str(root), "cat-file", "-t", EXPECTED_COMMIT],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        text=True,
+    )
+    if object_type.returncode != 0:
+        return "unavailable" if repository_is_incomplete(root) else None
+    if object_type.stdout.strip() != "commit":
+        return None
     listing = subprocess.run(
         [
             "git",
@@ -213,7 +265,7 @@ def commit_matches(root: Path) -> bool:
         check=False,
     )
     if listing.returncode != 0:
-        return False
+        return None
     timestamp = subprocess.run(
         ["git", "-C", str(root), "show", "-s", "--format=%cI", EXPECTED_COMMIT],
         stdout=subprocess.PIPE,
@@ -222,24 +274,24 @@ def commit_matches(root: Path) -> bool:
         text=True,
     )
     if timestamp.returncode != 0:
-        return False
+        return None
     try:
         commit_time = datetime.fromisoformat(timestamp.stdout.strip())
         generated_time = datetime.fromisoformat(
             EXPECTED_GENERATED_AT.replace("Z", "+00:00")
         )
     except ValueError:
-        return False
+        return None
     if EXPECTED_COMMIT_AT is None:
-        return False
+        return None
     try:
         expected_commit_time = datetime.fromisoformat(
             EXPECTED_COMMIT_AT.replace("Z", "+00:00")
         )
     except ValueError:
-        return False
+        return None
     if commit_time != expected_commit_time or generated_time < commit_time:
-        return False
+        return None
     digest = hashlib.sha256()
     paths = sorted(
         line.decode("utf-8").removeprefix("llmtracefx/")
@@ -260,17 +312,19 @@ def commit_matches(root: Path) -> bool:
             check=False,
         )
         if result.returncode != 0:
-            return False
+            return None
         content = normalized_source(relative_text, result.stdout)
         relative = relative_text.encode("utf-8")
         digest.update(len(relative).to_bytes(8, "big"))
         digest.update(relative)
         digest.update(len(content).to_bytes(8, "big"))
         digest.update(content)
-    return "sha256:" + digest.hexdigest() == EXPECTED_PACKAGE_DIGEST
+    if "sha256:" + digest.hexdigest() != EXPECTED_PACKAGE_DIGEST:
+        return None
+    return "verified"
 
 
-def resolve_package(bundle: Path, requested: Path | None) -> Path:
+def resolve_package(bundle: Path, requested: Path | None) -> tuple[Path, str]:
     candidates = [requested.resolve()] if requested is not None else []
     if requested is None:
         candidates.extend((bundle.resolve(), *bundle.resolve().parents))
@@ -279,8 +333,9 @@ def resolve_package(bundle: Path, requested: Path | None) -> Path:
         if package.is_symlink() or not package.is_dir():
             continue
         temporary, digest = snapshot_package(root)
-        if digest == EXPECTED_PACKAGE_DIGEST and commit_matches(root):
-            return temporary
+        corroboration = commit_matches(root)
+        if digest == EXPECTED_PACKAGE_DIGEST and corroboration is not None:
+            return temporary, corroboration
         import shutil
 
         shutil.rmtree(temporary)
@@ -298,11 +353,13 @@ def main() -> None:
     args = parser.parse_args()
     bundle = args.public_dir.resolve()
     verify_bundle_envelope(bundle)
-    snapshot_root = resolve_package(bundle, args.package_root)
+    snapshot_root, corroboration = resolve_package(bundle, args.package_root)
     sys.path.insert(0, str(snapshot_root))
     from llmtracefx.cache_audit.bundle import verify_bundle
 
-    print(json.dumps({"verified": True, **verify_bundle(bundle)}, sort_keys=True))
+    result = verify_bundle(bundle)
+    result["repository_chronology_corroboration"] = corroboration
+    print(json.dumps({"verified": True, **result}, sort_keys=True))
 
 
 if __name__ == "__main__":
