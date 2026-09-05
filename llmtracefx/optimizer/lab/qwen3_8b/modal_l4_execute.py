@@ -1105,7 +1105,7 @@ class ModalOrchestrator:
             )
         modal_module = self._sdk_loader()
         capabilities = verify_sdk_capabilities(modal_module)
-        # Standard local profile validation: after every offline gate and the
+        # Standard local profile validation: after every pre-SDK gate and the
         # SDK capability probe, but before the app or image is imported and
         # before any spend. It is a read-only ``modal token info`` probe whose
         # output is discarded; only a boolean, the version, and a timestamp are

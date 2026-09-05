@@ -175,9 +175,9 @@ L4_ADVERTISED_PEAK_BANDWIDTH_BYTES_PER_SECOND = 300_000_000_000
 FEASIBILITY_BANDWIDTH_BYTES_PER_SECOND = 300 * 1024**3
 DECODE_FEASIBILITY_KIND = "modal_l4_decode_bandwidth_feasibility"
 DECODE_FEASIBILITY_SCHEMA_VERSION = "2"
-# Non-terminating presentation values use this precision: achievable throughput
-# rounds down and the timeout ratio rounds up. Neither rounded value participates
-# in the verdict, which uses exact integer cross-multiplication.
+# Presentation values use this precision: achievable throughput rounds down and
+# the timeout ratio rounds up. Neither rounded value participates in the verdict,
+# which uses exact integer cross-multiplication.
 DECODE_RATE_DECIMAL_PLACES = 12
 MODEL_WEIGHT_BYTES_PROVENANCE = (
     "pinned model.safetensors.index.json metadata.total_size "
@@ -1732,8 +1732,11 @@ def evaluate_decode_bandwidth_feasibility(
                 shortfall_ratio.quantize(quantum, rounding=ROUND_UP)
             ),
             "rounding": (
-                f"rates are reported to {DECODE_RATE_DECIMAL_PLACES} decimal "
-                "places; the verdict itself is exact integer arithmetic"
+                "theoretical_peak_tokens_per_second rounds down and "
+                "minimum_over_timeout_ratio rounds up to "
+                f"{DECODE_RATE_DECIMAL_PLACES} decimal places; "
+                "minimum_decode_only_seconds and required_tokens_per_second "
+                "are exact decimals; the verdict is exact integer arithmetic"
             ),
             "excluded_from_the_minimum": list(DECODE_FEASIBILITY_EXCLUSIONS),
         },

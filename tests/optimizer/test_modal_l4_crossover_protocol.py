@@ -456,6 +456,12 @@ class TestDecodeBandwidthFeasibility:
         assert derivation["required_tokens_per_second"] == "28.8"
         assert derivation["theoretical_peak_tokens_per_second"] == "21.495162213676"
         assert derivation["minimum_over_timeout_ratio"] == "1.339836364747"
+        assert derivation["rounding"] == (
+            "theoretical_peak_tokens_per_second rounds down and "
+            "minimum_over_timeout_ratio rounds up to 12 decimal places; "
+            "minimum_decode_only_seconds and required_tokens_per_second are "
+            "exact decimals; the verdict is exact integer arithmetic"
+        )
 
     def test_the_sealed_design_is_infeasible(self) -> None:
         verdict = modal.evaluate_decode_bandwidth_feasibility()
