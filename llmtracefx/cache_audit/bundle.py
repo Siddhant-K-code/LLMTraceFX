@@ -80,13 +80,13 @@ def _normalized_source(relative: str, content: bytes) -> bytes:
         return content
     text = content.decode("utf-8")
     text = re.sub(
-        r'^_CACHE_AUDIT_SOURCE_COMMIT = "[^"]*"$',
+        r'^_CACHE_AUDIT_SOURCE_COMMIT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
         '_CACHE_AUDIT_SOURCE_COMMIT = "<bound-at-generation>"',
         text,
         flags=re.MULTILINE,
     )
     text = re.sub(
-        r'^_CACHE_AUDIT_PACKAGE_DIGEST = "[^"]*"$',
+        r'^_CACHE_AUDIT_PACKAGE_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
         '_CACHE_AUDIT_PACKAGE_DIGEST = "<bound-at-generation>"',
         text,
         flags=re.MULTILINE,
@@ -202,13 +202,13 @@ def normalized_source(relative: str, content: bytes) -> bytes:
 
     text = content.decode("utf-8")
     text = re.sub(
-        r'^_CACHE_AUDIT_SOURCE_COMMIT = "[^"]*"$',
+        r'^_CACHE_AUDIT_SOURCE_COMMIT = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
         '_CACHE_AUDIT_SOURCE_COMMIT = "<bound-at-generation>"',
         text,
         flags=re.MULTILINE,
     )
     text = re.sub(
-        r'^_CACHE_AUDIT_PACKAGE_DIGEST = "[^"]*"$',
+        r'^_CACHE_AUDIT_PACKAGE_DIGEST = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
         '_CACHE_AUDIT_PACKAGE_DIGEST = "<bound-at-generation>"',
         text,
         flags=re.MULTILINE,
