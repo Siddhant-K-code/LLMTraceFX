@@ -574,6 +574,7 @@ def _verify_source_bindings(repo_root: Path, source: Mapping[str, Any]) -> None:
             "workload_digest": manifest["workload_digest"],
             "adapter_version": manifest["adapter_version"],
             "generator_package_digest": manifest["generator_package_digest"],
+            "implementation_bound_at": manifest["generated_at"],
             "privacy_status": "verified_public_synthetic",
         }
         if observed_binding != binding:

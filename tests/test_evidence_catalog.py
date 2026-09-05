@@ -86,6 +86,7 @@ def test_modal_l4_adapters_are_closed_but_not_fabricated(
         ("workload_digest", "sha256:" + "0" * 64),
         ("adapter_version", "1"),
         ("generator_package_digest", "sha256:" + "0" * 64),
+        ("implementation_bound_at", "2000-01-01T00:00:00Z"),
         ("privacy_status", "private"),
     ),
 )

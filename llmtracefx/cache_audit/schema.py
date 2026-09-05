@@ -423,6 +423,147 @@ class RequestSpec:
 
 
 @dataclass(frozen=True)
+class RequestCacheIdentity:
+    """Exact cache identity needed to relate an eviction probe to its predecessor."""
+
+    backend: str
+    model_id: str
+    tokenizer_id: str
+    model_artifact_digest: str | None
+    cache_config_digest: str
+    namespace_id: str
+    input_token_ids: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        for name in (
+            "backend",
+            "model_id",
+            "tokenizer_id",
+            "cache_config_digest",
+            "namespace_id",
+        ):
+            _string(getattr(self, name), f"RequestCacheIdentity.{name}")
+        for name, value in (
+            ("model_artifact_digest", self.model_artifact_digest),
+            ("cache_config_digest", self.cache_config_digest),
+        ):
+            if (
+                value is not None
+                and re.fullmatch(r"sha256:[0-9a-f]{64}", value) is None
+            ):
+                raise SchemaValidationError(
+                    f"RequestCacheIdentity.{name} must be a SHA-256 digest"
+                )
+        if not self.input_token_ids:
+            raise SchemaValidationError(
+                "RequestCacheIdentity.input_token_ids must not be empty"
+            )
+        for index, token in enumerate(self.input_token_ids):
+            _integer(token, f"RequestCacheIdentity.input_token_ids[{index}]")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "backend": self.backend,
+            "model_id": self.model_id,
+            "tokenizer_id": self.tokenizer_id,
+            "model_artifact_digest": self.model_artifact_digest,
+            "cache_config_digest": self.cache_config_digest,
+            "namespace_id": self.namespace_id,
+            "input_token_ids": list(self.input_token_ids),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any, *, context: str) -> RequestCacheIdentity:
+        data = _object(value, context)
+        keys = {
+            "backend",
+            "model_id",
+            "tokenizer_id",
+            "model_artifact_digest",
+            "cache_config_digest",
+            "namespace_id",
+            "input_token_ids",
+        }
+        _exact(data, keys, context)
+        return cls(
+            backend=_string(data["backend"], f"{context}.backend"),
+            model_id=_string(data["model_id"], f"{context}.model_id"),
+            tokenizer_id=_string(data["tokenizer_id"], f"{context}.tokenizer_id"),
+            model_artifact_digest=_optional_string(
+                data["model_artifact_digest"],
+                f"{context}.model_artifact_digest",
+            ),
+            cache_config_digest=_string(
+                data["cache_config_digest"], f"{context}.cache_config_digest"
+            ),
+            namespace_id=_string(data["namespace_id"], f"{context}.namespace_id"),
+            input_token_ids=_integers(
+                data["input_token_ids"], f"{context}.input_token_ids"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class EvictionPredecessorProof:
+    """Identity-bound predecessor and current request used by an eviction verdict."""
+
+    predecessor_request_id: str
+    predecessor: RequestCacheIdentity
+    current: RequestCacheIdentity
+    reusable_prefix_tokens: int
+
+    def __post_init__(self) -> None:
+        _string(
+            self.predecessor_request_id,
+            "EvictionPredecessorProof.predecessor_request_id",
+        )
+        _integer(
+            self.reusable_prefix_tokens,
+            "EvictionPredecessorProof.reusable_prefix_tokens",
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "predecessor_request_id": self.predecessor_request_id,
+            "predecessor": self.predecessor.to_dict(),
+            "current": self.current.to_dict(),
+            "reusable_prefix_tokens": self.reusable_prefix_tokens,
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> EvictionPredecessorProof:
+        data = _object(value, "EvictionPredecessorProof")
+        _exact(
+            data,
+            {
+                "predecessor_request_id",
+                "predecessor",
+                "current",
+                "reusable_prefix_tokens",
+            },
+            "EvictionPredecessorProof",
+        )
+        return cls(
+            predecessor_request_id=_string(
+                data["predecessor_request_id"],
+                "EvictionPredecessorProof.predecessor_request_id",
+            ),
+            predecessor=RequestCacheIdentity.from_dict(
+                data["predecessor"],
+                context="EvictionPredecessorProof.predecessor",
+            ),
+            current=RequestCacheIdentity.from_dict(
+                data["current"],
+                context="EvictionPredecessorProof.current",
+            ),
+            reusable_prefix_tokens=_integer(
+                data["reusable_prefix_tokens"],
+                "EvictionPredecessorProof.reusable_prefix_tokens",
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class ReuseEvidence:
     semantic_prefix_tokens: EvidenceFact[int]
     policy_reusable_tokens: EvidenceFact[int]
@@ -825,6 +966,7 @@ class RequestEvidence:
     cache_before: CacheStateSnapshot | None = None
     cache_after: CacheStateSnapshot | None = None
     events: tuple[CacheEventRecord, ...] = ()
+    eviction_predecessor: EvictionPredecessorProof | None = None
     cost: CostEvidence = field(default_factory=CostEvidence)
     eligibility: ClaimEligibility = field(default_factory=unavailable_eligibility)
 
@@ -846,6 +988,11 @@ class RequestEvidence:
                 None if self.cache_after is None else self.cache_after.to_dict()
             ),
             "events": [event.to_dict() for event in self.events],
+            "eviction_predecessor": (
+                None
+                if self.eviction_predecessor is None
+                else self.eviction_predecessor.to_dict()
+            ),
             "cost": self.cost.to_dict(),
             "eligibility": self.eligibility.to_dict(),
         }
@@ -866,6 +1013,7 @@ class RequestEvidence:
             "cache_before",
             "cache_after",
             "events",
+            "eviction_predecessor",
             "cost",
             "eligibility",
         }
@@ -906,6 +1054,11 @@ class RequestEvidence:
                 else CacheStateSnapshot.from_dict(data["cache_after"])
             ),
             events=tuple(CacheEventRecord.from_dict(item) for item in events_value),
+            eviction_predecessor=(
+                None
+                if data["eviction_predecessor"] is None
+                else EvictionPredecessorProof.from_dict(data["eviction_predecessor"])
+            ),
             cost=CostEvidence.from_dict(data["cost"]),
             eligibility=ClaimEligibility.from_dict(data["eligibility"]),
         )
@@ -915,6 +1068,7 @@ class RequestEvidence:
 class AuditManifest:
     run_id: str
     created_at: str
+    generated_at: str
     backend: str
     backend_version: str
     adapter_version: str
@@ -928,6 +1082,7 @@ class AuditManifest:
     workload_digest: str
     seed: int
     generator_commit: str | None = None
+    generator_commit_at: str | None = None
     generator_package_digest: str | None = None
     limitations: tuple[Limitation, ...] = field(default_factory=tuple)
     schema_version: str = CACHE_AUDIT_SCHEMA_VERSION
@@ -940,6 +1095,7 @@ class AuditManifest:
         for name in (
             "run_id",
             "created_at",
+            "generated_at",
             "backend",
             "backend_version",
             "adapter_version",
@@ -961,6 +1117,16 @@ class AuditManifest:
         ):
             raise SchemaValidationError(
                 "AuditManifest.generator_commit must be a full git SHA"
+            )
+        if (self.generator_commit is None) != (self.generator_commit_at is None):
+            raise SchemaValidationError(
+                "AuditManifest.generator_commit and generator_commit_at "
+                "must be present together"
+            )
+        if self.generator_commit_at is not None:
+            _string(
+                self.generator_commit_at,
+                "AuditManifest.generator_commit_at",
             )
         if (
             self.generator_package_digest is not None
@@ -984,6 +1150,7 @@ class AuditManifest:
             "schema_version": self.schema_version,
             "run_id": self.run_id,
             "created_at": self.created_at,
+            "generated_at": self.generated_at,
             "backend": self.backend,
             "backend_version": self.backend_version,
             "adapter_version": self.adapter_version,
@@ -996,6 +1163,7 @@ class AuditManifest:
             "request_order": list(self.request_order),
             "workload_digest": self.workload_digest,
             "generator_commit": self.generator_commit,
+            "generator_commit_at": self.generator_commit_at,
             "generator_package_digest": self.generator_package_digest,
             "seed": self.seed,
             "limitations": [item.to_dict() for item in self.limitations],
@@ -1008,6 +1176,7 @@ class AuditManifest:
             "schema_version",
             "run_id",
             "created_at",
+            "generated_at",
             "backend",
             "backend_version",
             "adapter_version",
@@ -1020,6 +1189,7 @@ class AuditManifest:
             "request_order",
             "workload_digest",
             "generator_commit",
+            "generator_commit_at",
             "generator_package_digest",
             "seed",
             "limitations",
@@ -1041,6 +1211,7 @@ class AuditManifest:
             ),
             run_id=_string(data["run_id"], "AuditManifest.run_id"),
             created_at=_string(data["created_at"], "AuditManifest.created_at"),
+            generated_at=_string(data["generated_at"], "AuditManifest.generated_at"),
             backend=_string(data["backend"], "AuditManifest.backend"),
             backend_version=_string(
                 data["backend_version"], "AuditManifest.backend_version"
@@ -1076,6 +1247,14 @@ class AuditManifest:
                 None
                 if data["generator_commit"] is None
                 else _string(data["generator_commit"], "AuditManifest.generator_commit")
+            ),
+            generator_commit_at=(
+                None
+                if data["generator_commit_at"] is None
+                else _string(
+                    data["generator_commit_at"],
+                    "AuditManifest.generator_commit_at",
+                )
             ),
             generator_package_digest=(
                 None

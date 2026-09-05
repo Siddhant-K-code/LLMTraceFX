@@ -6,10 +6,10 @@ from typing import Any
 
 CATALOG_SCHEMA_VERSION = "1"
 VERIFIER_VERSION = "1"
-_CACHE_AUDIT_SOURCE_COMMIT = "3ee184486845bf9b30c37b9aaf7153d93f88a4be"
-_CACHE_AUDIT_PACKAGE_DIGEST = (
-    "sha256:41eee925488778e1b81ee5f339ea35adad411857ec973eee94b5f36e81454a02"
-)
+_CACHE_AUDIT_SOURCE_COMMIT = "<bound-at-generation>"
+_CACHE_AUDIT_PACKAGE_DIGEST = "<bound-at-generation>"
+_CACHE_AUDIT_CAPTURED_AT = "<bound-at-generation>"
+_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = "<bound-at-generation>"
 
 CLAIM_DIMENSIONS = (
     "timing",
@@ -1062,7 +1062,7 @@ SOURCES: tuple[dict[str, Any], ...] = (
             "reuse-alignment.svg",
             "summary.json",
         ),
-        "captured_at": "2026-09-05T09:19:05.277130Z",
+        "captured_at": _CACHE_AUDIT_CAPTURED_AT,
         "source_commit": _CACHE_AUDIT_SOURCE_COMMIT,
         "cache_binding": {
             "publication_mode": "public_synthetic",
@@ -1072,6 +1072,7 @@ SOURCES: tuple[dict[str, Any], ...] = (
             ),
             "adapter_version": "2",
             "generator_package_digest": _CACHE_AUDIT_PACKAGE_DIGEST,
+            "implementation_bound_at": _CACHE_AUDIT_IMPLEMENTATION_BOUND_AT,
             "privacy_status": "verified_public_synthetic",
         },
         "model": {

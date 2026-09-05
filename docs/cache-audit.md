@@ -87,6 +87,10 @@ MLX-LM's in-memory server cache is token-granular, not block-hashed.
 
 When a longer trimmable cache matches the complete request, MLX-LM trims it to
 at most `len(request) - 1`; one prompt token remains to produce sampling logits.
+In pinned MLX-LM 0.31.3, `fetch_nearest_cache` reads and copies the selected
+entry but does not update `CacheOrder`; eviction order changes only when
+`insert_cache` removes/replaces and pushes an entry. The independent oracle and
+synthetic control implement that same documented policy separately.
 The auditor records:
 
 - the semantic common prefix;
@@ -103,11 +107,17 @@ closed rather than borrowing vLLM semantics.
 
 Saved MLX prompt caches do not contain a cryptographic token-sequence or
 model-weight binding. LLMTraceFX therefore requires its own sidecar binding the
-exact token sequence, model artifacts, runtime versions, and cache payload.
+exact token sequence, namespace, model/tokenizer artifacts, runtime versions,
+cache configuration, and cache payload.
 The model directory and saved-cache payload are copied through verified file
 descriptors into private immutable snapshots; the adapter hashes and loads those
 same snapshot bytes. An absent, stale, mismatched, or concurrently modified
 artifact is refused before generation.
+The runtime cache key never contains the randomized snapshot pathname. It is a
+stable digest of the verified model-and-tokenizer artifact set, pinned MLX/MLX-LM
+versions, cache type, and cache limits. Reopening identical verified artifacts
+therefore accepts a matching saved-cache sidecar, while changed artifacts,
+runtime versions, or cache configuration refuse.
 
 ## vLLM 0.28.0 semantics
 
@@ -168,6 +178,21 @@ agreement and are never persisted as authoritative metadata. The MLX adapter
 performs its pinned-version capability check for local-path loading,
 already-loaded models, and every saved-cache load.
 
+An `evicted` verdict also persists an exact predecessor proof. The verifier
+requires the predecessor to be an earlier request with the same backend, model
+artifact, tokenizer, cache configuration, and namespace, and requires its exact
+tokens to have produced reusable policy prefix state for the current request.
+Cross-tenant, cross-model, configuration-mismatched, and unrelated predecessor
+claims are invalid.
+
+`created_at` records when the evidence request sequence was captured.
+`generated_at` separately records when that evidence was bound to the generating
+implementation and artifacts. `generator_commit_at` persists the bound commit
+timestamp so repository, installed-package, and portable verification all
+refuse a `generated_at` timestamp earlier than the generator commit. Catalog
+`captured_at` remains the evidence capture time rather than the later
+implementation-binding time.
+
 The report's primary sentence is:
 
 > The engine reported X cached tokens/blocks. Given the exact input and cache
@@ -193,7 +218,9 @@ uv run llmtracefx-cache-audit sanitize private-audit --output-dir public-audit
 
 The redacted bundle removes exact input/output token arrays, replaces
 request, pair, namespace, model, tokenizer, runtime, and limitation identifiers,
-and downgrade identity-dependent verdicts to `attested_only` or `unsupported`.
+replaces every evidence/timing scope and timing exclusion with fixed public
+constants, normalizes retained timing measurements to seconds, and downgrades
+identity-dependent verdicts to `attested_only` or `unsupported`.
 They also exclude prompts, native cache hashes, cache tensors, salts,
 credentials, host/account identities, and local paths. Sanitization is followed
 by complete bundle verification.

@@ -434,6 +434,7 @@ class SavedCacheIdentity:
     mlx_version: str
     mlx_lm_version: str
     token_ids_digest: str
+    namespace_id_digest: str
 
     @staticmethod
     def _digest(text: str) -> str:
@@ -450,6 +451,7 @@ class SavedCacheIdentity:
         mlx_version: str,
         mlx_lm_version: str,
         token_ids: Sequence[int],
+        namespace_id: str,
     ) -> SavedCacheIdentity:
         return cls(
             model_key_digest=cls._digest(repr(model_key)),
@@ -458,6 +460,7 @@ class SavedCacheIdentity:
             mlx_version=mlx_version,
             mlx_lm_version=mlx_lm_version,
             token_ids_digest=cls._digest(",".join(str(token) for token in token_ids)),
+            namespace_id_digest=cls._digest(namespace_id),
         )
 
     @classmethod
@@ -470,6 +473,7 @@ class SavedCacheIdentity:
         mlx_version: str,
         mlx_lm_version: str,
         token_ids: Sequence[int],
+        namespace_id: str,
     ) -> SavedCacheIdentity:
         return cls.for_binding(
             model_key=model_key,
@@ -478,6 +482,7 @@ class SavedCacheIdentity:
             mlx_version=mlx_version,
             mlx_lm_version=mlx_lm_version,
             token_ids=token_ids,
+            namespace_id=namespace_id,
         )
 
     def to_json(self) -> str:
@@ -489,6 +494,7 @@ class SavedCacheIdentity:
                 "mlx_version": self.mlx_version,
                 "mlx_lm_version": self.mlx_lm_version,
                 "token_ids_digest": self.token_ids_digest,
+                "namespace_id_digest": self.namespace_id_digest,
             },
             sort_keys=True,
         )
@@ -505,6 +511,7 @@ class SavedCacheIdentity:
             "mlx_version",
             "mlx_lm_version",
             "token_ids_digest",
+            "namespace_id_digest",
         }
         if set(data) != expected:
             raise SchemaValidationError("saved-cache identity fields differ")
@@ -522,6 +529,7 @@ class SavedCacheIdentity:
             "model_artifact_digest",
             "cache_payload_digest",
             "token_ids_digest",
+            "namespace_id_digest",
         ):
             if digest_pattern.fullmatch(values[key]) is None:
                 raise SchemaValidationError(
@@ -723,6 +731,32 @@ def _validate_local_model_path(model_path: str | Path) -> Path:
     return path
 
 
+def _stable_model_key(
+    *,
+    model_artifact_digest: str,
+    mlx_version: str,
+    mlx_lm_version: str,
+    max_cache_entries: int,
+    max_cache_bytes: int,
+) -> str:
+    """Bind MLX cache identity to verified artifacts and pinned cache semantics."""
+
+    payload = json.dumps(
+        {
+            "cache_type": "mlx_lru_prompt_cache",
+            "max_cache_bytes": max_cache_bytes,
+            "max_cache_entries": max_cache_entries,
+            "mlx_lm_version": mlx_lm_version,
+            "mlx_version": mlx_version,
+            "model_and_tokenizer_artifact_digest": model_artifact_digest,
+            "schema": "llmtracefx-mlx-model-key-v1",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return "llmtracefx-mlx-binding:" + hashlib.sha256(payload).hexdigest()
+
+
 def _fact(
     value: Any,
     basis: EvidenceBasis,
@@ -796,7 +830,7 @@ class MLXLocalCacheAdapter:
             snapshot = _snapshot_model_directory(local_path)
             self._artifact_snapshots.append(snapshot.owner)
             model_artifact_digest = snapshot.digest
-            model, tokenizer, model_key = self._runtime.load_model(snapshot.path)
+            model, tokenizer, _ = self._runtime.load_model(snapshot.path)
         elif model is not None and tokenizer is not None and model_key is not None:
             if (
                 model_artifact_digest is None
@@ -813,11 +847,17 @@ class MLXLocalCacheAdapter:
 
         self._model = model
         self._tokenizer = tokenizer
-        self._model_key: Hashable = model_key
         assert model_artifact_digest is not None
         self._model_artifact_digest = model_artifact_digest
         self._max_cache_entries = max_cache_entries
         self._max_cache_bytes = max_cache_bytes
+        self._model_key: Hashable = _stable_model_key(
+            model_artifact_digest=model_artifact_digest,
+            mlx_version=self._runtime.mlx_version or "",
+            mlx_lm_version=self._runtime.mlx_lm_version or "",
+            max_cache_entries=max_cache_entries,
+            max_cache_bytes=max_cache_bytes,
+        )
         self._oracle = MLXCacheOracle(
             max_entries=max_cache_entries, max_bytes=max_cache_bytes
         )
@@ -892,6 +932,7 @@ class MLXLocalCacheAdapter:
                 mlx_version=self._runtime.mlx_version or "",
                 mlx_lm_version=self._runtime.mlx_lm_version or "",
                 token_ids=request.input_token_ids,
+                namespace_id=request.namespace_id,
             )
             verify_saved_cache_sidecar(snapshot.path, expected)
         except Exception:

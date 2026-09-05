@@ -51,6 +51,7 @@ def test_manifest_is_strict_and_round_trips() -> None:
     manifest = AuditManifest(
         run_id="run",
         created_at="2026-01-01T00:00:00Z",
+        generated_at="2026-01-01T00:00:01Z",
         backend="synthetic_reference",
         backend_version="1",
         adapter_version="1",

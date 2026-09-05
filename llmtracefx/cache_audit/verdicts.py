@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+from .expected import longest_common_prefix
 from .schema import (
     ClaimEligibility,
     EligibilityStatus,
@@ -95,6 +96,43 @@ def _invalid(record: RequestEvidence, reasons: list[str]) -> RequestEvidence:
         verdict_reasons=tuple(reasons),
         eligibility=_output_eligibility(record),
     )
+
+
+def _eviction_proof_errors(record: RequestEvidence) -> list[str]:
+    proof = record.eviction_predecessor
+    if proof is None:
+        return ["eviction_predecessor_proof_missing"]
+    predecessor = proof.predecessor
+    current = proof.current
+    errors: list[str] = []
+    if proof.predecessor_request_id not in record.spec.expected_predecessors:
+        errors.append("eviction_predecessor_id_unbound")
+    if (
+        record.spec.input_token_ids is None
+        or current.input_token_ids != record.spec.input_token_ids
+        or current.namespace_id != record.spec.namespace_id
+    ):
+        errors.append("eviction_current_request_identity_mismatch")
+    for field in (
+        "backend",
+        "model_id",
+        "tokenizer_id",
+        "model_artifact_digest",
+        "cache_config_digest",
+        "namespace_id",
+    ):
+        if getattr(predecessor, field) != getattr(current, field):
+            errors.append(f"eviction_predecessor_{field}_mismatch")
+    reusable = min(
+        max(0, len(current.input_token_ids) - 1),
+        longest_common_prefix(
+            predecessor.input_token_ids,
+            current.input_token_ids,
+        ),
+    )
+    if reusable <= 0 or proof.reusable_prefix_tokens != reusable:
+        errors.append("eviction_predecessor_not_reuse_producing")
+    return errors
 
 
 def classify_request(record: RequestEvidence) -> RequestEvidence:
@@ -220,10 +258,15 @@ def classify_request(record: RequestEvidence) -> RequestEvidence:
             contradictions.append("recomputation_equation_mismatch")
     if evicted is True and not (prior_resident is True and residency_absent is True):
         contradictions.append("eviction_proof_incomplete")
+    if evicted is not True and record.eviction_predecessor is not None:
+        contradictions.append("eviction_predecessor_without_observed_eviction")
     if contradictions:
         return _invalid(record, contradictions)
 
     if evicted is True:
+        proof_errors = _eviction_proof_errors(record)
+        if proof_errors:
+            return _invalid(record, proof_errors)
         if semantic is None or expected is None:
             return _invalid(record, ["eviction_identity_or_policy_unavailable"])
         if expected != 0:

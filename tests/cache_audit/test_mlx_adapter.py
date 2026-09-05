@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Hashable, Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -362,7 +362,7 @@ def test_adapter_loads_local_model_path_without_fetching(tmp_path: Path) -> None
     assert runtime.loaded_model_path is not None
     assert runtime.loaded_model_path != model_dir
     assert runtime.loaded_model_config == b"{}"
-    assert adapter.model_key == str(runtime.loaded_model_path)
+    assert str(adapter.model_key).startswith("llmtracefx-mlx-binding:")
     assert (
         adapter.audit_identity().model_artifact_digest == adapter.model_artifact_digest
     )
@@ -629,6 +629,7 @@ def test_saved_cache_identity_round_trips_through_json() -> None:
         mlx_version="0.32.2",
         mlx_lm_version="0.31.3",
         token_ids=(1, 2, 3),
+        namespace_id="default",
     )
     restored = SavedCacheIdentity.from_json(identity.to_json())
     assert restored == identity
@@ -660,6 +661,7 @@ def test_load_saved_cache_succeeds_and_invokes_loader_once(tmp_path: Path) -> No
         mlx_version=REQUIRED_MLX_VERSION,
         mlx_lm_version=REQUIRED_MLX_LM_VERSION,
         token_ids=spec.input_token_ids or (),
+        namespace_id=spec.namespace_id,
     )
     write_saved_cache_sidecar(cache_path, identity)
 
@@ -678,6 +680,81 @@ def test_load_saved_cache_succeeds_and_invokes_loader_once(tmp_path: Path) -> No
     assert cache_path.read_bytes() == b"synthetic-cache-payload"
 
 
+def test_saved_cache_key_is_stable_across_verified_model_snapshots(
+    tmp_path: Path,
+) -> None:
+    model_dir = tmp_path / "local-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_bytes(b'{"model":"stable"}')
+    (model_dir / "tokenizer.json").write_bytes(b'{"tokenizer":"stable"}')
+    first = MLXLocalCacheAdapter(runtime=FakeMLXRuntime(), model_path=model_dir)
+    second = MLXLocalCacheAdapter(runtime=FakeMLXRuntime(), model_path=model_dir)
+    assert first.model_key == second.model_key
+    assert first.model_artifact_digest == second.model_artifact_digest
+
+    cache_path = tmp_path / "prompt.safetensors"
+    cache_path.write_bytes(b"synthetic-cache-payload")
+    spec = _spec("bind", (1, 2, 3, 4), order=0)
+    identity = SavedCacheIdentity.for_cache_file(
+        cache_path,
+        model_key=first.model_key,
+        model_artifact_digest=first.model_artifact_digest,
+        mlx_version=REQUIRED_MLX_VERSION,
+        mlx_lm_version=REQUIRED_MLX_LM_VERSION,
+        token_ids=spec.input_token_ids or (),
+        namespace_id=spec.namespace_id,
+    )
+    write_saved_cache_sidecar(cache_path, identity)
+    assert (
+        second.load_saved_cache(
+            cache_path,
+            request=spec,
+            loader=lambda path: path.read_bytes(),
+        )
+        == b"synthetic-cache-payload"
+    )
+
+
+@pytest.mark.parametrize("mismatch", ["artifact", "runtime", "config", "namespace"])
+def test_saved_cache_key_refuses_changed_binding(
+    tmp_path: Path,
+    mismatch: str,
+) -> None:
+    model_dir = tmp_path / "local-model"
+    model_dir.mkdir()
+    config_path = model_dir / "config.json"
+    config_path.write_bytes(b'{"model":"stable"}')
+    source = MLXLocalCacheAdapter(runtime=FakeMLXRuntime(), model_path=model_dir)
+    cache_path = tmp_path / "prompt.safetensors"
+    cache_path.write_bytes(b"synthetic-cache-payload")
+    spec = _spec("bind", (1, 2, 3, 4), order=0)
+    identity = SavedCacheIdentity.for_cache_file(
+        cache_path,
+        model_key=source.model_key,
+        model_artifact_digest=source.model_artifact_digest,
+        mlx_version=("0.32.1" if mismatch == "runtime" else REQUIRED_MLX_VERSION),
+        mlx_lm_version=REQUIRED_MLX_LM_VERSION,
+        token_ids=spec.input_token_ids or (),
+        namespace_id=spec.namespace_id,
+    )
+    write_saved_cache_sidecar(cache_path, identity)
+
+    if mismatch == "artifact":
+        config_path.write_bytes(b'{"model":"changed"}')
+    target = MLXLocalCacheAdapter(
+        runtime=FakeMLXRuntime(),
+        model_path=model_dir,
+        max_cache_entries=9 if mismatch == "config" else 10,
+    )
+    loader = Mock()
+    request = (
+        replace(spec, namespace_id="tenant-b") if mismatch == "namespace" else spec
+    )
+    with pytest.raises(MLXCacheAdapterError, match="identity mismatch"):
+        target.load_saved_cache(cache_path, request=request, loader=loader)
+    loader.assert_not_called()
+
+
 def test_load_saved_cache_uses_snapshot_after_source_replacement(
     tmp_path: Path,
 ) -> None:
@@ -692,6 +769,7 @@ def test_load_saved_cache_uses_snapshot_after_source_replacement(
         mlx_version=REQUIRED_MLX_VERSION,
         mlx_lm_version=REQUIRED_MLX_LM_VERSION,
         token_ids=spec.input_token_ids or (),
+        namespace_id=spec.namespace_id,
     )
     write_saved_cache_sidecar(cache_path, identity)
 
@@ -722,6 +800,7 @@ def test_load_saved_cache_refuses_on_token_mismatch_without_loading(
         mlx_version=REQUIRED_MLX_VERSION,
         mlx_lm_version=REQUIRED_MLX_LM_VERSION,
         token_ids=bound_spec.input_token_ids or (),
+        namespace_id=bound_spec.namespace_id,
     )
     write_saved_cache_sidecar(cache_path, identity)
 
@@ -757,6 +836,7 @@ def test_load_saved_cache_refuses_replaced_payload_without_loading(
         mlx_version=REQUIRED_MLX_VERSION,
         mlx_lm_version=REQUIRED_MLX_LM_VERSION,
         token_ids=spec.input_token_ids or (),
+        namespace_id=spec.namespace_id,
     )
     write_saved_cache_sidecar(cache_path, identity)
     cache_path.write_bytes(b"replacement-cache-payload")
@@ -777,6 +857,7 @@ def test_verify_saved_cache_sidecar_is_a_standalone_helper(tmp_path: Path) -> No
         mlx_version="0.32.2",
         mlx_lm_version="0.31.3",
         token_ids=(1, 2),
+        namespace_id="default",
     )
     write_saved_cache_sidecar(cache_path, identity)
     verify_saved_cache_sidecar(cache_path, identity)  # does not raise
@@ -788,6 +869,7 @@ def test_verify_saved_cache_sidecar_is_a_standalone_helper(tmp_path: Path) -> No
         mlx_version="0.32.2",
         mlx_lm_version="0.31.3",
         token_ids=(1, 2),
+        namespace_id="default",
     )
     with pytest.raises(MLXCacheAdapterError):
         verify_saved_cache_sidecar(cache_path, other)
@@ -801,6 +883,7 @@ def test_write_saved_cache_sidecar_rejects_missing_payload(tmp_path: Path) -> No
         mlx_version="0.32.2",
         mlx_lm_version="0.31.3",
         token_ids=(1, 2),
+        namespace_id="default",
     )
     with pytest.raises(MLXCacheAdapterError, match="regular"):
         write_saved_cache_sidecar(tmp_path / "missing.safetensors", identity)

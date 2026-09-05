@@ -3,20 +3,26 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .adapters.base import CacheAuditAdapter
 from .bundle import package_source_digest, write_bundle
+from .expected import longest_common_prefix
 from .schema import (
     AuditManifest,
     CacheConfig,
+    EvictionPredecessorProof,
     PublicationMode,
+    RequestCacheIdentity,
     RequestEvidence,
     RequestSpec,
 )
+from .verdicts import classify_request
 from .workloads import workload_digest
 
 ADAPTER_VERSION = "2"
@@ -27,18 +33,118 @@ def _run_id(backend: str, requests: Sequence[RequestSpec], seed: int) -> str:
     return "cache-audit-" + hashlib.sha256(material).hexdigest()[:16]
 
 
-def source_commit() -> str | None:
-    """Return the repository commit containing this package, when available."""
+def source_commit() -> tuple[str | None, str | None]:
+    """Return the repository commit and its timestamp, when available."""
 
     repository = Path(__file__).resolve().parents[2]
     result = subprocess.run(
-        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        ["git", "-C", str(repository), "show", "-s", "--format=%H%n%cI", "HEAD"],
         capture_output=True,
         check=False,
         text=True,
     )
-    value = result.stdout.strip()
-    return value if result.returncode == 0 and len(value) == 40 else None
+    lines = result.stdout.splitlines()
+    if result.returncode != 0 or len(lines) != 2 or len(lines[0]) != 40:
+        return None, None
+    return lines[0], lines[1]
+
+
+def _cache_config_digest(config: CacheConfig) -> str:
+    encoded = json.dumps(
+        config.to_dict(),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("ascii")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _request_cache_identity(
+    *,
+    spec: RequestSpec,
+    backend: str,
+    model_id: str,
+    tokenizer_id: str,
+    model_artifact_digest: str | None,
+    cache_config_digest: str,
+) -> RequestCacheIdentity | None:
+    if spec.input_token_ids is None:
+        return None
+    return RequestCacheIdentity(
+        backend=backend,
+        model_id=model_id,
+        tokenizer_id=tokenizer_id,
+        model_artifact_digest=model_artifact_digest,
+        cache_config_digest=cache_config_digest,
+        namespace_id=spec.namespace_id,
+        input_token_ids=spec.input_token_ids,
+    )
+
+
+def _bind_eviction_predecessors(
+    records: Sequence[RequestEvidence],
+    *,
+    backend: str,
+    model_id: str,
+    tokenizer_id: str,
+    model_artifact_digest: str | None,
+    cache_config: CacheConfig,
+) -> list[RequestEvidence]:
+    cache_digest = _cache_config_digest(cache_config)
+    prior: dict[str, RequestEvidence] = {}
+    bound: list[RequestEvidence] = []
+    for record in records:
+        proof = None
+        if record.reuse.eviction_observed.value is True:
+            predecessors = [
+                prior[request_id]
+                for request_id in record.spec.expected_predecessors
+                if request_id in prior
+            ]
+            current_identity = _request_cache_identity(
+                spec=record.spec,
+                backend=backend,
+                model_id=model_id,
+                tokenizer_id=tokenizer_id,
+                model_artifact_digest=model_artifact_digest,
+                cache_config_digest=cache_digest,
+            )
+            if len(predecessors) == 1 and current_identity is not None:
+                predecessor = predecessors[0]
+                predecessor_identity = _request_cache_identity(
+                    spec=predecessor.spec,
+                    backend=backend,
+                    model_id=model_id,
+                    tokenizer_id=tokenizer_id,
+                    model_artifact_digest=model_artifact_digest,
+                    cache_config_digest=cache_digest,
+                )
+                if predecessor_identity is not None:
+                    reusable = min(
+                        max(0, len(current_identity.input_token_ids) - 1),
+                        longest_common_prefix(
+                            predecessor_identity.input_token_ids,
+                            current_identity.input_token_ids,
+                        ),
+                    )
+                    proof = EvictionPredecessorProof(
+                        predecessor_request_id=predecessor.spec.request_id,
+                        predecessor=predecessor_identity,
+                        current=current_identity,
+                        reusable_prefix_tokens=reusable,
+                    )
+        rebound = classify_request(
+            replace(
+                record,
+                eviction_predecessor=proof,
+                verdict=None,
+                verdict_reasons=(),
+            )
+        )
+        bound.append(rebound)
+        prior[record.spec.request_id] = rebound
+    return bound
 
 
 def run_audit(
@@ -54,6 +160,7 @@ def run_audit(
     publication_mode: PublicationMode = PublicationMode.PRIVATE,
     seed: int = 0,
     created_at: str | None = None,
+    generated_at: str | None = None,
 ) -> tuple[AuditManifest, list[RequestEvidence]]:
     """Execute an adapter and persist a complete deterministic evidence bundle."""
 
@@ -87,12 +194,24 @@ def run_audit(
         raise RuntimeError(
             "adapter returned request specifications that differ from input"
         )
+    records = _bind_eviction_predecessors(
+        records,
+        backend=adapter.backend,
+        model_id=model_id,
+        tokenizer_id=tokenizer_id,
+        model_artifact_digest=identity.model_artifact_digest,
+        cache_config=authoritative_cache_config,
+    )
+    now = (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+    generator_commit, generator_commit_at = source_commit()
     manifest = AuditManifest(
         run_id=_run_id(adapter.backend, ordered, seed),
-        created_at=created_at
-        or datetime.now(timezone.utc)
-        .isoformat(timespec="microseconds")
-        .replace("+00:00", "Z"),
+        created_at=created_at or now,
+        generated_at=generated_at or now,
         backend=adapter.backend,
         backend_version=identity.backend_version,
         adapter_version=ADAPTER_VERSION,
@@ -105,7 +224,8 @@ def run_audit(
         request_order=tuple(request.request_id for request in ordered),
         workload_digest=workload_digest(ordered),
         seed=seed,
-        generator_commit=source_commit(),
+        generator_commit=generator_commit,
+        generator_commit_at=generator_commit_at,
         generator_package_digest=package_source_digest(),
     )
     write_bundle(output_dir, manifest, records)

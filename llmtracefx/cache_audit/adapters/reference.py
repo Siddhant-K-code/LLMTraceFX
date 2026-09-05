@@ -7,16 +7,18 @@ import platform
 import sys
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..expected import MLXCacheOracle
 from ..schema import (
     CacheStateSnapshot,
+    EvictionPredecessorProof,
     EvidenceBasis,
     EvidenceFact,
     Limitation,
     MemoryEvidence,
     OutputEvidence,
+    RequestCacheIdentity,
     RequestEvidence,
     RequestSpec,
     ReuseEvidence,
@@ -104,6 +106,10 @@ class SyntheticCacheEngine:
     def logical_bytes(self) -> int:
         return sum(entry.nbytes for entry in self._entries.values())
 
+    @property
+    def entry_ids(self) -> tuple[str, ...]:
+        return tuple(sorted(self._entries))
+
     def _lookup(
         self, namespace_id: str, request: tuple[int, ...]
     ) -> tuple[int, str | None]:
@@ -114,7 +120,6 @@ class SyntheticCacheEngine:
         ]
         exact = next((entry for entry in candidates if entry.tokens == request), None)
         if exact is not None:
-            self._entries.move_to_end(exact.entry_id)
             return len(request), exact.entry_id
 
         shorter = [
@@ -125,7 +130,6 @@ class SyntheticCacheEngine:
         ]
         if shorter:
             entry = max(shorter, key=lambda item: (len(item.tokens), item.entry_id))
-            self._entries.move_to_end(entry.entry_id)
             return len(entry.tokens), entry.entry_id
 
         longer = [
@@ -139,7 +143,6 @@ class SyntheticCacheEngine:
                 longer,
                 key=lambda item: (item[0], -len(item[1].tokens), item[1].entry_id),
             )
-            self._entries.move_to_end(entry.entry_id)
             return min(len(request) - 1, common), entry.entry_id
         return 0, None
 
@@ -355,6 +358,7 @@ class ReferenceCacheAdapter:
 
     def run(self, requests: Sequence[RequestSpec]) -> list[RequestEvidence]:
         records: list[RequestEvidence] = []
+        prior_specs: dict[str, RequestSpec] = {}
         gated_scenarios = {
             ScenarioKind.MIXED_LENGTH_CONCURRENT,
             ScenarioKind.SAVED_CACHE_MISMATCH,
@@ -522,5 +526,55 @@ class ReferenceCacheAdapter:
                     observation.logical_bytes_after,
                 ),
             )
+            if (
+                observation.eviction_observed
+                and len(request.expected_predecessors) == 1
+            ):
+                predecessor = prior_specs.get(request.expected_predecessors[0])
+                if (
+                    predecessor is not None
+                    and predecessor.input_token_ids is not None
+                    and request.input_token_ids is not None
+                ):
+                    config_material = (
+                        f"token_trie:{self._max_entries}:{self._max_bytes}"
+                    ).encode("ascii")
+                    config_digest = (
+                        "sha256:" + hashlib.sha256(config_material).hexdigest()
+                    )
+                    predecessor_identity = RequestCacheIdentity(
+                        backend=self.backend,
+                        model_id=self._model_key,
+                        tokenizer_id="integer-tokenizer-v1",
+                        model_artifact_digest=None,
+                        cache_config_digest=config_digest,
+                        namespace_id=predecessor.namespace_id,
+                        input_token_ids=predecessor.input_token_ids,
+                    )
+                    current_identity = RequestCacheIdentity(
+                        backend=self.backend,
+                        model_id=self._model_key,
+                        tokenizer_id="integer-tokenizer-v1",
+                        model_artifact_digest=None,
+                        cache_config_digest=config_digest,
+                        namespace_id=request.namespace_id,
+                        input_token_ids=request.input_token_ids,
+                    )
+                    record = replace(
+                        record,
+                        eviction_predecessor=EvictionPredecessorProof(
+                            predecessor_request_id=predecessor.request_id,
+                            predecessor=predecessor_identity,
+                            current=current_identity,
+                            reusable_prefix_tokens=min(
+                                max(0, len(request.input_token_ids) - 1),
+                                _common_prefix(
+                                    predecessor.input_token_ids,
+                                    request.input_token_ids,
+                                ),
+                            ),
+                        ),
+                    )
             records.append(classify_request(record))
+            prior_specs[request.request_id] = request
         return records

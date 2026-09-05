@@ -151,6 +151,8 @@ def render_html(
         f'<p class="meta">Run {_esc(manifest.run_id)} · backend '
         f"{_esc(manifest.backend)} {_esc(manifest.backend_version)} · "
         f"privacy mode {_esc(manifest.publication_mode.value)}</p>"
+        f'<p class="meta">Evidence captured {_esc(manifest.created_at)} · '
+        f"implementation bound/generated {_esc(manifest.generated_at)}</p>"
         f'<p class="meta">Evidence label: {_esc(evidence_label)}. '
         + (
             "Synthetic evidence validates arithmetic and verdict wiring only; "
