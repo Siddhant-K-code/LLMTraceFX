@@ -12,12 +12,12 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-EXPECTED_COMMIT = "334f0d4f2358fd5a572c824d395fb7193c8a7791"
-EXPECTED_COMMIT_AT = "2026-09-05T22:23:19+05:30"
+EXPECTED_COMMIT = "a5d63a90a0f31a5c1d6ada571cf98baf42fe308d"
+EXPECTED_COMMIT_AT = "2026-09-05T22:37:54+05:30"
 EXPECTED_PACKAGE_DIGEST = (
-    "sha256:d21d534869c02871266a79caca19d4de4ce8f91233aa2ed6f34988ab56e33f03"
+    "sha256:a0d9ea03f94b12383011d5a03295426cbac3ffc42f40c58b47cf7a36d812f5e3"
 )
-EXPECTED_GENERATED_AT = "2026-09-05T16:53:24Z"
+EXPECTED_GENERATED_AT = "2026-09-05T17:07:59Z"
 BUNDLE_DATA_FILES = (
     "audit-manifest.json",
     "request-evidence.jsonl",
@@ -30,6 +30,7 @@ BUNDLE_DATA_FILES = (
 )
 BUNDLE_FILES = BUNDLE_DATA_FILES + ("SHA256SUMS",)
 MAX_FILE_BYTES = 67108864
+GIT_ENV = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
 
 
 def fail(message: str) -> None:
@@ -211,25 +212,78 @@ def repository_is_incomplete(root: Path) -> bool:
     import subprocess
 
     shallow = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "--is-shallow-repository"],
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(root),
+            "rev-parse",
+            "--is-shallow-repository",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         check=False,
         text=True,
+        env=GIT_ENV,
     )
     if shallow.returncode != 0 or shallow.stdout.strip() not in {"true", "false"}:
         fail("candidate repository has invalid shallow-checkout metadata")
     if shallow.stdout.strip() == "true":
         return True
     partial = subprocess.run(
-        ["git", "-C", str(root), "config", "--get-regexp", r"^remote\..*\.promisor$"],
-        stdout=subprocess.DEVNULL,
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(root),
+            "config",
+            "--type=bool",
+            "--get-regexp",
+            r"^remote\..*\.promisor$",
+        ],
+        stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         check=False,
+        text=True,
+        env=GIT_ENV,
     )
     if partial.returncode not in {0, 1}:
         fail("candidate repository has invalid partial-clone metadata")
-    return partial.returncode == 0
+    if partial.returncode == 1:
+        return False
+    values = [line.rsplit(maxsplit=1)[-1] for line in partial.stdout.splitlines()]
+    if not values or any(value not in {"true", "false"} for value in values):
+        fail("candidate repository has invalid partial-clone metadata")
+    return any(value == "true" for value in values)
+
+
+def package_objects_missing(root: Path) -> bool | None:
+    if EXPECTED_COMMIT is None:
+        return False
+    import subprocess
+
+    result = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(root),
+            "rev-list",
+            "--objects",
+            "--missing=print",
+            EXPECTED_COMMIT,
+            "--",
+            "llmtracefx",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        text=True,
+        env=GIT_ENV,
+    )
+    if result.returncode != 0:
+        return None
+    return any(line.startswith("?") for line in result.stdout.splitlines())
 
 
 def commit_matches(root: Path) -> str | None:
@@ -238,11 +292,20 @@ def commit_matches(root: Path) -> str | None:
     import subprocess
 
     object_type = subprocess.run(
-        ["git", "-C", str(root), "cat-file", "-t", EXPECTED_COMMIT],
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(root),
+            "cat-file",
+            "-t",
+            EXPECTED_COMMIT,
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         check=False,
         text=True,
+        env=GIT_ENV,
     )
     if object_type.returncode != 0:
         return "unavailable" if repository_is_incomplete(root) else None
@@ -251,6 +314,7 @@ def commit_matches(root: Path) -> str | None:
     listing = subprocess.run(
         [
             "git",
+            "--no-replace-objects",
             "-C",
             str(root),
             "ls-tree",
@@ -263,15 +327,26 @@ def commit_matches(root: Path) -> str | None:
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         check=False,
+        env=GIT_ENV,
     )
     if listing.returncode != 0:
         return None
     timestamp = subprocess.run(
-        ["git", "-C", str(root), "show", "-s", "--format=%cI", EXPECTED_COMMIT],
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(root),
+            "show",
+            "-s",
+            "--format=%cI",
+            EXPECTED_COMMIT,
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         check=False,
         text=True,
+        env=GIT_ENV,
     )
     if timestamp.returncode != 0:
         return None
@@ -292,6 +367,12 @@ def commit_matches(root: Path) -> str | None:
         return None
     if commit_time != expected_commit_time or generated_time < commit_time:
         return None
+    if repository_is_incomplete(root):
+        missing = package_objects_missing(root)
+        if missing is None:
+            return None
+        if missing:
+            return "unavailable"
     digest = hashlib.sha256()
     paths = sorted(
         line.decode("utf-8").removeprefix("llmtracefx/")
@@ -302,6 +383,7 @@ def commit_matches(root: Path) -> str | None:
         result = subprocess.run(
             [
                 "git",
+                "--no-replace-objects",
                 "-C",
                 str(root),
                 "show",
@@ -310,6 +392,7 @@ def commit_matches(root: Path) -> str | None:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=False,
+            env=GIT_ENV,
         )
         if result.returncode != 0:
             return None
