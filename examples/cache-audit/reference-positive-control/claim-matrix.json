@@ -98,7 +98,27 @@
         "source": "independent_oracle.longest_common_prefix",
         "value": 0
       },
-      "statement": "The engine reported 0 cached tokens. Given the exact input and cache state, we independently expected 0. We observed 9 prompt-policy operations. Therefore the cache claim is verified_miss; output equivalence is eligible, and performance attribution is ineligible.",
+      "statement": "The engine reported 0 cached tokens. Given the exact input and cache state, we independently expected 0. We observed 9 prompt-policy operations. Therefore the cache claim is verified_miss; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
       "timing_exclusions": [
         "synthetic_control_emits_no_runtime_timing"
       ],
@@ -214,7 +234,27 @@
         "source": "independent_oracle.longest_common_prefix",
         "value": 9
       },
-      "statement": "The engine reported 8 cached tokens. Given the exact input and cache state, we independently expected 8. We observed 1 prompt-policy operations. Therefore the cache claim is verified_hit; output equivalence is eligible, and performance attribution is ineligible.",
+      "statement": "The engine reported 8 cached tokens. Given the exact input and cache state, we independently expected 8. We observed 1 prompt-policy operations. Therefore the cache claim is verified_hit; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
       "timing_exclusions": [
         "synthetic_control_emits_no_runtime_timing"
       ],
@@ -330,7 +370,27 @@
         "source": "independent_oracle.longest_common_prefix",
         "value": 0
       },
-      "statement": "The engine reported 0 cached tokens. Given the exact input and cache state, we independently expected 0. We observed 9 prompt-policy operations. Therefore the cache claim is verified_miss; output equivalence is eligible, and performance attribution is ineligible.",
+      "statement": "The engine reported 0 cached tokens. Given the exact input and cache state, we independently expected 0. We observed 9 prompt-policy operations. Therefore the cache claim is verified_miss; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
       "timing_exclusions": [
         "synthetic_control_emits_no_runtime_timing"
       ],
@@ -446,7 +506,27 @@
         "source": "independent_oracle.longest_common_prefix",
         "value": 3
       },
-      "statement": "The engine reported 3 cached tokens. Given the exact input and cache state, we independently expected 3. We observed 6 prompt-policy operations. Therefore the cache claim is partial_reuse; output equivalence is eligible, and performance attribution is ineligible.",
+      "statement": "The engine reported 3 cached tokens. Given the exact input and cache state, we independently expected 3. We observed 6 prompt-policy operations. Therefore the cache claim is partial_reuse; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
       "timing_exclusions": [
         "synthetic_control_emits_no_runtime_timing"
       ],
@@ -562,7 +642,27 @@
         "source": "independent_oracle.longest_common_prefix",
         "value": 4
       },
-      "statement": "The engine reported 4 cached tokens. Given the exact input and cache state, we independently expected 4. We observed 5 prompt-policy operations. Therefore the cache claim is partial_reuse; output equivalence is eligible, and performance attribution is ineligible.",
+      "statement": "The engine reported 4 cached tokens. Given the exact input and cache state, we independently expected 4. We observed 5 prompt-policy operations. Therefore the cache claim is partial_reuse; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
       "timing_exclusions": [
         "synthetic_control_emits_no_runtime_timing"
       ],
@@ -678,7 +778,27 @@
         "source": "independent_oracle.longest_common_prefix",
         "value": 8
       },
-      "statement": "The engine reported 8 cached tokens. Given the exact input and cache state, we independently expected 8. We observed 1 prompt-policy operations. Therefore the cache claim is partial_reuse; output equivalence is eligible, and performance attribution is ineligible.",
+      "statement": "The engine reported 8 cached tokens. Given the exact input and cache state, we independently expected 8. We observed 1 prompt-policy operations. Therefore the cache claim is partial_reuse; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
       "timing_exclusions": [
         "synthetic_control_emits_no_runtime_timing"
       ],
@@ -794,7 +914,27 @@
         "source": "independent_oracle.longest_common_prefix",
         "value": 0
       },
-      "statement": "The engine reported 0 cached tokens. Given the exact input and cache state, we independently expected 0. We observed 9 prompt-policy operations. Therefore the cache claim is verified_miss; output equivalence is eligible, and performance attribution is ineligible.",
+      "statement": "The engine reported 0 cached tokens. Given the exact input and cache state, we independently expected 0. We observed 9 prompt-policy operations. Therefore the cache claim is verified_miss; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
       "timing_exclusions": [
         "synthetic_control_emits_no_runtime_timing"
       ],
@@ -910,7 +1050,27 @@
         "source": "independent_oracle.longest_common_prefix",
         "value": 9
       },
-      "statement": "The engine reported 8 cached tokens. Given the exact input and cache state, we independently expected 8. We observed 1 prompt-policy operations. Therefore the cache claim is verified_hit; output equivalence is eligible, and performance attribution is ineligible.",
+      "statement": "The engine reported 8 cached tokens. Given the exact input and cache state, we independently expected 8. We observed 1 prompt-policy operations. Therefore the cache claim is verified_hit; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
       "timing_exclusions": [
         "synthetic_control_emits_no_runtime_timing"
       ],
@@ -1026,7 +1186,27 @@
         "source": "independent_oracle.longest_common_prefix",
         "value": 0
       },
-      "statement": "The engine reported 0 cached tokens. Given the exact input and cache state, we independently expected 0. We observed 9 prompt-policy operations. Therefore the cache claim is verified_miss; output equivalence is eligible, and performance attribution is ineligible.",
+      "statement": "The engine reported 0 cached tokens. Given the exact input and cache state, we independently expected 0. We observed 9 prompt-policy operations. Therefore the cache claim is verified_miss; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
       "timing_exclusions": [
         "synthetic_control_emits_no_runtime_timing"
       ],

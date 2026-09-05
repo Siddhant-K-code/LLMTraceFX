@@ -110,7 +110,10 @@
           "$ref": "#/$defs/budget"
         },
         "bundle_schema_version": {
-          "const": "1"
+          "enum": [
+            "1",
+            "2"
+          ]
         },
         "captured_at": {
           "anyOf": [
