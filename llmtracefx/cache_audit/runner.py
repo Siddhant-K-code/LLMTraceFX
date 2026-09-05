@@ -62,8 +62,6 @@ def run_audit(
         raise RuntimeError(
             f"{adapter.backend} cannot run: {', '.join(capability.reasons)}"
         )
-    if adapter.backend == "mlx_lm_local" and model_artifact_digest is None:
-        raise ValueError("MLX audits require a model artifact digest")
     if publication_mode is PublicationMode.PUBLIC_REDACTED:
         raise ValueError(
             "direct public_redacted runs are refused; create a private bundle and "
@@ -74,6 +72,11 @@ def run_audit(
         raise ValueError(
             "caller backend version does not match adapter: "
             f"{backend_version!r} != {identity.backend_version!r}"
+        )
+    if model_artifact_digest != identity.model_artifact_digest:
+        raise ValueError(
+            "caller model artifact digest does not match adapter: "
+            f"{model_artifact_digest!r} != {identity.model_artifact_digest!r}"
         )
     authoritative_cache_config = identity.authoritative_cache_config(cache_config)
     ordered = tuple(sorted(requests, key=lambda request: request.order))
@@ -95,7 +98,7 @@ def run_audit(
         adapter_version=ADAPTER_VERSION,
         model_id=model_id,
         tokenizer_id=tokenizer_id,
-        model_artifact_digest=model_artifact_digest,
+        model_artifact_digest=identity.model_artifact_digest,
         runtime_identity=identity.runtime_identity,
         cache_config=authoritative_cache_config,
         publication_mode=publication_mode,

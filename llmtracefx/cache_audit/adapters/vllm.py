@@ -8,8 +8,8 @@ synthetic ``BlockStored``/``BlockRemoved``/``AllBlocksCleared`` event mappings
 and synthetic/offline-captured ``RequestOutput`` observations that were
 recorded elsewhere (for example by a separate, gated live-GPU runner). Actual
 vLLM request execution is intentionally out of scope here;
-:func:`assess_vllm_capabilities` only says whether a described runtime is
-trustworthy enough for offline KV-cache accounting.
+:func:`assess_vllm_capabilities` reports why that untrusted description cannot
+establish runtime-backed KV-cache claims.
 """
 
 from __future__ import annotations
@@ -71,7 +71,7 @@ _UNAVAILABLE_FACTS = (
     "output_token_ids",
     "correctness",
 )
-_SUPPORTED_REASONS = ("read_only_offline_configuration_verified",)
+_CANONICAL_EVENT_HASH = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _clean(value: str | None) -> str | None:
@@ -135,7 +135,7 @@ def _pythonhashseed_is_fixed(value: str | None) -> bool:
 
 @dataclass(frozen=True)
 class VLLMCapabilityConfig:
-    """A caller-supplied snapshot of one vLLM deployment's audit-relevant identity."""
+    """An untrusted description used only for offline compatibility diagnostics."""
 
     version: str | None = None
     commit: str | None = None
@@ -147,8 +147,6 @@ class VLLMCapabilityConfig:
     hash_block_size: int | None = None
     physical_block_sizes: tuple[int, ...] = ()
     fine_grained_hits: bool = False
-    runtime_attestation_digest: str | None = None
-    runtime_attestation_exported: bool = False
     hash_representation: str | None = None
     hash_width_bits: int | None = None
 
@@ -177,8 +175,6 @@ class VLLMCapabilityConfig:
             hash_block_size=_parse_int(env.get(_ENV_HASH_BLOCK_SIZE)),
             physical_block_sizes=_parse_int_tuple(env.get(_ENV_PHYSICAL_BLOCK_SIZES)),
             fine_grained_hits=_parse_bool(env.get(_ENV_FINE_GRAINED_HITS)),
-            runtime_attestation_digest=None,
-            runtime_attestation_exported=False,
             hash_representation=None,
             hash_width_bits=None,
         )
@@ -194,14 +190,7 @@ def assess_vllm_capabilities(config: VLLMCapabilityConfig) -> CacheAuditCapabili
 
     reasons: list[str] = []
 
-    if not config.runtime_attestation_exported:
-        reasons.append("runtime_exported_attestation_missing")
-    if (
-        config.runtime_attestation_digest is None
-        or re.fullmatch(r"sha256:[0-9a-f]{64}", config.runtime_attestation_digest)
-        is None
-    ):
-        reasons.append("runtime_attestation_digest_invalid")
+    reasons.append("runtime_exported_attestation_unavailable_offline")
     if config.version != REQUIRED_VLLM_VERSION:
         reasons.append(
             "vllm_not_installed" if config.version is None else "vllm_version_mismatch"
@@ -239,10 +228,10 @@ def assess_vllm_capabilities(config: VLLMCapabilityConfig) -> CacheAuditCapabili
 
     return CacheAuditCapability(
         backend=BACKEND,
-        supported=not reasons,
-        reasons=tuple(reasons) if reasons else _SUPPORTED_REASONS,
-        observable_facts=_OBSERVABLE_FACTS,
-        unavailable_facts=_UNAVAILABLE_FACTS,
+        supported=False,
+        reasons=tuple(reasons),
+        observable_facts=(),
+        unavailable_facts=tuple(dict.fromkeys(_UNAVAILABLE_FACTS + _OBSERVABLE_FACTS)),
     )
 
 
@@ -475,11 +464,23 @@ def parse_kv_event(mapping: Mapping[str, Any]) -> SyntheticKVEvent:
             raise SchemaValidationError(
                 "BlockStored token_ids must contain one complete block per block hash"
             )
+        for block_hash in event.block_hashes:
+            if _CANONICAL_EVENT_HASH.fullmatch(block_hash) is None:
+                raise SchemaValidationError(
+                    "BlockStored hashes must be 256-bit SHA-256 lowercase hex"
+                )
+        if (
+            event.parent_block_hash is not None
+            and _CANONICAL_EVENT_HASH.fullmatch(event.parent_block_hash) is None
+        ):
+            raise SchemaValidationError(
+                "BlockStored parent hash must be 256-bit SHA-256 lowercase hex"
+            )
         return event
 
     if event_type is KVEventType.BLOCK_REMOVED:
         _exact_keys(data, _BLOCK_REMOVED_KEYS, "BlockRemoved event")
-        return SyntheticKVEvent(
+        event = SyntheticKVEvent(
             sequence=_require_int(data["sequence"], "kv_event.sequence"),
             event_type=event_type,
             block_hashes=_require_str_list(
@@ -488,6 +489,12 @@ def parse_kv_event(mapping: Mapping[str, Any]) -> SyntheticKVEvent:
             medium=_optional_str(data["medium"], "kv_event.medium"),
             group_idx=_optional_int(data["group_idx"], "kv_event.group_idx"),
         )
+        for block_hash in event.block_hashes:
+            if _CANONICAL_EVENT_HASH.fullmatch(block_hash) is None:
+                raise SchemaValidationError(
+                    "BlockRemoved hashes must be 256-bit SHA-256 lowercase hex"
+                )
+        return event
 
     _exact_keys(data, _ALL_BLOCKS_CLEARED_KEYS, "AllBlocksCleared event")
     return SyntheticKVEvent(
@@ -515,6 +522,10 @@ class KVEventStreamReport:
     duplicate_sequences: tuple[int, ...]
     ambiguous_block_hashes: tuple[tuple[tuple[int, ...], ...], ...] = ()
     inconsistent_block_metadata: bool = False
+    capture_start_sequence: int | None = None
+    capture_end_sequence: int | None = None
+    sequences_monotonic: bool = False
+    hash_metadata_valid: bool = False
 
     @property
     def has_gaps(self) -> bool:
@@ -539,6 +550,20 @@ class KVEventStreamReport:
         reasons = []
         if not self.events:
             reasons.append("kv_events_missing")
+        if self.capture_start_sequence is None:
+            reasons.append("kv_event_capture_start_missing")
+        if self.capture_end_sequence is None:
+            reasons.append("kv_event_capture_end_missing")
+        if not self.sequences_monotonic:
+            reasons.append("kv_event_sequences_not_monotonic")
+        if not self.hash_metadata_valid:
+            reasons.append("kv_event_hash_metadata_invalid")
+        if self.events and self.capture_start_sequence is not None:
+            if self.events[0].sequence != self.capture_start_sequence:
+                reasons.append("kv_event_capture_start_mismatch")
+        if self.events and self.capture_end_sequence is not None:
+            if self.events[-1].sequence != self.capture_end_sequence:
+                reasons.append("kv_event_capture_end_mismatch")
         if self.has_gaps:
             reasons.append("kv_event_sequence_gaps")
         if self.has_duplicate_sequences:
@@ -547,15 +572,26 @@ class KVEventStreamReport:
             reasons.append("kv_event_hash_identity_ambiguous")
         if self.inconsistent_block_metadata:
             reasons.append("kv_event_block_metadata_inconsistent")
+        reasons.append("runtime_event_attestation_unavailable")
         return tuple(reasons)
 
     @property
     def eligible(self) -> bool:
-        return not self.ineligibility_reasons
+        return False
+
+    @property
+    def structurally_eligible(self) -> bool:
+        return self.ineligibility_reasons == ("runtime_event_attestation_unavailable",)
 
 
 def parse_kv_event_stream(
     mappings: Sequence[Mapping[str, Any]],
+    *,
+    capture_start_sequence: int | None = None,
+    capture_end_sequence: int | None = None,
+    hash_algorithm: str = "sha256",
+    hash_encoding: str = "lowercase_hex",
+    hash_width_bits: int = 256,
 ) -> KVEventStreamReport:
     """Parse an ordered batch of event mappings and flag sequence defects.
 
@@ -599,6 +635,16 @@ def parse_kv_event_stream(
         if event.event_type is KVEventType.BLOCK_STORED
     }
     inconsistent_block_metadata = len(stored_metadata) > 1
+    sequences = tuple(event.sequence for event in events)
+    sequences_monotonic = bool(events) and all(
+        current < following
+        for current, following in zip(sequences, sequences[1:], strict=False)
+    )
+    hash_metadata_valid = (
+        hash_algorithm == "sha256"
+        and hash_encoding == "lowercase_hex"
+        and hash_width_bits == 256
+    )
 
     return KVEventStreamReport(
         events=events,
@@ -606,6 +652,10 @@ def parse_kv_event_stream(
         duplicate_sequences=duplicate_sequences,
         ambiguous_block_hashes=ambiguous_block_hashes,
         inconsistent_block_metadata=inconsistent_block_metadata,
+        capture_start_sequence=capture_start_sequence,
+        capture_end_sequence=capture_end_sequence,
+        sequences_monotonic=sequences_monotonic,
+        hash_metadata_valid=hash_metadata_valid,
     )
 
 

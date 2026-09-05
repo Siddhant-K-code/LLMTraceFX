@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from typing import Any
 
@@ -36,12 +37,14 @@ def _valid_config(**overrides: Any) -> VLLMCapabilityConfig:
         hash_block_size=4,
         physical_block_sizes=(8, 16),
         fine_grained_hits=False,
-        runtime_attestation_digest="sha256:" + "a" * 64,
-        runtime_attestation_exported=True,
         hash_representation="sha256_bytes",
         hash_width_bits=256,
     )
     return replace(base, **overrides)
+
+
+def _hash(label: str) -> str:
+    return hashlib.sha256(label.encode("ascii")).hexdigest()
 
 
 def _block_stored(
@@ -60,8 +63,13 @@ def _block_stored(
     return {
         "sequence": sequence,
         "type": "BlockStored",
-        "block_hashes": block_hashes if block_hashes is not None else ["h0"],
-        "parent_block_hash": parent_block_hash,
+        "block_hashes": [
+            _hash(value)
+            for value in (block_hashes if block_hashes is not None else ["h0"])
+        ],
+        "parent_block_hash": None
+        if parent_block_hash is None
+        else _hash(parent_block_hash),
         "token_ids": token_ids if token_ids is not None else [1, 2, 3, 4],
         "block_size": block_size,
         "medium": medium,
@@ -82,7 +90,10 @@ def _block_removed(
     return {
         "sequence": sequence,
         "type": "BlockRemoved",
-        "block_hashes": block_hashes if block_hashes is not None else ["h0"],
+        "block_hashes": [
+            _hash(value)
+            for value in (block_hashes if block_hashes is not None else ["h0"])
+        ],
         "medium": medium,
         "group_idx": group_idx,
     }
@@ -95,12 +106,15 @@ def _all_blocks_cleared(*, sequence: int = 2) -> dict[str, object]:
 # --- capability: valid configuration -----------------------------------
 
 
-def test_valid_configuration_is_supported_with_no_refusal_reasons() -> None:
+def test_valid_declared_configuration_remains_unsupported_without_runtime_export() -> (
+    None
+):
     result = assess_vllm_capabilities(_valid_config())
     assert result.backend == "vllm"
-    assert result.supported is True
-    assert result.reasons == ("read_only_offline_configuration_verified",)
-    assert "engine_cached_blocks" in result.observable_facts
+    assert result.supported is False
+    assert result.reasons == ("runtime_exported_attestation_unavailable_offline",)
+    assert result.observable_facts == ()
+    assert "engine_cached_blocks" in result.unavailable_facts
     assert "client_ttft" in result.unavailable_facts
 
 
@@ -121,11 +135,19 @@ def test_environment_claims_never_satisfy_runtime_attestation() -> None:
     )
     result = assess_vllm_capabilities(config)
     assert result.supported is False
-    assert "runtime_exported_attestation_missing" in result.reasons
+    assert "runtime_exported_attestation_unavailable_offline" in result.reasons
+
+
+def test_caller_cannot_construct_a_runtime_attestation_override() -> None:
+    with pytest.raises(TypeError):
+        VLLMCapabilityConfig(  # type: ignore[call-arg]
+            runtime_attestation_exported=True,
+            runtime_attestation_digest="sha256:" + "a" * 64,
+        )
 
 
 def test_event_stream_missing_gapped_duplicate_and_ambiguous_are_ineligible() -> None:
-    assert parse_kv_event_stream([]).ineligibility_reasons == ("kv_events_missing",)
+    assert "kv_events_missing" in parse_kv_event_stream([]).ineligibility_reasons
 
     gapped = parse_kv_event_stream(
         [_block_stored(sequence=0), _block_removed(sequence=2)]
@@ -170,8 +192,8 @@ def test_capability_to_dict_matches_expected_shape() -> None:
     result = assess_vllm_capabilities(_valid_config())
     assert result.to_dict() == {
         "backend": "vllm",
-        "supported": True,
-        "reasons": ["read_only_offline_configuration_verified"],
+        "supported": False,
+        "reasons": ["runtime_exported_attestation_unavailable_offline"],
         "observable_facts": list(result.observable_facts),
         "unavailable_facts": list(result.unavailable_facts),
     }
@@ -327,15 +349,12 @@ def test_from_environment_ignores_malformed_integers() -> None:
 # --- reuse expectation helper --------------------------------------------
 
 
-def test_derive_reuse_expectation_matches_expected_vllm_reuse_alignment() -> None:
+def test_derive_reuse_expectation_refuses_even_plausible_caller_configuration() -> None:
     config = _valid_config(hash_block_size=4, physical_block_sizes=(8, 16))
     request = tuple(range(30))
     cached = request[:23] + (999,)
-    result = derive_reuse_expectation(config, cached, request)
-    assert result.semantic_prefix_tokens == 23
-    assert result.policy_reusable_tokens == 16
-    assert result.reusable_blocks == 4
-    assert result.partial_block_tokens == 3
+    with pytest.raises(ValueError, match="runtime_exported_attestation_unavailable"):
+        derive_reuse_expectation(config, cached, request)
 
 
 def test_derive_reuse_expectation_refuses_unsupported_configuration() -> None:
@@ -362,7 +381,7 @@ def test_parse_block_stored_preserves_token_ids_privately() -> None:
 def test_parse_block_removed() -> None:
     event = parse_kv_event(_block_removed(block_hashes=["a", "b"]))
     assert event.event_type is KVEventType.BLOCK_REMOVED
-    assert event.block_hashes == ("a", "b")
+    assert event.block_hashes == (_hash("a"), _hash("b"))
 
 
 def test_parse_all_blocks_cleared() -> None:
@@ -410,6 +429,13 @@ def test_parse_rejects_block_hash_token_cardinality_mismatch() -> None:
                 block_size=4,
             )
         )
+
+
+def test_parse_rejects_non_sha256_event_hash() -> None:
+    payload = _block_stored()
+    payload["block_hashes"] = ["not-a-sha256-hash"]
+    with pytest.raises(SchemaValidationError, match="256-bit SHA-256"):
+        parse_kv_event(payload)
 
 
 # --- redaction --------------------------------------------------------
@@ -467,7 +493,9 @@ def test_stream_with_no_defects_reports_none() -> None:
             _block_stored(sequence=0),
             _block_removed(sequence=1),
             _all_blocks_cleared(sequence=2),
-        ]
+        ],
+        capture_start_sequence=0,
+        capture_end_sequence=2,
     )
     assert isinstance(report, KVEventStreamReport)
     assert len(report.events) == 3
@@ -475,6 +503,23 @@ def test_stream_with_no_defects_reports_none() -> None:
     assert report.has_duplicate_sequences is False
     assert report.sequence_gaps == ()
     assert report.duplicate_sequences == ()
+    assert report.structurally_eligible is True
+    assert report.eligible is False
+    assert report.ineligibility_reasons == ("runtime_event_attestation_unavailable",)
+
+
+def test_stream_requires_exact_capture_boundaries_and_hash_metadata() -> None:
+    report = parse_kv_event_stream(
+        [_block_stored(sequence=4), _block_removed(sequence=5)],
+        capture_start_sequence=3,
+        capture_end_sequence=6,
+        hash_algorithm="sha256_cbor",
+        hash_encoding="bytes",
+        hash_width_bits=64,
+    )
+    assert "kv_event_capture_start_mismatch" in report.ineligibility_reasons
+    assert "kv_event_capture_end_mismatch" in report.ineligibility_reasons
+    assert "kv_event_hash_metadata_invalid" in report.ineligibility_reasons
 
 
 def test_stream_detects_sequence_gap() -> None:

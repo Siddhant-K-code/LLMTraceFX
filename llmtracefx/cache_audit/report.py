@@ -50,7 +50,8 @@ def claim_statement(record: RequestEvidence) -> str:
         f"We observed {observed if observed is not None else 'unavailable'} "
         f"prompt-policy operations. Therefore the cache claim is {verdict}; "
         f"output equivalence is {record.eligibility.output_equivalence.value}, and "
-        f"performance attribution is {record.eligibility.performance.value}."
+        f"performance attribution is {record.eligibility.performance.value}; "
+        f"model quality is {record.eligibility.quality.value}."
     )
 
 
@@ -77,6 +78,30 @@ def build_claim_matrix(records: Sequence[RequestEvidence]) -> dict[str, Any]:
                 ),
                 "timing_scope": record.timing.scope,
                 "timing_exclusions": list(record.timing.exclusions),
+                "timing_evidence": {
+                    "client_ttft": {
+                        "value_ms": _milliseconds(record.timing.client_ttft),
+                        "basis": (
+                            "unavailable"
+                            if record.timing.client_ttft is None
+                            else record.timing.client_ttft.provenance.value
+                        ),
+                        "source": "timing.client_ttft",
+                        "scope": record.timing.scope,
+                        "limitations": list(record.timing.exclusions),
+                    },
+                    "in_process_first_token": {
+                        "value_ms": _milliseconds(record.timing.in_process_first_token),
+                        "basis": (
+                            "unavailable"
+                            if record.timing.in_process_first_token is None
+                            else record.timing.in_process_first_token.provenance.value
+                        ),
+                        "source": "timing.in_process_first_token",
+                        "scope": record.timing.scope,
+                        "limitations": list(record.timing.exclusions),
+                    },
+                },
                 "logical_cache_memory": _fact(record.memory.logical_cache_bytes),
                 "runtime_peak_memory": _fact(record.memory.runtime_peak_bytes),
                 "cache_entries_before": (

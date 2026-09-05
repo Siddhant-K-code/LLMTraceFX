@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import random
 import subprocess
 import sys
 from dataclasses import replace
@@ -8,7 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from llmtracefx.cache_audit.adapters.reference import ReferenceCacheAdapter
+from llmtracefx.cache_audit.adapters.reference import (
+    ReferenceCacheAdapter,
+    SyntheticCacheEngine,
+)
 from llmtracefx.cache_audit.api import sanitize_audit_bundle
 from llmtracefx.cache_audit.bundle import (
     CacheAuditBundleError,
@@ -16,11 +21,13 @@ from llmtracefx.cache_audit.bundle import (
     verify_bundle,
     write_bundle,
 )
+from llmtracefx.cache_audit.expected import MLXCacheOracle
 from llmtracefx.cache_audit.runner import run_audit
 from llmtracefx.cache_audit.schema import (
     CacheConfig,
     EligibilityStatus,
     PublicationMode,
+    RequestSpec,
     ScenarioKind,
     Verdict,
 )
@@ -140,6 +147,94 @@ def test_independent_baseline_failure_only_gates_output() -> None:
     assert warm.verdict is Verdict.VERIFIED_HIT
     assert warm.eligibility.output_equivalence is EligibilityStatus.INELIGIBLE
     assert warm.output.output_token_ids != warm.output.baseline_token_ids
+
+
+def test_synthetic_engine_prefix_compaction_regression() -> None:
+    engine = SyntheticCacheEngine(
+        max_entries=32,
+        max_bytes=1 << 30,
+        bytes_per_token=64,
+    )
+    oracle = MLXCacheOracle(max_entries=32, max_bytes=1 << 30)
+    original = RequestSpec(
+        request_id="original",
+        scenario=ScenarioKind.COLD,
+        order=0,
+        input_token_ids=(1, 2),
+        input_token_count=2,
+        output_tokens=1,
+    )
+    first = engine.execute(original)
+    first_sequence = original.input_token_ids + first.output_token_ids
+    oracle.insert(
+        entry_id=original.request_id,
+        model_key="synthetic-tiny-model",
+        namespace_id=original.namespace_id,
+        tokens=first_sequence,
+        nbytes=len(first_sequence) * 64,
+    )
+    extension_tokens = first_sequence + (9,)
+    extension = RequestSpec(
+        request_id="extension",
+        scenario=ScenarioKind.SUFFIX_CHANGE,
+        order=1,
+        input_token_ids=extension_tokens,
+        input_token_count=len(extension_tokens),
+        output_tokens=1,
+    )
+    expected_extension = oracle.lookup(
+        "synthetic-tiny-model", extension.namespace_id, extension_tokens
+    )
+    observed_extension = engine.execute(extension)
+    assert observed_extension.cached_tokens == expected_extension.policy_reusable_tokens
+    extension_sequence = extension_tokens + observed_extension.output_token_ids
+    oracle.insert(
+        entry_id=extension.request_id,
+        model_key="synthetic-tiny-model",
+        namespace_id=extension.namespace_id,
+        tokens=extension_sequence,
+        nbytes=len(extension_sequence) * 64,
+    )
+    expected_original = oracle.lookup(
+        "synthetic-tiny-model", original.namespace_id, original.input_token_ids
+    )
+    observed_original = engine.execute(replace(original, request_id="original-again"))
+    assert observed_original.cached_tokens == expected_original.policy_reusable_tokens
+    assert observed_original.cached_tokens == 1
+
+
+def test_synthetic_engine_randomized_differential_state_machine() -> None:
+    randomizer = random.Random(1729)
+    engine = SyntheticCacheEngine(
+        max_entries=256,
+        max_bytes=1 << 30,
+        bytes_per_token=64,
+    )
+    oracle = MLXCacheOracle(max_entries=256, max_bytes=1 << 30)
+    for order in range(200):
+        length = randomizer.randint(1, 12)
+        tokens = tuple(randomizer.randint(0, 15) for _ in range(length))
+        namespace = f"namespace-{randomizer.randint(0, 2)}"
+        request = RequestSpec(
+            request_id=f"random-{order}",
+            scenario=ScenarioKind.DUPLICATE,
+            order=order,
+            input_token_ids=tokens,
+            input_token_count=length,
+            output_tokens=randomizer.randint(1, 3),
+            namespace_id=namespace,
+        )
+        expected = oracle.lookup("synthetic-tiny-model", namespace, tokens)
+        observed = engine.execute(request)
+        assert observed.cached_tokens == expected.policy_reusable_tokens
+        sequence = tokens + observed.output_token_ids
+        oracle.insert(
+            entry_id=request.request_id,
+            model_key="synthetic-tiny-model",
+            namespace_id=namespace,
+            tokens=sequence,
+            nbytes=len(sequence) * 64,
+        )
 
 
 def test_writer_rejects_workload_digest_mismatch(tmp_path: Path) -> None:
@@ -377,6 +472,11 @@ def test_portable_verifier_refuses_unrelated_installed_package(tmp_path: Path) -
     fake_root = tmp_path / "fake-package"
     fake_module = fake_root / "llmtracefx" / "cache_audit"
     fake_module.mkdir(parents=True)
+    sentinel = tmp_path / "attacker-executed"
+    (fake_root / "llmtracefx" / "__init__.py").write_text(
+        f"from pathlib import Path\nPath({str(sentinel)!r}).write_text('executed')\n",
+        encoding="utf-8",
+    )
     (fake_module / "bundle.py").write_text("# unrelated package\n", encoding="utf-8")
     result = subprocess.run(
         [
@@ -394,6 +494,53 @@ def test_portable_verifier_refuses_unrelated_installed_package(tmp_path: Path) -
     )
     assert result.returncode != 0
     assert "matching llmtracefx source not found" in result.stderr
+    assert not sentinel.exists()
+
+
+def test_portable_verifier_rejects_manifest_retarget_before_import(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "bundle"
+    run_audit(
+        adapter=ReferenceCacheAdapter(),
+        requests=adversarial_requests()[:1],
+        cache_config=CacheConfig(namespace_id="synthetic", cache_type="token_trie"),
+        output_dir=bundle,
+        backend_version="1",
+        model_id="synthetic-tiny-model",
+        tokenizer_id="integer-tokenizer-v1",
+        created_at="2026-01-01T00:00:00Z",
+    )
+    manifest_path = bundle / "audit-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["generator_package_digest"] = "sha256:" + "0" * 64
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    checksums = (bundle / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+    updated = []
+    for line in checksums:
+        _, name = line.split("  ")
+        digest = hashlib.sha256((bundle / name).read_bytes()).hexdigest()
+        updated.append(f"{digest}  {name}")
+    (bundle / "SHA256SUMS").write_text("\n".join(updated) + "\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(bundle / "evidence_bundle.py"),
+            "verify",
+            "--public-dir",
+            str(bundle),
+            "--package-root",
+            str(Path.cwd()),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "embedded trust anchor" in result.stderr
 
 
 def test_documented_commands_work_from_clean_checkout() -> None:

@@ -46,9 +46,20 @@ def _output_eligibility(record: RequestEvidence) -> ClaimEligibility:
     identity = _truth(record.output.token_identity)
     correctness = _truth(record.output.correctness)
     reasons: list[str] = []
-    if identity is None or correctness is None:
+    if (
+        identity is None
+        or correctness is None
+        or record.output.output_token_ids is None
+        or record.output.baseline_token_ids is None
+    ):
         output = EligibilityStatus.UNAVAILABLE
         reasons.append("output_equivalence_unavailable")
+    elif (
+        record.output.token_identity.basis is not EvidenceBasis.OBSERVED
+        or record.output.correctness.basis is not EvidenceBasis.OBSERVED
+    ):
+        output = EligibilityStatus.INELIGIBLE
+        reasons.append("output_comparison_must_be_observed")
     elif identity and correctness:
         output = EligibilityStatus.ELIGIBLE
     else:
@@ -63,10 +74,9 @@ def _output_eligibility(record: RequestEvidence) -> ClaimEligibility:
     if synthetic:
         quality = EligibilityStatus.NOT_APPLICABLE
         reasons.append("synthetic_equivalence_is_not_model_quality")
-    elif output is EligibilityStatus.ELIGIBLE:
-        quality = EligibilityStatus.ELIGIBLE
     else:
-        quality = output
+        quality = EligibilityStatus.UNAVAILABLE
+        reasons.append("model_quality_evaluator_unavailable")
 
     performance = EligibilityStatus.INELIGIBLE
     reasons.append("paired_replicated_performance_evidence_required")
@@ -214,6 +224,10 @@ def classify_request(record: RequestEvidence) -> RequestEvidence:
         return _invalid(record, contradictions)
 
     if evicted is True:
+        if semantic is None or expected is None:
+            return _invalid(record, ["eviction_identity_or_policy_unavailable"])
+        if expected != 0:
+            return _invalid(record, ["eviction_expected_reuse_nonzero"])
         if attested == 0 and observed == input_count:
             return replace(
                 record,
@@ -232,8 +246,11 @@ def classify_request(record: RequestEvidence) -> RequestEvidence:
 
     if recomputed is not None and recomputed > 0:
         if (
-            expected is not None
+            semantic is not None
+            and expected is not None
             and expected > 0
+            and semantic >= expected
+            and attested == expected
             and prior_resident is True
             and observed is not None
             and required is not None

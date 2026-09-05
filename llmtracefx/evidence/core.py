@@ -52,6 +52,7 @@ CATALOG_PUBLIC_FILES = (*CATALOG_FILES, "SHA256SUMS")
 OUTCOMES = {"completed", "oom", "refused", "comparison"}
 STATUSES = {"verified"}
 CLAIM_STATES = {"supported", "unsupported", "not_applicable"}
+SUPPORTED_BUNDLE_SCHEMA_VERSIONS = {"1", "2"}
 RELATIONS = {
     "derived_from",
     "compares",
@@ -68,6 +69,7 @@ KINDS = {
     "hosted_comparison",
     "provider_preflight",
     "compile_break_even",
+    "cache_truth_audit",
 }
 SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 SAFE_PATH_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -138,6 +140,10 @@ SCRIPT_ADAPTERS = {
     "cloudrift_compile_v1": (
         "examples/optimizer/qwen3-8b-vllm-compile-break-even/evidence_bundle.py",
         ("verify",),
+    ),
+    "cache_audit_v1": (
+        "examples/cache-audit/reference-positive-control/evidence_bundle.py",
+        ("verify", "--public-dir", "{bundle}"),
     ),
     "vllm_crossover_protocol_v1": (
         "examples/optimizer/qwen3-8b-vllm-crossover-protocol/evidence_bundle.py",
@@ -559,6 +565,23 @@ def _verify_source_bindings(repo_root: Path, source: Mapping[str, Any]) -> None:
         captured = contract["captured_at"]
         model_id = plan["model"]["id"]
         model_revision = plan["model"]["revision"]
+    elif evidence_id == "cache-audit-reference-positive-control-20260905":
+        manifest = _load_json(bundle / "audit-manifest.json")
+        schema = manifest["schema_version"]
+        captured = manifest["created_at"]
+        source_commit = manifest["generator_commit"]
+        model_id = manifest["model_id"]
+        binding = source["cache_binding"]
+        observed_binding = {
+            "publication_mode": manifest["publication_mode"],
+            "backend": manifest["backend"],
+            "workload_digest": manifest["workload_digest"],
+            "adapter_version": manifest["adapter_version"],
+            "generator_package_digest": manifest["generator_package_digest"],
+            "privacy_status": "verified_public_synthetic",
+        }
+        if observed_binding != binding:
+            raise CatalogError(f"{evidence_id} cache provenance binding drifted")
     else:  # pragma: no cover - SOURCES is a closed registry
         raise CatalogError(f"{evidence_id} has no source binding contract")
     if str(schema) != source["bundle_schema_version"]:
@@ -639,7 +662,7 @@ def build_catalog(repo_root: str | Path) -> dict[str, Any]:
         entry = {
             key: value
             for key, value in source.items()
-            if key not in {"adapter", "artifact_files"}
+            if key not in {"adapter", "artifact_files", "cache_binding"}
         }
         entry["verifier"] = dict(adapter)
         entry["artifact_set_hash"] = _artifact_set_hash(root, source)
@@ -727,7 +750,7 @@ def _validate_entry(entry: Any, context: str) -> None:
     if not isinstance(entry["outcome"], str) or entry["outcome"] not in OUTCOMES:
         raise CatalogError(f"{context}.outcome is unknown")
     _validate_relative_path(entry["public_path"], f"{context}.public_path")
-    if entry["bundle_schema_version"] != "1":
+    if entry["bundle_schema_version"] not in SUPPORTED_BUNDLE_SCHEMA_VERSIONS:
         raise CatalogError(f"{context}.bundle_schema_version is unsupported")
     if not isinstance(entry["verifier"], dict):
         raise CatalogError(f"{context}.verifier must be an object")
@@ -1364,7 +1387,9 @@ def _schema_document() -> dict[str, Any]:
                         "maxLength": 512,
                         "pattern": path_pattern,
                     },
-                    "bundle_schema_version": {"const": "1"},
+                    "bundle_schema_version": {
+                        "enum": sorted(SUPPORTED_BUNDLE_SCHEMA_VERSIONS)
+                    },
                     "verifier": {"$ref": "#/$defs/verifier"},
                     "artifact_set_hash": {
                         "type": "string",

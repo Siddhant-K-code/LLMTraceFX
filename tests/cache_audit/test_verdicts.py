@@ -12,7 +12,7 @@ from llmtracefx.cache_audit.schema import (
     unavailable,
 )
 from llmtracefx.cache_audit.verdicts import classify_request
-from llmtracefx.cache_audit.workloads import adversarial_requests
+from llmtracefx.cache_audit.workloads import adversarial_requests, eviction_requests
 
 
 def _record():
@@ -157,3 +157,101 @@ def test_missing_semantic_prefix_cannot_verify_hit() -> None:
         )
     )
     assert classified.verdict is Verdict.ATTESTED_ONLY
+
+
+def test_eviction_requires_independent_identity_and_policy_evidence() -> None:
+    record = ReferenceCacheAdapter(max_entries=1).run(eviction_requests())[-1]
+    assert record.verdict is Verdict.EVICTED
+    classified = classify_request(
+        replace(
+            record,
+            reuse=replace(
+                record.reuse,
+                semantic_prefix_tokens=unavailable("test", "identity_missing"),
+            ),
+            verdict=None,
+            verdict_reasons=(),
+        )
+    )
+    assert classified.verdict is Verdict.INVALID
+    assert classified.verdict_reasons == ("eviction_identity_or_policy_unavailable",)
+
+
+def test_recomputed_requires_attested_expected_reuse_equation() -> None:
+    record = ReferenceCacheAdapter().run(adversarial_requests()[:2])[1]
+    required = record.reuse.policy_required_prompt_tokens.value
+    expected = record.reuse.policy_reusable_tokens.value
+    assert isinstance(required, int)
+    assert isinstance(expected, int)
+    classified = classify_request(
+        replace(
+            record,
+            reuse=replace(
+                record.reuse,
+                engine_cached_tokens=EvidenceFact(
+                    value=expected - 1,
+                    basis=EvidenceBasis.ENGINE_ATTESTED,
+                    source="test",
+                ),
+                observed_prompt_tokens=EvidenceFact(
+                    value=required + 1,
+                    basis=EvidenceBasis.OBSERVED,
+                    source="test",
+                ),
+                unexpected_recomputed_tokens=EvidenceFact(
+                    value=1,
+                    basis=EvidenceBasis.OBSERVED,
+                    source="test",
+                ),
+            ),
+            verdict=None,
+            verdict_reasons=(),
+        )
+    )
+    assert classified.verdict is Verdict.INVALID
+    assert "engine_counter_equation_mismatch" in classified.verdict_reasons
+
+
+def test_estimated_output_facts_are_not_claim_eligible() -> None:
+    record = _record()
+    classified = classify_request(
+        replace(
+            record,
+            output=replace(
+                record.output,
+                token_identity=EvidenceFact(
+                    value=True,
+                    basis=EvidenceBasis.ESTIMATED,
+                    source="test",
+                ),
+            ),
+            verdict=None,
+            verdict_reasons=(),
+        )
+    )
+    assert classified.verdict is Verdict.VERIFIED_MISS
+    assert classified.eligibility.output_equivalence is EligibilityStatus.INELIGIBLE
+
+
+def test_real_output_equivalence_does_not_claim_model_quality() -> None:
+    record = _record()
+    classified = classify_request(
+        replace(
+            record,
+            output=replace(
+                record.output,
+                token_identity=replace(
+                    record.output.token_identity,
+                    source="mlx.baseline_comparison",
+                ),
+                correctness=replace(
+                    record.output.correctness,
+                    source="mlx.baseline_comparison",
+                ),
+            ),
+            verdict=None,
+            verdict_reasons=(),
+        )
+    )
+    assert classified.eligibility.output_equivalence is EligibilityStatus.ELIGIBLE
+    assert classified.eligibility.quality is EligibilityStatus.UNAVAILABLE

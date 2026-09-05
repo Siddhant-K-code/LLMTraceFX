@@ -32,7 +32,9 @@ from llmtracefx.cache_audit.adapters.mlx import (
     write_saved_cache_sidecar,
 )
 from llmtracefx.cache_audit.expected import MLXCacheOracle
+from llmtracefx.cache_audit.runner import run_audit
 from llmtracefx.cache_audit.schema import (
+    CacheConfig,
     EvidenceBasis,
     RequestSpec,
     ScenarioKind,
@@ -98,6 +100,8 @@ class FakeMLXRuntime:
         self._peak_bytes = 0
         self.synchronize_calls = 0
         self.reset_peak_calls = 0
+        self.loaded_model_path: Path | None = None
+        self.loaded_model_config: bytes | None = None
 
     # -- capability surface --------------------------------------------
     @property
@@ -120,6 +124,8 @@ class FakeMLXRuntime:
         return self._missing_symbols
 
     def load_model(self, path: Path) -> tuple[Any, Any, Hashable]:
+        self.loaded_model_path = path
+        self.loaded_model_config = (path / "config.json").read_bytes()
         return f"model:{path}", f"tokenizer:{path}", str(path)
 
     # -- memory/synchronization -------------------------------------------
@@ -351,8 +357,53 @@ def test_adapter_loads_local_model_path_without_fetching(tmp_path: Path) -> None
     model_dir = tmp_path / "local-model"
     model_dir.mkdir()
     (model_dir / "config.json").write_text("{}")
-    adapter = MLXLocalCacheAdapter(runtime=FakeMLXRuntime(), model_path=model_dir)
-    assert adapter.model_key == str(model_dir)
+    runtime = FakeMLXRuntime()
+    adapter = MLXLocalCacheAdapter(runtime=runtime, model_path=model_dir)
+    assert runtime.loaded_model_path is not None
+    assert runtime.loaded_model_path != model_dir
+    assert runtime.loaded_model_config == b"{}"
+    assert adapter.model_key == str(runtime.loaded_model_path)
+    assert (
+        adapter.audit_identity().model_artifact_digest == adapter.model_artifact_digest
+    )
+
+
+def test_adapter_loads_hashed_model_snapshot_after_source_replacement(
+    tmp_path: Path,
+) -> None:
+    model_dir = tmp_path / "local-model"
+    model_dir.mkdir()
+    source = model_dir / "config.json"
+    source.write_bytes(b'{"version":"verified"}')
+
+    class ReplacingRuntime(FakeMLXRuntime):
+        def load_model(self, path: Path) -> tuple[Any, Any, Hashable]:
+            source.write_bytes(b'{"version":"replacement"}')
+            return super().load_model(path)
+
+    runtime = ReplacingRuntime()
+    adapter = MLXLocalCacheAdapter(runtime=runtime, model_path=model_dir)
+    assert runtime.loaded_model_config == b'{"version":"verified"}'
+    assert source.read_bytes() == b'{"version":"replacement"}'
+    assert adapter.model_artifact_digest != _MODEL_ARTIFACT_DIGEST
+
+
+def test_runner_rejects_caller_model_digest_mismatch(tmp_path: Path) -> None:
+    adapter = _adapter()
+    with pytest.raises(ValueError, match="model artifact digest"):
+        run_audit(
+            adapter=adapter,
+            requests=(_spec("cold", (1, 2, 3), order=0),),
+            cache_config=CacheConfig(
+                namespace_id="mlx-test",
+                cache_type="mlx_lru_prompt_cache",
+            ),
+            output_dir=tmp_path / "bundle",
+            backend_version=REQUIRED_MLX_LM_VERSION,
+            model_id="fake-model",
+            tokenizer_id="fake-tokenizer",
+            model_artifact_digest="sha256:" + "9" * 64,
+        )
 
 
 def test_adapter_rejects_url_model_path() -> None:
@@ -612,12 +663,49 @@ def test_load_saved_cache_succeeds_and_invokes_loader_once(tmp_path: Path) -> No
     )
     write_saved_cache_sidecar(cache_path, identity)
 
-    loader = Mock(return_value="loaded-cache")
+    loaded_paths: list[Path] = []
+
+    def loader(path: Path) -> str:
+        loaded_paths.append(path)
+        return "loaded-cache"
+
     result = adapter.load_saved_cache(cache_path, request=spec, loader=loader)
 
     assert result == "loaded-cache"
-    loader.assert_called_once_with(cache_path)
+    assert len(loaded_paths) == 1
+    assert loaded_paths[0] != cache_path
+    assert loaded_paths[0].read_bytes() == b"synthetic-cache-payload"
     assert cache_path.read_bytes() == b"synthetic-cache-payload"
+
+
+def test_load_saved_cache_uses_snapshot_after_source_replacement(
+    tmp_path: Path,
+) -> None:
+    adapter = _adapter()
+    cache_path = tmp_path / "prompt.safetensors"
+    cache_path.write_bytes(b"synthetic-cache-payload")
+    spec = _spec("bind", (1, 2, 3, 4), order=0)
+    identity = SavedCacheIdentity.for_cache_file(
+        cache_path,
+        model_key=adapter.model_key,
+        model_artifact_digest=_MODEL_ARTIFACT_DIGEST,
+        mlx_version=REQUIRED_MLX_VERSION,
+        mlx_lm_version=REQUIRED_MLX_LM_VERSION,
+        token_ids=spec.input_token_ids or (),
+    )
+    write_saved_cache_sidecar(cache_path, identity)
+
+    def replacing_loader(snapshot_path: Path) -> bytes:
+        cache_path.write_bytes(b"replacement-cache-payload")
+        return snapshot_path.read_bytes()
+
+    loaded = adapter.load_saved_cache(
+        cache_path,
+        request=spec,
+        loader=replacing_loader,
+    )
+    assert loaded == b"synthetic-cache-payload"
+    assert cache_path.read_bytes() == b"replacement-cache-payload"
 
 
 def test_load_saved_cache_refuses_on_token_mismatch_without_loading(

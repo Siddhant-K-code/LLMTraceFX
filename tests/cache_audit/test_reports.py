@@ -50,7 +50,31 @@ def test_nulls_render_as_unavailable_and_not_zero(tmp_path: Path) -> None:
     unavailable_svg = render_reuse_alignment_svg([unavailable_record])
     assert "None" not in html
     assert "unavailable" in html
+    assert "basis=" in html
+    assert "source=" in html
+    assert "scope=" in html
+    assert "Verdict reasons" in html
+    assert "Record limitations" in html
+    assert "privacy mode private" in html
+    assert "Output equivalence" in html
+    assert "Model quality" in html
     assert "url(#unavailable)" in unavailable_svg
+
+
+def test_real_backend_report_is_not_labeled_synthetic(tmp_path: Path) -> None:
+    manifest, records = run_audit(
+        adapter=ReferenceCacheAdapter(),
+        requests=adversarial_requests()[:1],
+        cache_config=CacheConfig(namespace_id="synthetic", cache_type="token_trie"),
+        output_dir=tmp_path / "bundle",
+        backend_version="1",
+        model_id="synthetic-tiny-model",
+        tokenizer_id="integer-tokenizer-v1",
+        created_at="2026-01-01T00:00:00Z",
+    )
+    html = render_html(replace(manifest, backend="mlx_lm_local"), records)
+    assert "mlx_lm_local runtime cache evidence" in html
+    assert "Synthetic evidence" not in html
 
 
 def test_pair_delta_requires_matching_scope_and_records_noncausal_basis(

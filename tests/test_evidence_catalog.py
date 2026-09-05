@@ -40,7 +40,7 @@ def _write_catalog(tmp_path: Path, catalog: dict) -> Path:
 def test_committed_catalog_verifies_every_registered_adapter() -> None:
     result = core.verify_catalog(CATALOG, ROOT)
     assert result["verified"] is True
-    assert result["entries"] == len(SOURCES) == 10
+    assert result["entries"] == len(SOURCES) == 11
     assert result["edges"] == 7
     assert result["verified_evidence_ids"] == sorted(
         source["evidence_id"] for source in SOURCES
@@ -76,6 +76,28 @@ def test_modal_l4_adapters_are_closed_but_not_fabricated(
     assert script == "llmtracefx/evidence/modal_l4_crossover_verifier.py"
     assert arguments == (action, "--bundle", "{bundle}")
     assert (ROOT / script).is_file()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("publication_mode", "private"),
+        ("backend", "mlx_lm_local"),
+        ("workload_digest", "sha256:" + "0" * 64),
+        ("adapter_version", "1"),
+        ("generator_package_digest", "sha256:" + "0" * 64),
+        ("privacy_status", "private"),
+    ),
+)
+def test_cache_catalog_binding_bypass_is_rejected(field: str, value: str) -> None:
+    source = next(
+        copy.deepcopy(item)
+        for item in SOURCES
+        if item["evidence_id"] == "cache-audit-reference-positive-control-20260905"
+    )
+    source["cache_binding"][field] = value
+    with pytest.raises(core.CatalogError, match="cache provenance binding drifted"):
+        core.verify_source(ROOT, source)
 
 
 def test_generation_is_deterministic_and_matches_committed_files() -> None:

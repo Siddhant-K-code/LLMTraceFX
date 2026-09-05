@@ -104,13 +104,16 @@ closed rather than borrowing vLLM semantics.
 Saved MLX prompt caches do not contain a cryptographic token-sequence or
 model-weight binding. LLMTraceFX therefore requires its own sidecar binding the
 exact token sequence, model artifacts, runtime versions, and cache payload.
-An absent, stale, or mismatched sidecar is refused before generation.
+The model directory and saved-cache payload are copied through verified file
+descriptors into private immutable snapshots; the adapter hashes and loads those
+same snapshot bytes. An absent, stale, mismatched, or concurrently modified
+artifact is refused before generation.
 
 ## vLLM 0.28.0 semantics
 
 The vLLM adapter is pinned to tag `v0.28.0`. Its offline oracle handles complete
 hash units, final partial units, physical-group alignment, and identity inputs.
-The runtime capability gate requires:
+The offline parser validates a proposed configuration against:
 
 - `vllm==0.28.0`;
 - automatic prefix caching explicitly enabled;
@@ -120,10 +123,15 @@ The runtime capability gate requires:
 - `VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES=0`, avoiding the default truncated
   external hash representation;
 - valid hash and physical block sizes.
-- a runtime-exported, version-bound attestation digest;
 - full 256-bit `sha256_bytes` event-hash representation.
 
-Caller or environment strings do not satisfy the runtime-attestation gate.
+No credible runtime-exported attestation artifact is available to this offline
+adapter, so vLLM capabilities are unconditionally reported as unsupported.
+Caller booleans, environment strings, digests, and configuration labels cannot
+open a supported path. Event parsing requires canonical 256-bit SHA-256 hashes,
+exact capture boundaries, monotonic contiguous sequences, and consistent block
+metadata, but its output remains claim-ineligible without a future
+runtime-exported artifact bound to installed binaries and engine configuration.
 Arrival-to-first-token is reported as a TTFT-like duration; queue duration is
 unavailable without a distinct scheduling timestamp.
 
@@ -147,16 +155,18 @@ A bundle contains:
 
 The offline verifier checks the exact file allowlist, checksums, strict schemas,
 request order, verdict predicates, derived claim matrix and summary, deterministic
-HTML/SVG rendering, public privacy rules, and the digest of the generating
-`llmtracefx.cache_audit` package. The portable wrapper searches the containing
-repository or requires `--package-root`; it never imports whichever unrelated
-`llmtracefx` happens to be installed.
+HTML/SVG rendering, public privacy rules, and the digest of every Python source
+in the generating `llmtracefx` package. Before importing package code, the
+portable wrapper verifies the bundle allowlist and checksums against embedded
+commit/package trust anchors, snapshots the exact matching source bytes, and
+imports only that snapshot. It never imports a bundle-local, ancestor, or
+otherwise unrelated `llmtracefx` package.
 
-Backend version, runtime identity, cache type, and cache limits are supplied by
-the adapter. Caller-provided values are checked for agreement and are never
-persisted as authoritative metadata. The MLX adapter performs its pinned-version
-capability check for local-path loading, already-loaded models, and every saved
-cache load.
+Backend version, runtime identity, model artifact digest, cache type, and cache
+limits are supplied by the adapter. Caller-provided values are checked for
+agreement and are never persisted as authoritative metadata. The MLX adapter
+performs its pinned-version capability check for local-path loading,
+already-loaded models, and every saved-cache load.
 
 The report's primary sentence is:
 

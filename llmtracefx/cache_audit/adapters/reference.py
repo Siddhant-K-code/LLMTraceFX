@@ -161,6 +161,15 @@ class SyntheticCacheEngine:
         )
         if duplicate is not None:
             del self._entries[duplicate]
+        compacted = [
+            entry_id
+            for entry_id, candidate in self._entries.items()
+            if candidate.namespace_id == entry.namespace_id
+            and len(candidate.tokens) < len(entry.tokens)
+            and entry.tokens[: len(candidate.tokens)] == candidate.tokens
+        ]
+        for entry_id in compacted:
+            del self._entries[entry_id]
         self._entries[entry.entry_id] = entry
         self._ever_resident.add(entry.entry_id)
         evicted: set[str] = set()
@@ -315,6 +324,7 @@ class ReferenceCacheAdapter:
                 "python": platform.python_version(),
                 "synthetic_engine": "independent-state-machine-v2",
             },
+            model_artifact_digest=None,
             cache_type="token_trie",
             max_entries=self._max_entries,
             max_bytes=self._max_bytes,

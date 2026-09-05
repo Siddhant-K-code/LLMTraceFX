@@ -33,6 +33,7 @@ class AdapterAuditIdentity:
 
     backend_version: str
     runtime_identity: dict[str, str]
+    model_artifact_digest: str | None
     cache_type: str
     max_entries: int | None
     max_bytes: int | None

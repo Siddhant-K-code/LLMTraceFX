@@ -21,8 +21,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
 import re
+import stat
+import tempfile
 import time
 from collections.abc import Callable, Hashable, Iterator, Sequence
 from dataclasses import dataclass
@@ -543,26 +546,110 @@ def _sha256_regular_file(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def _sha256_model_directory(path: Path) -> str:
-    digest = hashlib.sha256()
-    files = []
-    for candidate in path.rglob("*"):
-        if candidate.is_symlink():
-            raise MLXCacheAdapterError(
-                f"model directory must not contain symlinks: {candidate}"
-            )
-        if candidate.is_file():
-            files.append(candidate)
-    if not files:
-        raise MLXCacheAdapterError("model directory contains no artifact files")
-    for candidate in sorted(files, key=lambda item: item.relative_to(path).as_posix()):
-        relative = candidate.relative_to(path).as_posix().encode("utf-8")
-        digest.update(len(relative).to_bytes(8, "big"))
-        digest.update(relative)
-        digest.update(
-            bytes.fromhex(_sha256_regular_file(candidate).removeprefix("sha256:"))
+@dataclass(frozen=True)
+class _ArtifactSnapshot:
+    owner: Any
+    path: Path
+    digest: str
+
+
+def _stat_signature(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+    )
+
+
+def _copy_verified_file(source: Path, destination: Path) -> str:
+    try:
+        path_stat = source.lstat()
+    except FileNotFoundError as exc:
+        raise MLXCacheAdapterError(f"missing artifact file: {source}") from exc
+    except OSError as exc:
+        raise MLXCacheAdapterError(f"cannot inspect artifact file: {source}") from exc
+    if not stat.S_ISREG(path_stat.st_mode):
+        raise MLXCacheAdapterError(
+            f"artifact must be a regular non-symlink file: {source}"
         )
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(source, flags)
+    except OSError as exc:
+        raise MLXCacheAdapterError(
+            f"cannot open artifact file safely: {source}"
+        ) from exc
+    digest = hashlib.sha256()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        opened_stat = os.fstat(descriptor)
+        if _stat_signature(path_stat) != _stat_signature(opened_stat):
+            raise MLXCacheAdapterError(f"artifact changed before snapshot: {source}")
+        with os.fdopen(descriptor, "rb", closefd=False) as input_handle:
+            with destination.open("xb") as output_handle:
+                for chunk in iter(lambda: input_handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                    output_handle.write(chunk)
+        final_stat = os.fstat(descriptor)
+        if _stat_signature(opened_stat) != _stat_signature(final_stat):
+            raise MLXCacheAdapterError(f"artifact changed during snapshot: {source}")
+    finally:
+        os.close(descriptor)
+    destination.chmod(0o400)
     return "sha256:" + digest.hexdigest()
+
+
+def _snapshot_regular_file(path: Path) -> _ArtifactSnapshot:
+    owner = tempfile.TemporaryDirectory(prefix="llmtracefx-cache-snapshot-")
+    snapshot_path = Path(owner.name) / path.name
+    try:
+        digest = _copy_verified_file(path, snapshot_path)
+    except Exception:
+        owner.cleanup()
+        raise
+    return _ArtifactSnapshot(owner=owner, path=snapshot_path, digest=digest)
+
+
+def _snapshot_model_directory(path: Path) -> _ArtifactSnapshot:
+    owner = tempfile.TemporaryDirectory(prefix="llmtracefx-model-snapshot-")
+    snapshot_root = Path(owner.name) / "model"
+    snapshot_root.mkdir(mode=0o700)
+    aggregate = hashlib.sha256()
+    files: list[Path] = []
+    try:
+        for candidate in path.rglob("*"):
+            candidate_stat = candidate.lstat()
+            if stat.S_ISLNK(candidate_stat.st_mode):
+                raise MLXCacheAdapterError(
+                    f"model directory must not contain symlinks: {candidate}"
+                )
+            if stat.S_ISREG(candidate_stat.st_mode):
+                files.append(candidate)
+            elif not stat.S_ISDIR(candidate_stat.st_mode):
+                raise MLXCacheAdapterError(
+                    f"model directory contains unsupported artifact: {candidate}"
+                )
+        if not files:
+            raise MLXCacheAdapterError("model directory contains no artifact files")
+        for candidate in sorted(
+            files, key=lambda item: item.relative_to(path).as_posix()
+        ):
+            relative = candidate.relative_to(path).as_posix()
+            file_digest = _copy_verified_file(candidate, snapshot_root / Path(relative))
+            encoded_relative = relative.encode("utf-8")
+            aggregate.update(len(encoded_relative).to_bytes(8, "big"))
+            aggregate.update(encoded_relative)
+            aggregate.update(bytes.fromhex(file_digest.removeprefix("sha256:")))
+    except Exception:
+        owner.cleanup()
+        raise
+    return _ArtifactSnapshot(
+        owner=owner,
+        path=snapshot_root,
+        digest="sha256:" + aggregate.hexdigest(),
+    )
 
 
 def write_saved_cache_sidecar(cache_path: Path, identity: SavedCacheIdentity) -> Path:
@@ -703,10 +790,13 @@ class MLXLocalCacheAdapter:
                 "unsupported MLX runtime: " + "; ".join(capability.reasons)
             )
 
+        self._artifact_snapshots: list[Any] = []
         if model_path is not None:
             local_path = _validate_local_model_path(model_path)
-            model_artifact_digest = _sha256_model_directory(local_path)
-            model, tokenizer, model_key = self._runtime.load_model(local_path)
+            snapshot = _snapshot_model_directory(local_path)
+            self._artifact_snapshots.append(snapshot.owner)
+            model_artifact_digest = snapshot.digest
+            model, tokenizer, model_key = self._runtime.load_model(snapshot.path)
         elif model is not None and tokenizer is not None and model_key is not None:
             if (
                 model_artifact_digest is None
@@ -758,6 +848,7 @@ class MLXLocalCacheAdapter:
                 "platform_machine": self._runtime.platform_machine,
                 "platform_system": self._runtime.platform_system,
             },
+            model_artifact_digest=self._model_artifact_digest,
             cache_type="mlx_lru_prompt_cache",
             max_entries=self._max_cache_entries,
             max_bytes=self._max_cache_bytes,
@@ -788,16 +879,26 @@ class MLXLocalCacheAdapter:
             raise MLXCacheAdapterError(
                 "cannot bind a saved cache without exact request token IDs"
             )
-        expected = SavedCacheIdentity.for_cache_file(
-            cache_path,
-            model_key=self._model_key,
-            model_artifact_digest=self._model_artifact_digest,
-            mlx_version=self._runtime.mlx_version or "",
-            mlx_lm_version=self._runtime.mlx_lm_version or "",
-            token_ids=request.input_token_ids,
-        )
-        verify_saved_cache_sidecar(cache_path, expected)
-        return loader(cache_path)
+        snapshot = _snapshot_regular_file(cache_path)
+        try:
+            _copy_verified_file(
+                _sidecar_path(cache_path),
+                _sidecar_path(snapshot.path),
+            )
+            expected = SavedCacheIdentity.for_binding(
+                model_key=self._model_key,
+                model_artifact_digest=self._model_artifact_digest,
+                cache_payload_digest=snapshot.digest,
+                mlx_version=self._runtime.mlx_version or "",
+                mlx_lm_version=self._runtime.mlx_lm_version or "",
+                token_ids=request.input_token_ids,
+            )
+            verify_saved_cache_sidecar(snapshot.path, expected)
+        except Exception:
+            snapshot.owner.cleanup()
+            raise
+        self._artifact_snapshots.append(snapshot.owner)
+        return loader(snapshot.path)
 
     def _runtime_key(self, namespace_id: str) -> Hashable:
         return (self._model_key, namespace_id)
