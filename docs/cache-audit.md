@@ -198,7 +198,9 @@ the exact generator commit is available and its timestamp and package tree
 match. It reports `unavailable` for an installed package without Git metadata
 or a shallow/partial checkout missing that object; the checksum-bound embedded
 timestamps and exact package digest remain mandatory. An available but
-conflicting Git object, timestamp, or tree always fails verification.
+conflicting Git object, timestamp, or tree always fails verification. Git
+corroboration disables replacement objects and lazy network fetching, and only
+an explicitly configured promisor remote can establish a partial checkout.
 
 The report's primary sentence is:
 

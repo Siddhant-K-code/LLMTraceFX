@@ -920,6 +920,110 @@ def test_repository_chronology_is_unavailable_without_git(tmp_path: Path) -> Non
     )
 
 
+def test_false_promisor_setting_does_not_downgrade_missing_commit(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "config",
+            "remote.origin.promisor",
+            "false",
+        ],
+        check=True,
+    )
+    with pytest.raises(
+        CacheAuditBundleError,
+        match="generator commit is unavailable",
+    ):
+        _verify_manifest_chronology(
+            _committed_cache_manifest(),
+            repository=repository,
+        )
+
+
+def test_repository_chronology_ignores_replacement_refs(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    subprocess.run(
+        ["git", "clone", "--quiet", Path.cwd().resolve().as_uri(), str(repository)],
+        check=True,
+    )
+    manifest = _committed_cache_manifest()
+    assert manifest.generator_commit is not None
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "replace",
+            manifest.generator_commit,
+            "b84ec2d71ec9e9939be5194e5adf86e24428699c",
+        ],
+        check=True,
+    )
+    assert _verify_manifest_chronology(manifest, repository=repository) == "verified"
+
+
+def _blobless_partial_clone(tmp_path: Path) -> Path:
+    source = tmp_path / "source.git"
+    repository = tmp_path / "partial"
+    subprocess.run(
+        ["git", "clone", "--bare", "--quiet", ".", str(source)],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            f"--git-dir={source}",
+            "config",
+            "uploadpack.allowFilter",
+            "true",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--quiet",
+            "--filter=blob:none",
+            source.resolve().as_uri(),
+            str(repository),
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "remote",
+            "set-url",
+            "origin",
+            (tmp_path / "offline.git").resolve().as_uri(),
+        ],
+        check=True,
+    )
+    return repository
+
+
+def test_repository_chronology_is_unavailable_for_offline_blobless_clone(
+    tmp_path: Path,
+) -> None:
+    repository = _blobless_partial_clone(tmp_path)
+    assert (
+        _verify_manifest_chronology(
+            _committed_cache_manifest(),
+            repository=repository,
+        )
+        == "unavailable"
+    )
+
+
 def test_portable_verifier_accepts_shallow_checkout_without_generator_object(
     tmp_path: Path,
 ) -> None:
@@ -946,6 +1050,31 @@ def test_portable_verifier_accepts_shallow_checkout_without_generator_object(
             str(bundle),
             "--package-root",
             str(shallow),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["repository_chronology_corroboration"] == (
+        "unavailable"
+    )
+
+
+def test_portable_verifier_accepts_offline_blobless_partial_clone(
+    tmp_path: Path,
+) -> None:
+    repository = _blobless_partial_clone(tmp_path)
+    bundle = Path("examples/cache-audit/reference-positive-control").resolve()
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(bundle / "evidence_bundle.py"),
+            "verify",
+            "--public-dir",
+            str(bundle),
+            "--package-root",
+            str(repository),
         ],
         capture_output=True,
         check=False,
