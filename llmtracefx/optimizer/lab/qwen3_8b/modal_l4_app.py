@@ -5,14 +5,12 @@ Nothing on a planning, verification, or evidence path imports it, which
 is what keeps every offline contract testable with no provider package
 installed and no possibility of an accidental provider call.
 
-Import order matters. The SDK is imported with an install message rather
-than a bare ``ModuleNotFoundError``; its capabilities are then probed
-against the pinned, inspected API surface, so a drifted SDK fails here
-instead of halfway through a paid run; the run-scoped configuration is
-read from non-credential environment variables written by the local
-orchestrator; and only then are the app, the volume, the images and the
-Functions declared, every one of them parameterised from the sealed plan
-rather than from a literal written here.
+Import order matters. The sealed offline feasibility gate runs before the SDK
+import and currently refuses this protocol identity. The dormant declaration
+path then imports the SDK with an install message rather than a bare
+``ModuleNotFoundError``; probes the pinned API surface; reads run-scoped,
+non-credential configuration; and only then declares the app, volume, images,
+and Functions from the sealed plan.
 
 There is no web endpoint, no ``modal.Secret``, and no credential of any
 kind. Work is invoked over authenticated Modal RPC by the operator's own
@@ -23,18 +21,8 @@ container at a time, with zero retries and an explicit timeout.
 from __future__ import annotations
 
 import os
+from pathlib import PurePosixPath
 from typing import Any
-
-try:
-    import modal
-except ModuleNotFoundError as exc:  # pragma: no cover - exercised only on Modal
-    raise SystemExit(
-        "The Modal SDK is required to run this entrypoint. It is an optional "
-        "dependency of llmtracefx: install the exact tested SDK with "
-        "`uv sync --extra modal-l4-execute` (pins modal==1.5.5). Planning, "
-        "verification, and evidence do not need it and never import this "
-        "module."
-    ) from exc
 
 from llmtracefx.optimizer.lab.qwen3_8b import modal_l4_cell_runner as runner
 from llmtracefx.optimizer.lab.qwen3_8b.modal_l4_crossover import (
@@ -48,10 +36,30 @@ from llmtracefx.optimizer.lab.qwen3_8b.modal_l4_crossover import (
     STAGING_IMAGE_PYTHON_VERSION,
     ModalL4ContractError,
     build_default_plan,
+    require_controlled_cell_decode_feasible,
     run_scoped_names,
     verify_sdk_capabilities,
 )
 from llmtracefx.optimizer.lab.qwen3_8b.vllm_compile import BASE_IMAGE_REFERENCE
+
+# This provider entrypoint is a second, independent spend barrier. Even a
+# direct ``modal run`` that bypasses the local orchestrator must prove the
+# sealed protocol feasible before the Modal SDK is imported or any resource is
+# declared. The current L4 identity is infeasible, so production import stops
+# here. Tests patch this pure gate only to exercise the dormant declaration
+# contract against a fake SDK.
+require_controlled_cell_decode_feasible()
+
+try:
+    import modal
+except ModuleNotFoundError as exc:  # pragma: no cover - exercised only on Modal
+    raise SystemExit(
+        "The Modal SDK is required to run this entrypoint. It is an optional "
+        "dependency of llmtracefx: install the exact tested SDK with "
+        "`uv sync --extra modal-l4-execute` (pins modal==1.5.5). Planning, "
+        "verification, and evidence do not need it and never import this "
+        "module."
+    ) from exc
 
 APP_NAME_VAR = "LLMTRACEFX_MODAL_L4_APP_NAME"
 VOLUME_NAME_VAR = "LLMTRACEFX_MODAL_L4_VOLUME_NAME"
@@ -93,11 +101,15 @@ staging_image = modal.Image.debian_slim(
 runtime_image = modal.Image.from_registry(BASE_IMAGE_REFERENCE)
 
 
-def _writable_volumes() -> dict[str, Any]:
+def _writable_volumes() -> (
+    dict[str | PurePosixPath, modal.Volume | modal.CloudBucketMount]
+):
     return {MODEL_MOUNT_PATH: model_volume}
 
 
-def _read_only_volumes() -> dict[str, Any]:
+def _read_only_volumes() -> (
+    dict[str | PurePosixPath, modal.Volume | modal.CloudBucketMount]
+):
     return {MODEL_MOUNT_PATH: read_only_model_volume}
 
 
@@ -106,7 +118,9 @@ def _image(spec_key: str) -> Any:
     return staging_image if spec.image == "staging" else runtime_image
 
 
-def _volumes(spec_key: str) -> dict[str, Any]:
+def _volumes(
+    spec_key: str,
+) -> dict[str | PurePosixPath, modal.Volume | modal.CloudBucketMount]:
     spec = FUNCTION_SPEC_BY_KEY[spec_key]
     return (
         _writable_volumes()

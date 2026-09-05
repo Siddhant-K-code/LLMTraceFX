@@ -27,6 +27,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _modal_result_fixture as fixture  # noqa: E402
 
 CELL_IDS = [cell.cell_id for cell in modal.crossover_schedule()]
+_SEALED_VALIDATE_DECODE_FEASIBILITY = results._validate_decode_feasibility
+
+
+def _accept_hypothetical_feasibility(
+    orchestration: dict[str, Any],
+) -> dict[str, Any]:
+    receipt = orchestration.get("decode_feasibility")
+    if not isinstance(receipt, dict):
+        raise results.ModalL4ResultsError(
+            "orchestration decode-feasibility verdict is missing"
+        )
+    return dict(receipt)
+
+
+@pytest.fixture(autouse=True)
+def _exercise_dormant_result_analysis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test downstream analysis without enabling a production result path."""
+
+    monkeypatch.setattr(
+        results, "_validate_decode_feasibility", _accept_hypothetical_feasibility
+    )
 
 
 def _run(
@@ -353,7 +374,14 @@ class TestTeardownGate:
 class TestDecodeFeasibilityGate:
     """A result can only exist for a run the offline arithmetic admitted."""
 
-    def test_a_missing_verdict_is_refused(self) -> None:
+    def test_a_missing_verdict_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            results,
+            "_validate_decode_feasibility",
+            _SEALED_VALIDATE_DECODE_FEASIBILITY,
+        )
         orch = fixture.build_orchestration()
         orch["decode_feasibility"] = None
         orch = _reseal_orch(orch)
@@ -362,28 +390,67 @@ class TestDecodeFeasibilityGate:
         ):
             _run(orchestration=orch)
 
-    def test_a_hand_edited_verdict_does_not_recompute(self) -> None:
+    def test_a_hand_edited_verdict_does_not_recompute(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            results,
+            "_validate_decode_feasibility",
+            _SEALED_VALIDATE_DECODE_FEASIBILITY,
+        )
         orch = fixture.build_orchestration()
         orch["decode_feasibility"]["derivation"]["minimum_decode_only_seconds"] = "1"
         orch = _reseal_orch(orch)
-        with pytest.raises(results.ModalL4ResultsError, match="does not recompute"):
+        with pytest.raises(
+            results.ModalL4ResultsError, match="differs from the sealed"
+        ):
             _run(orchestration=orch)
 
-    def test_a_verdict_flipped_to_feasible_does_not_recompute(self) -> None:
+    def test_a_verdict_flipped_to_feasible_does_not_recompute(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Flipping the boolean without changing the inputs is caught."""
 
+        monkeypatch.setattr(
+            results,
+            "_validate_decode_feasibility",
+            _SEALED_VALIDATE_DECODE_FEASIBILITY,
+        )
         orch = fixture.build_orchestration()
         orch["decode_feasibility"] = modal.evaluate_decode_bandwidth_feasibility()
         orch["decode_feasibility"]["feasible"] = True
         orch = _reseal_orch(orch)
-        with pytest.raises(results.ModalL4ResultsError, match="does not recompute"):
+        with pytest.raises(
+            results.ModalL4ResultsError, match="differs from the sealed"
+        ):
             _run(orchestration=orch)
 
-    def test_the_sealed_infeasible_verdict_is_refused(self) -> None:
+    def test_the_sealed_infeasible_verdict_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            results,
+            "_validate_decode_feasibility",
+            _SEALED_VALIDATE_DECODE_FEASIBILITY,
+        )
         orch = fixture.build_orchestration()
         orch["decode_feasibility"] = modal.evaluate_decode_bandwidth_feasibility()
         orch = _reseal_orch(orch)
         with pytest.raises(results.ModalL4ResultsError, match="infeasible"):
+            _run(orchestration=orch)
+
+    def test_a_resealed_hypothetical_accelerator_result_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            results,
+            "_validate_decode_feasibility",
+            _SEALED_VALIDATE_DECODE_FEASIBILITY,
+        )
+        orch = fixture.build_orchestration()
+        assert orch["decode_feasibility"]["feasible"] is True
+        assert orch["decode_feasibility"]["uses_sealed_constants"] is False
+        with pytest.raises(results.ModalL4ResultsError, match="sealed plan"):
             _run(orchestration=orch)
 
     def test_the_verdict_is_published_in_the_analysis(self) -> None:
@@ -414,6 +481,24 @@ class TestHeadroomBinding:
         orch["headroom"]["is_provider_spend_proof"] = True
         orch = _reseal_orch(orch)
         with pytest.raises(results.ModalL4ResultsError, match="spend proof"):
+            _run(orchestration=orch)
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        (
+            ("protocol_id", "other-protocol"),
+            ("plan_sha256", "sha256:" + "0" * 64),
+            ("source_head", "0" * 40),
+            ("experiment_nonce", "a" * 32),
+        ),
+    )
+    def test_headroom_binding_identifiers_must_match_the_orchestration(
+        self, field: str, value: str
+    ) -> None:
+        orch = fixture.build_orchestration()
+        orch["headroom"]["authorization_binding"][field] = value
+        orch = _reseal_orch(orch)
+        with pytest.raises(results.ModalL4ResultsError, match="not bound"):
             _run(orchestration=orch)
 
 

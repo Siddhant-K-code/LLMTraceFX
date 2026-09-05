@@ -242,14 +242,15 @@ failure publishes a refusal.
 Before any of that, an arithmetic gate decides whether the sealed design can
 run at all, and finds that it cannot. One controlled cell generates 144 x 96 =
 13,824 output tokens. Batch-1 BF16 decoding is memory-bandwidth bound and must
-stream at least one full model-weight image per generated token, and the staged
-image is the exact 16,397,461,266 bytes the staging gate already verifies, so a
-cell must move 226,678,504,541,184 bytes. At the L4's advertised peak memory
-bandwidth of 300,000,000,000 bytes per second that is 755.59501513728 seconds
-of decoding alone, against the sealed 480-second controlled-cell timeout: 1.574
+stream at least one full model-weight image per generated token. The five exact
+safetensors shards total 16,381,516,776 bytes; the staging gate separately
+verifies the complete 15-file, 16,397,461,266-byte inventory. A cell must
+therefore move 226,458,087,911,424 bytes. At the L4's advertised peak memory
+bandwidth of 300,000,000,000 bytes per second that is 754.86029303808 seconds
+of decoding alone, against the sealed 480-second controlled-cell timeout: 1.573
 times over, before container start, weight load, engine initialization,
 prefill, or CUDA-graph capture. Put the other way, the cell needs 28.8 tokens
-per second where the hardware's theoretical ceiling is about 18.295515088183.
+per second where the hardware's theoretical ceiling is about 18.313322514769.
 
 Every input is a constant this protocol already pins, every step is exact
 integer arithmetic, and the whole proof runs offline, so
@@ -364,28 +365,26 @@ names is a name the result path reads, so a refusal still cannot be replayed as
 a result, and no paid receipt is thrown away because a later control-plane
 observation turned out to be ambiguous.
 
-The completed run is validated and analyzed by a provider-native results path
-(`modal_l4_crossover_results.analyze_modal_run`): it consumes the orchestration
-receipt and the 32 sealed inner cell receipts, checks schedule, lane, mode and
-pair coverage, one attempt per lifecycle, L4/runtime-pin/driver and nonce-bound
-commitment continuity from both canaries through every cell, per-cell cache
-scope, teardown and budget, and then reuses the CloudRift results core's
-provider-neutral statistical primitives over the inner receipts. It never
-imports the CloudRift-bound public builder, never fabricates a CloudRift
-authorization or host-cache receipt, and never claims host-cache or causal
-control: those claims stay unsupported by construction, while the
-fixed-token-count, provider-conditioned paired result is eligible only when
-every gate passes.
+The provider-native results analysis remains implemented and adversarially
+tested for auditability, but it is dormant for this protocol identity.
+`modal_l4_crossover_results.analyze_modal_run` requires the exact sealed
+feasibility receipt, which is negative, so no completed result bundle can be
+accepted. Its orchestration SHA-256 is an integrity checksum, not an
+authenticity proof. Any future feasible protocol identity must add an external
+trust anchor for authorization and execution receipts before enabling result
+publication; it must not reinterpret this identity's hypothetical-device test
+fixtures as evidence.
 
 #### Credential exposure gate
 
 A standard-profile credential was exposed outside this system. Provider
-execution is blocked until a coordinator attests, in a closed booleans-only
+If a future feasible protocol is separately approved, provider execution stays
+blocked until a coordinator attests, in a closed booleans-only
 schema, that the exposed credential was revoked and that a fresh
-standard-profile credential was created locally and never shared. The gate runs
-first in `preflight`, before the environment check, before authorization
-verification, and before the SDK can be imported; an absent or malformed
-attestation is a refusal, never an assumption of clearance.
+standard-profile credential was created locally and never shared. The
+feasibility refusal runs first; the credential gate would run second, before the
+environment check, authorization verification, or SDK import. An absent or
+malformed attestation is a refusal, never an assumption of clearance.
 
 The attestation and every stored verdict record status only —
 `exposed_profile_credential_never_used_by_experiment`,

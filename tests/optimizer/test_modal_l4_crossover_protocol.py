@@ -395,8 +395,8 @@ class TestDecodeBandwidthFeasibility:
     elsewhere in the protocol, so the proof can be re-done by hand:
 
         144 controlled requests x 96 output tokens = 13,824 tokens
-        13,824 tokens x 16,397,461,266 bytes  = 226,678,504,541,184 bytes
-        226,678,504,541,184 / 300,000,000,000 = 755.59501513728 seconds
+        13,824 tokens x 16,381,516,776 bytes  = 226,458,087,911,424 bytes
+        226,458,087,911,424 / 300,000,000,000 = 754.86029303808 seconds
 
     against a sealed 480-second controlled-cell timeout, excluding container
     start, weight load, engine init, prefill, and CUDA-graph capture.
@@ -405,6 +405,7 @@ class TestDecodeBandwidthFeasibility:
     def test_the_sealed_inputs_are_the_protocol_constants(self) -> None:
         assert modal.STAGED_MODEL_BYTES == 16_397_461_266
         assert modal.STAGED_MODEL_BYTES == vllm_compile.EXPECTED_MODEL_BYTES
+        assert modal.MODEL_WEIGHT_BYTES == 16_381_516_776
         assert modal.CONTROLLED_CELL_OUTPUT_TOKENS == 144 * 96 == 13_824
         assert modal.L4_ADVERTISED_PEAK_BANDWIDTH_BYTES_PER_SECOND == 300_000_000_000
         assert modal.CONTROLLED_CELL_TIMEOUT_SECONDS == 480
@@ -412,12 +413,12 @@ class TestDecodeBandwidthFeasibility:
     def test_the_derived_arithmetic_is_exact(self) -> None:
         verdict = modal.evaluate_decode_bandwidth_feasibility()
         derivation = verdict["derivation"]
-        assert derivation["weight_bytes_streamed_per_cell"] == 226_678_504_541_184
+        assert derivation["weight_bytes_streamed_per_cell"] == 226_458_087_911_424
         assert derivation["bytes_streamable_within_timeout"] == 144_000_000_000_000
-        assert derivation["minimum_decode_only_seconds"] == "755.59501513728"
+        assert derivation["minimum_decode_only_seconds"] == "754.86029303808"
         assert derivation["required_tokens_per_second"] == "28.8"
-        assert derivation["theoretical_peak_tokens_per_second"] == "18.295515088183"
-        assert derivation["minimum_over_timeout_ratio"] == "1.574156281536"
+        assert derivation["theoretical_peak_tokens_per_second"] == "18.313322514769"
+        assert derivation["minimum_over_timeout_ratio"] == "1.572625610496"
 
     def test_the_sealed_design_is_infeasible(self) -> None:
         verdict = modal.evaluate_decode_bandwidth_feasibility()
@@ -434,6 +435,13 @@ class TestDecodeBandwidthFeasibility:
         )
         assert verdict["inputs"]["model_bytes_provenance"]
         assert verdict["inputs"]["peak_bandwidth_provenance"]
+        assert verdict["inputs"]["decode_execution_contract"] == {
+            "dtype": "bfloat16",
+            "max_num_seqs": 1,
+            "enable_prefix_caching": False,
+            "speculative_config": None,
+            "request_execution": "sequential",
+        }
 
     def test_requiring_feasibility_refuses_the_sealed_design(self) -> None:
         with pytest.raises(modal.ModalL4ContractError, match="infeasible"):
@@ -443,10 +451,10 @@ class TestDecodeBandwidthFeasibility:
         with pytest.raises(modal.ModalL4ContractError) as excinfo:
             modal.require_controlled_cell_decode_feasible()
         message = str(excinfo.value)
-        assert "755.59501513728s" in message
+        assert "754.86029303808s" in message
         assert "480s" in message
         assert "28.8" in message
-        assert "18.295515088183" in message
+        assert "18.313322514769" in message
 
     def test_the_eager_canary_alone_could_not_have_caught_this(self) -> None:
         """One 96-token canary fits easily; only the full cell does not.
@@ -460,15 +468,16 @@ class TestDecodeBandwidthFeasibility:
             timeout_seconds=modal.EAGER_CANARY_TIMEOUT_SECONDS,
         )
         assert canary["feasible"] is True
-        assert canary["derivation"]["minimum_decode_only_seconds"] == "5.24718760512"
+        assert canary["derivation"]["minimum_decode_only_seconds"] == "5.24208536832"
 
-    def test_a_faster_hypothetical_device_is_feasible(self) -> None:
+    def test_a_faster_hypothetical_device_is_planning_only(self) -> None:
         verdict = modal.evaluate_decode_bandwidth_feasibility(
             peak_bandwidth_bytes_per_second=1_000_000_000_000
         )
         assert verdict["feasible"] is True
         assert verdict["uses_sealed_constants"] is False
-        assert modal.require_controlled_cell_decode_feasible(verdict=verdict) == verdict
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            modal.require_controlled_cell_decode_feasible(verdict=verdict)  # type: ignore[call-arg]
 
     @pytest.mark.parametrize("field", sorted(("model_bytes", "output_tokens")))
     def test_a_nonpositive_input_is_refused(self, field: str) -> None:

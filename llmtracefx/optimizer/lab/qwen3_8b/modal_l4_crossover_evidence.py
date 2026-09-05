@@ -7,11 +7,12 @@ preregistration and refusal bundle for the Modal L4 delta: the plan, the
 budget chain, the claim matrix with every provider-conditioned claim
 still unsupported, and the result contract a future run must satisfy.
 
-``verify_result_bundle`` adjudicates a completed run. It validates the
-Modal-specific envelope first (attempt receipts, rate receipt, memory
-gate, application ledger, teardown, limitations) and only then delegates
-the statistics to the existing crossover results verifier. The
-statistical core is reused, not reimplemented.
+The completed-result machinery is retained for audit and adversarial testing,
+but ``verify_result_bundle`` cannot accept a result for this protocol identity:
+the exact sealed feasibility receipt is negative. A future feasible protocol
+must use a new identity and add an external authenticity trust anchor before
+enabling publication. The dormant analysis reuses the existing statistical
+core rather than reimplementing it.
 """
 
 from __future__ import annotations
@@ -210,14 +211,14 @@ the run publishes a refusal. Nothing is tuned to make it pass.
 
 One further refusal is decided here, offline, before any of that. A
 controlled cell generates 144 x 96 = 13,824 tokens, and batch-1 BF16
-decoding must stream at least one full 16,397,461,266-byte weight image
-per generated token. At the L4's advertised peak memory bandwidth of
-300,000,000,000 bytes per second that is 226,678,504,541,184 bytes, or
-755.59501513728 seconds of decoding alone -- against a sealed 480-second
+decoding must stream at least the five exact 16,381,516,776-byte safetensors
+weight shards per generated token. At the L4's advertised peak memory bandwidth
+of 300,000,000,000 bytes per second that is 226,458,087,911,424 bytes, or
+754.86029303808 seconds of decoding alone -- against a sealed 480-second
 controlled-cell timeout, and before container start, weight load, engine
 initialization, prefill, or CUDA-graph capture. Sustaining the sealed
 design would need 28.8 tokens per second where the hardware's ceiling is
-about 18.295515088183. The approved design is therefore infeasible on
+about 18.313322514769. The approved design is therefore infeasible on
 this accelerator, and the execution preflight refuses it before
 authentication, before the official-rate fetch, before the provider SDK
 is imported, and before any provider call. It is refused rather than

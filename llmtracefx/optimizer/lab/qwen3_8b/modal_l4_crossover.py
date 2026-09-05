@@ -135,9 +135,9 @@ MAX_MODEL_LEN_MARGIN_TOKENS = DECODE_STEPS
 #      generated token requires reading at least one full image of the model
 #      weights from device memory. This is a *lower* bound: it ignores the KV
 #      cache, activations, and every non-weight read.
-#   2. The weight image is the exact staged byte count the protocol already
-#      verifies on the volume (``EXPECTED_MODEL_BYTES``), so no separate
-#      parameter-count estimate is introduced.
+#   2. The weight image is the exact sum of the five staged safetensors shards.
+#      Tokenizer, config, index, README, and license bytes are excluded because
+#      they are not streamed from HBM for every decode step.
 #   3. The device streams at its advertised peak memory bandwidth. Real
 #      achieved bandwidth is strictly lower, so the derived minimum is
 #      optimistic in favour of feasibility.
@@ -150,6 +150,7 @@ MAX_MODEL_LEN_MARGIN_TOKENS = DECODE_STEPS
 # the vendor-advertised figure for the accelerator this delta pins.
 # ---------------------------------------------------------------------------
 STAGED_MODEL_BYTES = EXPECTED_MODEL_BYTES
+MODEL_WEIGHT_BYTES = 16_381_516_776
 CONTROLLED_CELL_OUTPUT_TOKENS = CONTROLLED_REQUESTS_PER_CELL * DECODE_STEPS
 L4_ADVERTISED_PEAK_BANDWIDTH_BYTES_PER_SECOND = 300_000_000_000
 DECODE_FEASIBILITY_KIND = "modal_l4_decode_bandwidth_feasibility"
@@ -160,9 +161,11 @@ DECODE_FEASIBILITY_SCHEMA_VERSION = "1"
 # The verdict itself is decided by exact integer cross-multiplication and never
 # by a rounded value.
 DECODE_RATE_DECIMAL_PLACES = 12
-STAGED_MODEL_BYTES_PROVENANCE = (
-    "sealed staging inventory verified on the run-scoped model volume "
-    f"({EXPECTED_MODEL_FILE_COUNT} files, {EXPECTED_MODEL_BYTES} bytes)"
+MODEL_WEIGHT_BYTES_PROVENANCE = (
+    "exact sum of the five safetensors weight shards in the sealed staging "
+    f"inventory ({MODEL_WEIGHT_BYTES} bytes); the full "
+    f"{EXPECTED_MODEL_FILE_COUNT}-file staged inventory is "
+    f"{EXPECTED_MODEL_BYTES} bytes"
 )
 L4_BANDWIDTH_PROVENANCE = (
     "NVIDIA L4 advertised peak memory bandwidth, recorded offline as an "
@@ -171,7 +174,8 @@ L4_BANDWIDTH_PROVENANCE = (
 DECODE_FEASIBILITY_ASSUMPTIONS = (
     "batch-1 BF16 autoregressive decoding is memory-bandwidth bound and must "
     "stream at least one full model-weight image per generated token",
-    "the weight image is the exact staged byte count the staging gate verifies",
+    "the weight image is the exact sum of the five staged safetensors shards; "
+    "non-weight staged files are excluded",
     "the device sustains its advertised peak memory bandwidth, which no real "
     "kernel exceeds",
     "KV-cache, activation, and every other non-weight read is ignored, so the "
@@ -595,7 +599,7 @@ SCALEDOWN_WINDOW_SECONDS = 2
 # ``SCALEDOWN_WINDOW_SECONDS`` and its control plane is eventually consistent,
 # so a single sample taken the instant the ephemeral app context exits observes
 # timing rather than teardown. The budget is exact and finite -- twelve samples
-# five seconds apart, sixty seconds worst case -- so there is never an
+# five seconds apart, fifty-five seconds worst case -- so there is never an
 # unbounded wait, and a function that has not reported zero by the deadline is
 # recorded as unverified rather than assumed torn down. Repeatedly *reading* an
 # autoscaler counter is control-plane cleanup verification; it re-dispatches
@@ -1606,7 +1610,7 @@ def verify_official_rate_receipt(receipt: Any) -> dict[str, Any]:
 
 def evaluate_decode_bandwidth_feasibility(
     *,
-    model_bytes: int = STAGED_MODEL_BYTES,
+    model_bytes: int = MODEL_WEIGHT_BYTES,
     output_tokens: int = CONTROLLED_CELL_OUTPUT_TOKENS,
     peak_bandwidth_bytes_per_second: int = (
         L4_ADVERTISED_PEAK_BANDWIDTH_BYTES_PER_SECOND
@@ -1658,7 +1662,7 @@ def evaluate_decode_bandwidth_feasibility(
         "computed_offline": True,
         "uses_sealed_constants": values
         == {
-            "model_bytes": STAGED_MODEL_BYTES,
+            "model_bytes": MODEL_WEIGHT_BYTES,
             "output_tokens": CONTROLLED_CELL_OUTPUT_TOKENS,
             "peak_bandwidth_bytes_per_second": (
                 L4_ADVERTISED_PEAK_BANDWIDTH_BYTES_PER_SECOND
@@ -1670,8 +1674,15 @@ def evaluate_decode_bandwidth_feasibility(
             "controlled_requests_per_cell": CONTROLLED_REQUESTS_PER_CELL,
             "output_tokens_per_request": DECODE_STEPS,
             "accelerator": EXPECTED_GPU_NAME,
-            "model_bytes_provenance": STAGED_MODEL_BYTES_PROVENANCE,
+            "model_bytes_provenance": MODEL_WEIGHT_BYTES_PROVENANCE,
             "peak_bandwidth_provenance": L4_BANDWIDTH_PROVENANCE,
+            "decode_execution_contract": {
+                "dtype": "bfloat16",
+                "max_num_seqs": 1,
+                "enable_prefix_caching": False,
+                "speculative_config": None,
+                "request_execution": "sequential",
+            },
         },
         "assumptions": list(DECODE_FEASIBILITY_ASSUMPTIONS),
         "derivation": {
@@ -1705,24 +1716,17 @@ def evaluate_decode_bandwidth_feasibility(
     }
 
 
-def require_controlled_cell_decode_feasible(
-    *,
-    verdict: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
+def require_controlled_cell_decode_feasible() -> dict[str, Any]:
     """Refuse an infeasible design before anything else can happen.
 
-    A caller may pass a verdict computed by
-    ``evaluate_decode_bandwidth_feasibility`` (for example one derived from a
-    hypothetical device); otherwise the sealed constants are used. An
+    The production gate always recomputes the sealed constants. Hypothetical
+    devices may be evaluated with ``evaluate_decode_bandwidth_feasibility`` for
+    offline planning, but their verdicts cannot be supplied to this gate. An
     infeasible verdict is terminal: the design is refused rather than resized,
     retimed, or re-targeted.
     """
 
-    result = (
-        dict(verdict)
-        if verdict is not None
-        else evaluate_decode_bandwidth_feasibility()
-    )
+    result = evaluate_decode_bandwidth_feasibility()
     if result.get("feasible") is not True:
         derivation = result.get("derivation")
         detail = ""
@@ -2313,10 +2317,9 @@ class ModalL4Plan:
             },
             "runtime_image": runtime_image_identity(),
             "memory_gate": dict(MEMORY_GATE),
-            # The offline decode-bandwidth proof. It is part of the plan
-            # content -- and therefore part of the plan hash an authorization
-            # is bound to -- so an approval can never be signed against a plan
-            # whose feasibility arithmetic differs from the one being run.
+            # The production preflight always recomputes this same sealed
+            # verdict. Hypothetical-device verdicts are planning-only and
+            # cannot be supplied to the execution or result paths.
             "decode_feasibility": evaluate_decode_bandwidth_feasibility(),
             "claim_ids": {
                 "offline_only": list(OFFLINE_ONLY_CLAIM_IDS),

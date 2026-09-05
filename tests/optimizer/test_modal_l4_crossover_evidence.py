@@ -11,6 +11,7 @@ import pytest
 
 from llmtracefx.optimizer.lab.qwen3_8b import modal_l4_crossover as modal
 from llmtracefx.optimizer.lab.qwen3_8b import modal_l4_crossover_evidence as evidence
+from llmtracefx.optimizer.lab.qwen3_8b import modal_l4_crossover_results as results
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -18,6 +19,27 @@ import _modal_result_fixture as fixture  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = "2026-09-04T19:52:50.511+05:30"
+_SEALED_VALIDATE_DECODE_FEASIBILITY = results._validate_decode_feasibility
+
+
+def _accept_hypothetical_feasibility(
+    orchestration: dict[str, Any],
+) -> dict[str, Any]:
+    receipt = orchestration.get("decode_feasibility")
+    if not isinstance(receipt, dict):
+        raise results.ModalL4ResultsError(
+            "orchestration decode-feasibility verdict is missing"
+        )
+    return dict(receipt)
+
+
+@pytest.fixture(autouse=True)
+def _exercise_dormant_result_bundle_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test result plumbing without making this protocol result-eligible."""
+
+    monkeypatch.setattr(
+        results, "_validate_decode_feasibility", _accept_hypothetical_feasibility
+    )
 
 
 @pytest.fixture
@@ -268,7 +290,7 @@ class TestOfflineBundle:
         plan = json.loads((bundle / "experiment-plan.json").read_text(encoding="utf-8"))
         assert verdict == modal.evaluate_decode_bandwidth_feasibility()
         assert verdict["feasible"] is False
-        assert verdict["derivation"]["minimum_decode_only_seconds"] == "755.59501513728"
+        assert verdict["derivation"]["minimum_decode_only_seconds"] == "754.86029303808"
         assert verdict["derivation"]["required_tokens_per_second"] == "28.8"
         assert preflight["decode_feasibility"] == verdict
         assert preflight["execution_refused_offline"] is True
@@ -281,9 +303,9 @@ class TestOfflineBundle:
 
     def test_the_bundle_readme_states_the_arithmetic(self, bundle: Path) -> None:
         readme = (bundle / "README.md").read_text(encoding="utf-8")
-        assert "16,397,461,266-byte weight image" in readme
+        assert "16,381,516,776-byte safetensors" in readme
         assert "300,000,000,000 bytes per second" in readme
-        assert "755.59501513728 seconds" in readme
+        assert "754.86029303808 seconds" in readme
         assert "480-second" in readme
         assert "28.8 tokens per second" in readme
 
@@ -467,7 +489,9 @@ class TestResultContract:
             for name in evidence.REUSED_STATISTICAL_PRIMITIVE_NAMES
         )
 
-    def test_a_valid_completed_run_verifies_and_analyzes(self, tmp_path: Path) -> None:
+    def test_dormant_hypothetical_result_analysis_is_internally_consistent(
+        self, tmp_path: Path
+    ) -> None:
         root = _result_envelope(tmp_path / "results")
         result = evidence.verify_result_bundle(root)
         assert result["verified"] is True
@@ -482,6 +506,20 @@ class TestResultContract:
         assert "pure-causal-compilation-effect" not in supported
         for blocked in modal.BLOCKED_CLAIM_IDS:
             assert blocked not in supported
+
+    def test_public_verifier_rejects_any_result_for_the_infeasible_identity(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        root = _result_envelope(tmp_path / "results")
+        monkeypatch.setattr(
+            results,
+            "_validate_decode_feasibility",
+            _SEALED_VALIDATE_DECODE_FEASIBILITY,
+        )
+        with pytest.raises(
+            evidence.ModalL4EvidenceError, match="differs from the sealed plan"
+        ):
+            evidence.verify_result_bundle(root)
 
     def test_missing_envelope_document_fails_before_statistics(
         self, tmp_path: Path

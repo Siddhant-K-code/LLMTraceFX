@@ -981,6 +981,7 @@ class ModalOrchestrator:
         self.attempt_receipts: list[dict[str, Any]] = []
         self.cell_receipts: dict[str, dict[str, Any]] = {}
         self.memory_gate: list[dict[str, Any]] = []
+        self.refusal_receipts: dict[str, dict[str, Any]] = {}
         self.container_identities: dict[str, str] = {}
         self.profile_authentication: dict[str, Any] | None = None
         self.outstanding_call: Any = None
@@ -1059,7 +1060,7 @@ class ModalOrchestrator:
             "preempted": outcome.failure == "preemption",
             "timed_out": outcome.failure == "timeout",
             "terminal_receipt": (
-                outcome.failure is None and receipt.get("status") == "completed"
+                outcome.failure is None and receipt.get("terminal") is True
             ),
         }
         self.attempt_receipts.append(attempt)
@@ -1159,6 +1160,24 @@ class ModalOrchestrator:
                 )
                 return
             receipt = outcome.receipt or {}
+            if receipt.get("status") != "completed":
+                self.refusal_receipts[str(step["lifecycle_id"])] = receipt
+                if key in ("eager_canary", "compiled_canary"):
+                    self.memory_gate.append(
+                        {
+                            "mode": key.removesuffix("_canary"),
+                            "passed": False,
+                            "failures": ["provider_terminal_refusal"],
+                            "tuning_allowed": False,
+                            "action": "publish_refusal_only",
+                            "receipt": receipt,
+                        }
+                    )
+                elif step["cell_id"] is not None:
+                    self.cell_receipts[str(step["cell_id"])] = receipt
+                self.status = "refused"
+                self.failure = f"{key} returned a terminal refusal receipt"
+                return
             if key in ("eager_canary", "compiled_canary"):
                 verdict = evaluate_memory_gate(receipt.get("observation"))
                 self.memory_gate.append({**verdict, "receipt": receipt})
@@ -1469,9 +1488,11 @@ class ModalOrchestrator:
             _write_json(
                 root / "memory-gate" / f"canary-{index:02d}.json", item["receipt"]
             )
+        for lifecycle_id, receipt in self.refusal_receipts.items():
+            _write_json(root / "terminal-refusals" / f"{lifecycle_id}.json", receipt)
 
 
-def _require_feasible(verdict: Mapping[str, Any] | None) -> dict[str, Any]:
+def _require_feasible() -> dict[str, Any]:
     """Refuse an infeasible design before any other gate runs.
 
     This is the first thing ``preflight`` does. It reads no file, opens no
@@ -1482,7 +1503,7 @@ def _require_feasible(verdict: Mapping[str, Any] | None) -> dict[str, Any]:
     """
 
     try:
-        return require_controlled_cell_decode_feasible(verdict=verdict)
+        return require_controlled_cell_decode_feasible()
     except ModalL4ContractError as exc:
         raise ModalExecutionError(str(exc)) from exc
 
@@ -1558,7 +1579,7 @@ def preflight(
     signature_verifier: Any = None,
     signature_runner: Callable[[Sequence[str], str], int] | None = None,
     source_checkout_probe: SourceCheckoutProbe | None = None,
-    feasibility_verdict: Mapping[str, Any] | None = None,
+    signed_headroom_path: Path | None = None,
     repo_root: Path = REPO_ROOT,
     urls: Sequence[str] = OFFICIAL_SOURCE_URLS,
     now_utc: datetime | None = None,
@@ -1571,10 +1592,8 @@ def preflight(
     controlled-cell timeout at all. On the pinned accelerator it cannot, so the
     approved design is refused here -- before authentication, before the
     official-rate fetch, before the provider SDK is imported, and before any
-    provider call or spend. ``feasibility_verdict`` exists only so the policy
-    can be exercised against a hypothetical device offline; no production
-    caller supplies it, and the verdict actually used is recorded in the
-    returned gates and in every receipt this run writes.
+    provider call or spend. No production override exists: hypothetical-device
+    calculations are planning-only and cannot admit this protocol identity.
 
     The credential-exposure gate runs next. A standard-profile credential was
     exposed outside this system, so until a coordinator confirms it was revoked
@@ -1593,7 +1612,13 @@ def preflight(
     bound to this plan, head, nonce, and execution window.
     """
 
-    feasibility = _require_feasible(feasibility_verdict)
+    feasibility = _require_feasible()
+    if signed_headroom is not None and signed_headroom_path is not None:
+        raise ModalExecutionError(
+            "signed headroom must be supplied as a document or a path, not both"
+        )
+    if signed_headroom_path is not None:
+        signed_headroom = read_structured_receipt(signed_headroom_path)
     attestation = (
         read_structured_receipt(credential_exposure_attestation_path)
         if credential_exposure_attestation_path is not None
@@ -1816,11 +1841,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    signed_headroom = (
-        read_structured_receipt(args.signed_headroom)
-        if args.signed_headroom is not None
-        else None
-    )
     try:
         if args.action == "preflight":
             gates = preflight(
@@ -1832,7 +1852,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 authorized_signers_path=args.authorized_signers,
                 rate_receipt_path=args.rate_receipt,
                 workspace=args.workspace,
-                signed_headroom=signed_headroom,
+                signed_headroom_path=args.signed_headroom,
                 headroom_signature_path=args.headroom_signature,
                 headroom_authorized_signers_path=args.headroom_authorized_signers,
             )
@@ -1857,7 +1877,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             authorized_signers_path=args.authorized_signers,
             rate_receipt_path=args.rate_receipt,
             workspace=args.workspace,
-            signed_headroom=signed_headroom,
+            signed_headroom_path=args.signed_headroom,
             headroom_signature_path=args.headroom_signature,
             headroom_authorized_signers_path=args.headroom_authorized_signers,
         )

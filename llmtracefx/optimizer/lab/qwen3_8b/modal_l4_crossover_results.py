@@ -191,7 +191,13 @@ _NONCE = re.compile(r"^[0-9a-f]{32,64}$")
 
 
 def _verify_orchestration_seal(orchestration: Mapping[str, Any]) -> None:
-    """Verify the orchestration receipt's own seal before trusting any field."""
+    """Verify the receipt's integrity checksum.
+
+    This unkeyed seal is not an authenticity proof. The current protocol never
+    accepts a successful result at all because its sealed feasibility verdict
+    is negative; a future feasible protocol identity must add an external
+    trust anchor before enabling result publication.
+    """
 
     seal = orchestration.get("orchestration_sha256")
     _require(
@@ -287,27 +293,14 @@ def _validate_decode_feasibility(orchestration: Mapping[str, Any]) -> dict[str, 
         "orchestration decode-feasibility verdict is missing",
     )
     assert isinstance(receipt, Mapping)
-    inputs = receipt.get("inputs")
-    _require(
-        isinstance(inputs, Mapping),
-        "orchestration decode-feasibility verdict records no inputs",
-    )
-    assert isinstance(inputs, Mapping)
-    try:
-        recomputed = evaluate_decode_bandwidth_feasibility(
-            model_bytes=inputs["model_bytes"],
-            output_tokens=inputs["output_tokens"],
-            peak_bandwidth_bytes_per_second=inputs["peak_bandwidth_bytes_per_second"],
-            timeout_seconds=inputs["timeout_seconds"],
-        )
-    except Exception as exc:  # noqa: BLE001 - normalized into a terminal error
-        raise ModalL4ResultsError(
-            f"orchestration decode-feasibility verdict is invalid: {exc}"
-        ) from exc
+    recomputed = evaluate_decode_bandwidth_feasibility()
     _require(
         dict(receipt) == recomputed,
-        "orchestration decode-feasibility verdict does not recompute from its "
-        "own recorded inputs",
+        "orchestration decode-feasibility verdict differs from the sealed plan",
+    )
+    _require(
+        receipt.get("uses_sealed_constants") is True,
+        "orchestration decode-feasibility verdict does not use sealed constants",
     )
     _require(
         receipt.get("feasible") is True,
@@ -338,12 +331,27 @@ def _validate_headroom(orchestration: Mapping[str, Any]) -> dict[str, Any]:
     )
     binding = headroom.get("authorization_binding")
     if headroom.get("provenance") == "signed_operator_receipt":
+        expected_binding = {
+            "verified": True,
+            "bound_to_authorization": True,
+            "protocol_id": PROTOCOL_ID,
+            "plan_sha256": orchestration["plan_sha256"],
+            "source_head": orchestration["source_head"],
+            "experiment_nonce": orchestration["experiment_nonce"],
+            "confirmed_at": (
+                binding.get("confirmed_at") if isinstance(binding, Mapping) else None
+            ),
+            "expires_at": (
+                binding.get("expires_at") if isinstance(binding, Mapping) else None
+            ),
+            "covers_execution_window": True,
+            "records_account_identity": False,
+        }
         _require(
             isinstance(binding, Mapping)
-            and binding.get("verified") is True
-            and binding.get("bound_to_authorization") is True
-            and binding.get("covers_execution_window") is True
-            and binding.get("records_account_identity") is False,
+            and dict(binding) == expected_binding
+            and isinstance(binding.get("confirmed_at"), str)
+            and isinstance(binding.get("expires_at"), str),
             "orchestration signed headroom receipt is not bound to this "
             "authorization",
         )

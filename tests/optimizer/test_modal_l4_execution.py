@@ -17,6 +17,7 @@ import types
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -81,6 +82,20 @@ def _feasible_verdict() -> dict[str, Any]:
 
     return modal.evaluate_decode_bandwidth_feasibility(
         peak_bandwidth_bytes_per_second=1_000_000_000_000
+    )
+
+
+_SEALED_REQUIRE_FEASIBLE = execute_module._require_feasible
+
+
+@pytest.fixture(autouse=True)
+def _admit_hypothetical_device_for_execution_unit_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise dormant post-feasibility code without a production bypass."""
+
+    monkeypatch.setattr(
+        execute_module, "_require_feasible", lambda: _feasible_verdict()
     )
 
 
@@ -169,7 +184,12 @@ def app_module(monkeypatch: pytest.MonkeyPatch, fake_modal: Any) -> Any:
     monkeypatch.delenv(execute_module.VOLUME_NAME_VAR, raising=False)
     monkeypatch.delenv(execute_module.PLAN_SHA256_VAR, raising=False)
     sys.modules.pop(APP_MODULE, None)
-    module = importlib.import_module(APP_MODULE)
+    with patch.object(
+        modal,
+        "require_controlled_cell_decode_feasible",
+        return_value=_feasible_verdict(),
+    ):
+        module = importlib.import_module(APP_MODULE)
     yield module
     sys.modules.pop(APP_MODULE, None)
 
@@ -337,7 +357,6 @@ def _run(
     drop_attestation: bool = False,
     source_checkout_probe: Any = None,
     profile_validator: Any = None,
-    feasibility_verdict: Any = None,
     sleep: Any = None,
 ) -> dict[str, Any]:
     workspace = tmp_path / "workspace"
@@ -369,11 +388,6 @@ def _run(
         signature_runner=lambda argv, message: signature_result,
         source_checkout_probe=source_checkout_probe or _clean_checkout_probe,
         profile_validator=profile_validator or _authenticated_profile,
-        feasibility_verdict=(
-            feasibility_verdict
-            if feasibility_verdict is not None
-            else _feasible_verdict()
-        ),
         now_utc=WITHIN_WINDOW,
         **extra,
         **files,
@@ -381,6 +395,27 @@ def _run(
 
 
 class TestProviderAppDeclaration:
+    def test_direct_provider_entrypoint_refuses_before_resource_declaration(
+        self, monkeypatch: pytest.MonkeyPatch, fake_modal: Any
+    ) -> None:
+        source = (
+            Path(__file__).parents[2]
+            / "llmtracefx/optimizer/lab/qwen3_8b/modal_l4_app.py"
+        ).read_text(encoding="utf-8")
+        assert source.index("require_controlled_cell_decode_feasible()") < source.index(
+            "    import modal"
+        )
+        monkeypatch.setattr(
+            modal,
+            "require_controlled_cell_decode_feasible",
+            modal.require_controlled_cell_decode_feasible,
+        )
+        sys.modules.pop(APP_MODULE, None)
+        with pytest.raises(modal.ModalL4ContractError, match="infeasible"):
+            importlib.import_module(APP_MODULE)
+        assert fake_modal.Volume.objects.existing == []
+        sys.modules.pop(APP_MODULE, None)
+
     def test_app_declares_no_web_endpoint_and_no_secret(self, app_module: Any) -> None:
         source = Path(app_module.__file__).read_text(encoding="utf-8")
         for decorator in modal.NO_WEB_ENDPOINT_DECORATORS:
@@ -462,8 +497,13 @@ class TestProviderAppDeclaration:
         monkeypatch.setenv(execute_module.NONCE_VAR, NONCE)
         monkeypatch.setenv(execute_module.APP_NAME_VAR, "someone-elses-app")
         sys.modules.pop(APP_MODULE, None)
-        with pytest.raises(modal.ModalL4ContractError, match="app name"):
-            importlib.import_module(APP_MODULE)
+        with patch.object(
+            modal,
+            "require_controlled_cell_decode_feasible",
+            return_value=_feasible_verdict(),
+        ):
+            with pytest.raises(modal.ModalL4ContractError, match="app name"):
+                importlib.import_module(APP_MODULE)
         sys.modules.pop(APP_MODULE, None)
 
 
@@ -603,7 +643,6 @@ class TestGatesBeforeProviderImport:
         with pytest.raises(modal.ModalL4ContractError, match="different workspace"):
             execute_module.preflight(
                 workspace=workspace,
-                feasibility_verdict=_feasible_verdict(),
                 environ={},
                 fetcher=_fetcher,
                 signature_runner=lambda argv, message: 0,
@@ -723,7 +762,16 @@ class TestGatingAndInvalidation:
         }
         _script(app_module, receipts, stage=lambda *args: refusal)
         document = _run(tmp_path, app_module, fake_modal)
-        assert document["status"] == "invalidated"
+        assert document["status"] == "refused"
+        assert document["attempt_receipts"][0]["terminal_receipt"] is True
+        saved = (
+            tmp_path
+            / "workspace"
+            / execute_module.REFUSAL_EVIDENCE_DIR
+            / "terminal-refusals"
+            / "cpu-stage-01.json"
+        )
+        assert json.loads(saved.read_text(encoding="utf-8")) == refusal
         assert len(app_module.app.calls) == 1
 
     @pytest.mark.parametrize(
@@ -998,9 +1046,9 @@ class TestDecodeFeasibilityGate:
     """The approved design is refused offline, before anything can be spent.
 
     One controlled cell generates 144 x 96 = 13,824 tokens, and batch-1 BF16
-    decoding must stream at least one full 16,397,461,266-byte weight image per
-    token: 226,678,504,541,184 bytes. At the L4's advertised peak bandwidth of
-    300,000,000,000 bytes/s that is 755.59501513728 seconds of decoding alone,
+    decoding must stream at least the five 16,381,516,776-byte weight shards per
+    token: 226,458,087,911,424 bytes. At the L4's advertised peak bandwidth of
+    300,000,000,000 bytes/s that is 754.86029303808 seconds of decoding alone,
     against a sealed 480-second controlled-cell timeout -- before container
     start, weight load, engine init, prefill, or CUDA-graph capture. The design
     is therefore infeasible, and preflight says so before it authenticates,
@@ -1008,8 +1056,11 @@ class TestDecodeFeasibilityGate:
     """
 
     def test_production_preflight_refuses_before_any_gate_input_is_read(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setattr(
+            execute_module, "_require_feasible", _SEALED_REQUIRE_FEASIBLE
+        )
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         files = _write_gate_files(tmp_path, workspace=workspace)
@@ -1023,6 +1074,12 @@ class TestDecodeFeasibilityGate:
         def forbidden_signature(argv: Any, message: str) -> int:
             raise AssertionError("no signature check before the feasibility gate")
 
+        def forbidden_receipt_read(path: Path) -> dict[str, Any]:
+            raise AssertionError("no receipt read before the feasibility gate")
+
+        monkeypatch.setattr(
+            execute_module, "read_structured_receipt", forbidden_receipt_read
+        )
         with pytest.raises(
             execute_module.ModalExecutionError, match="infeasible"
         ) as excinfo:
@@ -1038,14 +1095,21 @@ class TestDecodeFeasibilityGate:
                 **files,
             )
         message = str(excinfo.value)
-        assert "755.59501513728s" in message
+        assert "754.86029303808s" in message
         assert "480s ceiling" in message
         assert "28.8 tokens/s" in message
-        assert "18.295515088183 tokens/s" in message
+        assert "18.313322514769 tokens/s" in message
 
     def test_production_run_refuses_without_importing_the_sdk(
-        self, tmp_path: Path, app_module: Any, fake_modal: Any
+        self,
+        tmp_path: Path,
+        app_module: Any,
+        fake_modal: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr(
+            execute_module, "_require_feasible", _SEALED_REQUIRE_FEASIBLE
+        )
         with pytest.raises(execute_module.ModalExecutionError, match="infeasible"):
             _run(
                 tmp_path,
@@ -1054,27 +1118,35 @@ class TestDecodeFeasibilityGate:
                 sdk_loader=lambda: (_ for _ in ()).throw(
                     AssertionError("SDK must not load for an infeasible design")
                 ),
-                feasibility_verdict=modal.evaluate_decode_bandwidth_feasibility(),
             )
 
     def test_the_refusal_leaves_the_workspace_untouched(
-        self, tmp_path: Path, app_module: Any, fake_modal: Any
+        self,
+        tmp_path: Path,
+        app_module: Any,
+        fake_modal: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr(
+            execute_module, "_require_feasible", _SEALED_REQUIRE_FEASIBLE
+        )
         workspace = tmp_path / "workspace"
         with pytest.raises(execute_module.ModalExecutionError, match="infeasible"):
-            _run(
-                tmp_path,
-                app_module,
-                fake_modal,
-                feasibility_verdict=modal.evaluate_decode_bandwidth_feasibility(),
-            )
+            _run(tmp_path, app_module, fake_modal)
         assert list(workspace.iterdir()) == []
 
     def test_the_default_gate_uses_the_sealed_constants(
-        self, tmp_path: Path, app_module: Any, fake_modal: Any
+        self,
+        tmp_path: Path,
+        app_module: Any,
+        fake_modal: Any,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """No verdict supplied means the sealed arithmetic, which refuses."""
 
+        monkeypatch.setattr(
+            execute_module, "_require_feasible", _SEALED_REQUIRE_FEASIBLE
+        )
         workspace = tmp_path / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
         files = _write_gate_files(tmp_path, workspace=workspace)
@@ -1130,7 +1202,6 @@ class TestHeadroomReceiptBinding:
         ):
             execute_module.preflight(
                 workspace=workspace,
-                feasibility_verdict=_feasible_verdict(),
                 environ={},
                 fetcher=_fetcher,
                 signature_runner=lambda argv, message: 0,
@@ -1162,7 +1233,6 @@ class TestHeadroomReceiptBinding:
         ):
             execute_module.preflight(
                 workspace=workspace,
-                feasibility_verdict=_feasible_verdict(),
                 environ={},
                 fetcher=_fetcher,
                 signature_runner=lambda argv, message: 0,
@@ -1605,7 +1675,6 @@ class TestExecutionWindow:
         with pytest.raises(execute_module.ModalExecutionError, match="has expired"):
             execute_module.preflight(
                 workspace=workspace,
-                feasibility_verdict=_feasible_verdict(),
                 environ={},
                 fetcher=forbidden_fetcher,
                 signature_runner=lambda argv, message: 0,
@@ -1825,7 +1894,6 @@ class TestCredentialExposureGate:
         ):
             execute_module.preflight(
                 workspace=workspace,
-                feasibility_verdict=_feasible_verdict(),
                 environ={},
                 fetcher=_fetcher,
                 signature_runner=lambda argv, message: 0,
@@ -1970,7 +2038,6 @@ def _orchestrator(
     )
     gates = execute_module.preflight(
         workspace=workspace,
-        feasibility_verdict=_feasible_verdict(),
         environ={},
         fetcher=_fetcher,
         signed_headroom=_headroom_receipt(),
@@ -2111,7 +2178,6 @@ class TestHeadroomSignatureGate:
         ):
             execute_module.preflight(
                 workspace=workspace,
-                feasibility_verdict=_feasible_verdict(),
                 environ={},
                 fetcher=_fetcher,
                 signature_runner=lambda argv, message: 0,
@@ -2143,7 +2209,6 @@ class TestHeadroomSignatureGate:
 
         gates = execute_module.preflight(
             workspace=workspace,
-            feasibility_verdict=_feasible_verdict(),
             environ={},
             fetcher=_fetcher,
             signature_runner=runner,
@@ -2181,7 +2246,6 @@ class TestHeadroomSignatureGate:
         ):
             execute_module.preflight(
                 workspace=workspace,
-                feasibility_verdict=_feasible_verdict(),
                 environ={},
                 fetcher=_fetcher,
                 signature_runner=lambda argv, message: (
@@ -2219,7 +2283,6 @@ class TestCleanWorkspaceGate:
                 signature_runner=lambda argv, message: 0,
                 source_checkout_probe=_clean_checkout_probe,
                 profile_validator=_authenticated_profile,
-                feasibility_verdict=_feasible_verdict(),
                 now_utc=WITHIN_WINDOW,
                 **files,
             )
@@ -2245,7 +2308,6 @@ class TestCleanWorkspaceGate:
                 signature_runner=lambda argv, message: 0,
                 source_checkout_probe=_clean_checkout_probe,
                 profile_validator=_authenticated_profile,
-                feasibility_verdict=_feasible_verdict(),
                 now_utc=WITHIN_WINDOW,
                 **files,
             )
@@ -2701,8 +2763,11 @@ class TestCliPublicationStatus:
         assert "supplied together" in capsys.readouterr().err
 
     def test_cli_preflight_refuses_the_infeasible_design_without_a_traceback(
-        self, tmp_path: Path, capsys: Any
+        self, tmp_path: Path, capsys: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setattr(
+            execute_module, "_require_feasible", _SEALED_REQUIRE_FEASIBLE
+        )
         """The production CLI path: no injection, no network, exit 1.
 
         Every path argument below points at a file that does not exist. If the
@@ -2726,18 +2791,27 @@ class TestCliPublicationStatus:
                 str(tmp_path / "workspace"),
                 "--credential-exposure-attestation",
                 str(tmp_path / "attestation.json"),
+                "--signed-headroom",
+                str(tmp_path / "headroom.json"),
+                "--headroom-signature",
+                str(tmp_path / "headroom.sig"),
+                "--headroom-authorized-signers",
+                str(tmp_path / "headroom-signers"),
             ]
         )
         assert code == 1
         error = capsys.readouterr().err
         assert "infeasible" in error
-        assert "755.59501513728s" in error
+        assert "754.86029303808s" in error
         assert "480s ceiling" in error
         assert "Traceback" not in error
 
     def test_cli_run_refuses_the_infeasible_design(
-        self, tmp_path: Path, capsys: Any
+        self, tmp_path: Path, capsys: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setattr(
+            execute_module, "_require_feasible", _SEALED_REQUIRE_FEASIBLE
+        )
         code = execute_module.main(
             [
                 "run",
@@ -2849,7 +2923,14 @@ class TestResultAnalysisFidelity:
             path.stem: json.loads(path.read_text(encoding="utf-8"))
             for path in (tmp_path / "workspace" / "cells").iterdir()
         }
-        analysis = results_module.analyze_modal_run(orchestration=document, cells=cells)
+        with patch.object(
+            results_module,
+            "_validate_decode_feasibility",
+            lambda orchestration: dict(orchestration["decode_feasibility"]),
+        ):
+            analysis = results_module.analyze_modal_run(
+                orchestration=document, cells=cells
+            )
         assert analysis["pair_count"] == 16
         claims = {
             claim["claim_id"]: claim["state"]
