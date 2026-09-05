@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import shutil
 import subprocess
@@ -11,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+import llmtracefx.cache_audit.bundle as cache_bundle
 from llmtracefx.cache_audit.adapters.reference import (
     ReferenceCacheAdapter,
     SyntheticCacheEngine,
@@ -24,6 +26,7 @@ from llmtracefx.cache_audit.bundle import (
     PUBLIC_REDACTED_TIMING_UNIT,
     CacheAuditBundleError,
     _verify_manifest_chronology,
+    package_source_digest,
     read_bundle,
     verify_bundle,
     write_bundle,
@@ -819,37 +822,169 @@ def _committed_cache_manifest() -> AuditManifest:
     )
 
 
-def test_repository_chronology_corroborates_available_commit() -> None:
+def _commit_fixture(
+    repository: Path, *, timestamp: str, message: str
+) -> tuple[str, str]:
+    environment = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Cache Audit Fixture",
+        "GIT_AUTHOR_EMAIL": "cache-audit@example.invalid",
+        "GIT_COMMITTER_NAME": "Cache Audit Fixture",
+        "GIT_COMMITTER_EMAIL": "cache-audit@example.invalid",
+        "GIT_AUTHOR_DATE": timestamp,
+        "GIT_COMMITTER_DATE": timestamp,
+    }
+    subprocess.run(
+        ["git", "-C", str(repository), "add", "-A"],
+        check=True,
+        env=environment,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "--no-gpg-sign",
+            "--no-verify",
+            "-m",
+            message,
+        ],
+        check=True,
+        env=environment,
+    )
+    commit = subprocess.run(
+        ["git", "--no-replace-objects", "-C", str(repository), "rev-parse", "HEAD"],
+        capture_output=True,
+        check=True,
+        text=True,
+        env=environment,
+    ).stdout.strip()
+    committed_at = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(repository),
+            "show",
+            "-s",
+            "--format=%cI",
+            commit,
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+        env=environment,
+    ).stdout.strip()
+    return commit, committed_at
+
+
+def _hermetic_chronology_fixture(
+    tmp_path: Path,
+) -> tuple[Path, AuditManifest, str]:
+    repository = tmp_path / "repository"
+    subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+    shutil.copytree(
+        "llmtracefx",
+        repository / "llmtracefx",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    commit, committed_at = _commit_fixture(
+        repository,
+        timestamp="2026-01-01T00:00:00+00:00",
+        message="Create exact package fixture",
+    )
+    manifest = replace(
+        _committed_cache_manifest(),
+        created_at="2025-12-31T23:59:59Z",
+        generated_at="2026-01-03T00:00:00Z",
+        generator_commit=commit,
+        generator_commit_at=committed_at,
+        generator_package_digest=package_source_digest(),
+    )
+    return repository, manifest, commit
+
+
+def _add_fixture_commit(
+    repository: Path,
+    *,
+    package_change: bool,
+) -> tuple[str, str]:
+    if package_change:
+        source = repository / "llmtracefx" / "__init__.py"
+        source.write_text(
+            source.read_text(encoding="utf-8") + "\n# changed fixture package\n",
+            encoding="utf-8",
+        )
+    else:
+        (repository / "fixture-note.txt").write_text(
+            "second fixture commit\n",
+            encoding="utf-8",
+        )
+    return _commit_fixture(
+        repository,
+        timestamp="2026-01-02T00:00:00+00:00",
+        message="Advance fixture history",
+    )
+
+
+def _write_hermetic_bundle(
+    tmp_path: Path,
+    manifest: AuditManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    _, records = read_bundle(Path("examples/cache-audit/reference-positive-control"))
+    output = tmp_path / "bundle"
+    with monkeypatch.context() as context:
+        context.setattr(
+            cache_bundle,
+            "_verify_manifest_chronology",
+            lambda _: "verified",
+        )
+        write_bundle(output, manifest, records)
+    return output
+
+
+def test_repository_chronology_corroborates_available_commit(
+    tmp_path: Path,
+) -> None:
+    repository, manifest, _ = _hermetic_chronology_fixture(tmp_path)
     assert (
         _verify_manifest_chronology(
-            _committed_cache_manifest(),
-            repository=Path.cwd(),
+            manifest,
+            repository=repository,
         )
         == "verified"
     )
 
 
-def test_repository_chronology_rejects_wrong_available_timestamp() -> None:
-    manifest = _committed_cache_manifest()
+def test_repository_chronology_rejects_wrong_available_timestamp(
+    tmp_path: Path,
+) -> None:
+    repository, manifest, _ = _hermetic_chronology_fixture(tmp_path)
     with pytest.raises(
         CacheAuditBundleError,
         match="commit timestamp does not match git",
     ):
         _verify_manifest_chronology(
-            replace(manifest, generator_commit_at="2026-09-05T16:11:24Z"),
-            repository=Path.cwd(),
+            replace(manifest, generator_commit_at="2026-01-01T00:00:01Z"),
+            repository=repository,
         )
 
 
-def test_repository_chronology_rejects_wrong_available_tree() -> None:
-    manifest = _committed_cache_manifest()
-    wrong_commit = "b84ec2d71ec9e9939be5194e5adf86e24428699c"
-    timestamp = subprocess.run(
-        ["git", "show", "-s", "--format=%cI", wrong_commit],
-        capture_output=True,
-        check=True,
-        text=True,
-    ).stdout.strip()
+def test_repository_chronology_rejects_wrong_available_tree(
+    tmp_path: Path,
+) -> None:
+    repository, manifest, _ = _hermetic_chronology_fixture(tmp_path)
+    wrong_commit, timestamp = _add_fixture_commit(
+        repository,
+        package_change=True,
+    )
     with pytest.raises(
         CacheAuditBundleError,
         match="package tree does not match package digest",
@@ -860,16 +995,14 @@ def test_repository_chronology_rejects_wrong_available_tree() -> None:
                 generator_commit=wrong_commit,
                 generator_commit_at=timestamp,
             ),
-            repository=Path.cwd(),
+            repository=repository,
         )
 
 
 def test_repository_chronology_rejects_available_non_commit_object(
     tmp_path: Path,
 ) -> None:
-    repository = tmp_path / "repository"
-    repository.mkdir()
-    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    repository, manifest, _ = _hermetic_chronology_fixture(tmp_path)
     object_id = subprocess.run(
         ["git", "-C", str(repository), "hash-object", "-w", "--stdin"],
         input="not a commit",
@@ -877,7 +1010,6 @@ def test_repository_chronology_rejects_available_non_commit_object(
         check=True,
         text=True,
     ).stdout.strip()
-    manifest = _committed_cache_manifest()
     with pytest.raises(CacheAuditBundleError, match="object is not a commit"):
         _verify_manifest_chronology(
             replace(manifest, generator_commit=object_id),
@@ -888,6 +1020,8 @@ def test_repository_chronology_rejects_available_non_commit_object(
 def test_repository_chronology_is_unavailable_in_shallow_checkout(
     tmp_path: Path,
 ) -> None:
+    repository, manifest, generator_commit = _hermetic_chronology_fixture(tmp_path)
+    _add_fixture_commit(repository, package_change=False)
     shallow = tmp_path / "shallow"
     subprocess.run(
         [
@@ -896,14 +1030,28 @@ def test_repository_chronology_is_unavailable_in_shallow_checkout(
             "--quiet",
             "--depth",
             "1",
-            Path.cwd().resolve().as_uri(),
+            repository.resolve().as_uri(),
             str(shallow),
         ],
         check=True,
     )
+    missing = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(shallow),
+            "cat-file",
+            "-e",
+            f"{generator_commit}^{{commit}}",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    assert missing.returncode != 0
     assert (
         _verify_manifest_chronology(
-            _committed_cache_manifest(),
+            manifest,
             repository=shallow,
         )
         == "unavailable"
@@ -911,10 +1059,13 @@ def test_repository_chronology_is_unavailable_in_shallow_checkout(
 
 
 def test_repository_chronology_is_unavailable_without_git(tmp_path: Path) -> None:
+    _, manifest, _ = _hermetic_chronology_fixture(tmp_path)
+    no_git = tmp_path / "no-git"
+    no_git.mkdir()
     assert (
         _verify_manifest_chronology(
-            _committed_cache_manifest(),
-            repository=tmp_path,
+            manifest,
+            repository=no_git,
         )
         == "unavailable"
     )
@@ -923,7 +1074,8 @@ def test_repository_chronology_is_unavailable_without_git(tmp_path: Path) -> Non
 def test_false_promisor_setting_does_not_downgrade_missing_commit(
     tmp_path: Path,
 ) -> None:
-    repository = tmp_path / "repository"
+    _, manifest, _ = _hermetic_chronology_fixture(tmp_path)
+    repository = tmp_path / "missing-repository"
     subprocess.run(["git", "init", "-q", str(repository)], check=True)
     subprocess.run(
         [
@@ -941,38 +1093,39 @@ def test_false_promisor_setting_does_not_downgrade_missing_commit(
         match="generator commit is unavailable",
     ):
         _verify_manifest_chronology(
-            _committed_cache_manifest(),
+            manifest,
             repository=repository,
         )
 
 
 def test_repository_chronology_ignores_replacement_refs(tmp_path: Path) -> None:
-    repository = tmp_path / "repository"
-    subprocess.run(
-        ["git", "clone", "--quiet", Path.cwd().resolve().as_uri(), str(repository)],
-        check=True,
+    repository, manifest, generator_commit = _hermetic_chronology_fixture(tmp_path)
+    replacement_commit, _ = _add_fixture_commit(
+        repository,
+        package_change=True,
     )
-    manifest = _committed_cache_manifest()
-    assert manifest.generator_commit is not None
     subprocess.run(
         [
             "git",
             "-C",
             str(repository),
             "replace",
-            manifest.generator_commit,
-            "b84ec2d71ec9e9939be5194e5adf86e24428699c",
+            generator_commit,
+            replacement_commit,
         ],
         check=True,
     )
     assert _verify_manifest_chronology(manifest, repository=repository) == "verified"
 
 
-def _blobless_partial_clone(tmp_path: Path) -> Path:
+def _blobless_partial_clone(
+    tmp_path: Path,
+) -> tuple[Path, AuditManifest]:
+    complete, manifest, _ = _hermetic_chronology_fixture(tmp_path)
     source = tmp_path / "source.git"
     repository = tmp_path / "partial"
     subprocess.run(
-        ["git", "clone", "--bare", "--quiet", ".", str(source)],
+        ["git", "clone", "--bare", "--quiet", str(complete), str(source)],
         check=True,
     )
     subprocess.run(
@@ -991,6 +1144,7 @@ def _blobless_partial_clone(tmp_path: Path) -> Path:
             "clone",
             "--quiet",
             "--filter=blob:none",
+            "--no-checkout",
             source.resolve().as_uri(),
             str(repository),
         ],
@@ -1008,16 +1162,21 @@ def _blobless_partial_clone(tmp_path: Path) -> Path:
         ],
         check=True,
     )
-    return repository
+    shutil.copytree(
+        "llmtracefx",
+        repository / "llmtracefx",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    return repository, manifest
 
 
 def test_repository_chronology_is_unavailable_for_offline_blobless_clone(
     tmp_path: Path,
 ) -> None:
-    repository = _blobless_partial_clone(tmp_path)
+    repository, manifest = _blobless_partial_clone(tmp_path)
     assert (
         _verify_manifest_chronology(
-            _committed_cache_manifest(),
+            manifest,
             repository=repository,
         )
         == "unavailable"
@@ -1026,7 +1185,10 @@ def test_repository_chronology_is_unavailable_for_offline_blobless_clone(
 
 def test_portable_verifier_accepts_shallow_checkout_without_generator_object(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    repository, manifest, generator_commit = _hermetic_chronology_fixture(tmp_path)
+    _add_fixture_commit(repository, package_change=False)
     shallow = tmp_path / "shallow"
     subprocess.run(
         [
@@ -1035,12 +1197,26 @@ def test_portable_verifier_accepts_shallow_checkout_without_generator_object(
             "--quiet",
             "--depth",
             "1",
-            Path.cwd().resolve().as_uri(),
+            repository.resolve().as_uri(),
             str(shallow),
         ],
         check=True,
     )
-    bundle = Path("examples/cache-audit/reference-positive-control").resolve()
+    missing = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(shallow),
+            "cat-file",
+            "-e",
+            f"{generator_commit}^{{commit}}",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    assert missing.returncode != 0
+    bundle = _write_hermetic_bundle(tmp_path, manifest, monkeypatch)
     result = subprocess.run(
         [
             sys.executable,
@@ -1063,9 +1239,10 @@ def test_portable_verifier_accepts_shallow_checkout_without_generator_object(
 
 def test_portable_verifier_accepts_offline_blobless_partial_clone(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repository = _blobless_partial_clone(tmp_path)
-    bundle = Path("examples/cache-audit/reference-positive-control").resolve()
+    repository, manifest = _blobless_partial_clone(tmp_path)
+    bundle = _write_hermetic_bundle(tmp_path, manifest, monkeypatch)
     result = subprocess.run(
         [
             sys.executable,
@@ -1088,10 +1265,12 @@ def test_portable_verifier_accepts_offline_blobless_partial_clone(
 
 def test_portable_verifier_accepts_matching_package_without_git(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _, manifest, _ = _hermetic_chronology_fixture(tmp_path)
     installed = tmp_path / "installed"
     shutil.copytree("llmtracefx", installed / "llmtracefx")
-    bundle = Path("examples/cache-audit/reference-positive-control").resolve()
+    bundle = _write_hermetic_bundle(tmp_path, manifest, monkeypatch)
     result = subprocess.run(
         [
             sys.executable,
