@@ -141,10 +141,6 @@ SCRIPT_ADAPTERS = {
         "examples/optimizer/qwen3-8b-vllm-compile-break-even/evidence_bundle.py",
         ("verify",),
     ),
-    "cache_audit_v1": (
-        "examples/cache-audit/reference-positive-control/evidence_bundle.py",
-        ("verify", "--public-dir", "{bundle}"),
-    ),
     "vllm_crossover_protocol_v1": (
         "examples/optimizer/qwen3-8b-vllm-crossover-protocol/evidence_bundle.py",
         ("verify",),
@@ -607,6 +603,12 @@ def verify_source(repo_root: Path, source: Mapping[str, Any]) -> None:
         _verify_legacy_pins(repo_root, source)
     elif adapter == "sha256_allowlist_v1":
         _verify_sha256_allowlist(repo_root, source)
+    elif adapter == "cache_audit_v1":
+        from llmtracefx.cache_audit.bundle import verify_bundle
+
+        verify_bundle(
+            _resolve_contained(repo_root, source["public_path"], directory=True)
+        )
     elif adapter in SCRIPT_ADAPTERS:
         _run_script_verifier(repo_root, source)
     else:  # pragma: no cover - registry and branch are intentionally closed together
