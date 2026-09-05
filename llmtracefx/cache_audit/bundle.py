@@ -1,0 +1,1738 @@
+"""Write, sanitize, and verify deterministic cache-audit evidence bundles."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+from collections import Counter
+from collections.abc import Sequence
+from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Literal
+
+from llmtracefx.evidence.core import PRIVACY_PATTERNS, canonical_json
+from llmtracefx.optimizer._artifact_io import (
+    MAX_EVIDENCE_ARTIFACT_BYTES,
+    read_bounded_regular_bytes,
+    read_bounded_regular_text,
+    reject_non_finite_json_constant,
+)
+from llmtracefx.optimizer.collectors._shared import atomic_write_text
+
+from .report import build_claim_matrix, build_summary
+from .report_html import render_html, render_reuse_alignment_svg
+from .schema import (
+    AuditManifest,
+    CacheEventRecord,
+    CacheStateSnapshot,
+    CostEvidence,
+    EvidenceBasis,
+    EvidenceFact,
+    Limitation,
+    MemoryEvidence,
+    OutputEvidence,
+    PublicationMode,
+    RequestCacheIdentity,
+    RequestEvidence,
+    ReuseEvidence,
+)
+from .verdicts import classify_request
+from .workloads import adversarial_requests, workload_digest
+
+BUNDLE_DATA_FILES = (
+    "audit-manifest.json",
+    "request-evidence.jsonl",
+    "cache-events.jsonl",
+    "claim-matrix.json",
+    "summary.json",
+    "reuse-alignment.svg",
+    "report.html",
+    "evidence_bundle.py",
+)
+BUNDLE_FILES = (*BUNDLE_DATA_FILES, "SHA256SUMS")
+_CHECKSUM = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]*)$")
+PUBLIC_REDACTED_FACT_SCOPE = "public_redacted_fact"
+PUBLIC_REDACTED_TIMING_SCOPE = "public_redacted_timing"
+PUBLIC_REDACTED_TIMING_EXCLUSIONS = ("timing_details_redacted",)
+PUBLIC_REDACTED_TIMING_UNIT = "s"
+_GIT_ENV = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
+
+
+class CacheAuditBundleError(ValueError):
+    """Raised when a cache-audit evidence bundle fails closed."""
+
+
+def package_source_digest() -> str:
+    """Digest the complete Python package that can affect bundle verification."""
+
+    package_dir = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256()
+    for path in sorted(package_dir.rglob("*.py")):
+        relative = path.relative_to(package_dir).as_posix().encode("utf-8")
+        content = _normalized_source(
+            relative.decode("utf-8"),
+            path.read_bytes(),
+        )
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return "sha256:" + digest.hexdigest()
+
+
+def _normalized_source(relative: str, content: bytes) -> bytes:
+    if relative != "evidence/registry.py":
+        return content
+    text = content.decode("utf-8")
+    text = re.sub(
+        r'^_CACHE_AUDIT_SOURCE_COMMIT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_CACHE_AUDIT_SOURCE_COMMIT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_CACHE_AUDIT_PACKAGE_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_CACHE_AUDIT_PACKAGE_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_CACHE_AUDIT_CAPTURED_AT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_CACHE_AUDIT_CAPTURED_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    return text.encode("utf-8")
+
+
+def _portable_verifier(manifest: AuditManifest) -> str:
+    if manifest.generator_package_digest is None:
+        raise CacheAuditBundleError(
+            "portable verification requires a generator package digest"
+        )
+    commit = (
+        "None"
+        if manifest.generator_commit is None
+        else json.dumps(manifest.generator_commit)
+    )
+    commit_at = (
+        "None"
+        if manifest.generator_commit_at is None
+        else json.dumps(manifest.generator_commit_at)
+    )
+    package_digest = json.dumps(manifest.generator_package_digest)
+    generated_at = json.dumps(manifest.generated_at)
+    bundle_data_files = "\n".join(
+        f"    {json.dumps(name)}," for name in BUNDLE_DATA_FILES
+    )
+    return f'''"""Offline verifier bound to one audited source implementation."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import stat
+import sys
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+EXPECTED_COMMIT = {commit}
+EXPECTED_COMMIT_AT = {commit_at}
+EXPECTED_PACKAGE_DIGEST = (
+    {package_digest}
+)
+EXPECTED_GENERATED_AT = {generated_at}
+BUNDLE_DATA_FILES = (
+{bundle_data_files}
+)
+BUNDLE_FILES = BUNDLE_DATA_FILES + ("SHA256SUMS",)
+MAX_FILE_BYTES = {MAX_EVIDENCE_ARTIFACT_BYTES}
+GIT_ENV = {{**os.environ, "GIT_NO_LAZY_FETCH": "1"}}
+
+
+def fail(message: str) -> None:
+    raise SystemExit(message)
+
+
+def safe_bytes(path: Path) -> bytes:
+    if path.is_symlink():
+        fail(f"unsafe symlink: {{path}}")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        fail(f"cannot open {{path}}: {{exc}}")
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_FILE_BYTES:
+            fail(f"unsafe or oversized file: {{path}}")
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(65536, MAX_FILE_BYTES - total + 1))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > MAX_FILE_BYTES:
+                fail(f"oversized file: {{path}}")
+        after = os.fstat(descriptor)
+
+        def signature(value):
+            return (
+                value.st_dev,
+                value.st_ino,
+                value.st_mode,
+                value.st_size,
+                value.st_mtime_ns,
+            )
+
+        if signature(before) != signature(after):
+            fail(f"file changed while reading: {{path}}")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def verify_bundle_envelope(bundle: Path) -> None:
+    if bundle.is_symlink() or not bundle.is_dir():
+        fail("bundle must be a regular directory")
+    names = {{item.name for item in bundle.iterdir()}}
+    if names != set(BUNDLE_FILES):
+        fail("bundle file allowlist mismatch")
+    checksum_lines = safe_bytes(bundle / "SHA256SUMS").decode("ascii").splitlines()
+    checksums = {{}}
+    for line in checksum_lines:
+        parts = line.split("  ")
+        if (
+            len(parts) != 2
+            or len(parts[0]) != 64
+            or any(character not in "0123456789abcdef" for character in parts[0])
+        ):
+            fail("invalid checksum manifest")
+        digest, name = parts
+        if name in checksums:
+            fail("duplicate checksum entry")
+        checksums[name] = digest
+    if set(checksums) != set(BUNDLE_DATA_FILES):
+        fail("checksum file allowlist mismatch")
+    for name, expected in checksums.items():
+        if hashlib.sha256(safe_bytes(bundle / name)).hexdigest() != expected:
+            fail(f"checksum mismatch: {{name}}")
+    try:
+        manifest = json.loads(safe_bytes(bundle / "audit-manifest.json"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        fail(f"invalid audit manifest: {{exc}}")
+    if manifest.get("schema_version") != "2":
+        fail("unsupported audit schema")
+    if manifest.get("generator_commit") != EXPECTED_COMMIT:
+        fail("bundle generator commit does not match embedded trust anchor")
+    if manifest.get("generator_commit_at") != EXPECTED_COMMIT_AT:
+        fail("bundle generator commit timestamp does not match embedded trust anchor")
+    if manifest.get("generator_package_digest") != EXPECTED_PACKAGE_DIGEST:
+        fail("bundle package digest does not match embedded trust anchor")
+    if manifest.get("generated_at") != EXPECTED_GENERATED_AT:
+        fail("bundle generation timestamp does not match embedded trust anchor")
+    try:
+        captured_at = datetime.fromisoformat(
+            manifest["created_at"].replace("Z", "+00:00")
+        )
+        generated_at = datetime.fromisoformat(
+            manifest["generated_at"].replace("Z", "+00:00")
+        )
+        commit_at = (
+            None
+            if EXPECTED_COMMIT_AT is None
+            else datetime.fromisoformat(EXPECTED_COMMIT_AT.replace("Z", "+00:00"))
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        fail(f"invalid bundle chronology: {{exc}}")
+    if captured_at.tzinfo is None or generated_at.tzinfo is None:
+        fail("bundle chronology must include timezone offsets")
+    if generated_at < captured_at:
+        fail("bundle generation predates evidence capture")
+    if (EXPECTED_COMMIT is None) != (commit_at is None):
+        fail("bundle generator commit timestamp binding is incomplete")
+    if commit_at is not None and generated_at < commit_at:
+        fail("bundle generation predates generator commit")
+
+
+def normalized_source(relative: str, content: bytes) -> bytes:
+    if relative != "evidence/registry.py":
+        return content
+    import re
+
+    text = content.decode("utf-8")
+    text = re.sub(
+        r'^_CACHE_AUDIT_SOURCE_COMMIT = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_CACHE_AUDIT_SOURCE_COMMIT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_CACHE_AUDIT_PACKAGE_DIGEST = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_CACHE_AUDIT_PACKAGE_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_CACHE_AUDIT_CAPTURED_AT = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_CACHE_AUDIT_CAPTURED_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    return text.encode("utf-8")
+
+
+def snapshot_package(root: Path) -> tuple[Path, str]:
+    package = root / "llmtracefx"
+    if package.is_symlink() or not package.is_dir():
+        fail("candidate has no regular llmtracefx package")
+    temporary = Path(tempfile.mkdtemp(prefix="llmtracefx-verifier-"))
+    snapshot = temporary / "llmtracefx"
+    snapshot.mkdir(mode=0o700)
+    digest = hashlib.sha256()
+    paths = sorted(package.rglob("*.py"))
+    if not paths:
+        fail("candidate llmtracefx package has no Python sources")
+    for source in paths:
+        relative_path = source.relative_to(package)
+        for parent in (source, *source.parents):
+            if parent == package.parent:
+                break
+            if parent.is_symlink():
+                fail(f"candidate package contains symlink: {{parent}}")
+        content = safe_bytes(source)
+        digest_content = normalized_source(relative_path.as_posix(), content)
+        relative = relative_path.as_posix().encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(digest_content).to_bytes(8, "big"))
+        digest.update(digest_content)
+        destination = snapshot / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+        try:
+            os.write(descriptor, content)
+        finally:
+            os.close(descriptor)
+    return temporary, "sha256:" + digest.hexdigest()
+
+
+def repository_is_incomplete(root: Path) -> bool:
+    import subprocess
+
+    shallow = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(root),
+            "rev-parse",
+            "--is-shallow-repository",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        text=True,
+        env=GIT_ENV,
+    )
+    if shallow.returncode != 0 or shallow.stdout.strip() not in {{"true", "false"}}:
+        fail("candidate repository has invalid shallow-checkout metadata")
+    if shallow.stdout.strip() == "true":
+        return True
+    partial = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(root),
+            "config",
+            "--type=bool",
+            "--get-regexp",
+            r"^remote\\..*\\.promisor$",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        text=True,
+        env=GIT_ENV,
+    )
+    if partial.returncode not in {{0, 1}}:
+        fail("candidate repository has invalid partial-clone metadata")
+    if partial.returncode == 1:
+        return False
+    values = [line.rsplit(maxsplit=1)[-1] for line in partial.stdout.splitlines()]
+    if not values or any(value not in {{"true", "false"}} for value in values):
+        fail("candidate repository has invalid partial-clone metadata")
+    return any(value == "true" for value in values)
+
+
+def package_objects_missing(root: Path) -> bool | None:
+    if EXPECTED_COMMIT is None:
+        return False
+    import subprocess
+
+    result = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(root),
+            "rev-list",
+            "--objects",
+            "--missing=print",
+            EXPECTED_COMMIT,
+            "--",
+            "llmtracefx",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        text=True,
+        env=GIT_ENV,
+    )
+    if result.returncode != 0:
+        return None
+    return any(line.startswith("?") for line in result.stdout.splitlines())
+
+
+def commit_matches(root: Path) -> str | None:
+    if EXPECTED_COMMIT is None or not (root / ".git").exists():
+        return "unavailable"
+    import subprocess
+
+    object_type = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(root),
+            "cat-file",
+            "-t",
+            EXPECTED_COMMIT,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        text=True,
+        env=GIT_ENV,
+    )
+    if object_type.returncode != 0:
+        return "unavailable" if repository_is_incomplete(root) else None
+    if object_type.stdout.strip() != "commit":
+        return None
+    listing = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(root),
+            "ls-tree",
+            "-r",
+            "--name-only",
+            EXPECTED_COMMIT,
+            "--",
+            "llmtracefx",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        env=GIT_ENV,
+    )
+    if listing.returncode != 0:
+        return None
+    timestamp = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(root),
+            "show",
+            "-s",
+            "--format=%cI",
+            EXPECTED_COMMIT,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        text=True,
+        env=GIT_ENV,
+    )
+    if timestamp.returncode != 0:
+        return None
+    try:
+        commit_time = datetime.fromisoformat(timestamp.stdout.strip())
+        generated_time = datetime.fromisoformat(
+            EXPECTED_GENERATED_AT.replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+    if EXPECTED_COMMIT_AT is None:
+        return None
+    try:
+        expected_commit_time = datetime.fromisoformat(
+            EXPECTED_COMMIT_AT.replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+    if commit_time != expected_commit_time or generated_time < commit_time:
+        return None
+    if repository_is_incomplete(root):
+        missing = package_objects_missing(root)
+        if missing is None:
+            return None
+        if missing:
+            return "unavailable"
+    digest = hashlib.sha256()
+    paths = sorted(
+        line.decode("utf-8").removeprefix("llmtracefx/")
+        for line in listing.stdout.splitlines()
+        if line.endswith(b".py")
+    )
+    for relative_text in paths:
+        result = subprocess.run(
+            [
+                "git",
+                "--no-replace-objects",
+                "-C",
+                str(root),
+                "show",
+                EXPECTED_COMMIT + ":llmtracefx/" + relative_text,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            env=GIT_ENV,
+        )
+        if result.returncode != 0:
+            return None
+        content = normalized_source(relative_text, result.stdout)
+        relative = relative_text.encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    if "sha256:" + digest.hexdigest() != EXPECTED_PACKAGE_DIGEST:
+        return None
+    return "verified"
+
+
+def resolve_package(bundle: Path, requested: Path | None) -> tuple[Path, str]:
+    candidates = [requested.resolve()] if requested is not None else []
+    if requested is None:
+        candidates.extend((bundle.resolve(), *bundle.resolve().parents))
+    for root in candidates:
+        package = root / "llmtracefx"
+        if package.is_symlink() or not package.is_dir():
+            continue
+        temporary, digest = snapshot_package(root)
+        corroboration = commit_matches(root)
+        if digest == EXPECTED_PACKAGE_DIGEST and corroboration is not None:
+            return temporary, corroboration
+        import shutil
+
+        shutil.rmtree(temporary)
+    fail(
+        "matching llmtracefx source not found; pass --package-root for the "
+        "repository or installed package recorded by this bundle"
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", choices=("verify",))
+    parser.add_argument("--public-dir", type=Path, default=Path(__file__).parent)
+    parser.add_argument("--package-root", type=Path)
+    args = parser.parse_args()
+    bundle = args.public_dir.resolve()
+    verify_bundle_envelope(bundle)
+    snapshot_root, corroboration = resolve_package(bundle, args.package_root)
+    sys.path.insert(0, str(snapshot_root))
+    from llmtracefx.cache_audit.bundle import verify_bundle
+
+    result = verify_bundle(bundle)
+    result["repository_chronology_corroboration"] = corroboration
+    print(json.dumps({{"verified": True, **result}}, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def _verify_public_synthetic_provenance(
+    manifest: AuditManifest, records: Sequence[RequestEvidence]
+) -> None:
+    approved = adversarial_requests()
+    if (
+        manifest.backend != "synthetic_reference"
+        or manifest.model_id != "synthetic-tiny-model"
+        or manifest.tokenizer_id != "integer-tokenizer-v1"
+        or tuple(record.spec for record in records) != approved
+        or manifest.adapter_version != "2"
+        or manifest.workload_digest != workload_digest(approved)
+        or manifest.generator_commit is None
+        or manifest.generator_package_digest != package_source_digest()
+    ):
+        raise CacheAuditBundleError(
+            "public_synthetic publication requires the approved built-in "
+            "synthetic reference workload and identities"
+        )
+
+
+def _verify_manifest_backend_contract(manifest: AuditManifest) -> None:
+    if manifest.publication_mode is PublicationMode.PUBLIC_REDACTED:
+        return
+    if manifest.backend == "synthetic_reference":
+        if (
+            manifest.backend_version != "1"
+            or manifest.cache_config.cache_type != "token_trie"
+            or manifest.cache_config.hash_algorithm is not None
+            or manifest.cache_config.hash_block_size is not None
+            or manifest.cache_config.physical_block_sizes
+            or manifest.cache_config.fine_grained_hits
+            or manifest.model_artifact_digest is not None
+            or manifest.runtime_identity.get("synthetic_engine")
+            != "independent-state-machine-v2"
+        ):
+            raise CacheAuditBundleError(
+                "synthetic-reference manifest contradicts adapter-owned identity"
+            )
+        return
+    if manifest.backend == "mlx_lm_local":
+        from .adapters.mlx import REQUIRED_MLX_LM_VERSION, REQUIRED_MLX_VERSION
+
+        if (
+            manifest.backend_version != REQUIRED_MLX_LM_VERSION
+            or manifest.runtime_identity.get("mlx") != REQUIRED_MLX_VERSION
+            or manifest.runtime_identity.get("mlx_lm") != REQUIRED_MLX_LM_VERSION
+            or manifest.cache_config.cache_type != "mlx_lru_prompt_cache"
+            or manifest.cache_config.hash_algorithm is not None
+            or manifest.cache_config.hash_block_size is not None
+            or manifest.cache_config.physical_block_sizes
+            or manifest.cache_config.fine_grained_hits
+            or manifest.model_artifact_digest is None
+        ):
+            raise CacheAuditBundleError(
+                "MLX manifest contradicts pinned adapter-owned identity"
+            )
+        return
+    raise CacheAuditBundleError(f"unsupported bundle backend: {manifest.backend}")
+
+
+def _timestamp(value: str, field: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise CacheAuditBundleError(f"{field} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise CacheAuditBundleError(f"{field} must include a timezone offset")
+    return parsed.astimezone(timezone.utc)
+
+
+def _repository_is_incomplete(repository: Path) -> bool:
+    shallow = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(repository),
+            "rev-parse",
+            "--is-shallow-repository",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        env=_GIT_ENV,
+    )
+    shallow_value = shallow.stdout.strip()
+    if shallow.returncode != 0 or shallow_value not in {"true", "false"}:
+        raise CacheAuditBundleError("repository has invalid shallow-checkout metadata")
+    if shallow_value == "true":
+        return True
+    partial = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(repository),
+            "config",
+            "--type=bool",
+            "--get-regexp",
+            r"^remote\..*\.promisor$",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        env=_GIT_ENV,
+    )
+    if partial.returncode not in {0, 1}:
+        raise CacheAuditBundleError("repository has invalid partial-clone metadata")
+    if partial.returncode == 1:
+        return False
+    values = [line.rsplit(maxsplit=1)[-1] for line in partial.stdout.splitlines()]
+    if not values or any(value not in {"true", "false"} for value in values):
+        raise CacheAuditBundleError("repository has invalid partial-clone metadata")
+    return any(value == "true" for value in values)
+
+
+def _package_objects_missing(repository: Path, commit: str) -> bool:
+    result = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(repository),
+            "rev-list",
+            "--objects",
+            "--missing=print",
+            commit,
+            "--",
+            "llmtracefx",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        env=_GIT_ENV,
+    )
+    if result.returncode != 0:
+        raise CacheAuditBundleError(
+            "generator commit package object inventory is unavailable"
+        )
+    return any(line.startswith("?") for line in result.stdout.splitlines())
+
+
+def _git_package_digest(repository: Path, commit: str) -> str:
+    listing = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(repository),
+            "ls-tree",
+            "-r",
+            "--name-only",
+            commit,
+            "--",
+            "llmtracefx",
+        ],
+        capture_output=True,
+        check=False,
+        env=_GIT_ENV,
+    )
+    if listing.returncode != 0:
+        raise CacheAuditBundleError("generator commit package tree is unavailable")
+    try:
+        paths = sorted(
+            line.decode("utf-8").removeprefix("llmtracefx/")
+            for line in listing.stdout.splitlines()
+            if line.endswith(b".py")
+        )
+    except UnicodeDecodeError as exc:
+        raise CacheAuditBundleError(
+            "generator commit package tree contains an invalid path"
+        ) from exc
+    if not paths or len(paths) != len(set(paths)):
+        raise CacheAuditBundleError("generator commit package tree is invalid")
+    digest = hashlib.sha256()
+    for relative_text in paths:
+        result = subprocess.run(
+            [
+                "git",
+                "--no-replace-objects",
+                "-C",
+                str(repository),
+                "show",
+                f"{commit}:llmtracefx/{relative_text}",
+            ],
+            capture_output=True,
+            check=False,
+            env=_GIT_ENV,
+        )
+        if result.returncode != 0:
+            raise CacheAuditBundleError(
+                "generator commit package source is unavailable"
+            )
+        content = _normalized_source(relative_text, result.stdout)
+        relative = relative_text.encode("utf-8")
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return "sha256:" + digest.hexdigest()
+
+
+def _verify_manifest_chronology(
+    manifest: AuditManifest,
+    *,
+    repository: Path | None = None,
+) -> str:
+    captured_at = _timestamp(manifest.created_at, "created_at")
+    generated_at = _timestamp(manifest.generated_at, "generated_at")
+    if generated_at < captured_at:
+        raise CacheAuditBundleError("bundle generation predates evidence capture")
+    if manifest.generator_commit is None:
+        return "unavailable"
+    if manifest.generator_commit_at is None:
+        raise CacheAuditBundleError("generator commit timestamp is unavailable")
+    recorded_commit_at = _timestamp(
+        manifest.generator_commit_at,
+        "generator_commit_at",
+    )
+    if generated_at < recorded_commit_at:
+        raise CacheAuditBundleError("bundle generation predates generator commit")
+    repository = repository or Path(__file__).resolve().parents[2]
+    if not (repository / ".git").exists():
+        return "unavailable"
+    object_type = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(repository),
+            "cat-file",
+            "-t",
+            manifest.generator_commit,
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        env=_GIT_ENV,
+    )
+    if object_type.returncode != 0:
+        if _repository_is_incomplete(repository):
+            return "unavailable"
+        raise CacheAuditBundleError("generator commit is unavailable for chronology")
+    if object_type.stdout.strip() != "commit":
+        raise CacheAuditBundleError("generator object is not a commit")
+    result = subprocess.run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(repository),
+            "show",
+            "-s",
+            "--format=%cI",
+            manifest.generator_commit,
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        env=_GIT_ENV,
+    )
+    if result.returncode != 0:
+        raise CacheAuditBundleError("generator commit is unavailable for chronology")
+    commit_at = _timestamp(result.stdout.strip(), "generator commit timestamp")
+    if recorded_commit_at != commit_at:
+        raise CacheAuditBundleError("generator commit timestamp does not match git")
+    if _repository_is_incomplete(repository) and _package_objects_missing(
+        repository,
+        manifest.generator_commit,
+    ):
+        return "unavailable"
+    if manifest.generator_package_digest is None:
+        raise CacheAuditBundleError("generator package digest is unavailable")
+    if (
+        _git_package_digest(repository, manifest.generator_commit)
+        != manifest.generator_package_digest
+    ):
+        raise CacheAuditBundleError(
+            "generator commit package tree does not match package digest"
+        )
+    return "verified"
+
+
+def _cache_config_digest(manifest: AuditManifest) -> str:
+    encoded = json.dumps(
+        manifest.cache_config.to_dict(),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode("ascii")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _request_identity(
+    manifest: AuditManifest,
+    record: RequestEvidence,
+    cache_config_digest: str,
+) -> RequestCacheIdentity | None:
+    if record.spec.input_token_ids is None:
+        return None
+    return RequestCacheIdentity(
+        backend=manifest.backend,
+        model_id=manifest.model_id,
+        tokenizer_id=manifest.tokenizer_id,
+        model_artifact_digest=manifest.model_artifact_digest,
+        cache_config_digest=cache_config_digest,
+        namespace_id=record.spec.namespace_id,
+        input_token_ids=record.spec.input_token_ids,
+    )
+
+
+def _verify_eviction_predecessors(
+    manifest: AuditManifest,
+    records: Sequence[RequestEvidence],
+) -> None:
+    if manifest.publication_mode is PublicationMode.PUBLIC_REDACTED:
+        return
+    cache_digest = _cache_config_digest(manifest)
+    prior: dict[str, RequestEvidence] = {}
+    for record in records:
+        proof = record.eviction_predecessor
+        if proof is not None:
+            predecessor = prior.get(proof.predecessor_request_id)
+            if predecessor is None:
+                raise CacheAuditBundleError(
+                    f"eviction predecessor is missing or not prior for "
+                    f"{record.spec.request_id}"
+                )
+            expected_predecessor = _request_identity(
+                manifest, predecessor, cache_digest
+            )
+            expected_current = _request_identity(manifest, record, cache_digest)
+            if (
+                expected_predecessor is None
+                or expected_current is None
+                or proof.predecessor != expected_predecessor
+                or proof.current != expected_current
+            ):
+                raise CacheAuditBundleError(
+                    f"eviction predecessor identity mismatch for "
+                    f"{record.spec.request_id}"
+                )
+        prior[record.spec.request_id] = record
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(
+        read_bounded_regular_bytes(path, MAX_EVIDENCE_ARTIFACT_BYTES)
+    ).hexdigest()
+
+
+def _jsonl(records: Sequence[RequestEvidence], *, include_tokens: bool) -> str:
+    return "".join(
+        json.dumps(
+            record.to_dict(include_tokens=include_tokens),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        + "\n"
+        for record in records
+    )
+
+
+def _events_jsonl(records: Sequence[RequestEvidence]) -> str:
+    rows = []
+    for record in records:
+        for event in record.events:
+            rows.append(
+                {
+                    "request_id": record.spec.request_id,
+                    "event": event.to_dict(),
+                }
+            )
+    return "".join(
+        json.dumps(
+            row,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        + "\n"
+        for row in rows
+    )
+
+
+def write_bundle(
+    output_dir: Path,
+    manifest: AuditManifest,
+    records: Sequence[RequestEvidence],
+) -> None:
+    """Write one complete bundle atomically at file granularity."""
+
+    if output_dir.is_symlink():
+        raise CacheAuditBundleError("output directory must not be a symlink")
+    if output_dir.exists():
+        if not output_dir.is_dir():
+            raise CacheAuditBundleError("output path must be a directory")
+        if any(output_dir.iterdir()):
+            raise CacheAuditBundleError(f"output directory is not empty: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if tuple(record.spec.request_id for record in records) != manifest.request_order:
+        raise CacheAuditBundleError("record order does not match manifest")
+    if workload_digest([record.spec for record in records]) != manifest.workload_digest:
+        raise CacheAuditBundleError(
+            "recorded request specifications do not match manifest"
+        )
+    if manifest.generator_package_digest != package_source_digest():
+        raise CacheAuditBundleError(
+            "manifest generating-package digest does not match this package"
+        )
+    _verify_manifest_chronology(manifest)
+    _verify_manifest_backend_contract(manifest)
+    if manifest.publication_mode is PublicationMode.PUBLIC_SYNTHETIC:
+        _verify_public_synthetic_provenance(manifest, records)
+        _verify_reference_oracle(manifest, records)
+    include_tokens = manifest.publication_mode is not PublicationMode.PUBLIC_REDACTED
+    atomic_write_text(
+        output_dir / "audit-manifest.json", canonical_json(manifest.to_dict())
+    )
+    atomic_write_text(
+        output_dir / "request-evidence.jsonl",
+        _jsonl(records, include_tokens=include_tokens),
+    )
+    atomic_write_text(output_dir / "cache-events.jsonl", _events_jsonl(records))
+    atomic_write_text(
+        output_dir / "claim-matrix.json",
+        canonical_json(build_claim_matrix(records)),
+    )
+    atomic_write_text(
+        output_dir / "summary.json",
+        canonical_json(build_summary(records, manifest)),
+    )
+    atomic_write_text(
+        output_dir / "reuse-alignment.svg",
+        render_reuse_alignment_svg(records),
+    )
+    atomic_write_text(output_dir / "report.html", render_html(manifest, records))
+    atomic_write_text(
+        output_dir / "evidence_bundle.py",
+        _portable_verifier(manifest),
+    )
+    checksums = "".join(
+        f"{_sha256(output_dir / name)}  {name}\n" for name in BUNDLE_DATA_FILES
+    )
+    atomic_write_text(output_dir / "SHA256SUMS", checksums)
+
+
+def _load_json(path: Path) -> Any:
+    text = read_bounded_regular_text(
+        path,
+        max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
+    )
+    try:
+        return json.loads(text, parse_constant=reject_non_finite_json_constant)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise CacheAuditBundleError(f"invalid JSON in {path.name}: {exc}") from exc
+
+
+def _load_records(path: Path) -> list[RequestEvidence]:
+    text = read_bounded_regular_text(
+        path,
+        max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
+    )
+    records: list[RequestEvidence] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if not line:
+            raise CacheAuditBundleError(
+                f"blank line in request-evidence.jsonl at {line_number}"
+            )
+        try:
+            value = json.loads(line, parse_constant=reject_non_finite_json_constant)
+            records.append(RequestEvidence.from_dict(value))
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise CacheAuditBundleError(
+                f"invalid request evidence at line {line_number}: {exc}"
+            ) from exc
+    return records
+
+
+def _verify_checksums(bundle_dir: Path) -> None:
+    text = read_bounded_regular_text(
+        bundle_dir / "SHA256SUMS",
+        max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
+    )
+    found: dict[str, str] = {}
+    for line in text.splitlines():
+        match = _CHECKSUM.fullmatch(line)
+        if match is None:
+            raise CacheAuditBundleError(f"invalid checksum line: {line!r}")
+        digest, name = match.groups()
+        if name in found:
+            raise CacheAuditBundleError(f"duplicate checksum entry: {name}")
+        found[name] = digest
+    if set(found) != set(BUNDLE_DATA_FILES):
+        raise CacheAuditBundleError("checksum file list is incomplete or unexpected")
+    for name, expected in found.items():
+        if _sha256(bundle_dir / name) != expected:
+            raise CacheAuditBundleError(f"checksum mismatch: {name}")
+
+
+def _verify_public_privacy(bundle_dir: Path) -> None:
+    for name in BUNDLE_FILES:
+        text = read_bounded_regular_text(
+            bundle_dir / name,
+            max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
+        )
+        for pattern, label in PRIVACY_PATTERNS:
+            if pattern.search(text):
+                raise CacheAuditBundleError(f"{name} contains {label}")
+        if '"cache_salt"' in text or '"raw_hash"' in text:
+            raise CacheAuditBundleError(f"{name} contains private cache identity")
+
+
+def _facts(record: RequestEvidence) -> tuple[EvidenceFact[Any], ...]:
+    snapshots = tuple(
+        fact
+        for snapshot in (record.cache_before, record.cache_after)
+        if snapshot is not None
+        for fact in (
+            snapshot.entry_count,
+            snapshot.logical_bytes,
+            snapshot.valid_token_offsets,
+            snapshot.cache_classes,
+        )
+    )
+    return (
+        *(getattr(record.reuse, name) for name in record.reuse.__dataclass_fields__),
+        *(getattr(record.memory, name) for name in record.memory.__dataclass_fields__),
+        record.output.token_identity,
+        record.output.correctness,
+        record.cost.billed,
+        record.cost.estimated,
+        *snapshots,
+    )
+
+
+def _verify_public_redacted_shape(
+    manifest: AuditManifest, records: Sequence[RequestEvidence]
+) -> None:
+    if (
+        manifest.run_id != "cache-audit-public-redacted"
+        or manifest.backend
+        not in {"synthetic_reference", "mlx_lm_local", "vllm", "redacted-backend"}
+        or manifest.backend_version != "redacted"
+        or manifest.adapter_version != "redacted"
+        or manifest.model_id != "redacted-model"
+        or manifest.tokenizer_id != "redacted-tokenizer"
+        or manifest.model_artifact_digest is not None
+        or manifest.runtime_identity != {"redaction": "public"}
+        or manifest.cache_config.namespace_id != "redacted-namespace"
+        or manifest.cache_config.cache_type != "redacted-cache"
+        or manifest.cache_config.hash_algorithm is not None
+        or manifest.cache_config.cache_salt_relationship is not None
+        or manifest.generator_commit is not None
+        or manifest.generator_commit_at is not None
+        or manifest.generator_package_digest is None
+    ):
+        raise CacheAuditBundleError("public-redacted manifest is not de-identified")
+    expected_ids = tuple(f"request-{index:04d}" for index in range(len(records)))
+    if manifest.request_order != expected_ids:
+        raise CacheAuditBundleError("public-redacted request identifiers are invalid")
+    for limitation in manifest.limitations:
+        if (
+            re.fullmatch(r"redacted_limitation_[0-9]{4}", limitation.code) is None
+            or limitation.message
+            != "Limitation details are available only in the private bundle."
+        ):
+            raise CacheAuditBundleError(
+                "public-redacted manifest limitation is invalid"
+            )
+    request_id_set = set(expected_ids)
+    for index, record in enumerate(records):
+        if record.spec.request_id != expected_ids[index]:
+            raise CacheAuditBundleError("public-redacted request identifier is invalid")
+        if re.fullmatch(r"namespace-[0-9]{4}", record.spec.namespace_id) is None:
+            raise CacheAuditBundleError("public-redacted namespace is invalid")
+        if re.fullmatch(r"replicate-[0-9]{4}", record.spec.replicate_id) is None:
+            raise CacheAuditBundleError(
+                "public-redacted replicate identifier is invalid"
+            )
+        if (
+            record.spec.pair_id is not None
+            and re.fullmatch(r"pair-[0-9]{4}", record.spec.pair_id) is None
+        ):
+            raise CacheAuditBundleError("public-redacted pair identifier is invalid")
+        if not set(record.spec.expected_predecessors) <= request_id_set:
+            raise CacheAuditBundleError("public-redacted predecessor is invalid")
+        for fact in _facts(record):
+            if fact.source != f"redacted.{fact.basis.value}":
+                raise CacheAuditBundleError(
+                    "public-redacted evidence source is invalid"
+                )
+            if fact.scope != PUBLIC_REDACTED_FACT_SCOPE:
+                raise CacheAuditBundleError("public-redacted evidence scope is invalid")
+            if not (
+                fact.value is None
+                or isinstance(fact.value, (bool, int, float))
+                or (
+                    isinstance(fact.value, list)
+                    and all(
+                        isinstance(item, int) and not isinstance(item, bool)
+                        for item in fact.value
+                    )
+                )
+            ):
+                raise CacheAuditBundleError(
+                    "public-redacted evidence value has an unsafe type"
+                )
+            if not set(fact.limitations) <= {
+                "details_redacted",
+                "token_identity_redacted",
+                "output_tokens_redacted",
+                "cache_classes_redacted",
+            }:
+                raise CacheAuditBundleError(
+                    "public-redacted evidence limitation is invalid"
+                )
+        if (
+            record.timing.scope != PUBLIC_REDACTED_TIMING_SCOPE
+            or record.timing.exclusions != PUBLIC_REDACTED_TIMING_EXCLUSIONS
+        ):
+            raise CacheAuditBundleError("public-redacted timing scope is invalid")
+        if any(
+            measurement is not None and measurement.unit != PUBLIC_REDACTED_TIMING_UNIT
+            for measurement in (
+                record.timing.client_ttft,
+                record.timing.in_process_first_token,
+                record.timing.queue,
+                record.timing.scheduling,
+                record.timing.prefill,
+                record.timing.decode,
+                record.timing.total,
+            )
+        ):
+            raise CacheAuditBundleError("public-redacted timing unit is invalid")
+        if record.eviction_predecessor is not None:
+            raise CacheAuditBundleError(
+                "public-redacted eviction predecessor must be removed"
+            )
+        for limitation in record.limitations:
+            if limitation.code == "public_tokens_redacted":
+                continue
+            if re.fullmatch(r"redacted_limitation_[0-9]{4}", limitation.code) is None:
+                raise CacheAuditBundleError(
+                    "public-redacted limitation identifier is invalid"
+                )
+            if (
+                limitation.message
+                != "Limitation details are available only in the private bundle."
+            ):
+                raise CacheAuditBundleError(
+                    "public-redacted limitation message is invalid"
+                )
+        for event in record.events:
+            if event.event_type not in {
+                "stored",
+                "removed",
+                "cleared",
+                "preempted",
+                "BlockStored",
+                "BlockRemoved",
+                "AllBlocksCleared",
+                "redacted",
+            } or event.medium not in {
+                None,
+                "CPU",
+                "GPU",
+                "cpu",
+                "gpu",
+                "host",
+                "device",
+            }:
+                raise CacheAuditBundleError("public-redacted cache event is invalid")
+            if not set(event.limitations) <= {"details_redacted"}:
+                raise CacheAuditBundleError(
+                    "public-redacted cache event limitation is invalid"
+                )
+
+
+def _verify_reference_oracle(
+    manifest: AuditManifest, records: Sequence[RequestEvidence]
+) -> None:
+    if manifest.backend != "synthetic_reference":
+        return
+    if any(record.spec.input_token_ids is None for record in records):
+        return
+    from .adapters.reference import ReferenceCacheAdapter
+
+    expected_records = ReferenceCacheAdapter(
+        max_entries=manifest.cache_config.max_entries or 32,
+        max_bytes=manifest.cache_config.max_bytes or (1 << 30),
+    ).run([record.spec for record in records])
+    for expected, observed in zip(expected_records, records, strict=True):
+        fields = tuple(expected.reuse.__dataclass_fields__)
+        for field in fields:
+            if (
+                getattr(expected.reuse, field).value
+                != getattr(observed.reuse, field).value
+            ):
+                raise CacheAuditBundleError(
+                    f"independent oracle mismatch for "
+                    f"{observed.spec.request_id}.{field}"
+                )
+        if expected.output.output_token_ids != observed.output.output_token_ids:
+            raise CacheAuditBundleError(
+                f"output control mismatch for {observed.spec.request_id}"
+            )
+        if expected.output.baseline_token_ids != observed.output.baseline_token_ids:
+            raise CacheAuditBundleError(
+                f"baseline control mismatch for {observed.spec.request_id}"
+            )
+
+
+def verify_bundle(bundle_dir: Path) -> dict[str, Any]:
+    """Verify checksums, schema, request order, verdicts, reports, and privacy."""
+
+    if not bundle_dir.is_dir() or bundle_dir.is_symlink():
+        raise CacheAuditBundleError("bundle must be a regular directory")
+    actual = {item.name for item in bundle_dir.iterdir()}
+    if actual != set(BUNDLE_FILES):
+        raise CacheAuditBundleError(
+            f"bundle files differ: missing={sorted(set(BUNDLE_FILES) - actual)}, "
+            f"extra={sorted(actual - set(BUNDLE_FILES))}"
+        )
+    for name in BUNDLE_FILES:
+        path = bundle_dir / name
+        if path.is_symlink() or not path.is_file():
+            raise CacheAuditBundleError(f"{name} must be a regular non-symlink file")
+    _verify_checksums(bundle_dir)
+    manifest = AuditManifest.from_dict(_load_json(bundle_dir / "audit-manifest.json"))
+    if manifest.generator_package_digest != package_source_digest():
+        raise CacheAuditBundleError(
+            "bundle belongs to a different llmtracefx cache-audit package"
+        )
+    repository_chronology_corroboration = _verify_manifest_chronology(manifest)
+    _verify_manifest_backend_contract(manifest)
+    records = _load_records(bundle_dir / "request-evidence.jsonl")
+    if tuple(record.spec.request_id for record in records) != manifest.request_order:
+        raise CacheAuditBundleError("request evidence order does not match manifest")
+    if workload_digest([record.spec for record in records]) != manifest.workload_digest:
+        raise CacheAuditBundleError(
+            "request specifications do not match workload digest"
+        )
+    _verify_eviction_predecessors(manifest, records)
+    if manifest.publication_mode is PublicationMode.PUBLIC_SYNTHETIC:
+        _verify_public_synthetic_provenance(manifest, records)
+    if manifest.publication_mode is PublicationMode.PUBLIC_REDACTED:
+        for record in records:
+            if (
+                record.spec.input_token_ids is not None
+                or record.output.output_token_ids is not None
+                or record.output.baseline_token_ids is not None
+            ):
+                raise CacheAuditBundleError(
+                    "public-redacted bundle contains exact token IDs"
+                )
+        _verify_public_redacted_shape(manifest, records)
+    if read_bounded_regular_text(
+        bundle_dir / "cache-events.jsonl",
+        max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
+    ) != _events_jsonl(records):
+        raise CacheAuditBundleError("cache event stream is not derived from requests")
+    _verify_reference_oracle(manifest, records)
+    for record in records:
+        output_tokens = record.output.output_token_ids
+        baseline_tokens = record.output.baseline_token_ids
+        if (output_tokens is None) != (baseline_tokens is None):
+            raise CacheAuditBundleError(
+                f"incomplete output comparison for request {record.spec.request_id}"
+            )
+        if output_tokens is None:
+            if record.output.token_identity.value is not None:
+                raise CacheAuditBundleError(
+                    f"token identity lacks exact arrays for request "
+                    f"{record.spec.request_id}"
+                )
+        else:
+            assert baseline_tokens is not None
+            if (
+                len(output_tokens) > record.spec.output_tokens
+                or len(baseline_tokens) > record.spec.output_tokens
+            ):
+                raise CacheAuditBundleError(
+                    f"output exceeds requested length for {record.spec.request_id}"
+                )
+            if record.output.token_identity.value != (output_tokens == baseline_tokens):
+                raise CacheAuditBundleError(
+                    f"output token identity mismatch for {record.spec.request_id}"
+                )
+        classified = classify_request(replace(record, verdict=None, verdict_reasons=()))
+        if classified.verdict != record.verdict:
+            raise CacheAuditBundleError(
+                f"verdict mismatch for request {record.spec.request_id}"
+            )
+        if classified.verdict_reasons != record.verdict_reasons:
+            raise CacheAuditBundleError(
+                f"verdict reasons mismatch for request {record.spec.request_id}"
+            )
+        if classified.eligibility != record.eligibility:
+            raise CacheAuditBundleError(
+                f"claim eligibility mismatch for request {record.spec.request_id}"
+            )
+    if _load_json(bundle_dir / "claim-matrix.json") != build_claim_matrix(records):
+        raise CacheAuditBundleError("claim matrix is not derived from request evidence")
+    if _load_json(bundle_dir / "summary.json") != build_summary(records, manifest):
+        raise CacheAuditBundleError("summary is not derived from request evidence")
+    if read_bounded_regular_text(
+        bundle_dir / "reuse-alignment.svg",
+        max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
+    ) != render_reuse_alignment_svg(records):
+        raise CacheAuditBundleError("reuse SVG is not deterministic")
+    if read_bounded_regular_text(
+        bundle_dir / "report.html",
+        max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
+    ) != render_html(manifest, records):
+        raise CacheAuditBundleError("HTML report is not deterministic")
+    if read_bounded_regular_text(
+        bundle_dir / "evidence_bundle.py",
+        max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
+    ) != _portable_verifier(manifest):
+        raise CacheAuditBundleError("portable verifier wrapper is not deterministic")
+    if manifest.publication_mode is not PublicationMode.PRIVATE:
+        _verify_public_privacy(bundle_dir)
+    return {
+        "run_id": manifest.run_id,
+        "backend": manifest.backend,
+        "request_count": len(records),
+        "verdict_counts": dict(
+            sorted(
+                Counter(
+                    "unclassified" if record.verdict is None else record.verdict.value
+                    for record in records
+                ).items()
+            )
+        ),
+        "token_identity_reproducible": (
+            manifest.publication_mode is not PublicationMode.PUBLIC_REDACTED
+        ),
+        "repository_chronology_corroboration": (repository_chronology_corroboration),
+    }
+
+
+def read_bundle(bundle_dir: Path) -> tuple[AuditManifest, list[RequestEvidence]]:
+    """Load a checksummed bundle after full verification."""
+
+    verify_bundle(bundle_dir)
+    return (
+        AuditManifest.from_dict(_load_json(bundle_dir / "audit-manifest.json")),
+        _load_records(bundle_dir / "request-evidence.jsonl"),
+    )
+
+
+def _redacted_fact(
+    fact: EvidenceFact[Any],
+    *,
+    value_type: Literal["bool", "int", "number", "int_list"],
+) -> EvidenceFact[Any]:
+    value = fact.value
+    valid = value is None
+    if value_type == "bool":
+        valid = valid or isinstance(value, bool)
+    elif value_type == "int":
+        valid = valid or (isinstance(value, int) and not isinstance(value, bool))
+    elif value_type == "number":
+        valid = valid or (
+            isinstance(value, (int, float)) and not isinstance(value, bool)
+        )
+    else:
+        valid = valid or (
+            isinstance(value, list)
+            and all(
+                isinstance(item, int) and not isinstance(item, bool) for item in value
+            )
+        )
+    if not valid:
+        return _redacted_unavailable("details_redacted")
+    return replace(
+        fact,
+        source=f"redacted.{fact.basis.value}",
+        scope=PUBLIC_REDACTED_FACT_SCOPE,
+        limitations=("details_redacted",) if fact.limitations else (),
+    )
+
+
+def _redacted_unavailable(*limitations: str) -> EvidenceFact[Any]:
+    return EvidenceFact(
+        value=None,
+        basis=EvidenceBasis.UNAVAILABLE,
+        source="redacted.unavailable",
+        scope=PUBLIC_REDACTED_FACT_SCOPE,
+        limitations=limitations,
+    )
+
+
+def _redacted_snapshot(
+    snapshot: CacheStateSnapshot | None,
+) -> CacheStateSnapshot | None:
+    if snapshot is None:
+        return None
+    return replace(
+        snapshot,
+        entry_count=_redacted_fact(snapshot.entry_count, value_type="int"),
+        logical_bytes=_redacted_fact(snapshot.logical_bytes, value_type="int"),
+        valid_token_offsets=_redacted_fact(
+            snapshot.valid_token_offsets,
+            value_type="int_list",
+        ),
+        cache_classes=_redacted_unavailable("cache_classes_redacted"),
+    )
+
+
+def _redacted_measurement(measurement: Any) -> Any:
+    if measurement is None:
+        return None
+    multipliers = {"s": 1.0, "ms": 1e-3, "us": 1e-6, "ns": 1e-9}
+    multiplier = multipliers.get(measurement.unit)
+    if multiplier is None:
+        return None
+    return replace(
+        measurement,
+        value=measurement.value * multiplier,
+        unit=PUBLIC_REDACTED_TIMING_UNIT,
+    )
+
+
+def _redacted_limitations(
+    limitations: Sequence[Limitation],
+) -> tuple[Limitation, ...]:
+    return tuple(
+        Limitation(
+            code=f"redacted_limitation_{index:04d}",
+            message="Limitation details are available only in the private bundle.",
+            blocks_verdict=limitation.blocks_verdict,
+        )
+        for index, limitation in enumerate(limitations)
+    )
+
+
+def sanitized_records(
+    records: Sequence[RequestEvidence],
+) -> list[RequestEvidence]:
+    """Return structurally de-identified public records and reclassify them."""
+
+    limitation = Limitation(
+        code="public_tokens_redacted",
+        message=(
+            "Exact input/output token IDs remain private; public token-identity "
+            "claims are not independently reproducible."
+        ),
+        blocks_verdict=False,
+    )
+    request_ids = {
+        record.spec.request_id: f"request-{index:04d}"
+        for index, record in enumerate(records)
+    }
+    pair_ids = {
+        pair_id: f"pair-{index:04d}"
+        for index, pair_id in enumerate(
+            dict.fromkeys(
+                record.spec.pair_id
+                for record in records
+                if record.spec.pair_id is not None
+            )
+        )
+    }
+    namespace_ids = {
+        namespace_id: f"namespace-{index:04d}"
+        for index, namespace_id in enumerate(
+            dict.fromkeys(record.spec.namespace_id for record in records)
+        )
+    }
+    sanitized: list[RequestEvidence] = []
+    for index, record in enumerate(records):
+        spec = replace(
+            record.spec,
+            request_id=request_ids[record.spec.request_id],
+            input_token_ids=None,
+            pair_id=(
+                None if record.spec.pair_id is None else pair_ids[record.spec.pair_id]
+            ),
+            expected_predecessors=tuple(
+                request_ids[predecessor]
+                for predecessor in record.spec.expected_predecessors
+            ),
+            namespace_id=namespace_ids[record.spec.namespace_id],
+            replicate_id=f"replicate-{index:04d}",
+        )
+        redacted = replace(
+            record,
+            spec=spec,
+            reuse=ReuseEvidence(
+                semantic_prefix_tokens=_redacted_unavailable("token_identity_redacted"),
+                policy_reusable_tokens=_redacted_unavailable("token_identity_redacted"),
+                reusable_blocks=_redacted_unavailable("token_identity_redacted"),
+                partial_block_tokens=_redacted_unavailable("token_identity_redacted"),
+                engine_cached_tokens=_redacted_fact(
+                    record.reuse.engine_cached_tokens,
+                    value_type="int",
+                ),
+                engine_cached_blocks=_redacted_fact(
+                    record.reuse.engine_cached_blocks,
+                    value_type="int",
+                ),
+                engine_created_tokens=_redacted_fact(
+                    record.reuse.engine_created_tokens,
+                    value_type="int",
+                ),
+                observed_prompt_tokens=_redacted_fact(
+                    record.reuse.observed_prompt_tokens,
+                    value_type="int",
+                ),
+                policy_required_prompt_tokens=_redacted_unavailable(
+                    "token_identity_redacted"
+                ),
+                unexpected_recomputed_tokens=_redacted_unavailable(
+                    "token_identity_redacted"
+                ),
+                eviction_observed=_redacted_unavailable("token_identity_redacted"),
+                preemption_observed=_redacted_unavailable("token_identity_redacted"),
+                prior_residency_observed=_redacted_unavailable(
+                    "token_identity_redacted"
+                ),
+                residency_absence_observed=_redacted_unavailable(
+                    "token_identity_redacted"
+                ),
+            ),
+            timing=replace(
+                record.timing,
+                **{
+                    name: _redacted_measurement(getattr(record.timing, name))
+                    for name in (
+                        "client_ttft",
+                        "in_process_first_token",
+                        "queue",
+                        "scheduling",
+                        "prefill",
+                        "decode",
+                        "total",
+                    )
+                },
+                scope=PUBLIC_REDACTED_TIMING_SCOPE,
+                exclusions=PUBLIC_REDACTED_TIMING_EXCLUSIONS,
+            ),
+            memory=MemoryEvidence(
+                **{
+                    name: _redacted_fact(
+                        getattr(record.memory, name),
+                        value_type="int",
+                    )
+                    for name in record.memory.__dataclass_fields__
+                }
+            ),
+            output=OutputEvidence(
+                output_token_ids=None,
+                baseline_token_ids=None,
+                token_identity=_redacted_unavailable("output_tokens_redacted"),
+                correctness=_redacted_unavailable("output_tokens_redacted"),
+                finish_reason=(
+                    record.output.finish_reason
+                    if record.output.finish_reason in {"stop", "length", "eos"}
+                    else None
+                ),
+            ),
+            cost=CostEvidence(
+                billed=_redacted_fact(record.cost.billed, value_type="number"),
+                estimated=_redacted_fact(record.cost.estimated, value_type="number"),
+                currency=None,
+            ),
+            limitations=_redacted_limitations(record.limitations) + (limitation,),
+            cache_before=_redacted_snapshot(record.cache_before),
+            cache_after=_redacted_snapshot(record.cache_after),
+            eviction_predecessor=None,
+            events=tuple(
+                CacheEventRecord(
+                    sequence=event.sequence,
+                    event_type=(
+                        event.event_type
+                        if event.event_type
+                        in {
+                            "stored",
+                            "removed",
+                            "cleared",
+                            "preempted",
+                            "BlockStored",
+                            "BlockRemoved",
+                            "AllBlocksCleared",
+                        }
+                        else "redacted"
+                    ),
+                    basis=event.basis,
+                    token_count=event.token_count,
+                    block_count=event.block_count,
+                    medium=(
+                        event.medium
+                        if event.medium
+                        in {"CPU", "GPU", "cpu", "gpu", "host", "device"}
+                        else None
+                    ),
+                    group_index=event.group_index,
+                    limitations=("details_redacted",) if event.limitations else (),
+                )
+                for event in record.events
+            ),
+            verdict=None,
+            verdict_reasons=(),
+        )
+        sanitized.append(classify_request(redacted))
+    return sanitized
+
+
+def sanitized_manifest(
+    manifest: AuditManifest, records: Sequence[RequestEvidence]
+) -> AuditManifest:
+    """Return a non-correlating manifest bound to the sanitized request specs."""
+
+    return replace(
+        manifest,
+        run_id="cache-audit-public-redacted",
+        backend=(
+            manifest.backend
+            if manifest.backend in {"synthetic_reference", "mlx_lm_local", "vllm"}
+            else "redacted-backend"
+        ),
+        backend_version="redacted",
+        adapter_version="redacted",
+        model_id="redacted-model",
+        tokenizer_id="redacted-tokenizer",
+        model_artifact_digest=None,
+        runtime_identity={"redaction": "public"},
+        cache_config=replace(
+            manifest.cache_config,
+            namespace_id="redacted-namespace",
+            cache_type="redacted-cache",
+            hash_algorithm=None,
+            cache_salt_relationship=None,
+        ),
+        publication_mode=PublicationMode.PUBLIC_REDACTED,
+        request_order=tuple(record.spec.request_id for record in records),
+        workload_digest=workload_digest([record.spec for record in records]),
+        generator_commit=None,
+        generator_commit_at=None,
+        limitations=_redacted_limitations(manifest.limitations),
+    )
+
+
+def sanitize_bundle_records(
+    manifest: AuditManifest, records: Sequence[RequestEvidence]
+) -> tuple[AuditManifest, list[RequestEvidence]]:
+    """Sanitize records and return the correspondingly rebound manifest."""
+
+    redacted_records = sanitized_records(records)
+    return sanitized_manifest(manifest, redacted_records), redacted_records

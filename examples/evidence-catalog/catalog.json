@@ -1,5 +1,5 @@
 {
-  "catalog_hash": "sha256:982953e63bfc75f9567b45f602f70dc667bbdb77e3bb97e85b649175996bbcc7",
+  "catalog_hash": "sha256:2a53a2c63008993db0c4e27deab2f932d3f075afd07f843f5cc31d29d3df98b5",
   "claim_dimensions": [
     "timing",
     "quality",
@@ -7,7 +7,12 @@
     "memory",
     "process_attribution",
     "model_fit",
-    "deployment_readiness"
+    "deployment_readiness",
+    "cache_reuse_identity",
+    "cache_compute_avoidance",
+    "cache_latency_effect",
+    "cache_memory_effect",
+    "cache_output_correctness"
   ],
   "edges": [
     {
@@ -48,6 +53,128 @@
   ],
   "entries": [
     {
+      "artifact_set_hash": "sha256:16261b46c09f8c619c50db1c56d5382af837a01d9e5ea2141028891fa198d380",
+      "budget": {
+        "authorized_usd": null,
+        "inferred_usd": null,
+        "limitation": "The synthetic local control incurred no provider spend.",
+        "planned_usd": null,
+        "reported_usd": null,
+        "scope": "not_applicable"
+      },
+      "bundle_schema_version": "2",
+      "captured_at": "2026-09-05T09:19:05.277130Z",
+      "claims": {
+        "cache_compute_avoidance": {
+          "provenance": "synthetic policy arithmetic is not observed runtime compute",
+          "state": "unsupported"
+        },
+        "cache_latency_effect": {
+          "provenance": "no timing measurements are emitted by the reference adapter",
+          "state": "unsupported"
+        },
+        "cache_memory_effect": {
+          "provenance": "no counterfactual allocator, RSS, or physical-memory effect is measured",
+          "state": "unsupported"
+        },
+        "cache_output_correctness": {
+          "provenance": "deterministic output IDs match an independent no-cache execution",
+          "state": "supported"
+        },
+        "cache_reuse_identity": {
+          "provenance": "public exact token arrays and independent prefix oracle",
+          "state": "supported"
+        },
+        "cost": {
+          "provenance": "no provider or paid execution occurred",
+          "state": "not_applicable"
+        },
+        "deployment_readiness": {
+          "provenance": "synthetic positive control is not a deployment assessment",
+          "state": "not_applicable"
+        },
+        "memory": {
+          "provenance": "logical synthetic cache accounting is not a runtime memory effect",
+          "state": "unsupported"
+        },
+        "model_fit": {
+          "provenance": "no model weights were loaded",
+          "state": "not_applicable"
+        },
+        "process_attribution": {
+          "provenance": "no native runtime process was measured",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "deterministic synthetic equivalence is not model quality evidence",
+          "state": "not_applicable"
+        },
+        "timing": {
+          "provenance": "the synthetic reference records no latency",
+          "state": "unsupported"
+        }
+      },
+      "dependencies": [],
+      "evidence_id": "cache-audit-reference-positive-control-20260905",
+      "hardware": {
+        "architecture": "not_applicable",
+        "system": "platform-independent synthetic control"
+      },
+      "kind": "cache_truth_audit",
+      "limitations": [
+        "This is a synthetic reference adapter, not MLX or vLLM evidence.",
+        "No client or engine timing domain was measured.",
+        "Logical cache bytes are not allocator or process memory."
+      ],
+      "measurements": [
+        {
+          "provenance": "independent oracle and synthetic engine attestation",
+          "scope": "expected and engine-attested reusable token counts"
+        },
+        {
+          "provenance": "synthetic reference observations; not runtime compute",
+          "scope": "synthetic prompt-policy operations and logical cache bytes"
+        },
+        {
+          "provenance": "independently invoked synthetic no-cache baseline",
+          "scope": "deterministic output-token equivalence"
+        }
+      ],
+      "model": {
+        "id": "synthetic-tiny-model",
+        "quantization": null,
+        "revision": null
+      },
+      "outcome": "completed",
+      "public_path": "examples/cache-audit/reference-positive-control",
+      "runtime": {
+        "name": "LLMTraceFX synthetic reference cache",
+        "provider": "local",
+        "version": "1"
+      },
+      "source_commit": "a5d63a90a0f31a5c1d6ada571cf98baf42fe308d",
+      "status": "verified",
+      "supported_claims": [
+        "The synthetic engine's attested reusable-token counts match the independent exact-token oracle for all nine requests.",
+        "All outputs match an independently invoked deterministic no-cache baseline."
+      ],
+      "unsupported_claims": [
+        "MLX, vLLM, GPU, or model-runtime cache behavior",
+        "latency, allocator memory, RSS, power, energy, or cost improvement",
+        "runtime compute avoidance or model quality",
+        "block hashing, preemption, multimodal, or speculative semantics"
+      ],
+      "verifier": {
+        "name": "cache-audit.verify_bundle",
+        "version": "1"
+      },
+      "workload": {
+        "context": "nine public synthetic exact-token requests",
+        "identity": "cache-audit-adversarial-v1",
+        "request": "cold, identical, mutation, suffix, duplicate, and namespace cases"
+      }
+    },
+    {
       "artifact_set_hash": "sha256:e7b5ae6331089f945941126aeb261d201d53db4e1176b245ba7535271d0abf0e",
       "budget": {
         "authorized_usd": 80.0,
@@ -60,6 +187,26 @@
       "bundle_schema_version": "1",
       "captured_at": "2026-09-02T22:38:00+05:30",
       "claims": {
+        "cache_compute_avoidance": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_latency_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_memory_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_output_correctness": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_reuse_identity": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
         "cost": {
           "provenance": "planned caps and inferred zero spend; no provider usage",
           "state": "supported"
@@ -161,6 +308,26 @@
       "bundle_schema_version": "1",
       "captured_at": "2026-08-31T13:18:34+00:00",
       "claims": {
+        "cache_compute_avoidance": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_latency_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_memory_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_output_correctness": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_reuse_identity": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
         "cost": {
           "provenance": "local trace capture has no spend claim",
           "state": "not_applicable"
@@ -257,6 +424,26 @@
       "bundle_schema_version": "1",
       "captured_at": "2026-09-02T21:57:45+05:30",
       "claims": {
+        "cache_compute_avoidance": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_latency_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_memory_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_output_correctness": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_reuse_identity": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
         "cost": {
           "provenance": "modeled cost and inferred zero spend are distinct scopes",
           "state": "supported"
@@ -352,6 +539,26 @@
       "bundle_schema_version": "1",
       "captured_at": "2026-09-02T11:44:23.771009Z",
       "claims": {
+        "cache_compute_avoidance": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_latency_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_memory_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_output_correctness": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_reuse_identity": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
         "cost": {
           "provenance": "provider usage, plan, and account delta remain separate scopes",
           "state": "supported"
@@ -457,6 +664,26 @@
       "bundle_schema_version": "1",
       "captured_at": "2026-09-03T16:30:38.954381+00:00",
       "claims": {
+        "cache_compute_avoidance": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_latency_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_memory_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_output_correctness": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_reuse_identity": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
         "cost": {
           "provenance": "boot-to-console list-rate inference; provider spend is unavailable",
           "state": "supported"
@@ -573,6 +800,26 @@
       "bundle_schema_version": "1",
       "captured_at": "2026-09-02T08:08:36.185127Z",
       "claims": {
+        "cache_compute_avoidance": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_latency_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_memory_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_output_correctness": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_reuse_identity": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
         "cost": {
           "provenance": "local execution has no spend claim",
           "state": "not_applicable"
@@ -673,6 +920,26 @@
       "bundle_schema_version": "1",
       "captured_at": "2026-09-04T14:41:34.327+05:30",
       "claims": {
+        "cache_compute_avoidance": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_latency_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_memory_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_output_correctness": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_reuse_identity": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
         "cost": {
           "provenance": "offline generation records zero spend and no execution authorization",
           "state": "supported"
@@ -776,6 +1043,26 @@
       "bundle_schema_version": "1",
       "captured_at": "2026-09-01T17:45:36.921331Z",
       "claims": {
+        "cache_compute_avoidance": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_latency_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_memory_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_output_correctness": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_reuse_identity": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
         "cost": {
           "provenance": "local execution has no spend claim",
           "state": "not_applicable"
@@ -885,6 +1172,26 @@
       "bundle_schema_version": "1",
       "captured_at": "2026-09-01T05:30:24.941062Z",
       "claims": {
+        "cache_compute_avoidance": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_latency_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_memory_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_output_correctness": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_reuse_identity": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
         "cost": {
           "provenance": "local execution has no spend claim",
           "state": "not_applicable"
@@ -986,6 +1293,26 @@
       "bundle_schema_version": "1",
       "captured_at": "2026-08-31T14:57:58.660151Z",
       "claims": {
+        "cache_compute_avoidance": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_latency_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_memory_effect": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_output_correctness": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
+        "cache_reuse_identity": {
+          "provenance": "evidence bundle predates the cache-audit claim contract",
+          "state": "not_applicable"
+        },
         "cost": {
           "provenance": "local execution has no spend claim",
           "state": "not_applicable"
@@ -1075,7 +1402,7 @@
     "name": "llmtracefx-evidence",
     "version": "1"
   },
-  "registry_hash": "sha256:10e3bc53be68ec915979210ce124746681ddf57c7dafd047f9979966dd65ec28",
+  "registry_hash": "sha256:570a2b371bd1b511fd27fc62f4f9c14179b78dcab4c6dc38462ae0bbf6f6dcbb",
   "schema_version": "1",
   "unregistered_candidates": []
 }

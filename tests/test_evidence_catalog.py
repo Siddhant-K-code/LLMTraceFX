@@ -40,7 +40,7 @@ def _write_catalog(tmp_path: Path, catalog: dict) -> Path:
 def test_committed_catalog_verifies_every_registered_adapter() -> None:
     result = core.verify_catalog(CATALOG, ROOT)
     assert result["verified"] is True
-    assert result["entries"] == len(SOURCES) == 10
+    assert result["entries"] == len(SOURCES) == 11
     assert result["edges"] == 7
     assert result["verified_evidence_ids"] == sorted(
         source["evidence_id"] for source in SOURCES
@@ -76,6 +76,29 @@ def test_modal_l4_adapters_are_closed_but_not_fabricated(
     assert script == "llmtracefx/evidence/modal_l4_crossover_verifier.py"
     assert arguments == (action, "--bundle", "{bundle}")
     assert (ROOT / script).is_file()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("publication_mode", "private"),
+        ("backend", "mlx_lm_local"),
+        ("workload_digest", "sha256:" + "0" * 64),
+        ("adapter_version", "1"),
+        ("generator_package_digest", "sha256:" + "0" * 64),
+        ("implementation_bound_at", "2000-01-01T00:00:00Z"),
+        ("privacy_status", "private"),
+    ),
+)
+def test_cache_catalog_binding_bypass_is_rejected(field: str, value: str) -> None:
+    source = next(
+        copy.deepcopy(item)
+        for item in SOURCES
+        if item["evidence_id"] == "cache-audit-reference-positive-control-20260905"
+    )
+    source["cache_binding"][field] = value
+    with pytest.raises(core.CatalogError, match="cache provenance binding drifted"):
+        core.verify_source(ROOT, source)
 
 
 def test_generation_is_deterministic_and_matches_committed_files() -> None:
@@ -289,7 +312,7 @@ def test_claim_matrix_is_closed_and_never_boolean() -> None:
     artifacts = core.render_catalog_artifacts(_catalog())
     matrix = json.loads(artifacts["claim-matrix.json"])
     assert matrix["dimensions"] == list(CLAIM_DIMENSIONS)
-    assert len(matrix["rows"]) == 10
+    assert len(matrix["rows"]) == 11
     for row in matrix["rows"]:
         assert set(row["claims"]) == set(CLAIM_DIMENSIONS)
         assert {claim["state"] for claim in row["claims"].values()} <= {
@@ -529,7 +552,7 @@ def test_external_cwd_verification_uses_explicit_catalog(tmp_path: Path) -> None
     assert completed.returncode == 0, completed.stdout + completed.stderr
     result = json.loads(completed.stdout)
     assert result["verified"] is True
-    assert result["entries"] == 10
+    assert result["entries"] == 11
 
 
 def test_unrelated_project_is_not_inferred_as_repository_root(

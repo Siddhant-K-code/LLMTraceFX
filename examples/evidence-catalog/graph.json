@@ -1,5 +1,5 @@
 {
-  "catalog_hash": "sha256:982953e63bfc75f9567b45f602f70dc667bbdb77e3bb97e85b649175996bbcc7",
+  "catalog_hash": "sha256:2a53a2c63008993db0c4e27deab2f932d3f075afd07f843f5cc31d29d3df98b5",
   "edges": [
     {
       "relation": "same_model_as",
@@ -38,6 +38,18 @@
     }
   ],
   "nodes": [
+    {
+      "evidence_id": "cache-audit-reference-positive-control-20260905",
+      "kind": "cache_truth_audit",
+      "model": "synthetic-tiny-model",
+      "outcome": "completed",
+      "status": "verified",
+      "supported_claim_scope": [
+        "cache_reuse_identity",
+        "cache_output_correctness"
+      ],
+      "system": "platform-independent synthetic control"
+    },
     {
       "evidence_id": "cloudrift-glm53flash-preflight-20260902",
       "kind": "provider_preflight",

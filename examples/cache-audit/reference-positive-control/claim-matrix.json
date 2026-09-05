@@ -1,0 +1,1229 @@
+{
+  "rows": [
+    {
+      "cache_entries_after": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 1
+      },
+      "cache_entries_before": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 0
+      },
+      "cache_event_count": 0,
+      "cache_reuse_verdict": "verified_miss",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "client_ttft_ms": null,
+      "correctness": {
+        "basis": "observed",
+        "limitations": [
+          "not_model_quality"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_baseline.deterministic_equivalence",
+        "value": true
+      },
+      "engine_cached": {
+        "basis": "engine_attested",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.cached_token_counter",
+        "value": 0
+      },
+      "expected_policy_reuse": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.synthetic_policy",
+        "value": 0
+      },
+      "in_process_first_token_ms": null,
+      "limitations": [],
+      "logical_cache_memory": {
+        "basis": "observed",
+        "limitations": [
+          "not_runtime_or_allocator_memory"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.logical_bytes",
+        "value": 704
+      },
+      "observed_prompt_work": {
+        "basis": "observed",
+        "limitations": [
+          "not_observed_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.policy_operation_counter",
+        "value": 9
+      },
+      "output_identity": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.separate_execution_comparison",
+        "value": true
+      },
+      "pair_id": "base-pair",
+      "pair_role": "control",
+      "replicate_id": "replicate-0",
+      "request_id": "cold",
+      "runtime_peak_memory": {
+        "basis": "unavailable",
+        "limitations": [
+          "no_runtime_allocator"
+        ],
+        "scope": "request",
+        "source": "synthetic_reference",
+        "value": null
+      },
+      "scenario": "cold",
+      "semantic_prefix": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.longest_common_prefix",
+        "value": 0
+      },
+      "statement": "The engine reported 0 cached tokens. Given the exact input and cache state, we independently expected 0. We observed 9 prompt-policy operations. Therefore the cache claim is verified_miss; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
+      "timing_exclusions": [
+        "synthetic_control_emits_no_runtime_timing"
+      ],
+      "timing_scope": "unavailable",
+      "unexpected_recomputed": {
+        "basis": "independently_derived",
+        "limitations": [
+          "synthetic_operations_not_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.operation_delta",
+        "value": 0
+      },
+      "verdict_reasons": [
+        "expected_attested_observed_miss"
+      ]
+    },
+    {
+      "cache_entries_after": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 1
+      },
+      "cache_entries_before": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 1
+      },
+      "cache_event_count": 0,
+      "cache_reuse_verdict": "verified_hit",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "client_ttft_ms": null,
+      "correctness": {
+        "basis": "observed",
+        "limitations": [
+          "not_model_quality"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_baseline.deterministic_equivalence",
+        "value": true
+      },
+      "engine_cached": {
+        "basis": "engine_attested",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.cached_token_counter",
+        "value": 8
+      },
+      "expected_policy_reuse": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.synthetic_policy",
+        "value": 8
+      },
+      "in_process_first_token_ms": null,
+      "limitations": [],
+      "logical_cache_memory": {
+        "basis": "observed",
+        "limitations": [
+          "not_runtime_or_allocator_memory"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.logical_bytes",
+        "value": 704
+      },
+      "observed_prompt_work": {
+        "basis": "observed",
+        "limitations": [
+          "not_observed_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.policy_operation_counter",
+        "value": 1
+      },
+      "output_identity": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.separate_execution_comparison",
+        "value": true
+      },
+      "pair_id": "base-pair",
+      "pair_role": "treatment",
+      "replicate_id": "replicate-0",
+      "request_id": "identical",
+      "runtime_peak_memory": {
+        "basis": "unavailable",
+        "limitations": [
+          "no_runtime_allocator"
+        ],
+        "scope": "request",
+        "source": "synthetic_reference",
+        "value": null
+      },
+      "scenario": "identical_prefix",
+      "semantic_prefix": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.longest_common_prefix",
+        "value": 9
+      },
+      "statement": "The engine reported 8 cached tokens. Given the exact input and cache state, we independently expected 8. We observed 1 prompt-policy operations. Therefore the cache claim is verified_hit; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
+      "timing_exclusions": [
+        "synthetic_control_emits_no_runtime_timing"
+      ],
+      "timing_scope": "unavailable",
+      "unexpected_recomputed": {
+        "basis": "independently_derived",
+        "limitations": [
+          "synthetic_operations_not_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.operation_delta",
+        "value": 0
+      },
+      "verdict_reasons": [
+        "semantic_policy_attested_observed_full_reuse"
+      ]
+    },
+    {
+      "cache_entries_after": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 2
+      },
+      "cache_entries_before": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 1
+      },
+      "cache_event_count": 0,
+      "cache_reuse_verdict": "verified_miss",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "client_ttft_ms": null,
+      "correctness": {
+        "basis": "observed",
+        "limitations": [
+          "not_model_quality"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_baseline.deterministic_equivalence",
+        "value": true
+      },
+      "engine_cached": {
+        "basis": "engine_attested",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.cached_token_counter",
+        "value": 0
+      },
+      "expected_policy_reuse": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.synthetic_policy",
+        "value": 0
+      },
+      "in_process_first_token_ms": null,
+      "limitations": [],
+      "logical_cache_memory": {
+        "basis": "observed",
+        "limitations": [
+          "not_runtime_or_allocator_memory"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.logical_bytes",
+        "value": 1408
+      },
+      "observed_prompt_work": {
+        "basis": "observed",
+        "limitations": [
+          "not_observed_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.policy_operation_counter",
+        "value": 9
+      },
+      "output_identity": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.separate_execution_comparison",
+        "value": true
+      },
+      "pair_id": null,
+      "pair_role": "single",
+      "replicate_id": "replicate-0",
+      "request_id": "first-token-mutation",
+      "runtime_peak_memory": {
+        "basis": "unavailable",
+        "limitations": [
+          "no_runtime_allocator"
+        ],
+        "scope": "request",
+        "source": "synthetic_reference",
+        "value": null
+      },
+      "scenario": "first_token_mutation",
+      "semantic_prefix": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.longest_common_prefix",
+        "value": 0
+      },
+      "statement": "The engine reported 0 cached tokens. Given the exact input and cache state, we independently expected 0. We observed 9 prompt-policy operations. Therefore the cache claim is verified_miss; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
+      "timing_exclusions": [
+        "synthetic_control_emits_no_runtime_timing"
+      ],
+      "timing_scope": "unavailable",
+      "unexpected_recomputed": {
+        "basis": "independently_derived",
+        "limitations": [
+          "synthetic_operations_not_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.operation_delta",
+        "value": 0
+      },
+      "verdict_reasons": [
+        "expected_attested_observed_miss"
+      ]
+    },
+    {
+      "cache_entries_after": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 3
+      },
+      "cache_entries_before": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 2
+      },
+      "cache_event_count": 0,
+      "cache_reuse_verdict": "partial_reuse",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "client_ttft_ms": null,
+      "correctness": {
+        "basis": "observed",
+        "limitations": [
+          "not_model_quality"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_baseline.deterministic_equivalence",
+        "value": true
+      },
+      "engine_cached": {
+        "basis": "engine_attested",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.cached_token_counter",
+        "value": 3
+      },
+      "expected_policy_reuse": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.synthetic_policy",
+        "value": 3
+      },
+      "in_process_first_token_ms": null,
+      "limitations": [],
+      "logical_cache_memory": {
+        "basis": "observed",
+        "limitations": [
+          "not_runtime_or_allocator_memory"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.logical_bytes",
+        "value": 2112
+      },
+      "observed_prompt_work": {
+        "basis": "observed",
+        "limitations": [
+          "not_observed_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.policy_operation_counter",
+        "value": 6
+      },
+      "output_identity": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.separate_execution_comparison",
+        "value": true
+      },
+      "pair_id": null,
+      "pair_role": "single",
+      "replicate_id": "replicate-0",
+      "request_id": "within-block-mutation",
+      "runtime_peak_memory": {
+        "basis": "unavailable",
+        "limitations": [
+          "no_runtime_allocator"
+        ],
+        "scope": "request",
+        "source": "synthetic_reference",
+        "value": null
+      },
+      "scenario": "within_block_mutation",
+      "semantic_prefix": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.longest_common_prefix",
+        "value": 3
+      },
+      "statement": "The engine reported 3 cached tokens. Given the exact input and cache state, we independently expected 3. We observed 6 prompt-policy operations. Therefore the cache claim is partial_reuse; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
+      "timing_exclusions": [
+        "synthetic_control_emits_no_runtime_timing"
+      ],
+      "timing_scope": "unavailable",
+      "unexpected_recomputed": {
+        "basis": "independently_derived",
+        "limitations": [
+          "synthetic_operations_not_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.operation_delta",
+        "value": 0
+      },
+      "verdict_reasons": [
+        "expected_attested_observed_partial_reuse"
+      ]
+    },
+    {
+      "cache_entries_after": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 4
+      },
+      "cache_entries_before": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 3
+      },
+      "cache_event_count": 0,
+      "cache_reuse_verdict": "partial_reuse",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "client_ttft_ms": null,
+      "correctness": {
+        "basis": "observed",
+        "limitations": [
+          "not_model_quality"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_baseline.deterministic_equivalence",
+        "value": true
+      },
+      "engine_cached": {
+        "basis": "engine_attested",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.cached_token_counter",
+        "value": 4
+      },
+      "expected_policy_reuse": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.synthetic_policy",
+        "value": 4
+      },
+      "in_process_first_token_ms": null,
+      "limitations": [],
+      "logical_cache_memory": {
+        "basis": "observed",
+        "limitations": [
+          "not_runtime_or_allocator_memory"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.logical_bytes",
+        "value": 2816
+      },
+      "observed_prompt_work": {
+        "basis": "observed",
+        "limitations": [
+          "not_observed_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.policy_operation_counter",
+        "value": 5
+      },
+      "output_identity": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.separate_execution_comparison",
+        "value": true
+      },
+      "pair_id": null,
+      "pair_role": "single",
+      "replicate_id": "replicate-0",
+      "request_id": "boundary-mutation",
+      "runtime_peak_memory": {
+        "basis": "unavailable",
+        "limitations": [
+          "no_runtime_allocator"
+        ],
+        "scope": "request",
+        "source": "synthetic_reference",
+        "value": null
+      },
+      "scenario": "block_boundary_mutation",
+      "semantic_prefix": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.longest_common_prefix",
+        "value": 4
+      },
+      "statement": "The engine reported 4 cached tokens. Given the exact input and cache state, we independently expected 4. We observed 5 prompt-policy operations. Therefore the cache claim is partial_reuse; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
+      "timing_exclusions": [
+        "synthetic_control_emits_no_runtime_timing"
+      ],
+      "timing_scope": "unavailable",
+      "unexpected_recomputed": {
+        "basis": "independently_derived",
+        "limitations": [
+          "synthetic_operations_not_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.operation_delta",
+        "value": 0
+      },
+      "verdict_reasons": [
+        "expected_attested_observed_partial_reuse"
+      ]
+    },
+    {
+      "cache_entries_after": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 5
+      },
+      "cache_entries_before": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 4
+      },
+      "cache_event_count": 0,
+      "cache_reuse_verdict": "partial_reuse",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "client_ttft_ms": null,
+      "correctness": {
+        "basis": "observed",
+        "limitations": [
+          "not_model_quality"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_baseline.deterministic_equivalence",
+        "value": true
+      },
+      "engine_cached": {
+        "basis": "engine_attested",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.cached_token_counter",
+        "value": 8
+      },
+      "expected_policy_reuse": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.synthetic_policy",
+        "value": 8
+      },
+      "in_process_first_token_ms": null,
+      "limitations": [],
+      "logical_cache_memory": {
+        "basis": "observed",
+        "limitations": [
+          "not_runtime_or_allocator_memory"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.logical_bytes",
+        "value": 3520
+      },
+      "observed_prompt_work": {
+        "basis": "observed",
+        "limitations": [
+          "not_observed_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.policy_operation_counter",
+        "value": 1
+      },
+      "output_identity": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.separate_execution_comparison",
+        "value": true
+      },
+      "pair_id": null,
+      "pair_role": "single",
+      "replicate_id": "replicate-0",
+      "request_id": "suffix-change",
+      "runtime_peak_memory": {
+        "basis": "unavailable",
+        "limitations": [
+          "no_runtime_allocator"
+        ],
+        "scope": "request",
+        "source": "synthetic_reference",
+        "value": null
+      },
+      "scenario": "suffix_change",
+      "semantic_prefix": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.longest_common_prefix",
+        "value": 8
+      },
+      "statement": "The engine reported 8 cached tokens. Given the exact input and cache state, we independently expected 8. We observed 1 prompt-policy operations. Therefore the cache claim is partial_reuse; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
+      "timing_exclusions": [
+        "synthetic_control_emits_no_runtime_timing"
+      ],
+      "timing_scope": "unavailable",
+      "unexpected_recomputed": {
+        "basis": "independently_derived",
+        "limitations": [
+          "synthetic_operations_not_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.operation_delta",
+        "value": 0
+      },
+      "verdict_reasons": [
+        "expected_attested_observed_partial_reuse"
+      ]
+    },
+    {
+      "cache_entries_after": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 6
+      },
+      "cache_entries_before": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 5
+      },
+      "cache_event_count": 0,
+      "cache_reuse_verdict": "verified_miss",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "client_ttft_ms": null,
+      "correctness": {
+        "basis": "observed",
+        "limitations": [
+          "not_model_quality"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_baseline.deterministic_equivalence",
+        "value": true
+      },
+      "engine_cached": {
+        "basis": "engine_attested",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.cached_token_counter",
+        "value": 0
+      },
+      "expected_policy_reuse": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.synthetic_policy",
+        "value": 0
+      },
+      "in_process_first_token_ms": null,
+      "limitations": [],
+      "logical_cache_memory": {
+        "basis": "observed",
+        "limitations": [
+          "not_runtime_or_allocator_memory"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.logical_bytes",
+        "value": 4224
+      },
+      "observed_prompt_work": {
+        "basis": "observed",
+        "limitations": [
+          "not_observed_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.policy_operation_counter",
+        "value": 9
+      },
+      "output_identity": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.separate_execution_comparison",
+        "value": true
+      },
+      "pair_id": null,
+      "pair_role": "single",
+      "replicate_id": "replicate-0",
+      "request_id": "same-length-different-ids",
+      "runtime_peak_memory": {
+        "basis": "unavailable",
+        "limitations": [
+          "no_runtime_allocator"
+        ],
+        "scope": "request",
+        "source": "synthetic_reference",
+        "value": null
+      },
+      "scenario": "same_length_different_ids",
+      "semantic_prefix": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.longest_common_prefix",
+        "value": 0
+      },
+      "statement": "The engine reported 0 cached tokens. Given the exact input and cache state, we independently expected 0. We observed 9 prompt-policy operations. Therefore the cache claim is verified_miss; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
+      "timing_exclusions": [
+        "synthetic_control_emits_no_runtime_timing"
+      ],
+      "timing_scope": "unavailable",
+      "unexpected_recomputed": {
+        "basis": "independently_derived",
+        "limitations": [
+          "synthetic_operations_not_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.operation_delta",
+        "value": 0
+      },
+      "verdict_reasons": [
+        "expected_attested_observed_miss"
+      ]
+    },
+    {
+      "cache_entries_after": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 6
+      },
+      "cache_entries_before": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 6
+      },
+      "cache_event_count": 0,
+      "cache_reuse_verdict": "verified_hit",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "client_ttft_ms": null,
+      "correctness": {
+        "basis": "observed",
+        "limitations": [
+          "not_model_quality"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_baseline.deterministic_equivalence",
+        "value": true
+      },
+      "engine_cached": {
+        "basis": "engine_attested",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.cached_token_counter",
+        "value": 8
+      },
+      "expected_policy_reuse": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.synthetic_policy",
+        "value": 8
+      },
+      "in_process_first_token_ms": null,
+      "limitations": [],
+      "logical_cache_memory": {
+        "basis": "observed",
+        "limitations": [
+          "not_runtime_or_allocator_memory"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.logical_bytes",
+        "value": 4224
+      },
+      "observed_prompt_work": {
+        "basis": "observed",
+        "limitations": [
+          "not_observed_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.policy_operation_counter",
+        "value": 1
+      },
+      "output_identity": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.separate_execution_comparison",
+        "value": true
+      },
+      "pair_id": null,
+      "pair_role": "single",
+      "replicate_id": "replicate-0",
+      "request_id": "duplicate",
+      "runtime_peak_memory": {
+        "basis": "unavailable",
+        "limitations": [
+          "no_runtime_allocator"
+        ],
+        "scope": "request",
+        "source": "synthetic_reference",
+        "value": null
+      },
+      "scenario": "duplicate",
+      "semantic_prefix": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.longest_common_prefix",
+        "value": 9
+      },
+      "statement": "The engine reported 8 cached tokens. Given the exact input and cache state, we independently expected 8. We observed 1 prompt-policy operations. Therefore the cache claim is verified_hit; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
+      "timing_exclusions": [
+        "synthetic_control_emits_no_runtime_timing"
+      ],
+      "timing_scope": "unavailable",
+      "unexpected_recomputed": {
+        "basis": "independently_derived",
+        "limitations": [
+          "synthetic_operations_not_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.operation_delta",
+        "value": 0
+      },
+      "verdict_reasons": [
+        "semantic_policy_attested_observed_full_reuse"
+      ]
+    },
+    {
+      "cache_entries_after": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 7
+      },
+      "cache_entries_before": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.resident_entries",
+        "value": 6
+      },
+      "cache_event_count": 0,
+      "cache_reuse_verdict": "verified_miss",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "client_ttft_ms": null,
+      "correctness": {
+        "basis": "observed",
+        "limitations": [
+          "not_model_quality"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_baseline.deterministic_equivalence",
+        "value": true
+      },
+      "engine_cached": {
+        "basis": "engine_attested",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.cached_token_counter",
+        "value": 0
+      },
+      "expected_policy_reuse": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.synthetic_policy",
+        "value": 0
+      },
+      "in_process_first_token_ms": null,
+      "limitations": [],
+      "logical_cache_memory": {
+        "basis": "observed",
+        "limitations": [
+          "not_runtime_or_allocator_memory"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.logical_bytes",
+        "value": 4928
+      },
+      "observed_prompt_work": {
+        "basis": "observed",
+        "limitations": [
+          "not_observed_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.policy_operation_counter",
+        "value": 9
+      },
+      "output_identity": {
+        "basis": "observed",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "synthetic_engine.separate_execution_comparison",
+        "value": true
+      },
+      "pair_id": null,
+      "pair_role": "single",
+      "replicate_id": "replicate-0",
+      "request_id": "namespace-isolation",
+      "runtime_peak_memory": {
+        "basis": "unavailable",
+        "limitations": [
+          "no_runtime_allocator"
+        ],
+        "scope": "request",
+        "source": "synthetic_reference",
+        "value": null
+      },
+      "scenario": "namespace_isolation",
+      "semantic_prefix": {
+        "basis": "independently_derived",
+        "limitations": [],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.longest_common_prefix",
+        "value": 0
+      },
+      "statement": "The engine reported 0 cached tokens. Given the exact input and cache state, we independently expected 0. We observed 9 prompt-policy operations. Therefore the cache claim is verified_miss; output equivalence is eligible, and performance attribution is ineligible; model quality is not_applicable.",
+      "timing_evidence": {
+        "client_ttft": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.client_ttft",
+          "value_ms": null
+        },
+        "in_process_first_token": {
+          "basis": "unavailable",
+          "limitations": [
+            "synthetic_control_emits_no_runtime_timing"
+          ],
+          "scope": "unavailable",
+          "source": "timing.in_process_first_token",
+          "value_ms": null
+        }
+      },
+      "timing_exclusions": [
+        "synthetic_control_emits_no_runtime_timing"
+      ],
+      "timing_scope": "unavailable",
+      "unexpected_recomputed": {
+        "basis": "independently_derived",
+        "limitations": [
+          "synthetic_operations_not_runtime_compute"
+        ],
+        "scope": "synthetic_arithmetic_control",
+        "source": "independent_oracle.operation_delta",
+        "value": 0
+      },
+      "verdict_reasons": [
+        "expected_attested_observed_miss"
+      ]
+    }
+  ],
+  "schema_version": "2"
+}

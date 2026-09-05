@@ -663,6 +663,26 @@ Then run `tune`, `tune-report`, or `optimize` against the verified result
 directory. The example policy files under `examples/optimizer/` are labelled
 examples and contain no benchmark claim.
 
+## KV-cache truth auditing
+
+`llmtracefx-cache-audit` checks whether a cache claim is supported by exact
+token identity, the pinned cache policy, observed prompt work, and output
+correctness. Cached-token counts, timing, memory, and cost remain separate claim
+dimensions; missing values remain unavailable.
+
+The built-in synthetic positive control is offline and download-free:
+
+```bash
+uv run llmtracefx-cache-audit run \
+  --backend reference \
+  --publication-mode public_synthetic \
+  --output-dir output/cache-audit
+uv run llmtracefx-cache-audit verify output/cache-audit
+```
+
+See [the cache-audit guide](docs/cache-audit.md) for MLX-LM 0.31.3 semantics,
+the vLLM 0.28.0 refusal gate, bundle privacy modes, and verdict definitions.
+
 ## Modal deployment
 
 `llmtracefx-deploy` is a planning CLI for the pinned GLM-5.3-Flash harness. It
@@ -692,12 +712,14 @@ The console scripts below come from `pyproject.toml`.
 | Command | Status | Purpose |
 | --- | --- | --- |
 | `llmtracefx-optimizer` | Current | Evidence collection, deterministic workloads, verification, comparison, tuning, and optimization |
+| `llmtracefx-cache-audit` | Current | Exact-token cache reuse, prompt-work, timing, memory, and correctness verification |
 | `llmtracefx-deploy` | Current | No-spend planning for the optional Modal GLM-5.3-Flash harness |
 | `llmtracefx` | Legacy compatibility | Earlier token trace analyzer |
 | `llmtracefx-serve` | Legacy compatibility | Local FastAPI surface for the earlier analyzer |
 | `llmtracefx-dashboard` | Legacy compatibility | Earlier Streamlit dashboard; not the current evidence workflow |
 
-Use `uv run llmtracefx-optimizer --help` and
+Use `uv run llmtracefx-optimizer --help`,
+`uv run llmtracefx-cache-audit --help`, and
 `uv run llmtracefx-deploy --help` as the source of truth for current flags.
 The legacy scripts are listed for package inventory only. Do not assume they
 implement a side-effect-free `--help` path.

@@ -110,7 +110,10 @@
           "$ref": "#/$defs/budget"
         },
         "bundle_schema_version": {
-          "const": "1"
+          "enum": [
+            "1",
+            "2"
+          ]
         },
         "captured_at": {
           "anyOf": [
@@ -128,6 +131,116 @@
         "claims": {
           "additionalProperties": false,
           "properties": {
+            "cache_compute_avoidance": {
+              "additionalProperties": false,
+              "properties": {
+                "provenance": {
+                  "maxLength": 32768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "not_applicable",
+                    "supported",
+                    "unsupported"
+                  ]
+                }
+              },
+              "required": [
+                "state",
+                "provenance"
+              ],
+              "type": "object"
+            },
+            "cache_latency_effect": {
+              "additionalProperties": false,
+              "properties": {
+                "provenance": {
+                  "maxLength": 32768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "not_applicable",
+                    "supported",
+                    "unsupported"
+                  ]
+                }
+              },
+              "required": [
+                "state",
+                "provenance"
+              ],
+              "type": "object"
+            },
+            "cache_memory_effect": {
+              "additionalProperties": false,
+              "properties": {
+                "provenance": {
+                  "maxLength": 32768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "not_applicable",
+                    "supported",
+                    "unsupported"
+                  ]
+                }
+              },
+              "required": [
+                "state",
+                "provenance"
+              ],
+              "type": "object"
+            },
+            "cache_output_correctness": {
+              "additionalProperties": false,
+              "properties": {
+                "provenance": {
+                  "maxLength": 32768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "not_applicable",
+                    "supported",
+                    "unsupported"
+                  ]
+                }
+              },
+              "required": [
+                "state",
+                "provenance"
+              ],
+              "type": "object"
+            },
+            "cache_reuse_identity": {
+              "additionalProperties": false,
+              "properties": {
+                "provenance": {
+                  "maxLength": 32768,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "not_applicable",
+                    "supported",
+                    "unsupported"
+                  ]
+                }
+              },
+              "required": [
+                "state",
+                "provenance"
+              ],
+              "type": "object"
+            },
             "cost": {
               "additionalProperties": false,
               "properties": {
@@ -290,7 +403,12 @@
             "memory",
             "process_attribution",
             "model_fit",
-            "deployment_readiness"
+            "deployment_readiness",
+            "cache_reuse_identity",
+            "cache_compute_avoidance",
+            "cache_latency_effect",
+            "cache_memory_effect",
+            "cache_output_correctness"
           ],
           "type": "object"
         },
@@ -310,6 +428,7 @@
         },
         "kind": {
           "enum": [
+            "cache_truth_audit",
             "compile_break_even",
             "fit_frontier",
             "hosted_comparison",
@@ -539,6 +658,12 @@
       "oneOf": [
         {
           "const": {
+            "name": "cache-audit.verify_bundle",
+            "version": "1"
+          }
+        },
+        {
+          "const": {
             "name": "cloudrift-compile.verify",
             "version": "1"
           }
@@ -657,8 +782,8 @@
     },
     "claim_dimensions": {
       "items": false,
-      "maxItems": 7,
-      "minItems": 7,
+      "maxItems": 12,
+      "minItems": 12,
       "prefixItems": [
         {
           "const": "timing"
@@ -680,6 +805,21 @@
         },
         {
           "const": "deployment_readiness"
+        },
+        {
+          "const": "cache_reuse_identity"
+        },
+        {
+          "const": "cache_compute_avoidance"
+        },
+        {
+          "const": "cache_latency_effect"
+        },
+        {
+          "const": "cache_memory_effect"
+        },
+        {
+          "const": "cache_output_correctness"
         }
       ],
       "type": "array"

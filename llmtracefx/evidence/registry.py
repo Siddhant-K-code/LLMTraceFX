@@ -6,6 +6,12 @@ from typing import Any
 
 CATALOG_SCHEMA_VERSION = "1"
 VERIFIER_VERSION = "1"
+_CACHE_AUDIT_SOURCE_COMMIT = "a5d63a90a0f31a5c1d6ada571cf98baf42fe308d"
+_CACHE_AUDIT_PACKAGE_DIGEST = (
+    "sha256:a0d9ea03f94b12383011d5a03295426cbac3ffc42f40c58b47cf7a36d812f5e3"
+)
+_CACHE_AUDIT_CAPTURED_AT = "2026-09-05T09:19:05.277130Z"
+_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = "2026-09-05T17:07:59Z"
 
 CLAIM_DIMENSIONS = (
     "timing",
@@ -15,6 +21,11 @@ CLAIM_DIMENSIONS = (
     "process_attribution",
     "model_fit",
     "deployment_readiness",
+    "cache_reuse_identity",
+    "cache_compute_avoidance",
+    "cache_latency_effect",
+    "cache_memory_effect",
+    "cache_output_correctness",
 )
 
 
@@ -23,7 +34,18 @@ def _claim(state: str, provenance: str) -> dict[str, str]:
 
 
 def _claims(**values: tuple[str, str]) -> dict[str, dict[str, str]]:
-    return {dimension: _claim(*values[dimension]) for dimension in CLAIM_DIMENSIONS}
+    return {
+        dimension: _claim(
+            *values.get(
+                dimension,
+                (
+                    "not_applicable",
+                    "evidence bundle predates the cache-audit claim contract",
+                ),
+            )
+        )
+        for dimension in CLAIM_DIMENSIONS
+    }
 
 
 SOURCES: tuple[dict[str, Any], ...] = (
@@ -1023,6 +1045,142 @@ SOURCES: tuple[dict[str, Any], ...] = (
             "A future result remains conditional on one exact VM and runtime.",
         ),
     },
+    {
+        "evidence_id": "cache-audit-reference-positive-control-20260905",
+        "kind": "cache_truth_audit",
+        "status": "verified",
+        "outcome": "completed",
+        "public_path": "examples/cache-audit/reference-positive-control",
+        "bundle_schema_version": "2",
+        "adapter": "cache_audit_v1",
+        "artifact_files": (
+            "SHA256SUMS",
+            "audit-manifest.json",
+            "cache-events.jsonl",
+            "claim-matrix.json",
+            "evidence_bundle.py",
+            "report.html",
+            "request-evidence.jsonl",
+            "reuse-alignment.svg",
+            "summary.json",
+        ),
+        "captured_at": _CACHE_AUDIT_CAPTURED_AT,
+        "source_commit": _CACHE_AUDIT_SOURCE_COMMIT,
+        "cache_binding": {
+            "publication_mode": "public_synthetic",
+            "backend": "synthetic_reference",
+            "workload_digest": (
+                "sha256:6b7a8cf4acd60b6f6600104c8284e8251ce5a3b3b8c93f20c6b36f72b3ea5445"
+            ),
+            "adapter_version": "2",
+            "generator_package_digest": _CACHE_AUDIT_PACKAGE_DIGEST,
+            "implementation_bound_at": _CACHE_AUDIT_IMPLEMENTATION_BOUND_AT,
+            "privacy_status": "verified_public_synthetic",
+        },
+        "model": {
+            "id": "synthetic-tiny-model",
+            "revision": None,
+            "quantization": None,
+        },
+        "runtime": {
+            "name": "LLMTraceFX synthetic reference cache",
+            "version": "1",
+            "provider": "local",
+        },
+        "hardware": {
+            "system": "platform-independent synthetic control",
+            "architecture": "not_applicable",
+        },
+        "workload": {
+            "identity": "cache-audit-adversarial-v1",
+            "context": "nine public synthetic exact-token requests",
+            "request": (
+                "cold, identical, mutation, suffix, duplicate, and namespace cases"
+            ),
+        },
+        "measurements": (
+            {
+                "scope": "expected and engine-attested reusable token counts",
+                "provenance": "independent oracle and synthetic engine attestation",
+            },
+            {
+                "scope": "synthetic prompt-policy operations and logical cache bytes",
+                "provenance": "synthetic reference observations; not runtime compute",
+            },
+            {
+                "scope": "deterministic output-token equivalence",
+                "provenance": "independently invoked synthetic no-cache baseline",
+            },
+        ),
+        "claims": _claims(
+            timing=("unsupported", "the synthetic reference records no latency"),
+            quality=(
+                "not_applicable",
+                "deterministic synthetic equivalence is not model quality evidence",
+            ),
+            cost=("not_applicable", "no provider or paid execution occurred"),
+            memory=(
+                "unsupported",
+                "logical synthetic cache accounting is not a runtime memory effect",
+            ),
+            process_attribution=(
+                "not_applicable",
+                "no native runtime process was measured",
+            ),
+            model_fit=("not_applicable", "no model weights were loaded"),
+            deployment_readiness=(
+                "not_applicable",
+                "synthetic positive control is not a deployment assessment",
+            ),
+            cache_reuse_identity=(
+                "supported",
+                "public exact token arrays and independent prefix oracle",
+            ),
+            cache_compute_avoidance=(
+                "unsupported",
+                "synthetic policy arithmetic is not observed runtime compute",
+            ),
+            cache_latency_effect=(
+                "unsupported",
+                "no timing measurements are emitted by the reference adapter",
+            ),
+            cache_memory_effect=(
+                "unsupported",
+                "no counterfactual allocator, RSS, or physical-memory effect is measured",
+            ),
+            cache_output_correctness=(
+                "supported",
+                "deterministic output IDs match an independent no-cache execution",
+            ),
+        ),
+        "supported_claims": (
+            (
+                "The synthetic engine's attested reusable-token counts match the "
+                "independent exact-token oracle for all nine requests."
+            ),
+            "All outputs match an independently invoked deterministic no-cache baseline.",
+        ),
+        "unsupported_claims": (
+            "MLX, vLLM, GPU, or model-runtime cache behavior",
+            "latency, allocator memory, RSS, power, energy, or cost improvement",
+            "runtime compute avoidance or model quality",
+            "block hashing, preemption, multimodal, or speculative semantics",
+        ),
+        "budget": {
+            "scope": "not_applicable",
+            "authorized_usd": None,
+            "planned_usd": None,
+            "reported_usd": None,
+            "inferred_usd": None,
+            "limitation": "The synthetic local control incurred no provider spend.",
+        },
+        "dependencies": (),
+        "limitations": (
+            "This is a synthetic reference adapter, not MLX or vLLM evidence.",
+            "No client or engine timing domain was measured.",
+            "Logical cache bytes are not allocator or process memory.",
+        ),
+    },
 )
 
 ADAPTERS = {
@@ -1072,6 +1230,10 @@ ADAPTERS = {
     },
     "modal_l4_crossover_results_v1": {
         "name": "modal-l4-crossover-results.verify",
+        "version": VERIFIER_VERSION,
+    },
+    "cache_audit_v1": {
+        "name": "cache-audit.verify_bundle",
         "version": VERIFIER_VERSION,
     },
 }
