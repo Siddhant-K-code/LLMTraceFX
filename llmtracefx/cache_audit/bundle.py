@@ -309,6 +309,9 @@ def resolve_package(bundle: Path, requested: Path | None) -> Path:
     if requested is None:
         candidates.extend((bundle.resolve(), *bundle.resolve().parents))
     for root in candidates:
+        package = root / "llmtracefx"
+        if package.is_symlink() or not package.is_dir():
+            continue
         temporary, digest = snapshot_package(root)
         if digest == EXPECTED_PACKAGE_DIGEST and commit_matches(root):
             return temporary
