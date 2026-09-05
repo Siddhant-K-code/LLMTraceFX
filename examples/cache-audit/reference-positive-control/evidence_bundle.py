@@ -9,10 +9,13 @@ import os
 import stat
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
-EXPECTED_COMMIT = '3ee184486845bf9b30c37b9aaf7153d93f88a4be'
-EXPECTED_PACKAGE_DIGEST = 'sha256:41eee925488778e1b81ee5f339ea35adad411857ec973eee94b5f36e81454a02'
+EXPECTED_COMMIT = 'e54395da3bb5493660791b6ee1d435d1d5be765e'
+EXPECTED_COMMIT_AT = '2026-09-05T21:41:23+05:30'
+EXPECTED_PACKAGE_DIGEST = 'sha256:1a85dd96d0191193d7390cfa6d2b6f87d25cdc6cc4c91943dc74d1b357a1457f'
+EXPECTED_GENERATED_AT = '2026-09-05T16:11:54Z'
 BUNDLE_DATA_FILES = ('audit-manifest.json', 'request-evidence.jsonl', 'cache-events.jsonl', 'claim-matrix.json', 'summary.json', 'reuse-alignment.svg', 'report.html', 'evidence_bundle.py')
 BUNDLE_FILES = BUNDLE_DATA_FILES + ("SHA256SUMS",)
 MAX_FILE_BYTES = 67108864
@@ -90,8 +93,34 @@ def verify_bundle_envelope(bundle: Path) -> None:
         fail("unsupported audit schema")
     if manifest.get("generator_commit") != EXPECTED_COMMIT:
         fail("bundle generator commit does not match embedded trust anchor")
+    if manifest.get("generator_commit_at") != EXPECTED_COMMIT_AT:
+        fail("bundle generator commit timestamp does not match embedded trust anchor")
     if manifest.get("generator_package_digest") != EXPECTED_PACKAGE_DIGEST:
         fail("bundle package digest does not match embedded trust anchor")
+    if manifest.get("generated_at") != EXPECTED_GENERATED_AT:
+        fail("bundle generation timestamp does not match embedded trust anchor")
+    try:
+        captured_at = datetime.fromisoformat(
+            manifest["created_at"].replace("Z", "+00:00")
+        )
+        generated_at = datetime.fromisoformat(
+            manifest["generated_at"].replace("Z", "+00:00")
+        )
+        commit_at = (
+            None
+            if EXPECTED_COMMIT_AT is None
+            else datetime.fromisoformat(EXPECTED_COMMIT_AT.replace("Z", "+00:00"))
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        fail(f"invalid bundle chronology: {exc}")
+    if captured_at.tzinfo is None or generated_at.tzinfo is None:
+        fail("bundle chronology must include timezone offsets")
+    if generated_at < captured_at:
+        fail("bundle generation predates evidence capture")
+    if (EXPECTED_COMMIT is None) != (commit_at is None):
+        fail("bundle generator commit timestamp binding is incomplete")
+    if commit_at is not None and generated_at < commit_at:
+        fail("bundle generation predates generator commit")
 
 
 def normalized_source(relative: str, content: bytes) -> bytes:
@@ -109,6 +138,18 @@ def normalized_source(relative: str, content: bytes) -> bytes:
     text = re.sub(
         r'^_CACHE_AUDIT_PACKAGE_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
         '_CACHE_AUDIT_PACKAGE_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_CACHE_AUDIT_CAPTURED_AT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_CACHE_AUDIT_CAPTURED_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = "<bound-at-generation>"',
         text,
         flags=re.MULTILINE,
     )
@@ -172,6 +213,32 @@ def commit_matches(root: Path) -> bool:
         check=False,
     )
     if listing.returncode != 0:
+        return False
+    timestamp = subprocess.run(
+        ["git", "-C", str(root), "show", "-s", "--format=%cI", EXPECTED_COMMIT],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        text=True,
+    )
+    if timestamp.returncode != 0:
+        return False
+    try:
+        commit_time = datetime.fromisoformat(timestamp.stdout.strip())
+        generated_time = datetime.fromisoformat(
+            EXPECTED_GENERATED_AT.replace("Z", "+00:00")
+        )
+    except ValueError:
+        return False
+    if EXPECTED_COMMIT_AT is None:
+        return False
+    try:
+        expected_commit_time = datetime.fromisoformat(
+            EXPECTED_COMMIT_AT.replace("Z", "+00:00")
+        )
+    except ValueError:
+        return False
+    if commit_time != expected_commit_time or generated_time < commit_time:
         return False
     digest = hashlib.sha256()
     paths = sorted(

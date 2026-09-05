@@ -14,8 +14,10 @@
     "physical_block_sizes": []
   },
   "created_at": "2026-09-05T09:19:05.277130Z",
-  "generator_commit": "3ee184486845bf9b30c37b9aaf7153d93f88a4be",
-  "generator_package_digest": "sha256:41eee925488778e1b81ee5f339ea35adad411857ec973eee94b5f36e81454a02",
+  "generated_at": "2026-09-05T16:11:54Z",
+  "generator_commit": "e54395da3bb5493660791b6ee1d435d1d5be765e",
+  "generator_commit_at": "2026-09-05T21:41:23+05:30",
+  "generator_package_digest": "sha256:1a85dd96d0191193d7390cfa6d2b6f87d25cdc6cc4c91943dc74d1b357a1457f",
   "limitations": [],
   "model_artifact_digest": null,
   "model_id": "synthetic-tiny-model",
