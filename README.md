@@ -199,9 +199,15 @@ make modal-l4-crossover-bundle modal-l4-crossover-verify
 ```
 
 Neither command imports the Modal SDK, authenticates, creates a container,
-downloads a model, uses a GPU, or authorizes spend. Work would run through
-Modal Functions and RPC only, never a public web endpoint, on one L4 with four
-physical CPU cores and 32 GiB, one live cell, `max_containers=1`,
+downloads a model, uses a GPU, or authorizes spend. **The protocol is currently
+refused**: an offline arithmetic gate (described below) shows the sealed design
+cannot fit one controlled cell inside its own timeout on an L4, so the
+execution preflight stops before authenticating. Everything that follows
+describes the preregistered design and the gates that would guard it.
+
+Work would run through Modal Functions and RPC only, never a public web
+endpoint, on one L4 with four physical CPU cores and 32 GiB, one live cell,
+`max_containers=1`,
 `min_containers=0`, single-input concurrency, single-use cell containers, zero
 retries, and an explicit timeout per stage. Any observed second attempt, crash,
 preemption, timeout, or missing terminal receipt invalidates the run and
@@ -219,24 +225,63 @@ Authentication uses only the operator's standard local Modal profile;
 and routing overrides plus credential-shaped variables are rejected by name and
 never read.
 
-A fail-closed GPU memory gate precedes the measured cells. Runner arguments
-stay BF16, tensor parallel 1, one sequence, 0.94 utilization, no prefix or
+A fail-closed GPU memory gate runs once, ahead of the whole measured block,
+as two isolated canaries; it is not re-run before each individual cell, and no
+measured cell is dispatched unless both canaries pass. Runner arguments stay
+BF16, tensor parallel 1, one sequence, 0.94 utilization, no prefix or
 speculative decoding, and a context length of exactly the longest frozen prompt
 array plus 96. CPU staging verifies 15 files and 16,397,461,266 bytes and seals
-the token arrays; isolated eager and compiled canaries then run the actual
-longest controlled prompt for 96 steps and must observe exactly one L4, the
-pinned runtime, sufficient KV capacity, no OOM, a full terminal completion, and
-a peak at least 512 MiB below total VRAM. Nothing is tuned to make the gate
-pass; a failure publishes a refusal.
+the token arrays; the eager and compiled canaries then run the actual longest
+controlled prompt for 96 steps and must observe exactly one L4, the pinned
+runtime, sufficient KV capacity, no OOM, a full terminal completion, and a peak
+at least 512 MiB below total VRAM. Nothing is tuned to make the gate pass; a
+failure publishes a refusal.
+
+#### The approved design is infeasible on an L4, and is refused offline
+
+Before any of that, an arithmetic gate decides whether the sealed design can
+run at all, and finds that it cannot. One controlled cell generates 144 x 96 =
+13,824 output tokens. Batch-1 BF16 decoding is memory-bandwidth bound and must
+stream at least one full model-weight image per generated token, and the staged
+image is the exact 16,397,461,266 bytes the staging gate already verifies, so a
+cell must move 226,678,504,541,184 bytes. At the L4's advertised peak memory
+bandwidth of 300,000,000,000 bytes per second that is 755.59501513728 seconds
+of decoding alone, against the sealed 480-second controlled-cell timeout: 1.574
+times over, before container start, weight load, engine initialization,
+prefill, or CUDA-graph capture. Put the other way, the cell needs 28.8 tokens
+per second where the hardware's theoretical ceiling is about 18.295515088183.
+
+Every input is a constant this protocol already pins, every step is exact
+integer arithmetic, and the whole proof runs offline, so
+`llmtracefx-modal-l4-execute preflight` refuses the run as its very first
+action — before the credential-exposure gate, before authentication, before the
+official-rate fetch, before the SDK is imported, and before any provider call
+or spend. The assumptions are deliberately generous to feasibility (peak rather
+than achieved bandwidth, weights only, no KV-cache or activation traffic, and
+zero setup time), so the real figure can only be worse.
+
+This is a refusal, not a repair. The sample size, the request and token counts,
+the timeout, and the accelerator are all preregistered, so lowering *n*,
+retuning the runner, extending the timeout, or moving to a different GPU would
+be a different experiment rather than this one. The verdict ships in the
+preregistration bundle as `decode-feasibility.json`, in the plan hash the
+authorization is bound to, and in the claim matrix as
+`controlled-cell-decode-feasible-on-l4`. Note that a canary could never have
+caught this: one 96-token canary needs about 5.2 seconds against its own
+300-second timeout and passes comfortably.
 
 Modal exposes no host page-cache drop and no dedicated-host reservation, so
 those CloudRift requirements are removed from this protocol only. Fresh
 single-use containers, unique writable cache directories, a disabled compile
 cache, a read-only shared model volume, and zero hidden warmups remain
-observable; provider placement, physical host reuse and page-cache state, and
-volume/backend caching do not. Results are therefore descriptive,
-provider-conditioned paired comparisons: pure causal compilation and natural
-causal speedup claims are unsupported by construction.
+observable; physical host reuse, host page-cache state, and volume/backend
+caching do not. Placement is a narrower case: it is chosen by Modal and never
+controlled, and the physical host is never identified, but whether the two
+cells of a pair landed in the same *anonymized* placement group is derived
+from their nonce-bound GPU commitments and published per pair. Results are
+therefore descriptive, provider-conditioned paired comparisons: pure causal
+compilation, hardware-matched, and natural causal speedup claims are
+unsupported by construction.
 
 #### Execution surface
 
@@ -256,37 +301,68 @@ volume read-only, and no `modal.Secret` is created or read anywhere.
 Measurement is not reimplemented. The cell Function calls the existing
 CloudRift crossover cell runner, so the deterministic environment, the memory
 sampler, the frozen `_llm_kwargs`, the request records, and the terminal-shape
-checks are the same code. The one deliberate difference is the hardware gate:
-the CloudRift gate admits one exact RTX 4090, so this delta has an L4 gate that
-pins the accelerator name and count and records the provider-managed driver
-instead of pinning it.
+checks are the same code. There are exactly two deliberate differences. The
+first is the hardware gate: the CloudRift gate admits one exact RTX 4090, so
+this delta has an L4 gate that pins the accelerator name and count and records
+the provider-managed driver instead of pinning it. The second is that a Modal
+Function returns a value instead of leaving a file on a host, so ordinary and
+out-of-memory failures become terminal refusal receipts rather than a reason
+lost inside a provider stack trace.
 
 `llmtracefx-modal-l4-execute preflight` runs every gate and stops before the
-SDK is imported: environment overrides are rejected by name without reading a
-value, the authorization is verified against an OpenSSH detached signature and
-bound to the exact plan hash, source head, nonce, run-scoped names, image
-reference, workspace path, and rate-receipt hash, the official rate documents
-are re-fetched and hashed (never parsed for numbers), and account headroom
-comes from a sanitized control-plane probe or a separately signed operator
-receipt — never from silence. `run` then imports the SDK, probes it against the
-pinned and inspected modal 1.5.5 API surface, and executes staging,
-verification, the eager canary, the compiled canary, the 32 sealed cells only
-if both canaries pass, and the analysis inventory, sequentially, reserving each
-lifecycle in the ledger before every call. A second attempt, crash, preemption,
-timeout, or missing terminal receipt stops the run where it stands, with no
-replacement cells.
+SDK is imported. The decode-bandwidth feasibility proof above runs first and,
+for the sealed design, ends the run there. Behind it: environment overrides are
+rejected by name without reading a value; the coordinator credential-exposure
+attestation is read and must be cleared; the authorization is verified against
+an OpenSSH detached signature and bound to the exact plan hash, clean source
+head, nonce, run-scoped names, image reference, workspace path, rate-receipt
+hash, credential-exposure attestation hash, and signed-headroom receipt hash,
+inside a bounded UTC `[not_before, expires_at)` window with an explicit maximum
+duration; the source-checkout gate confirms real git is clean at exactly that
+head; a standard local Modal profile is confirmed by a read-only probe whose
+output is discarded; the official rate documents are re-fetched and hashed
+(never parsed for numbers); and account headroom comes from a sanitized
+control-plane probe or a separately signed operator receipt — never from
+silence. That headroom receipt is not a bare dollar figure: it is a closed
+schema carrying the protocol, plan hash, source head, nonce, amount, and its
+own strict UTC validity window, which must cover the whole authorization
+window, and the authorization names its exact hash so a receipt signed for one
+run cannot be replayed into another. No account, workspace, or profile
+identifier may appear in it.
+
+`run` then imports the SDK, probes it against the pinned and inspected modal
+1.5.5 API surface, and executes staging, verification, the eager canary, the
+compiled canary, the 32 sealed cells only if both canaries pass, and the
+analysis inventory, sequentially, reserving each lifecycle in the ledger before
+every call. A second attempt, crash, preemption, timeout, or missing terminal
+receipt stops the run where it stands, with no replacement cells.
 
 Teardown runs in a `finally` on every path: the outstanding call is retained
 until it is cancelled with container termination, the ephemeral app context
-exits (a local action, never claimed as provider deletion proof), function
-autoscaler stats are read as scale-to-zero evidence, the run-scoped volume is
-deleted, and the volume listing — the only named-resource inventory Modal
-exposes — is read back into a sanitized receipt. Modal exposes no per-container
-delete, no `App.stop()`, and no app or container inventory, so none is claimed;
-each is published as an explicit unsupported control, as is the absence of a
-pre-run spend authority, and any ambiguity (a listing that could not be
-performed) fails the teardown closed. A complete run whose teardown is
-incomplete is a refusal, not a result.
+exits (a local action, never claimed as provider deletion proof), the run-scoped
+volume is deleted, and the volume listing — the only named-resource inventory
+Modal exposes — is read back into a sanitized receipt. Scale-to-zero is read
+from function autoscaler stats, but not as a single sample the instant the
+context exits: the scaledown window for these functions is two seconds and the
+control plane is eventually consistent, so one immediate reading observes
+timing rather than teardown. The gate polls within an exact, finite budget
+instead — at most twelve samples five seconds apart, 55 seconds worst case —
+and a function that has not reported zero by the deadline is recorded as
+unverified. Re-reading an autoscaler counter is control-plane cleanup
+verification, never a scientific retry: nothing measured is re-run, no call is
+re-dispatched, and the one-attempt-per-lifecycle rule is untouched.
+
+Modal exposes no per-container delete, no `App.stop()`, and no app or container
+inventory, so none is claimed; each is published as an explicit unsupported
+control, as is the absence of a pre-run spend authority, and any ambiguity (a
+listing that could not be performed) fails the teardown closed. A complete run
+whose teardown is incomplete is a refusal, not a result — but a refusal keeps
+its evidence. Cells and canaries that were already dispatched were already paid
+for, so their terminal receipts are written under a clearly-named
+`refused-evidence/` subtree alongside a `refusal-receipt.json`. None of those
+names is a name the result path reads, so a refusal still cannot be replayed as
+a result, and no paid receipt is thrown away because a later control-plane
+observation turned out to be ambiguous.
 
 The completed run is validated and analyzed by a provider-native results path
 (`modal_l4_crossover_results.analyze_modal_run`): it consumes the orchestration
@@ -436,8 +512,8 @@ uv run llmtracefx-optimizer optimize \
 | Metal and `xctrace` | macOS, full Xcode command-line tools, and a locally available Instruments template | `uv run llmtracefx-optimizer instruments capability` |
 | Hosted API collection | An HTTPS OpenAI-compatible endpoint and a provider key stored in an environment variable | Use `collect-api --dry-run` before making a request |
 | Modal planning | No Modal account or SDK is required | `uv run llmtracefx-deploy plan --help` |
-| Modal execution | An approved plan, current price inputs, Modal account and auth, optional `modal` extra, proxy auth token, pinned model revision, and pinned serving image | `uv sync --locked --extra modal` |
-| Modal L4 crossover execution | A signed authorization, cleared credential-exposure attestation, fresh rate receipt, and signed headroom, plus the exactly pinned SDK | `uv sync --locked --extra modal-l4-execute` (installs `modal==1.5.5`) |
+| Modal execution | An approved plan, current price inputs, Modal account and auth, optional `modal` extra, proxy auth token, pinned model revision, and pinned serving image | `uv sync --locked --extra modal` (the constraint is still `>=1.0.5`, but the lock now resolves `modal==1.5.5`) |
+| Modal L4 crossover execution | Currently refused: the sealed design is infeasible on an L4. Would otherwise need a signed authorization, cleared credential-exposure attestation, fresh rate receipt, run-bound signed headroom, and the exactly pinned SDK | `uv sync --locked --extra modal-l4-execute` (installs `modal==1.5.5`) |
 
 Hosted API requests, Modal staging, deployment, health checks, and inference can
 incur provider charges. None runs from the quickstart or from

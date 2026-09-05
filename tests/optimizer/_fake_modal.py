@@ -49,6 +49,12 @@ class Function:
         self.raw = raw
         self.kwargs = kwargs
         self.stats = FunctionStats()
+        # An optional scripted sequence of autoscaler samples. Each
+        # ``get_current_stats`` call consumes one entry; once the script is
+        # exhausted the steady-state ``stats`` are returned. This models the
+        # provider's real behaviour, where the control plane keeps reporting a
+        # live runner for a short while after the app context exits.
+        self.stats_script: list[FunctionStats] = []
 
     def outcome(self, arguments: tuple[Any, ...]) -> Any:
         script = self.app.script.get(self.key)
@@ -70,6 +76,8 @@ class Function:
         self.app.log.append(("stats", self.key))
         if self.app.stats_error is not None:
             raise self.app.stats_error
+        if self.stats_script:
+            return self.stats_script.pop(0)
         return self.stats
 
 

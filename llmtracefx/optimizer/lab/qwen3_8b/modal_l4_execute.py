@@ -48,13 +48,22 @@ from .modal_l4_crossover import (
     COMPUTE_PLANNED_SECONDS,
     FUNCTION_SPEC_BY_KEY,
     HARD_CAP_USD,
+    HEADROOM_RECEIPT_FIELDS,
+    HEADROOM_RECEIPT_KIND,
+    HEADROOM_RECEIPT_SCHEMA_VERSION,
     LIFECYCLE_BY_ID,
+    MAX_HEADROOM_RECEIPT_WINDOW_SECONDS,
     PROFILE_AUTHENTICATION_FIELDS,
     PROFILE_AUTHENTICATION_GATE,
     PROFILE_AUTHENTICATION_MECHANISM,
     PROFILE_AUTHENTICATION_SCHEMA_VERSION,
     PROTOCOL_ID,
     RUNTIME_IMAGE_SPEC_COMMITMENT,
+    SCALE_ZERO_POLL_ATTEMPTS,
+    SCALE_ZERO_POLL_INTERVAL_SECONDS,
+    SCALE_ZERO_POLL_TIMEOUT_SECONDS,
+    SCALE_ZERO_SETTLING_MECHANISM,
+    SCALEDOWN_WINDOW_SECONDS,
     STATISTICAL_PUBLICATION,
     TESTED_MODAL_VERSION,
     UNCONTROLLED_CACHE_LIMITATIONS,
@@ -67,6 +76,7 @@ from .modal_l4_crossover import (
     evaluate_attempt_receipts,
     evaluate_memory_gate,
     evaluate_teardown_receipt,
+    require_controlled_cell_decode_feasible,
     require_credential_exposure_cleared,
     require_local_profile_authentication,
     run_scoped_names,
@@ -201,6 +211,7 @@ class ModalExecutionAuthorization:
     experiment_nonce: str
     workspace_sha256: str
     rate_receipt_sha256: str
+    headroom_receipt_sha256: str
     credential_exposure_attestation_sha256: str
     authorized_at: str
     not_before: str
@@ -215,6 +226,7 @@ class ModalExecutionAuthorization:
         experiment_nonce: str,
         workspace_sha256: str,
         rate_receipt_sha256: str,
+        headroom_receipt_sha256: str,
         credential_exposure_attestation_sha256: str,
         authorized_at: str,
         not_before: str,
@@ -236,6 +248,11 @@ class ModalExecutionAuthorization:
             )["runtime_image_run_commitment"],
             "workspace_sha256": workspace_sha256,
             "rate_receipt_sha256": rate_receipt_sha256,
+            # The canonical hash of the signed operator headroom receipt. A
+            # signed dollar figure with no binding is replayable across plans
+            # and runs, so the exact receipt is named here and the supplied one
+            # must hash to this value.
+            "headroom_receipt_sha256": headroom_receipt_sha256,
             "credential_exposure_attestation_sha256": (
                 credential_exposure_attestation_sha256
             ),
@@ -262,6 +279,7 @@ class ModalExecutionAuthorization:
                 experiment_nonce=self.experiment_nonce,
                 workspace_sha256=self.workspace_sha256,
                 rate_receipt_sha256=self.rate_receipt_sha256,
+                headroom_receipt_sha256=self.headroom_receipt_sha256,
                 credential_exposure_attestation_sha256=(
                     self.credential_exposure_attestation_sha256
                 ),
@@ -280,6 +298,7 @@ class ModalExecutionAuthorization:
             "plan_sha256",
             "workspace_sha256",
             "rate_receipt_sha256",
+            "headroom_receipt_sha256",
             "credential_exposure_attestation_sha256",
         ):
             value = data.get(field)
@@ -316,6 +335,7 @@ class ModalExecutionAuthorization:
             experiment_nonce=nonce,
             workspace_sha256=data["workspace_sha256"],
             rate_receipt_sha256=data["rate_receipt_sha256"],
+            headroom_receipt_sha256=data["headroom_receipt_sha256"],
             credential_exposure_attestation_sha256=data[
                 "credential_exposure_attestation_sha256"
             ],
@@ -339,6 +359,7 @@ class ModalExecutionAuthorization:
             experiment_nonce=nonce,
             workspace_sha256=data["workspace_sha256"],
             rate_receipt_sha256=data["rate_receipt_sha256"],
+            headroom_receipt_sha256=data["headroom_receipt_sha256"],
             credential_exposure_attestation_sha256=data[
                 "credential_exposure_attestation_sha256"
             ],
@@ -648,8 +669,108 @@ def verify_execution_window(
     }
 
 
-PROFILE_VALIDATION_TIMEOUT_SECONDS = 20
-# The probe is the running interpreter's own ``modal`` module, not a bare
+MAX_HEADROOM_RECEIPT_WINDOW = timedelta(seconds=MAX_HEADROOM_RECEIPT_WINDOW_SECONDS)
+
+
+def verify_signed_headroom_receipt(
+    receipt: Any,
+    *,
+    authorization: ModalExecutionAuthorization,
+    now: datetime,
+) -> dict[str, Any]:
+    """Bind a signed operator headroom receipt to exactly this execution.
+
+    A signed dollar figure on its own is replayable: the same signature would
+    authorize any plan, any source head, and any run, indefinitely. This gate
+    refuses that. The receipt must
+
+    * be the exact document the signed authorization names, by canonical
+      SHA-256 (checked by the caller against
+      ``authorization.headroom_receipt_sha256``);
+    * carry the closed field set -- protocol, plan hash, source head,
+      experiment nonce, headroom, and its own validity window -- and nothing
+      else, so no account, workspace, profile, or contact identifier can ride
+      along;
+    * match this authorization's protocol, plan hash, source head, and nonce;
+    * carry strict UTC ``confirmed_at``/``expires_at`` instants forming a
+      bounded window no longer than
+      ``MAX_HEADROOM_RECEIPT_WINDOW_SECONDS`` seconds;
+    * be valid at ``now`` and cover the whole signed authorization window, so
+      headroom confirmed before the run stays confirmed until the run's
+      approval expires.
+
+    The returned verdict carries booleans, the bound identifiers, and the two
+    window edges only. No signature material and no identity is retained.
+    """
+
+    if not isinstance(receipt, Mapping):
+        raise ModalExecutionError("headroom receipt must be an object")
+    keys = set(receipt)
+    expected_keys = set(HEADROOM_RECEIPT_FIELDS)
+    extra = sorted(keys - expected_keys)
+    missing = sorted(expected_keys - keys)
+    if missing or extra:
+        raise ModalExecutionError(
+            "headroom receipt fields must match exactly; "
+            f"missing={missing!r} extra={extra!r}"
+        )
+    for field, expected in (
+        ("schema_version", HEADROOM_RECEIPT_SCHEMA_VERSION),
+        ("kind", HEADROOM_RECEIPT_KIND),
+        ("protocol_id", PROTOCOL_ID),
+        ("plan_sha256", authorization.plan_sha256),
+        ("source_head", authorization.source_head),
+        ("experiment_nonce", authorization.experiment_nonce),
+    ):
+        if receipt.get(field) != expected:
+            raise ModalExecutionError(
+                f"headroom receipt {field} is not bound to this authorization"
+            )
+    if not isinstance(receipt.get("headroom_usd"), str):
+        raise ModalExecutionError("headroom receipt must carry a decimal string")
+    confirmed_at = _parse_utc_timestamp(
+        receipt.get("confirmed_at"), field="confirmed_at"
+    )
+    receipt_expires_at = _parse_utc_timestamp(
+        receipt.get("expires_at"), field="headroom expires_at"
+    )
+    if confirmed_at >= receipt_expires_at:
+        raise ModalExecutionError("headroom receipt window is empty or inverted")
+    if receipt_expires_at - confirmed_at > MAX_HEADROOM_RECEIPT_WINDOW:
+        raise ModalExecutionError(
+            "headroom receipt window exceeds the maximum bounded duration of "
+            f"{MAX_HEADROOM_RECEIPT_WINDOW_SECONDS} seconds"
+        )
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ModalExecutionError("current time must be timezone-aware")
+    now_utc = now.astimezone(timezone.utc)
+    if not confirmed_at <= now_utc < receipt_expires_at:
+        raise ModalExecutionError(
+            "headroom receipt is not fresh; refusing a stale or premature "
+            "headroom confirmation"
+        )
+    not_before, expires_at = authorization.execution_window()
+    if confirmed_at > not_before or receipt_expires_at < expires_at:
+        raise ModalExecutionError(
+            "headroom receipt does not cover the authorized execution window"
+        )
+    return {
+        "verified": True,
+        "bound_to_authorization": True,
+        "protocol_id": PROTOCOL_ID,
+        "plan_sha256": authorization.plan_sha256,
+        "source_head": authorization.source_head,
+        "experiment_nonce": authorization.experiment_nonce,
+        "confirmed_at": receipt["confirmed_at"],
+        "expires_at": receipt["expires_at"],
+        "covers_execution_window": True,
+        "records_account_identity": False,
+    }
+
+
+PROFILE_VALIDATION_TIMEOUT_SECONDS = (
+    20  # The probe is the running interpreter's own ``modal`` module, not a bare
+)
 # ``modal`` looked up on PATH. ``sys.executable -m modal`` is guaranteed to be
 # the exact package the loaded SDK was imported from -- same interpreter, same
 # site-packages, same version -- so the probed CLI cannot silently be a
@@ -821,9 +942,12 @@ class ModalOrchestrator:
         app_loader: Callable[[], Any],
         rate_refresh: Mapping[str, Any] | None = None,
         source_checkout: Mapping[str, Any] | None = None,
+        decode_feasibility: Mapping[str, Any] | None = None,
+        headroom: Mapping[str, Any] | None = None,
         profile_validator: LocalProfileValidator | None = None,
         clock: Callable[[], str] = _now,
         monotonic_ns: Callable[[], int] = time.monotonic_ns,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.plan = plan
         self.authorization = authorization
@@ -839,11 +963,20 @@ class ModalOrchestrator:
         self.source_checkout = (
             dict(source_checkout) if source_checkout is not None else None
         )
+        # The offline decode-bandwidth proof this run passed, and the
+        # authorization-bound headroom verdict, are embedded so a later
+        # adjudicator can see which arithmetic and which headroom receipt
+        # actually admitted the run.
+        self.decode_feasibility = (
+            dict(decode_feasibility) if decode_feasibility is not None else None
+        )
+        self.headroom = dict(headroom) if headroom is not None else None
         self._sdk_loader = sdk_loader
         self._app_loader = app_loader
         self._profile_validator = profile_validator
         self._clock = clock
         self._monotonic_ns = monotonic_ns
+        self._sleep = sleep
         self.names = run_scoped_names(authorization.experiment_nonce)
         self.attempt_receipts: list[dict[str, Any]] = []
         self.cell_receipts: dict[str, dict[str, Any]] = {}
@@ -1042,6 +1175,82 @@ class ModalOrchestrator:
 
     # -- teardown ---------------------------------------------------------
 
+    def _poll_scale_to_zero(self, app_module: Any) -> dict[str, Any]:
+        """Wait, boundedly, for every function to report scale-to-zero.
+
+        Exiting the ephemeral app context does not make the autoscaler
+        instantly report zero. Modal's scaledown window for these functions is
+        ``SCALEDOWN_WINDOW_SECONDS`` and the control plane is eventually
+        consistent, so a single immediate sample after the context exits is a
+        coin flip: it can report a live runner that is about to disappear, or
+        (less often) a stale zero. Sampling once and recording the answer as
+        final is therefore not an observation of teardown, it is an
+        observation of timing.
+
+        This polls instead, with an exact, finite budget: at most
+        ``SCALE_ZERO_POLL_ATTEMPTS`` samples spaced ``SCALE_ZERO_POLL_INTERVAL_
+        SECONDS`` apart, for a worst case of
+        ``SCALE_ZERO_POLL_TIMEOUT_SECONDS``. There is no unbounded wait and no
+        retry-until-success: the loop always terminates, and a function that
+        has not reported zero by the deadline is recorded as *not* verified.
+
+        This is control-plane cleanup verification, not a scientific retry.
+        Nothing measured is re-run, no call is re-dispatched, and no receipt is
+        replaced; the sealed one-attempt-per-lifecycle rule is untouched. The
+        only thing repeated is *reading* an autoscaler counter, which cannot
+        change a measurement or cause spend.
+
+        Fails closed in both directions: a probe that raises on every attempt,
+        and a function still reporting runners or backlog at the deadline, both
+        leave ``verified`` false with a recorded failure.
+        """
+
+        functions = dict(getattr(app_module, "FUNCTIONS", {}))
+        pending = dict(functions)
+        failures: list[str] = []
+        samples = 0
+        settled_after_samples: dict[str, int] = {}
+        for attempt in range(1, SCALE_ZERO_POLL_ATTEMPTS + 1):
+            if not pending:
+                break
+            if attempt > 1:
+                self._sleep(SCALE_ZERO_POLL_INTERVAL_SECONDS)
+            samples = attempt
+            for key in sorted(pending):
+                function = pending[key]
+                try:
+                    stats = function.get_current_stats()
+                except BaseException:  # noqa: BLE001 - absence is never inferred
+                    # Transient control-plane unavailability is retried within
+                    # the same bounded budget; a probe that never succeeds is
+                    # recorded as unverified below.
+                    continue
+                if (
+                    getattr(stats, "num_total_runners", 1) == 0
+                    and getattr(stats, "backlog", 1) == 0
+                ):
+                    settled_after_samples[key] = attempt
+                    del pending[key]
+        for key in sorted(pending):
+            failures.append(f"scale_zero_unverified:{key}")
+        return {
+            "verified": not pending,
+            "failures": failures,
+            "observation": {
+                "mechanism": SCALE_ZERO_SETTLING_MECHANISM,
+                "is_scientific_retry": False,
+                "provider_scaledown_window_seconds": SCALEDOWN_WINDOW_SECONDS,
+                "poll_interval_seconds": SCALE_ZERO_POLL_INTERVAL_SECONDS,
+                "poll_attempts_max": SCALE_ZERO_POLL_ATTEMPTS,
+                "poll_timeout_seconds": SCALE_ZERO_POLL_TIMEOUT_SECONDS,
+                "samples_taken": samples,
+                "functions_observed": len(functions),
+                "functions_settled": len(settled_after_samples),
+                "settled_after_samples": dict(sorted(settled_after_samples.items())),
+                "unsettled_functions": len(pending),
+            },
+        }
+
     def _tear_down(self, modal_module: Any, app_module: Any) -> dict[str, Any]:
         failures: list[str] = []
         cancelled = True
@@ -1053,20 +1262,9 @@ class ModalOrchestrator:
                 failures.append("outstanding_call_cancel_failed")
             finally:
                 self.outstanding_call = None
-        scale_zero = True
-        for key, function in getattr(app_module, "FUNCTIONS", {}).items():
-            try:
-                stats = function.get_current_stats()
-            except BaseException:  # noqa: BLE001 - absence is recorded, not inferred
-                scale_zero = False
-                failures.append(f"scale_zero_unverified:{key}")
-                continue
-            if (
-                getattr(stats, "num_total_runners", 1) != 0
-                or getattr(stats, "backlog", 1) != 0
-            ):
-                scale_zero = False
-                failures.append(f"runners_remaining:{key}")
+        scale_zero_poll = self._poll_scale_to_zero(app_module)
+        scale_zero = bool(scale_zero_poll["verified"])
+        failures.extend(scale_zero_poll["failures"])
         volume_deleted = True
         try:
             modal_module.Volume.objects.delete(
@@ -1101,6 +1299,11 @@ class ModalOrchestrator:
             "functions_scaled_to_zero": scale_zero,
             "function_inventory_observability": "control_plane_scale_to_zero_only",
             "scale_zero_verified_via_control_plane": scale_zero,
+            # How the scale-to-zero verdict was reached: a bounded, finite
+            # settling poll of the autoscaler, never a single immediate sample
+            # and never an unbounded wait. This is cleanup verification of the
+            # control plane, explicitly not a retry of anything scientific.
+            "scale_zero_settling": scale_zero_poll["observation"],
             # No per-container inventory or delete exists.
             "container_inventory_observable": False,
             "container_inventory_null_reason": UNSUPPORTED_PROVIDER_CONTROLS[
@@ -1198,6 +1401,16 @@ class ModalOrchestrator:
             "source_checkout": (
                 dict(self.source_checkout) if self.source_checkout is not None else None
             ),
+            # The offline decode-bandwidth proof that admitted this run, and
+            # the authorization-bound headroom verdict. Both are recorded so a
+            # reader can see exactly which arithmetic and which signed receipt
+            # let the run start, without re-deriving either.
+            "decode_feasibility": (
+                dict(self.decode_feasibility)
+                if self.decode_feasibility is not None
+                else None
+            ),
+            "headroom": dict(self.headroom) if self.headroom is not None else None,
             "call_sequence_executed": [
                 {
                     "lifecycle_id": item["lifecycle_id"],
@@ -1228,21 +1441,50 @@ class ModalOrchestrator:
             "observed_at": self._clock(),
         }
         document["orchestration_sha256"] = _sha256_json(document)
-        # Result evidence is written only for a published result. A non-complete
-        # status, or a complete run refused because teardown was incomplete,
-        # never writes an orchestration receipt, a cell receipt, or a canary
-        # receipt, so a refusal can never be mistaken for, or replayed as, a
-        # result.
+        # A published result is written under the names the result bundle
+        # reads. A refusal -- a non-complete status, or a complete run refused
+        # because teardown was incomplete or ambiguous -- is written under a
+        # separate refusal subtree instead. The distinction matters twice over:
+        # a refusal can never be mistaken for, or replayed as, a result,
+        # because no file it writes has a name the result path consumes; and
+        # the receipts for cells and canaries that were already dispatched and
+        # already paid for are still preserved rather than thrown away because
+        # a later control-plane observation was ambiguous. Discarding paid
+        # evidence would be both wasteful and unscientific: the refusal is a
+        # finding, and its supporting receipts are part of it.
         if published:
             _write_json(self.workspace / "orchestration-receipt.json", document)
-            for cell_id, receipt in self.cell_receipts.items():
-                _write_json(self.workspace / "cells" / f"{cell_id}.json", receipt)
-            for index, item in enumerate(self.memory_gate, start=1):
-                _write_json(
-                    self.workspace / "memory-gate" / f"canary-{index:02d}.json",
-                    item["receipt"],
-                )
+            self._write_run_receipts(self.workspace)
+        else:
+            _write_json(self.workspace / REFUSAL_RECEIPT_FILE, document)
+            self._write_run_receipts(self.workspace / REFUSAL_EVIDENCE_DIR)
         return document
+
+    def _write_run_receipts(self, root: Path) -> None:
+        """Persist every terminal cell and canary receipt this run obtained."""
+
+        for cell_id, receipt in self.cell_receipts.items():
+            _write_json(root / "cells" / f"{cell_id}.json", receipt)
+        for index, item in enumerate(self.memory_gate, start=1):
+            _write_json(
+                root / "memory-gate" / f"canary-{index:02d}.json", item["receipt"]
+            )
+
+
+def _require_feasible(verdict: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Refuse an infeasible design before any other gate runs.
+
+    This is the first thing ``preflight`` does. It reads no file, opens no
+    socket, imports no provider package, and touches no credential: it is pure
+    arithmetic over frozen constants, so the refusal is reproducible by anyone
+    with the plan and a calculator. An infeasible verdict is a scientific
+    result, not a retry condition.
+    """
+
+    try:
+        return require_controlled_cell_decode_feasible(verdict=verdict)
+    except ModalL4ContractError as exc:
+        raise ModalExecutionError(str(exc)) from exc
 
 
 def _require_workspace(path: Path) -> Path:
@@ -1257,6 +1499,7 @@ def _require_workspace(path: Path) -> Path:
 # must never be able to mix with, or be replayed into, a new run's evidence.
 RUN_OUTPUT_FILES = (
     "credential-exposure.json",
+    "decode-feasibility.json",
     "source-checkout.json",
     "rate-refresh.json",
     "headroom.json",
@@ -1265,8 +1508,11 @@ RUN_OUTPUT_FILES = (
     "application-ledger.json",
     ".application-ledger.json.lock",
     "orchestration-receipt.json",
+    "refusal-receipt.json",
 )
-RUN_OUTPUT_DIRS = ("cells", "memory-gate")
+RUN_OUTPUT_DIRS = ("cells", "memory-gate", "refused-evidence")
+REFUSAL_RECEIPT_FILE = "refusal-receipt.json"
+REFUSAL_EVIDENCE_DIR = "refused-evidence"
 
 
 def _require_clean_output_workspace(
@@ -1312,13 +1558,25 @@ def preflight(
     signature_verifier: Any = None,
     signature_runner: Callable[[Sequence[str], str], int] | None = None,
     source_checkout_probe: SourceCheckoutProbe | None = None,
+    feasibility_verdict: Mapping[str, Any] | None = None,
     repo_root: Path = REPO_ROOT,
     urls: Sequence[str] = OFFICIAL_SOURCE_URLS,
     now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     """Run every gate that must pass before the provider SDK is imported.
 
-    The credential-exposure gate runs first. A standard-profile credential was
+    The decode-bandwidth feasibility proof runs first, before anything is read
+    from disk. It is pure arithmetic over frozen constants and decides whether
+    one controlled cell could stream its weight images inside the sealed
+    controlled-cell timeout at all. On the pinned accelerator it cannot, so the
+    approved design is refused here -- before authentication, before the
+    official-rate fetch, before the provider SDK is imported, and before any
+    provider call or spend. ``feasibility_verdict`` exists only so the policy
+    can be exercised against a hypothetical device offline; no production
+    caller supplies it, and the verdict actually used is recorded in the
+    returned gates and in every receipt this run writes.
+
+    The credential-exposure gate runs next. A standard-profile credential was
     exposed outside this system, so until a coordinator confirms it was revoked
     and that a fresh local profile was created and never shared, no path here
     authenticates, imports the provider SDK, or spends anything. The
@@ -1330,9 +1588,12 @@ def preflight(
     network fetch or provider import the source-checkout gate binds the run to
     a clean git checkout at the authorized source head, so a run can never
     start from uncommitted or dirty execution source, nor from a stale or
-    replayed approval outside its window.
+    replayed approval outside its window. The signed operator headroom receipt
+    is then required to be the exact document the authorization names and to be
+    bound to this plan, head, nonce, and execution window.
     """
 
+    feasibility = _require_feasible(feasibility_verdict)
     attestation = (
         read_structured_receipt(credential_exposure_attestation_path)
         if credential_exposure_attestation_path is not None
@@ -1354,10 +1615,8 @@ def preflight(
     # Bounded execution window: after the signature is verified, but before any
     # network fetch or SDK import, refuse an approval that is not yet valid or
     # has expired so a stale or replayed approval cannot start a run.
-    execution_window = verify_execution_window(
-        authorization,
-        now=now_utc if now_utc is not None else datetime.now(timezone.utc),
-    )
+    now = now_utc if now_utc is not None else datetime.now(timezone.utc)
+    execution_window = verify_execution_window(authorization, now=now)
     if (
         _sha256_json(attestation)
         != authorization.credential_exposure_attestation_sha256
@@ -1400,6 +1659,22 @@ def preflight(
             authorized_signers_path=headroom_authorized_signers_path,
             runner=signature_runner,
         )
+    # The signed headroom receipt must be the exact document the signed
+    # authorization names, and must itself be bound to this plan, source head,
+    # nonce, and execution window, so a receipt signed for one run cannot be
+    # replayed into another.
+    headroom_binding: dict[str, Any] | None = None
+    if signed_headroom is not None:
+        if _sha256_json(dict(signed_headroom)) != authorization.headroom_receipt_sha256:
+            raise ModalExecutionError(
+                "the supplied headroom receipt is not the authorized headroom "
+                "receipt"
+            )
+        headroom_binding = verify_signed_headroom_receipt(
+            signed_headroom,
+            authorization=authorization,
+            now=now,
+        )
     headroom = account_headroom(
         control_plane_probe=headroom_probe,
         signed_receipt=signed_headroom,
@@ -1410,10 +1685,11 @@ def preflight(
         "authorization_authentication": authentication,
         "execution_window": execution_window,
         "credential_exposure": exposure,
+        "decode_feasibility": feasibility,
         "source_checkout": source_checkout,
         "rate_receipt": structured,
         "rates": rates,
-        "headroom": headroom,
+        "headroom": {**headroom, "authorization_binding": headroom_binding},
         "plan": plan,
         "workspace": root,
     }
@@ -1430,6 +1706,7 @@ def execute(
     sdk_loader: Callable[[], Any] | None = None,
     app_loader: Callable[[], Any] | None = None,
     profile_validator: LocalProfileValidator | None = None,
+    sleep: Callable[[float], None] = time.sleep,
     workspace_allowlist: Sequence[str] = (),
     **gate_arguments: Any,
 ) -> dict[str, Any]:
@@ -1452,6 +1729,7 @@ def execute(
     # with or replay into this run's receipts.
     _require_clean_output_workspace(root, allowlist=workspace_allowlist)
     _write_json(root / "credential-exposure.json", gates["credential_exposure"])
+    _write_json(root / "decode-feasibility.json", gates["decode_feasibility"])
     _write_json(root / "source-checkout.json", gates["source_checkout"])
     _write_json(root / "rate-refresh.json", gates["rates"])
     _write_json(root / "headroom.json", gates["headroom"])
@@ -1486,9 +1764,12 @@ def execute(
         rate_receipt=gates["rate_receipt"],
         rate_refresh=gates["rates"],
         source_checkout=gates["source_checkout"],
+        decode_feasibility=gates["decode_feasibility"],
+        headroom=gates["headroom"],
         sdk_loader=sdk_loader or _load_sdk,
         app_loader=app_loader or _load_app,
         profile_validator=profile_validator,
+        sleep=sleep,
     )
     return orchestrator.execute()
 

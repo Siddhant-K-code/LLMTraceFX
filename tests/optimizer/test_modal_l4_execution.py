@@ -12,6 +12,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 import types
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,7 +27,7 @@ from llmtracefx.optimizer.lab.qwen3_8b import modal_l4_rates as rates_module
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _fake_modal import build_fake_modal  # noqa: E402
+from _fake_modal import FunctionStats, build_fake_modal  # noqa: E402
 
 APP_MODULE = "llmtracefx.optimizer.lab.qwen3_8b.modal_l4_app"
 NONCE = "d" * 32
@@ -39,6 +40,48 @@ AUTHORIZED_AT = "2026-09-04T19:52:50.511+05:30"
 NOT_BEFORE = "2026-09-04T14:00:00+00:00"
 EXPIRES_AT = "2026-09-04T18:00:00+00:00"
 WITHIN_WINDOW = datetime(2026, 9, 4, 14, 30, 0, tzinfo=timezone.utc)
+# The signed headroom receipt must cover the whole authorization window and be
+# fresh at the moment of the check, so its window brackets [NOT_BEFORE,
+# EXPIRES_AT) and contains WITHIN_WINDOW.
+HEADROOM_CONFIRMED_AT = "2026-09-04T13:00:00+00:00"
+HEADROOM_EXPIRES_AT = "2026-09-04T20:00:00+00:00"
+
+
+def _headroom_receipt(**overrides: Any) -> dict[str, Any]:
+    """A signed operator headroom receipt bound to exactly this execution."""
+
+    receipt = {
+        "schema_version": modal.HEADROOM_RECEIPT_SCHEMA_VERSION,
+        "kind": modal.HEADROOM_RECEIPT_KIND,
+        "protocol_id": modal.PROTOCOL_ID,
+        "plan_sha256": modal.build_default_plan().content_sha256,
+        "source_head": HEAD,
+        "experiment_nonce": NONCE,
+        "headroom_usd": "25",
+        "confirmed_at": HEADROOM_CONFIRMED_AT,
+        "expires_at": HEADROOM_EXPIRES_AT,
+    }
+    receipt.update(overrides)
+    return receipt
+
+
+def _feasible_verdict() -> dict[str, Any]:
+    """A feasibility verdict for a hypothetical device fast enough to run.
+
+    The sealed design is infeasible on a real L4 -- decode-only weight
+    streaming for one controlled cell needs about 755.6s against the sealed
+    480s timeout -- so production preflight refuses it offline before any
+    authentication, rate fetch, SDK import, or provider call. Tests that
+    exercise the machinery *behind* that gate therefore have to state, out
+    loud, that they are running on a hypothetical device: one terabyte per
+    second is far above any real L4 and is not a claim about hardware. The
+    dedicated feasibility tests below use the sealed constants and assert the
+    refusal.
+    """
+
+    return modal.evaluate_decode_bandwidth_feasibility(
+        peak_bandwidth_bytes_per_second=1_000_000_000_000
+    )
 
 
 def _passing_observation(mode: str) -> dict[str, Any]:
@@ -170,6 +213,7 @@ def _write_gate_files(
     workspace: Path,
     rate_overrides: dict[str, Any] | None = None,
     attestation: dict[str, Any] | None = None,
+    headroom: dict[str, Any] | None = None,
 ) -> dict[str, Path]:
     rate_receipt = {
         "source_url": rates_module.OFFICIAL_RATE_URL,
@@ -194,12 +238,14 @@ def _write_gate_files(
     exposure_path = tmp_path / "credential-exposure-attestation.json"
     exposure_path.write_text(json.dumps(exposure, indent=2), encoding="utf-8")
 
+    headroom_receipt = _headroom_receipt() if headroom is None else headroom
     content = execute_module.ModalExecutionAuthorization.content(
         plan_sha256=modal.build_default_plan().content_sha256,
         source_head=HEAD,
         experiment_nonce=NONCE,
         workspace_sha256=execute_module._sha256_text(str(workspace.resolve())),
         rate_receipt_sha256=execute_module._sha256_json(rate_receipt),
+        headroom_receipt_sha256=execute_module._sha256_json(headroom_receipt),
         credential_exposure_attestation_sha256=execute_module._sha256_json(exposure),
         authorized_at=AUTHORIZED_AT,
         not_before=NOT_BEFORE,
@@ -227,6 +273,33 @@ def _write_gate_files(
 
 def _fetcher(url: str) -> bytes:
     return f"official document for {url}".encode()
+
+
+def _git(repo: Path, *args: str) -> None:
+    """Run one git command in a scratch repository with a closed environment."""
+
+    subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": execute_module._SAFE_EXECUTION_PATH,
+            "LANG": "C",
+            "LC_ALL": "C",
+            "HOME": str(repo),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "scratch",
+            "GIT_AUTHOR_EMAIL": "scratch@invalid",
+            "GIT_COMMITTER_NAME": "scratch",
+            "GIT_COMMITTER_EMAIL": "scratch@invalid",
+            "GIT_TERMINAL_PROMPT": "0",
+        },
+    )
+
+
+def _git_init(repo: Path) -> None:
+    _git(repo, "init", "--quiet", "--initial-branch", "main")
 
 
 def _clean_checkout_probe() -> dict[str, Any]:
@@ -264,33 +337,45 @@ def _run(
     drop_attestation: bool = False,
     source_checkout_probe: Any = None,
     profile_validator: Any = None,
+    feasibility_verdict: Any = None,
+    sleep: Any = None,
 ) -> dict[str, Any]:
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
+    signed_headroom = headroom if headroom is not None else _headroom_receipt()
     files = _write_gate_files(
         tmp_path,
         workspace=workspace,
         rate_overrides=rate_overrides,
         attestation=attestation,
+        headroom=signed_headroom,
     )
     if drop_attestation:
         files["credential_exposure_attestation_path"] = None  # type: ignore[assignment]
     fake_modal.Volume.objects.existing.append(
         modal.run_scoped_names(NONCE)["volume_name"]
     )
+    extra: dict[str, Any] = {}
+    if sleep is not None:
+        extra["sleep"] = sleep
     return execute_module.execute(
         workspace=workspace,
         sdk_loader=sdk_loader or (lambda: fake_modal),
         app_loader=lambda: app_module,
         environ=environ if environ is not None else {},
         fetcher=_fetcher,
-        signed_headroom=headroom
-        or {"headroom_usd": "25", "signed_by": "operator", "kind": "headroom"},
+        signed_headroom=signed_headroom,
         signature_verifier=lambda payload: None,
         signature_runner=lambda argv, message: signature_result,
         source_checkout_probe=source_checkout_probe or _clean_checkout_probe,
         profile_validator=profile_validator or _authenticated_profile,
+        feasibility_verdict=(
+            feasibility_verdict
+            if feasibility_verdict is not None
+            else _feasible_verdict()
+        ),
         now_utc=WITHIN_WINDOW,
+        **extra,
         **files,
     )
 
@@ -506,7 +591,7 @@ class TestGatesBeforeProviderImport:
                 app_module,
                 fake_modal,
                 sdk_loader=forbidden_loader,
-                headroom={"headroom_usd": "1"},
+                headroom=_headroom_receipt(headroom_usd="1"),
             )
 
     def test_authorization_bound_to_another_workspace_refuses(
@@ -518,10 +603,11 @@ class TestGatesBeforeProviderImport:
         with pytest.raises(modal.ModalL4ContractError, match="different workspace"):
             execute_module.preflight(
                 workspace=workspace,
+                feasibility_verdict=_feasible_verdict(),
                 environ={},
                 fetcher=_fetcher,
                 signature_runner=lambda argv, message: 0,
-                signed_headroom={"headroom_usd": "25"},
+                signed_headroom=_headroom_receipt(),
                 signature_verifier=lambda payload: None,
                 **files,
             )
@@ -766,6 +852,478 @@ class TestTeardown:
         assert "volume_delete_failed" in document["teardown"]["teardown_failures"]
 
 
+class TestScaleToZeroSettling:
+    """Teardown must observe scale-to-zero, not the provider's scaledown timing.
+
+    Exiting the ephemeral app context does not make the autoscaler report zero
+    immediately: the scaledown window for these functions is two seconds and
+    the control plane is eventually consistent. Sampling once, the instant the
+    context exits, therefore measures timing rather than teardown. The gate
+    polls within an exact, finite budget instead, with an injected sleep so the
+    tests never actually wait.
+    """
+
+    def test_a_runner_that_disappears_after_a_moment_is_still_verified(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        slept: list[float] = []
+        for function in app_module.FUNCTIONS.values():
+            function.stats_script = [FunctionStats(num_total_runners=1)]
+        _script(app_module, _Receipts())
+        document = _run(tmp_path, app_module, fake_modal, sleep=slept.append)
+        teardown = document["teardown"]
+        assert teardown["scale_zero_verified_via_control_plane"] is True
+        assert teardown["adjudication"]["complete"] is True
+        settling = teardown["scale_zero_settling"]
+        assert settling["samples_taken"] == 2
+        assert settling["unsettled_functions"] == 0
+        assert settling["functions_settled"] == settling["functions_observed"]
+        assert set(settling["settled_after_samples"].values()) == {2}
+        assert slept == [float(execute_module.SCALE_ZERO_POLL_INTERVAL_SECONDS)]
+
+    def test_a_single_immediate_sample_would_have_reported_a_live_runner(
+        self, app_module: Any
+    ) -> None:
+        """The regression this gate exists for, stated directly."""
+
+        for function in app_module.FUNCTIONS.values():
+            function.stats_script = [FunctionStats(num_total_runners=1)]
+        first = next(iter(app_module.FUNCTIONS.values())).get_current_stats()
+        assert first.num_total_runners == 1
+
+    def test_a_runner_that_never_scales_down_fails_closed(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        slept: list[float] = []
+        for function in app_module.FUNCTIONS.values():
+            function.stats = FunctionStats(num_total_runners=1)
+        _script(app_module, _Receipts())
+        document = _run(tmp_path, app_module, fake_modal, sleep=slept.append)
+        teardown = document["teardown"]
+        assert teardown["scale_zero_verified_via_control_plane"] is False
+        assert teardown["adjudication"]["complete"] is False
+        assert document["published"] is False
+        settling = teardown["scale_zero_settling"]
+        assert settling["samples_taken"] == execute_module.SCALE_ZERO_POLL_ATTEMPTS
+        assert settling["unsettled_functions"] == settling["functions_observed"]
+        assert all(
+            item.startswith("scale_zero_unverified")
+            for item in teardown["teardown_failures"]
+        )
+        # Exactly the documented budget: no infinite wait, no extra sample.
+        assert len(slept) == execute_module.SCALE_ZERO_POLL_ATTEMPTS - 1
+        assert sum(slept) == float(execute_module.SCALE_ZERO_POLL_TIMEOUT_SECONDS)
+
+    def test_a_backlog_that_never_drains_fails_closed(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        for function in app_module.FUNCTIONS.values():
+            function.stats = FunctionStats(backlog=1)
+        _script(app_module, _Receipts())
+        document = _run(tmp_path, app_module, fake_modal, sleep=lambda seconds: None)
+        assert document["teardown"]["scale_zero_verified_via_control_plane"] is False
+        assert document["published"] is False
+
+    def test_a_control_plane_that_is_briefly_unavailable_is_retried(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        """Transient unavailability is not read as a torn-down function.
+
+        Re-reading an autoscaler counter is control-plane cleanup verification,
+        not a scientific retry: nothing measured is re-run and no call is
+        re-dispatched.
+        """
+
+        original = app_module.app.stats_error
+        app_module.app.stats_error = RuntimeError("control plane unavailable")
+        _script(app_module, _Receipts())
+        document = _run(tmp_path, app_module, fake_modal, sleep=lambda seconds: None)
+        app_module.app.stats_error = original
+        teardown = document["teardown"]
+        assert teardown["scale_zero_verified_via_control_plane"] is False
+        settling = teardown["scale_zero_settling"]
+        assert settling["samples_taken"] == execute_module.SCALE_ZERO_POLL_ATTEMPTS
+        assert settling["is_scientific_retry"] is False
+
+    def test_settling_happens_after_the_app_context_exits(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        for function in app_module.FUNCTIONS.values():
+            function.stats_script = [FunctionStats(num_total_runners=1)]
+        _script(app_module, _Receipts())
+        _run(tmp_path, app_module, fake_modal, sleep=lambda seconds: None)
+        events = [event for event, _ in app_module.app.log]
+        exit_index = events.index("app_run_exit")
+        stats_indices = [i for i, event in enumerate(events) if event == "stats"]
+        assert stats_indices, "teardown must observe the autoscaler"
+        assert min(stats_indices) > exit_index
+        assert app_module.app.exited == 1
+
+    def test_the_settling_budget_is_finite_and_recorded(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        _script(app_module, _Receipts())
+        document = _run(tmp_path, app_module, fake_modal)
+        settling = document["teardown"]["scale_zero_settling"]
+        assert settling["mechanism"] == modal.SCALE_ZERO_SETTLING_MECHANISM
+        assert settling["is_scientific_retry"] is False
+        assert settling["provider_scaledown_window_seconds"] == (
+            modal.SCALEDOWN_WINDOW_SECONDS
+        )
+        assert settling["poll_interval_seconds"] == (
+            execute_module.SCALE_ZERO_POLL_INTERVAL_SECONDS
+        )
+        assert settling["poll_attempts_max"] == execute_module.SCALE_ZERO_POLL_ATTEMPTS
+        assert settling["poll_timeout_seconds"] == (
+            execute_module.SCALE_ZERO_POLL_TIMEOUT_SECONDS
+        )
+        # An already-settled autoscaler needs exactly one sample and no wait.
+        assert settling["samples_taken"] == 1
+
+    def test_the_default_orchestrator_sleeps_with_the_real_clock(self) -> None:
+        orchestrator = execute_module.ModalOrchestrator(
+            plan=modal.build_default_plan(),
+            authorization=_windowed_authorization(),
+            workspace=Path("/nonexistent"),
+            ledger=None,  # type: ignore[arg-type]
+            credential_exposure={"cleared": True},
+            rate_receipt={},
+            sdk_loader=lambda: None,
+            app_loader=lambda: None,
+        )
+        assert orchestrator._sleep is time.sleep
+
+
+class TestDecodeFeasibilityGate:
+    """The approved design is refused offline, before anything can be spent.
+
+    One controlled cell generates 144 x 96 = 13,824 tokens, and batch-1 BF16
+    decoding must stream at least one full 16,397,461,266-byte weight image per
+    token: 226,678,504,541,184 bytes. At the L4's advertised peak bandwidth of
+    300,000,000,000 bytes/s that is 755.59501513728 seconds of decoding alone,
+    against a sealed 480-second controlled-cell timeout -- before container
+    start, weight load, engine init, prefill, or CUDA-graph capture. The design
+    is therefore infeasible, and preflight says so before it authenticates,
+    fetches a rate, imports the SDK, or calls the provider.
+    """
+
+    def test_production_preflight_refuses_before_any_gate_input_is_read(
+        self, tmp_path: Path
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        files = _write_gate_files(tmp_path, workspace=workspace)
+
+        def forbidden_fetcher(url: str) -> bytes:
+            raise AssertionError("no official-rate fetch before the feasibility gate")
+
+        def forbidden_probe() -> dict[str, Any]:
+            raise AssertionError("no git probe before the feasibility gate")
+
+        def forbidden_signature(argv: Any, message: str) -> int:
+            raise AssertionError("no signature check before the feasibility gate")
+
+        with pytest.raises(
+            execute_module.ModalExecutionError, match="infeasible"
+        ) as excinfo:
+            execute_module.preflight(
+                workspace=workspace,
+                environ={},
+                fetcher=forbidden_fetcher,
+                signature_runner=forbidden_signature,
+                signed_headroom=_headroom_receipt(),
+                signature_verifier=lambda payload: None,
+                source_checkout_probe=forbidden_probe,
+                now_utc=WITHIN_WINDOW,
+                **files,
+            )
+        message = str(excinfo.value)
+        assert "755.59501513728s" in message
+        assert "480s ceiling" in message
+        assert "28.8 tokens/s" in message
+        assert "18.295515088183 tokens/s" in message
+
+    def test_production_run_refuses_without_importing_the_sdk(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        with pytest.raises(execute_module.ModalExecutionError, match="infeasible"):
+            _run(
+                tmp_path,
+                app_module,
+                fake_modal,
+                sdk_loader=lambda: (_ for _ in ()).throw(
+                    AssertionError("SDK must not load for an infeasible design")
+                ),
+                feasibility_verdict=modal.evaluate_decode_bandwidth_feasibility(),
+            )
+
+    def test_the_refusal_leaves_the_workspace_untouched(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        with pytest.raises(execute_module.ModalExecutionError, match="infeasible"):
+            _run(
+                tmp_path,
+                app_module,
+                fake_modal,
+                feasibility_verdict=modal.evaluate_decode_bandwidth_feasibility(),
+            )
+        assert list(workspace.iterdir()) == []
+
+    def test_the_default_gate_uses_the_sealed_constants(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        """No verdict supplied means the sealed arithmetic, which refuses."""
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        files = _write_gate_files(tmp_path, workspace=workspace)
+        with pytest.raises(execute_module.ModalExecutionError, match="infeasible"):
+            execute_module.preflight(
+                workspace=workspace,
+                environ={},
+                fetcher=_fetcher,
+                signature_runner=lambda argv, message: 0,
+                signed_headroom=_headroom_receipt(),
+                signature_verifier=lambda payload: None,
+                source_checkout_probe=_clean_checkout_probe,
+                now_utc=WITHIN_WINDOW,
+                **files,
+            )
+
+    def test_the_admitting_verdict_is_written_and_recorded(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        _script(app_module, _Receipts())
+        document = _run(tmp_path, app_module, fake_modal)
+        workspace = tmp_path / "workspace"
+        written = json.loads(
+            (workspace / "decode-feasibility.json").read_text(encoding="utf-8")
+        )
+        assert written == _feasible_verdict()
+        assert document["decode_feasibility"] == written
+        # A run admitted on hypothetical hardware says so in its own receipt.
+        assert written["uses_sealed_constants"] is False
+        assert written["feasible"] is True
+
+    def test_the_refusal_is_not_a_retry_condition(self) -> None:
+        policy = modal.evaluate_decode_bandwidth_feasibility()["remedy_policy"]
+        assert "refused, not repaired" in policy
+        assert "extending the timeout" in policy
+
+
+class TestHeadroomReceiptBinding:
+    """A signed headroom figure must not be replayable across runs."""
+
+    def test_a_receipt_that_is_not_the_authorized_one_is_refused(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        # The authorization names one receipt; a different (still valid,
+        # still signed) receipt is supplied at run time.
+        files = _write_gate_files(
+            tmp_path, workspace=workspace, headroom=_headroom_receipt()
+        )
+        with pytest.raises(
+            execute_module.ModalExecutionError, match="not the authorized headroom"
+        ):
+            execute_module.preflight(
+                workspace=workspace,
+                feasibility_verdict=_feasible_verdict(),
+                environ={},
+                fetcher=_fetcher,
+                signature_runner=lambda argv, message: 0,
+                signed_headroom=_headroom_receipt(headroom_usd="26"),
+                signature_verifier=lambda payload: None,
+                source_checkout_probe=_clean_checkout_probe,
+                now_utc=WITHIN_WINDOW,
+                **files,
+            )
+
+    @pytest.mark.parametrize(
+        "field,value",
+        (
+            ("protocol_id", "some-other-protocol"),
+            ("plan_sha256", "sha256:" + "0" * 64),
+            ("source_head", "0" * 40),
+            ("experiment_nonce", "a" * 32),
+        ),
+    )
+    def test_a_receipt_bound_to_another_run_is_refused(
+        self, tmp_path: Path, field: str, value: str
+    ) -> None:
+        receipt = _headroom_receipt(**{field: value})
+        workspace = tmp_path / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+        files = _write_gate_files(tmp_path, workspace=workspace, headroom=receipt)
+        with pytest.raises(
+            execute_module.ModalExecutionError, match="not bound to this authorization"
+        ):
+            execute_module.preflight(
+                workspace=workspace,
+                feasibility_verdict=_feasible_verdict(),
+                environ={},
+                fetcher=_fetcher,
+                signature_runner=lambda argv, message: 0,
+                signed_headroom=receipt,
+                signature_verifier=lambda payload: None,
+                source_checkout_probe=_clean_checkout_probe,
+                now_utc=WITHIN_WINDOW,
+                **files,
+            )
+
+    def test_a_bare_dollar_figure_is_refused(self) -> None:
+        with pytest.raises(
+            execute_module.ModalExecutionError, match="fields must match exactly"
+        ):
+            execute_module.verify_signed_headroom_receipt(
+                {"headroom_usd": "25"},
+                authorization=_windowed_authorization(),
+                now=WITHIN_WINDOW,
+            )
+
+    @pytest.mark.parametrize(
+        "extra", ("account_id", "workspace", "email", "profile_name")
+    )
+    def test_an_identifying_field_is_refused_by_the_closed_schema(
+        self, extra: str
+    ) -> None:
+        with pytest.raises(
+            execute_module.ModalExecutionError, match="fields must match exactly"
+        ):
+            execute_module.verify_signed_headroom_receipt(
+                {**_headroom_receipt(), extra: "value"},
+                authorization=_windowed_authorization(),
+                now=WITHIN_WINDOW,
+            )
+
+    def test_a_stale_receipt_is_refused(self) -> None:
+        receipt = _headroom_receipt(
+            confirmed_at="2026-09-03T00:00:00+00:00",
+            expires_at="2026-09-03T12:00:00+00:00",
+        )
+        with pytest.raises(execute_module.ModalExecutionError, match="not fresh"):
+            execute_module.verify_signed_headroom_receipt(
+                receipt, authorization=_windowed_authorization(), now=WITHIN_WINDOW
+            )
+
+    def test_a_premature_receipt_is_refused(self) -> None:
+        receipt = _headroom_receipt(
+            confirmed_at="2026-09-04T23:00:00+00:00",
+            expires_at="2026-09-05T02:00:00+00:00",
+        )
+        with pytest.raises(execute_module.ModalExecutionError, match="not fresh"):
+            execute_module.verify_signed_headroom_receipt(
+                receipt, authorization=_windowed_authorization(), now=WITHIN_WINDOW
+            )
+
+    def test_a_receipt_that_expires_inside_the_run_window_is_refused(self) -> None:
+        receipt = _headroom_receipt(
+            confirmed_at="2026-09-04T13:00:00+00:00",
+            expires_at="2026-09-04T17:00:00+00:00",
+        )
+        with pytest.raises(execute_module.ModalExecutionError, match="does not cover"):
+            execute_module.verify_signed_headroom_receipt(
+                receipt, authorization=_windowed_authorization(), now=WITHIN_WINDOW
+            )
+
+    def test_a_receipt_confirmed_after_the_window_opens_is_refused(self) -> None:
+        receipt = _headroom_receipt(
+            confirmed_at="2026-09-04T14:15:00+00:00",
+            expires_at="2026-09-04T20:00:00+00:00",
+        )
+        with pytest.raises(execute_module.ModalExecutionError, match="does not cover"):
+            execute_module.verify_signed_headroom_receipt(
+                receipt, authorization=_windowed_authorization(), now=WITHIN_WINDOW
+            )
+
+    def test_an_unbounded_receipt_window_is_refused(self) -> None:
+        receipt = _headroom_receipt(
+            confirmed_at="2026-09-04T13:00:00+00:00",
+            expires_at="2026-09-30T00:00:00+00:00",
+        )
+        with pytest.raises(
+            execute_module.ModalExecutionError, match="exceeds the maximum bounded"
+        ):
+            execute_module.verify_signed_headroom_receipt(
+                receipt, authorization=_windowed_authorization(), now=WITHIN_WINDOW
+            )
+
+    @pytest.mark.parametrize(
+        "edge", ("2026-09-04T13:00:00", "2026-09-04T13:00:00+05:30", "yesterday")
+    )
+    def test_a_non_utc_or_malformed_edge_is_refused(self, edge: str) -> None:
+        with pytest.raises(execute_module.ModalExecutionError):
+            execute_module.verify_signed_headroom_receipt(
+                _headroom_receipt(confirmed_at=edge),
+                authorization=_windowed_authorization(),
+                now=WITHIN_WINDOW,
+            )
+
+    def test_an_inverted_receipt_window_is_refused(self) -> None:
+        receipt = _headroom_receipt(
+            confirmed_at="2026-09-04T20:00:00+00:00",
+            expires_at="2026-09-04T13:00:00+00:00",
+        )
+        with pytest.raises(
+            execute_module.ModalExecutionError, match="empty or inverted"
+        ):
+            execute_module.verify_signed_headroom_receipt(
+                receipt, authorization=_windowed_authorization(), now=WITHIN_WINDOW
+            )
+
+    def test_the_authorization_binds_the_receipt_hash(self) -> None:
+        receipt = _headroom_receipt()
+        content = execute_module.ModalExecutionAuthorization.content(
+            plan_sha256=modal.build_default_plan().content_sha256,
+            source_head=HEAD,
+            experiment_nonce=NONCE,
+            workspace_sha256="sha256:" + "c" * 64,
+            rate_receipt_sha256="sha256:" + "d" * 64,
+            headroom_receipt_sha256=execute_module._sha256_json(receipt),
+            credential_exposure_attestation_sha256="sha256:" + "e" * 64,
+            authorized_at=AUTHORIZED_AT,
+            not_before=NOT_BEFORE,
+            expires_at=EXPIRES_AT,
+        )
+        assert content["headroom_receipt_sha256"] == (
+            execute_module._sha256_json(receipt)
+        )
+
+    def test_the_binding_verdict_records_no_identity_and_no_amount(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        _script(app_module, _Receipts())
+        _run(tmp_path, app_module, fake_modal)
+        written = json.loads(
+            (tmp_path / "workspace" / "headroom.json").read_text(encoding="utf-8")
+        )
+        binding = written["authorization_binding"]
+        assert binding["records_account_identity"] is False
+        assert "headroom_usd" not in binding
+        assert set(binding) == {
+            "verified",
+            "bound_to_authorization",
+            "protocol_id",
+            "plan_sha256",
+            "source_head",
+            "experiment_nonce",
+            "confirmed_at",
+            "expires_at",
+            "covers_execution_window",
+            "records_account_identity",
+        }
+
+    def test_the_binding_is_in_the_orchestration(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        _script(app_module, _Receipts())
+        document = _run(tmp_path, app_module, fake_modal)
+        assert document["headroom"]["authorization_binding"]["verified"] is True
+        assert document["headroom"]["provenance"] == "signed_operator_receipt"
+
+
 class TestRateRefreshSurface:
     def test_capture_hashes_documents_without_parsing_them(self) -> None:
         capture = rates_module.capture_rate_documents(
@@ -869,6 +1427,7 @@ class TestAuthorizationBinding:
             experiment_nonce=NONCE,
             workspace_sha256="sha256:" + "c" * 64,
             rate_receipt_sha256="sha256:" + "d" * 64,
+            headroom_receipt_sha256="sha256:" + "b" * 64,
             credential_exposure_attestation_sha256="sha256:" + "e" * 64,
             authorized_at=AUTHORIZED_AT,
             not_before=NOT_BEFORE,
@@ -888,6 +1447,7 @@ class TestAuthorizationBinding:
             experiment_nonce=NONCE,
             workspace_sha256="sha256:" + "c" * 64,
             rate_receipt_sha256="sha256:" + "d" * 64,
+            headroom_receipt_sha256="sha256:" + "b" * 64,
             credential_exposure_attestation_sha256="sha256:" + "e" * 64,
             authorized_at=AUTHORIZED_AT,
             not_before=NOT_BEFORE,
@@ -911,6 +1471,7 @@ class TestAuthorizationBinding:
             experiment_nonce=NONCE,
             workspace_sha256="sha256:" + "c" * 64,
             rate_receipt_sha256="sha256:" + "d" * 64,
+            headroom_receipt_sha256="sha256:" + "b" * 64,
             credential_exposure_attestation_sha256="sha256:" + "e" * 64,
             authorized_at=AUTHORIZED_AT,
             not_before=NOT_BEFORE,
@@ -930,6 +1491,7 @@ class TestAuthorizationBinding:
             experiment_nonce=NONCE,
             workspace_sha256="sha256:" + "c" * 64,
             rate_receipt_sha256="sha256:" + "d" * 64,
+            headroom_receipt_sha256="sha256:" + "b" * 64,
             credential_exposure_attestation_sha256="sha256:" + "e" * 64,
             authorized_at=AUTHORIZED_AT,
             not_before=NOT_BEFORE,
@@ -959,6 +1521,7 @@ def _windowed_authorization(
         experiment_nonce=NONCE,
         workspace_sha256="sha256:" + "c" * 64,
         rate_receipt_sha256="sha256:" + "d" * 64,
+        headroom_receipt_sha256="sha256:" + "b" * 64,
         credential_exposure_attestation_sha256="sha256:" + "e" * 64,
         authorized_at=AUTHORIZED_AT,
         not_before=not_before,
@@ -1042,10 +1605,11 @@ class TestExecutionWindow:
         with pytest.raises(execute_module.ModalExecutionError, match="has expired"):
             execute_module.preflight(
                 workspace=workspace,
+                feasibility_verdict=_feasible_verdict(),
                 environ={},
                 fetcher=forbidden_fetcher,
                 signature_runner=lambda argv, message: 0,
-                signed_headroom={"headroom_usd": "25"},
+                signed_headroom=_headroom_receipt(),
                 signature_verifier=lambda payload: None,
                 source_checkout_probe=_clean_checkout_probe,
                 now_utc=expired,
@@ -1261,10 +1825,11 @@ class TestCredentialExposureGate:
         ):
             execute_module.preflight(
                 workspace=workspace,
+                feasibility_verdict=_feasible_verdict(),
                 environ={},
                 fetcher=_fetcher,
                 signature_runner=lambda argv, message: 0,
-                signed_headroom={"headroom_usd": "25"},
+                signed_headroom=_headroom_receipt(),
                 signature_verifier=lambda payload: None,
                 now_utc=WITHIN_WINDOW,
                 **files,
@@ -1325,6 +1890,44 @@ class TestCredentialExposureGate:
         assert "reason" not in receipt["credential_exposure"]
         assert receipt["credential_exposure"]["records_credential_values"] is False
 
+    def test_the_exposure_booleans_survive_every_change(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        """The three exposure facts stay recorded, as booleans and nothing more.
+
+        The old token was never used by the experiment, it was revoked, and a
+        fresh local profile was created without being shared anywhere. Those
+        are recorded as booleans in the attestation, in the stored gate verdict,
+        in the orchestration projection, and as claim identifiers in both
+        matrices -- and never as a value, a hash, a prefix, or an identifier.
+        """
+
+        _script(app_module, _Receipts())
+        document = _run(tmp_path, app_module, fake_modal)
+        booleans = {
+            "exposed_profile_credential_never_used_by_experiment": True,
+            "exposed_profile_credential_revocation_confirmed": True,
+            "fresh_local_profile_created_without_sharing": True,
+            "fresh_profile_shared_anywhere": False,
+        }
+        verdict = json.loads(
+            (tmp_path / "workspace" / "credential-exposure.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        projected = document["credential_exposure"]
+        for field, expected in booleans.items():
+            assert verdict[field] is expected
+            assert projected[field] is expected
+        assert verdict["records_credential_values"] is False
+        for claim_id in (
+            "exposed-profile-credential-never-used-by-experiment",
+            "exposed-profile-credential-revocation-confirmed",
+            "fresh-local-profile-created-without-sharing",
+        ):
+            assert claim_id in modal.PREREGISTERED_CLAIM_IDS
+            assert claim_id in modal.OFFLINE_ONLY_CLAIM_IDS
+
     def test_the_gate_runs_before_the_environment_check(
         self, tmp_path: Path, app_module: Any, fake_modal: Any
     ) -> None:
@@ -1367,9 +1970,10 @@ def _orchestrator(
     )
     gates = execute_module.preflight(
         workspace=workspace,
+        feasibility_verdict=_feasible_verdict(),
         environ={},
         fetcher=_fetcher,
-        signed_headroom={"headroom_usd": "25"},
+        signed_headroom=_headroom_receipt(),
         signature_verifier=lambda payload: None,
         signature_runner=lambda argv, message: 0,
         source_checkout_probe=_clean_checkout_probe,
@@ -1507,10 +2111,11 @@ class TestHeadroomSignatureGate:
         ):
             execute_module.preflight(
                 workspace=workspace,
+                feasibility_verdict=_feasible_verdict(),
                 environ={},
                 fetcher=_fetcher,
                 signature_runner=lambda argv, message: 0,
-                signed_headroom={"headroom_usd": "25"},
+                signed_headroom=_headroom_receipt(),
                 source_checkout_probe=_clean_checkout_probe,
                 now_utc=WITHIN_WINDOW,
                 **files,
@@ -1538,10 +2143,11 @@ class TestHeadroomSignatureGate:
 
         gates = execute_module.preflight(
             workspace=workspace,
+            feasibility_verdict=_feasible_verdict(),
             environ={},
             fetcher=_fetcher,
             signature_runner=runner,
-            signed_headroom={"headroom_usd": "25"},
+            signed_headroom=_headroom_receipt(),
             headroom_signature_path=signature,
             headroom_authorized_signers_path=signers,
             source_checkout_probe=_clean_checkout_probe,
@@ -1551,8 +2157,14 @@ class TestHeadroomSignatureGate:
         assert gates["headroom"]["provenance"] == "signed_operator_receipt"
         assert rates_module.HEADROOM_SIGNATURE_NAMESPACE in seen["argv"]
         assert execute_module.HEADROOM_SIGNER_IDENTITY in seen["argv"]
-        # The signed message is the canonical headroom receipt, nothing else.
-        assert json.loads(seen["message"]) == {"headroom_usd": "25"}
+        # The signed message is the canonical headroom receipt, nothing else,
+        # and the receipt is the closed run-bound schema rather than a bare
+        # dollar figure that could be replayed into another run.
+        assert json.loads(seen["message"]) == _headroom_receipt()
+        binding = gates["headroom"]["authorization_binding"]
+        assert binding["bound_to_authorization"] is True
+        assert binding["covers_execution_window"] is True
+        assert binding["records_account_identity"] is False
 
     def test_a_failing_headroom_signature_refuses(
         self, tmp_path: Path, app_module: Any, fake_modal: Any
@@ -1569,12 +2181,13 @@ class TestHeadroomSignatureGate:
         ):
             execute_module.preflight(
                 workspace=workspace,
+                feasibility_verdict=_feasible_verdict(),
                 environ={},
                 fetcher=_fetcher,
                 signature_runner=lambda argv, message: (
                     0 if "authorization" in "".join(str(a) for a in argv) else 1
                 ),
-                signed_headroom={"headroom_usd": "25"},
+                signed_headroom=_headroom_receipt(),
                 headroom_signature_path=signature,
                 headroom_authorized_signers_path=signers,
                 source_checkout_probe=_clean_checkout_probe,
@@ -1601,11 +2214,12 @@ class TestCleanWorkspaceGate:
                 app_loader=lambda: app_module,
                 environ={},
                 fetcher=_fetcher,
-                signed_headroom={"headroom_usd": "25"},
+                signed_headroom=_headroom_receipt(),
                 signature_verifier=lambda payload: None,
                 signature_runner=lambda argv, message: 0,
                 source_checkout_probe=_clean_checkout_probe,
                 profile_validator=_authenticated_profile,
+                feasibility_verdict=_feasible_verdict(),
                 now_utc=WITHIN_WINDOW,
                 **files,
             )
@@ -1626,11 +2240,12 @@ class TestCleanWorkspaceGate:
                 app_loader=lambda: app_module,
                 environ={},
                 fetcher=_fetcher,
-                signed_headroom={"headroom_usd": "25"},
+                signed_headroom=_headroom_receipt(),
                 signature_verifier=lambda payload: None,
                 signature_runner=lambda argv, message: 0,
                 source_checkout_probe=_clean_checkout_probe,
                 profile_validator=_authenticated_profile,
+                feasibility_verdict=_feasible_verdict(),
                 now_utc=WITHIN_WINDOW,
                 **files,
             )
@@ -1724,19 +2339,98 @@ class TestSourceCheckoutGate:
         assert gate["tracked_workspace_clean"] is True
         assert gate["source_head"] == HEAD
 
-    def test_the_production_gate_reads_real_git_and_refuses_uncommitted_source(
+    def test_the_production_probe_and_gate_agree_on_a_scratch_repository(
+        self, tmp_path: Path
+    ) -> None:
+        """The real probe + the real policy, on a repository this test creates.
+
+        This replaces an earlier test that depended on the *ambient* state of
+        the developer's own checkout: it asserted a refusal because this
+        branch's source happened to be uncommitted at the time, so it passed
+        only while the tree was dirty and failed the moment the work was
+        committed. That is a test of the environment, not of the gate.
+
+        Here the checkout is built deterministically inside ``tmp_path``, so
+        both directions are exercised with the production probe and the
+        production policy, and the outcome does not depend on anything outside
+        this test.
+        """
+
+        repo = tmp_path / "scratch-repo"
+        repo.mkdir()
+        _git_init(repo)
+        (repo / "tracked.py").write_text("value = 1\n", encoding="utf-8")
+        _git(repo, "add", "tracked.py")
+        _git(repo, "commit", "-m", "initial")
+        head = execute_module._default_source_checkout_probe(repo)["head"]
+        assert re.fullmatch(r"[0-9a-f]{40}", head)
+
+        # Clean at the committed head: the production gate admits it.
+        clean = execute_module.verify_source_checkout(source_head=head, repo_root=repo)
+        assert clean == {
+            "verified": True,
+            "source_head": head,
+            "tracked_workspace_clean": True,
+            "ignored_untracked_prefix": execute_module.IGNORED_UNTRACKED_PREFIX,
+        }
+
+        # A tracked modification: refused, and the path is never echoed.
+        (repo / "tracked.py").write_text("value = 2\n", encoding="utf-8")
+        with pytest.raises(
+            execute_module.ModalExecutionError, match="not clean"
+        ) as excinfo:
+            execute_module.verify_source_checkout(source_head=head, repo_root=repo)
+        assert "tracked.py" not in str(excinfo.value)
+
+        # Restored, then dirtied again with untracked source: also refused.
+        (repo / "tracked.py").write_text("value = 1\n", encoding="utf-8")
+        assert execute_module.verify_source_checkout(source_head=head, repo_root=repo)[
+            "verified"
+        ]
+        (repo / "sneaked_in.py").write_text("value = 3\n", encoding="utf-8")
+        with pytest.raises(execute_module.ModalExecutionError, match="not clean"):
+            execute_module.verify_source_checkout(source_head=head, repo_root=repo)
+
+    def test_the_production_gate_passes_on_a_clean_committed_head(
+        self, tmp_path: Path
+    ) -> None:
+        """A clean committed head passes, with production wiring and no fakes.
+
+        No probe is injected, so ``verify_source_checkout`` reaches for its
+        default production probe and reads real git. The repository is created
+        by this test, so the pass is deterministic: it does not depend on
+        whether the developer's own tree happens to be clean at the moment.
+        """
+
+        repo = tmp_path / "committed-repo"
+        repo.mkdir()
+        _git_init(repo)
+        (repo / "module.py").write_text("value = 1\n", encoding="utf-8")
+        _git(repo, "add", "module.py")
+        _git(repo, "commit", "-m", "committed")
+        head = execute_module._default_source_checkout_probe(repo)["head"]
+        receipt = execute_module.verify_source_checkout(
+            source_head=head, repo_root=repo
+        )
+        assert receipt["verified"] is True
+        assert receipt["tracked_workspace_clean"] is True
+        assert receipt["source_head"] == head
+
+        # The one tolerated untracked path does not break the clean pass.
+        traces = repo / execute_module.IGNORED_UNTRACKED_EXACT
+        traces.mkdir()
+        (traces / "trace-01.json").write_text("{}\n", encoding="utf-8")
+        assert execute_module.verify_source_checkout(source_head=head, repo_root=repo)[
+            "verified"
+        ]
+
+    def test_the_production_gate_refuses_a_head_it_was_not_authorized_for(
         self,
     ) -> None:
-        # The default probe reads the real checkout. This branch's Modal source
-        # is still uncommitted, so the production gate must refuse it: an
-        # execution can only start once the implementation is committed exactly.
-        head = execute_module._default_source_checkout_probe(execute_module.REPO_ROOT)[
-            "head"
-        ]
-        with pytest.raises(execute_module.ModalExecutionError):
-            execute_module.verify_source_checkout(
-                source_head=head, repo_root=execute_module.REPO_ROOT
-            )
+        """The real repository, but an approval for a different commit."""
+
+        with pytest.raises(execute_module.ModalExecutionError, match="does not match"):
+            execute_module.verify_source_checkout(source_head="0" * 40)
 
 
 class TestLocalProfileGate:
@@ -1875,7 +2569,16 @@ class TestLocalProfileGate:
 
 
 class TestNoResultEvidenceOnRefusal:
-    """Task 8: a non-complete or incomplete-teardown run writes no result."""
+    """A refusal writes no *result*, but it does keep its own evidence.
+
+    Two separate obligations. A non-complete run, or a complete run whose
+    teardown was incomplete or ambiguous, must never write a file the result
+    path consumes, so it can never be replayed as a result. It must also not
+    throw away receipts for work that was already dispatched and already paid
+    for: an ambiguous control-plane observation at teardown is not a reason to
+    destroy the cell and canary receipts the run bought. Those live under a
+    clearly-named refusal subtree instead.
+    """
 
     def test_an_incomplete_teardown_writes_no_result_evidence(
         self, tmp_path: Path, app_module: Any, fake_modal: Any
@@ -1884,6 +2587,50 @@ class TestNoResultEvidenceOnRefusal:
         _script(app_module, _Receipts())
         document = _run(tmp_path, app_module, fake_modal)
         assert document["published"] is False
+        workspace = tmp_path / "workspace"
+        assert not (workspace / "orchestration-receipt.json").exists()
+        assert not (workspace / "cells").exists()
+        assert not (workspace / "memory-gate").exists()
+
+    def test_an_ambiguous_teardown_still_preserves_the_paid_receipts(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        """32 cells and two canaries were paid for; the receipts survive."""
+
+        fake_modal.Volume.objects.list_error = RuntimeError("listing unavailable")
+        _script(app_module, _Receipts())
+        document = _run(tmp_path, app_module, fake_modal)
+        assert document["status"] == "complete"
+        assert document["published"] is False
+        assert "named_resource_listing_unavailable" in (
+            document["teardown"]["teardown_failures"]
+        )
+        workspace = tmp_path / "workspace"
+        refused = workspace / execute_module.REFUSAL_EVIDENCE_DIR
+        assert (workspace / execute_module.REFUSAL_RECEIPT_FILE).is_file()
+        assert sorted(path.name for path in (refused / "cells").iterdir()) == sorted(
+            f"{cell_id}.json" for cell_id in CELL_IDS
+        )
+        assert sorted(path.name for path in (refused / "memory-gate").iterdir()) == [
+            "canary-01.json",
+            "canary-02.json",
+        ]
+        receipt = json.loads(
+            (workspace / execute_module.REFUSAL_RECEIPT_FILE).read_text(
+                encoding="utf-8"
+            )
+        )
+        assert receipt["kind"].endswith(".refusal")
+        assert receipt["published"] is False
+
+    def test_preserved_refusal_evidence_uses_no_result_path_names(
+        self, tmp_path: Path, app_module: Any, fake_modal: Any
+    ) -> None:
+        """Preserving evidence must not create a replayable result bundle."""
+
+        fake_modal.Volume.objects.list_error = RuntimeError("listing unavailable")
+        _script(app_module, _Receipts())
+        _run(tmp_path, app_module, fake_modal)
         workspace = tmp_path / "workspace"
         assert not (workspace / "orchestration-receipt.json").exists()
         assert not (workspace / "cells").exists()
@@ -1906,6 +2653,11 @@ class TestNoResultEvidenceOnRefusal:
         workspace = tmp_path / "workspace"
         assert not (workspace / "orchestration-receipt.json").exists()
         assert not (workspace / "cells").exists()
+        # The failing canary was still dispatched and still billed, so its
+        # receipt is retained under the refusal subtree rather than discarded.
+        refused = workspace / execute_module.REFUSAL_EVIDENCE_DIR
+        assert (refused / "memory-gate" / "canary-01.json").is_file()
+        assert not (refused / "cells").exists()
 
 
 class TestCliPublicationStatus:
@@ -1947,6 +2699,66 @@ class TestCliPublicationStatus:
         )
         assert code == 1
         assert "supplied together" in capsys.readouterr().err
+
+    def test_cli_preflight_refuses_the_infeasible_design_without_a_traceback(
+        self, tmp_path: Path, capsys: Any
+    ) -> None:
+        """The production CLI path: no injection, no network, exit 1.
+
+        Every path argument below points at a file that does not exist. If the
+        feasibility gate ran anywhere other than first, the failure would be a
+        read error instead; the refusal message proves nothing was read,
+        fetched, authenticated, or imported before the arithmetic decided.
+        """
+
+        code = execute_module.main(
+            [
+                "preflight",
+                "--authorization",
+                str(tmp_path / "authorization.json"),
+                "--authorization-signature",
+                str(tmp_path / "authorization.sig"),
+                "--authorized-signers",
+                str(tmp_path / "allowed_signers"),
+                "--rate-receipt",
+                str(tmp_path / "rate-receipt.json"),
+                "--workspace",
+                str(tmp_path / "workspace"),
+                "--credential-exposure-attestation",
+                str(tmp_path / "attestation.json"),
+            ]
+        )
+        assert code == 1
+        error = capsys.readouterr().err
+        assert "infeasible" in error
+        assert "755.59501513728s" in error
+        assert "480s ceiling" in error
+        assert "Traceback" not in error
+
+    def test_cli_run_refuses_the_infeasible_design(
+        self, tmp_path: Path, capsys: Any
+    ) -> None:
+        code = execute_module.main(
+            [
+                "run",
+                "--authorization",
+                str(tmp_path / "authorization.json"),
+                "--authorization-signature",
+                str(tmp_path / "authorization.sig"),
+                "--authorized-signers",
+                str(tmp_path / "allowed_signers"),
+                "--rate-receipt",
+                str(tmp_path / "rate-receipt.json"),
+                "--workspace",
+                str(tmp_path / "workspace"),
+                "--credential-exposure-attestation",
+                str(tmp_path / "attestation.json"),
+            ]
+        )
+        assert code == 1
+        assert "infeasible" in capsys.readouterr().err
+        # No workspace, ledger, or receipt is created by a refused run.
+        assert not (tmp_path / "workspace").exists()
 
     def test_cli_run_returns_nonzero_when_result_is_not_published(
         self, tmp_path: Path, monkeypatch: Any, capsys: Any

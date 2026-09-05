@@ -24,6 +24,14 @@ from llmtracefx.optimizer.lab.qwen3_8b import vllm_compile as core
 
 NONCE = "d" * 32
 SOURCE_HEAD = "e" * 40
+# The sealed design is infeasible on a real L4: decode-only weight streaming for
+# one controlled cell needs about 755.6s against the sealed 480s timeout, so
+# production preflight refuses it offline. A *completed* run therefore only
+# exists on a hypothetical device, and these fixtures say so explicitly rather
+# than pretending the sealed constants passed. One terabyte per second is far
+# above any real L4 and is obviously not a claim about hardware; it exists only
+# so the post-feasibility machinery stays covered.
+HYPOTHETICAL_PEAK_BANDWIDTH_BYTES_PER_SECOND = 1_000_000_000_000
 DRIVER = "570.86"
 RESERVED_AT = "2026-09-04T20:00:00+00:00"
 COMPLETED_AT = "2026-09-04T20:04:00+00:00"
@@ -320,6 +328,43 @@ def _memory_gate_entry(mode: str, *, index: int, nonce: str = NONCE) -> dict[str
     return {**verdict, "receipt": receipt}
 
 
+def hypothetical_feasibility() -> dict[str, Any]:
+    """A feasible decode-bandwidth verdict for a hypothetical fast device."""
+
+    return modal.evaluate_decode_bandwidth_feasibility(
+        peak_bandwidth_bytes_per_second=HYPOTHETICAL_PEAK_BANDWIDTH_BYTES_PER_SECOND
+    )
+
+
+def hypothetical_feasibility_probe() -> dict[str, Any]:
+    """The same verdict, shaped as an injectable offline feasibility probe."""
+
+    return hypothetical_feasibility()
+
+
+def _headroom() -> dict[str, Any]:
+    return {
+        "supported": True,
+        "headroom_usd": "25",
+        "provenance": "signed_operator_receipt",
+        "signature_namespace": rates_module.HEADROOM_SIGNATURE_NAMESPACE,
+        "is_provider_spend_proof": False,
+        "null_reason": None,
+        "authorization_binding": {
+            "verified": True,
+            "bound_to_authorization": True,
+            "protocol_id": modal.PROTOCOL_ID,
+            "plan_sha256": modal.build_default_plan().content_sha256,
+            "source_head": SOURCE_HEAD,
+            "experiment_nonce": NONCE,
+            "confirmed_at": "2026-09-04T13:00:00+00:00",
+            "expires_at": "2026-09-05T00:00:00+00:00",
+            "covers_execution_window": True,
+            "records_account_identity": False,
+        },
+    }
+
+
 def _teardown() -> dict[str, Any]:
     receipt = {
         "outstanding_calls_cancelled": True,
@@ -332,6 +377,19 @@ def _teardown() -> dict[str, Any]:
         "functions_scaled_to_zero": True,
         "function_inventory_observability": "control_plane_scale_to_zero_only",
         "scale_zero_verified_via_control_plane": True,
+        "scale_zero_settling": {
+            "mechanism": modal.SCALE_ZERO_SETTLING_MECHANISM,
+            "is_scientific_retry": False,
+            "provider_scaledown_window_seconds": modal.SCALEDOWN_WINDOW_SECONDS,
+            "poll_interval_seconds": modal.SCALE_ZERO_POLL_INTERVAL_SECONDS,
+            "poll_attempts_max": modal.SCALE_ZERO_POLL_ATTEMPTS,
+            "poll_timeout_seconds": modal.SCALE_ZERO_POLL_TIMEOUT_SECONDS,
+            "samples_taken": 2,
+            "functions_observed": 7,
+            "functions_settled": 7,
+            "settled_after_samples": {},
+            "unsettled_functions": 0,
+        },
         "container_inventory_observable": False,
         "container_inventory_null_reason": modal.UNSUPPORTED_PROVIDER_CONTROLS[
             "individual_container_deletion"
@@ -503,6 +561,8 @@ def build_orchestration(*, nonce: str = NONCE) -> dict[str, Any]:
         "rate_receipt": rate_receipt(),
         "rate_refresh": rate_refresh(),
         "source_checkout": _source_checkout(),
+        "decode_feasibility": hypothetical_feasibility(),
+        "headroom": _headroom(),
         "call_sequence_executed": [
             {
                 "lifecycle_id": item["lifecycle_id"],

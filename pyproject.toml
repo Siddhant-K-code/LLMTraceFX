@@ -61,8 +61,12 @@ modal = [
 # volume mount `Volume.with_mount_options(read_only=True)` and the
 # `FunctionCall.cancel(terminate_containers=True)` teardown). It is pinned
 # exactly so a silent SDK upgrade cannot move that surface under a paid run.
-# It is a separate extra, not a change to `modal` above, so GLM behaviour is
-# untouched. Install it with `uv sync --extra modal-l4-execute`.
+# It is a separate extra, so the GLM `modal` constraint above is unchanged.
+# Note what that does and does not mean: uv resolves one `modal` entry for the
+# whole project, so adding this pin moved the locked version from 1.5.4 to
+# 1.5.5, and a locked `uv sync --extra modal` for GLM now installs 1.5.5 too.
+# The GLM *constraint* is untouched; the resolved GLM install is not.
+# Install it with `uv sync --extra modal-l4-execute`.
 modal-l4-execute = [
     "modal==1.5.5",
 ]

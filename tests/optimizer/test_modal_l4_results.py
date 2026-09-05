@@ -109,12 +109,36 @@ class TestValidCompletedRun:
 
     def test_causal_and_cache_claims_are_unsupported_by_construction(self) -> None:
         claims = {c["claim_id"]: c["state"] for c in _run()["claim_matrix"]["claims"]}
-        assert claims["pure-causal-compilation-effect"] == "unsupported"
-        assert claims["natural-end-to-end-causal-speedup"] == "unsupported"
-        assert claims["cache-state-controlled-comparison"] == "unsupported"
-        assert claims["compile-cuda-graph-component-timing"] == "unsupported"
+        state = modal.UNSUPPORTED_BY_CONSTRUCTION_STATE
+        assert claims["pure-causal-compilation-effect"] == state
+        assert claims["natural-end-to-end-causal-speedup"] == state
+        assert claims["cache-state-controlled-comparison"] == state
+        assert claims["hardware-matched-comparison"] == state
+        assert claims["compile-cuda-graph-component-timing"] == state
         for blocked in modal.BLOCKED_CLAIM_IDS:
-            assert claims[blocked] == "unsupported"
+            assert claims[blocked] == state
+
+    def test_result_claim_ids_match_the_canonical_registry(self) -> None:
+        """The result matrix names exactly the canonical identifiers.
+
+        Preregistration and result must be traceable to each other by claim
+        identifier alone, so the result matrix is closed over the canonical
+        registry and the preregistered matrix is a strict superset of it.
+        """
+
+        matrix = _run()["claim_matrix"]
+        published = sorted(c["claim_id"] for c in matrix["claims"])
+        assert published == sorted(modal.RESULT_CLAIM_IDS)
+        assert matrix["claim_ids"] == list(modal.RESULT_CLAIM_IDS)
+        assert set(modal.RESULT_CLAIM_IDS) <= set(modal.PREREGISTERED_CLAIM_IDS)
+        assert set(modal.MEASURED_CLAIM_IDS) <= set(published)
+        assert set(modal.BLOCKED_CLAIM_IDS) <= set(published)
+
+    def test_the_memory_gate_claim_is_supported_for_a_validated_run(self) -> None:
+        claims = {c["claim_id"]: c for c in _run()["claim_matrix"]["claims"]}
+        gate = claims["memory-gate-passed"]
+        assert gate["state"] == "supported"
+        assert gate["blockers"] == []
 
 
 class TestClaimSemantics:
@@ -323,6 +347,105 @@ class TestTeardownGate:
         with pytest.raises(
             results.ModalL4ResultsError, match="adjudication does not recompute"
         ):
+            _run(orchestration=orch)
+
+
+class TestDecodeFeasibilityGate:
+    """A result can only exist for a run the offline arithmetic admitted."""
+
+    def test_a_missing_verdict_is_refused(self) -> None:
+        orch = fixture.build_orchestration()
+        orch["decode_feasibility"] = None
+        orch = _reseal_orch(orch)
+        with pytest.raises(
+            results.ModalL4ResultsError, match="decode-feasibility verdict is missing"
+        ):
+            _run(orchestration=orch)
+
+    def test_a_hand_edited_verdict_does_not_recompute(self) -> None:
+        orch = fixture.build_orchestration()
+        orch["decode_feasibility"]["derivation"]["minimum_decode_only_seconds"] = "1"
+        orch = _reseal_orch(orch)
+        with pytest.raises(results.ModalL4ResultsError, match="does not recompute"):
+            _run(orchestration=orch)
+
+    def test_a_verdict_flipped_to_feasible_does_not_recompute(self) -> None:
+        """Flipping the boolean without changing the inputs is caught."""
+
+        orch = fixture.build_orchestration()
+        orch["decode_feasibility"] = modal.evaluate_decode_bandwidth_feasibility()
+        orch["decode_feasibility"]["feasible"] = True
+        orch = _reseal_orch(orch)
+        with pytest.raises(results.ModalL4ResultsError, match="does not recompute"):
+            _run(orchestration=orch)
+
+    def test_the_sealed_infeasible_verdict_is_refused(self) -> None:
+        orch = fixture.build_orchestration()
+        orch["decode_feasibility"] = modal.evaluate_decode_bandwidth_feasibility()
+        orch = _reseal_orch(orch)
+        with pytest.raises(results.ModalL4ResultsError, match="infeasible"):
+            _run(orchestration=orch)
+
+    def test_the_verdict_is_published_in_the_analysis(self) -> None:
+        result = _run()
+        assert result["decode_feasibility"]["feasible"] is True
+        assert result["decode_feasibility"]["uses_sealed_constants"] is False
+
+
+class TestHeadroomBinding:
+    """Headroom that admitted a run must be bound to the authorization."""
+
+    def test_a_missing_headroom_verdict_is_refused(self) -> None:
+        orch = fixture.build_orchestration()
+        orch["headroom"] = None
+        orch = _reseal_orch(orch)
+        with pytest.raises(results.ModalL4ResultsError, match="headroom is missing"):
+            _run(orchestration=orch)
+
+    def test_an_unbound_signed_headroom_receipt_is_refused(self) -> None:
+        orch = fixture.build_orchestration()
+        orch["headroom"]["authorization_binding"] = None
+        orch = _reseal_orch(orch)
+        with pytest.raises(results.ModalL4ResultsError, match="not bound"):
+            _run(orchestration=orch)
+
+    def test_headroom_presented_as_spend_proof_is_refused(self) -> None:
+        orch = fixture.build_orchestration()
+        orch["headroom"]["is_provider_spend_proof"] = True
+        orch = _reseal_orch(orch)
+        with pytest.raises(results.ModalL4ResultsError, match="spend proof"):
+            _run(orchestration=orch)
+
+
+class TestTeardownSettlingGate:
+    def test_a_teardown_without_bounded_settling_is_incomplete(self) -> None:
+        orch = fixture.build_orchestration()
+        del orch["teardown"]["scale_zero_settling"]
+        orch["teardown"]["adjudication"] = modal.evaluate_teardown_receipt(
+            {k: v for k, v in orch["teardown"].items() if k != "adjudication"}
+        )
+        orch = _reseal_orch(orch)
+        with pytest.raises(results.ModalL4ResultsError, match="scale_zero_settling"):
+            _run(orchestration=orch)
+
+    def test_settling_presented_as_a_scientific_retry_is_incomplete(self) -> None:
+        orch = fixture.build_orchestration()
+        orch["teardown"]["scale_zero_settling"]["is_scientific_retry"] = True
+        orch["teardown"]["adjudication"] = modal.evaluate_teardown_receipt(
+            {k: v for k, v in orch["teardown"].items() if k != "adjudication"}
+        )
+        orch = _reseal_orch(orch)
+        with pytest.raises(results.ModalL4ResultsError, match="scale_zero_settling"):
+            _run(orchestration=orch)
+
+    def test_an_unbounded_settling_budget_is_incomplete(self) -> None:
+        orch = fixture.build_orchestration()
+        orch["teardown"]["scale_zero_settling"]["poll_timeout_seconds"] = 0
+        orch["teardown"]["adjudication"] = modal.evaluate_teardown_receipt(
+            {k: v for k, v in orch["teardown"].items() if k != "adjudication"}
+        )
+        orch = _reseal_orch(orch)
+        with pytest.raises(results.ModalL4ResultsError, match="scale_zero_settling"):
             _run(orchestration=orch)
 
 

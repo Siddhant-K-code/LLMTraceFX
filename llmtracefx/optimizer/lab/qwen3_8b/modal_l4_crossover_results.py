@@ -36,13 +36,18 @@ from .modal_l4_crossover import (
     HARD_CAP_USD,
     LIFECYCLE_BY_ID,
     PROTOCOL_ID,
+    RESULT_CLAIM_IDS,
+    REUSED_PROVIDER_NEUTRAL_PRIMITIVES,
     RUNTIME_IMAGE_SPEC_COMMITMENT,
     TOTAL_PLANNED_USD,
     UNCONTROLLED_CACHE_LIMITATIONS,
+    UNSUPPORTED_BY_CONSTRUCTION_CLAIMS,
+    UNSUPPORTED_BY_CONSTRUCTION_STATE,
     build_default_plan,
     call_sequence,
     crossover_schedule,
     evaluate_attempt_receipts,
+    evaluate_decode_bandwidth_feasibility,
     evaluate_memory_gate,
     evaluate_teardown_receipt,
     runtime_image_identity,
@@ -55,28 +60,16 @@ from .vllm_compile import RUNTIME_PINS, canonical_decimal
 
 RESULT_SCHEMA_VERSION = "1"
 ORCHESTRATION_SCHEMA_VERSION = "1"
-REUSED_STATISTICAL_PRIMITIVES = (
-    "cloudrift_crossover_results._validate_request",
-    "cloudrift_crossover_results._compute_pair_effects",
-    "cloudrift_crossover_results._identity_summary",
-    "cloudrift_crossover_results._analysis_document",
-    "cloudrift_crossover_results._natural_evaluation",
-    "cloudrift_crossover_results._quality_preservation",
-    "vllm_compile.PairCurve",
-    "vllm_compile.analyze_pair_curves",
-)
+# One list, shared with the preregistered plan, so the protocol's claim about
+# which primitives are reused and the code that reuses them cannot drift apart.
+REUSED_STATISTICAL_PRIMITIVES = REUSED_PROVIDER_NEUTRAL_PRIMITIVES
 # Claims a fresh-container, provider-conditioned crossover cannot make on Modal:
 # the host page cache and container placement are chosen by the provider and are
 # never observable, so no causal, cache-controlled, or hardware-matched claim is
 # available. These stay unsupported by construction and must never be marked
-# supported.
-_UNSUPPORTED_BY_CONSTRUCTION = {
-    "pure-causal-compilation-effect": "host_page_cache_and_placement_uncontrolled",
-    "natural-end-to-end-causal-speedup": "host_page_cache_and_placement_uncontrolled",
-    "cache-state-controlled-comparison": "host_page_cache_not_observable",
-    "hardware-matched-comparison": "container_placement_uncontrolled_across_cells",
-    "compile-cuda-graph-component-timing": "no_stable_offline_snapshot_hook",
-}
+# supported. The registry is shared with the preregistered claim matrix so both
+# matrices name the identical claims with the identical blocking reasons.
+_UNSUPPORTED_BY_CONSTRUCTION = dict(UNSUPPORTED_BY_CONSTRUCTION_CLAIMS)
 
 
 class ModalL4ResultsError(ValueError):
@@ -131,6 +124,8 @@ ORCHESTRATION_KEYS = (
     "rate_receipt",
     "rate_refresh",
     "source_checkout",
+    "decode_feasibility",
+    "headroom",
     "call_sequence_executed",
     "attempt_receipts",
     "attempt_adjudication",
@@ -274,6 +269,85 @@ def _validate_orchestration_envelope(
         "orchestration runtime image commitment differs or claims a digest",
     )
     return source_head, experiment_nonce
+
+
+def _validate_decode_feasibility(orchestration: Mapping[str, Any]) -> dict[str, Any]:
+    """Re-derive the decode-bandwidth proof that admitted this run.
+
+    The receipt is not trusted: its own recorded inputs are fed back through
+    the same evaluator and the whole document must recompute byte-for-byte, so
+    a hand-edited verdict, a silently different byte count, or a fabricated
+    bandwidth is terminal. A result can only exist for a run the arithmetic
+    admitted, so an infeasible or absent verdict is refused here.
+    """
+
+    receipt = orchestration.get("decode_feasibility")
+    _require(
+        isinstance(receipt, Mapping),
+        "orchestration decode-feasibility verdict is missing",
+    )
+    assert isinstance(receipt, Mapping)
+    inputs = receipt.get("inputs")
+    _require(
+        isinstance(inputs, Mapping),
+        "orchestration decode-feasibility verdict records no inputs",
+    )
+    assert isinstance(inputs, Mapping)
+    try:
+        recomputed = evaluate_decode_bandwidth_feasibility(
+            model_bytes=inputs["model_bytes"],
+            output_tokens=inputs["output_tokens"],
+            peak_bandwidth_bytes_per_second=inputs["peak_bandwidth_bytes_per_second"],
+            timeout_seconds=inputs["timeout_seconds"],
+        )
+    except Exception as exc:  # noqa: BLE001 - normalized into a terminal error
+        raise ModalL4ResultsError(
+            f"orchestration decode-feasibility verdict is invalid: {exc}"
+        ) from exc
+    _require(
+        dict(receipt) == recomputed,
+        "orchestration decode-feasibility verdict does not recompute from its "
+        "own recorded inputs",
+    )
+    _require(
+        receipt.get("feasible") is True,
+        "orchestration decode-feasibility verdict is infeasible; a result "
+        "cannot exist for a design the arithmetic refuses",
+    )
+    return dict(receipt)
+
+
+def _validate_headroom(orchestration: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the recorded account-headroom verdict and its binding.
+
+    Headroom that came from a signed operator receipt must carry the
+    authorization binding the execution path recorded, so a result cannot be
+    built from a run admitted by an unbound, replayable dollar figure.
+    """
+
+    headroom = orchestration.get("headroom")
+    _require(isinstance(headroom, Mapping), "orchestration headroom is missing")
+    assert isinstance(headroom, Mapping)
+    _require(
+        headroom.get("supported") is True,
+        "orchestration headroom was never established",
+    )
+    _require(
+        headroom.get("is_provider_spend_proof") is False,
+        "orchestration headroom is presented as provider spend proof",
+    )
+    binding = headroom.get("authorization_binding")
+    if headroom.get("provenance") == "signed_operator_receipt":
+        _require(
+            isinstance(binding, Mapping)
+            and binding.get("verified") is True
+            and binding.get("bound_to_authorization") is True
+            and binding.get("covers_execution_window") is True
+            and binding.get("records_account_identity") is False,
+            "orchestration signed headroom receipt is not bound to this "
+            "authorization",
+        )
+    return dict(headroom)
 
 
 def _validate_profile_authentication(
@@ -912,6 +986,8 @@ def analyze_modal_run(
     source_head, experiment_nonce = _validate_orchestration_envelope(
         orchestration, plan=modal_plan
     )
+    decode_feasibility = _validate_decode_feasibility(orchestration)
+    headroom = _validate_headroom(orchestration)
     profile_authentication = _validate_profile_authentication(orchestration)
     source_checkout = _validate_source_checkout(orchestration, source_head=source_head)
     rate_provenance = _validate_rate_provenance(orchestration)
@@ -1015,6 +1091,8 @@ def analyze_modal_run(
         "reused_statistical_primitives": list(REUSED_STATISTICAL_PRIMITIVES),
         "profile_authentication": profile_authentication,
         "source_checkout": source_checkout,
+        "decode_feasibility": decode_feasibility,
+        "headroom": headroom,
         "rate_receipt": rate_provenance["rate_receipt"],
         "rate_refresh": rate_provenance["rate_refresh"],
         "hardware_placement": placement,
@@ -1210,6 +1288,13 @@ def _claim_matrix(
 ) -> dict[str, Any]:
     """Return the Modal claim matrix with the corrected claim semantics.
 
+    Claim identifiers are the shared canonical ones, so every claim here is the
+    same claim, under the same name, as the one the offline preregistration
+    published: a reader can trace ``memory-gate-passed`` or
+    ``provider-teardown-complete`` from preregistration to result without a
+    translation table. The measured set and the unsupported-by-construction set
+    are both exhaustive and are checked against the canonical registry below.
+
     * A fixed-token-count, provider-conditioned crossover does NOT require
       equal output tokens: it requires complete controlled 144x96 terminals and
       a statistically supported crossing. It does not need output identity, and
@@ -1260,28 +1345,35 @@ def _claim_matrix(
         correctness["all_natural_requests_correct"]
         and quality.get("noninferiority_supported") is True
     )
+    # Reaching this function at all means both memory-gate canaries were
+    # re-adjudicated as passing with no tuning applied; anything else is a
+    # terminal validation error long before a claim matrix is built.
+    feasibility = evaluate_decode_bandwidth_feasibility()
 
     claims: list[dict[str, Any]] = [
+        {
+            "claim_id": "application-ledger-within-hard-cap",
+            "state": "supported",
+            "blockers": [],
+        },
+        {
+            "claim_id": "controlled-cell-decode-feasible-on-l4",
+            "state": "supported" if feasibility["feasible"] else "unsupported",
+            "blockers": (
+                []
+                if feasibility["feasible"]
+                else ["decode_only_minimum_exceeds_controlled_cell_timeout"]
+            ),
+        },
         {
             "claim_id": "fixed-token-count-provider-conditioned-crossover",
             "state": "supported" if not fixed_blockers else "unsupported",
             "blockers": fixed_blockers,
         },
         {
-            "claim_id": "output-identical-generation-crossover",
-            "state": (
-                "supported"
-                if not output_identical_crossover_blockers
-                else "unsupported"
-            ),
-            "blockers": output_identical_crossover_blockers,
-        },
-        {
-            "claim_id": "numerically-reproducible-generation",
-            "state": "supported" if numeric_reproducible else "unsupported",
-            "blockers": (
-                [] if numeric_reproducible else ["within_mode_lifecycles_not_identical"]
-            ),
+            "claim_id": "memory-gate-passed",
+            "state": "supported",
+            "blockers": [],
         },
         {
             "claim_id": "natural-output-quality-preserved",
@@ -1293,9 +1385,20 @@ def _claim_matrix(
             ),
         },
         {
-            "claim_id": "budget-reservations-within-hard-cap",
-            "state": "supported",
-            "blockers": [],
+            "claim_id": "numerically-reproducible-generation",
+            "state": "supported" if numeric_reproducible else "unsupported",
+            "blockers": (
+                [] if numeric_reproducible else ["within_mode_lifecycles_not_identical"]
+            ),
+        },
+        {
+            "claim_id": "output-identical-generation-crossover",
+            "state": (
+                "supported"
+                if not output_identical_crossover_blockers
+                else "unsupported"
+            ),
+            "blockers": output_identical_crossover_blockers,
         },
         {
             "claim_id": "provider-reported-spend-within-hard-cap",
@@ -1311,7 +1414,7 @@ def _claim_matrix(
     claims.extend(
         {
             "claim_id": claim_id,
-            "state": "unsupported",
+            "state": UNSUPPORTED_BY_CONSTRUCTION_STATE,
             "blockers": [blocker],
         }
         for claim_id, blocker in sorted(_UNSUPPORTED_BY_CONSTRUCTION.items())
@@ -1326,4 +1429,14 @@ def _claim_matrix(
         "claims unsupported by construction were marked supported: "
         + ", ".join(supported_blocked),
     )
-    return {"schema_version": RESULT_SCHEMA_VERSION, "claims": claims}
+    published = tuple(sorted(claim["claim_id"] for claim in claims))
+    _require(
+        published == RESULT_CLAIM_IDS,
+        "result claim identifiers differ from the canonical registry: "
+        f"{sorted(set(published) ^ set(RESULT_CLAIM_IDS))}",
+    )
+    return {
+        "schema_version": RESULT_SCHEMA_VERSION,
+        "claim_ids": list(RESULT_CLAIM_IDS),
+        "claims": sorted(claims, key=lambda item: item["claim_id"]),
+    }

@@ -107,6 +107,7 @@ def _result_envelope(
     envelopes: dict[str, Any] = {
         "application-ledger.json": orch["ledger"],
         "credential-exposure.json": {**orch["credential_exposure"], "reason": reason},
+        "decode-feasibility.json": orch["decode_feasibility"],
         "memory-gate.json": {
             "tuning_applied": orch["memory_gate"]["tuning_applied"],
             "canaries": [
@@ -228,10 +229,63 @@ class TestOfflineBundle:
         states = {item["claim_id"]: item["state"] for item in claims["claims"]}
         assert states["zero-spend-offline-generation"] == "supported"
         assert states["no-provider-authentication"] == "supported"
-        assert states["provider-billed-cost-within-hard-cap"] == "unsupported"
-        assert states["cache-state-controlled-comparison"] == "not_applicable"
+        assert states["provider-reported-spend-within-hard-cap"] == "unsupported"
+        blocked_state = modal.UNSUPPORTED_BY_CONSTRUCTION_STATE
+        assert states["cache-state-controlled-comparison"] == blocked_state
         for claim_id in modal.BLOCKED_CLAIM_IDS:
-            assert states[claim_id] == "not_applicable"
+            assert states[claim_id] == blocked_state
+
+    def test_the_offline_matrix_uses_the_canonical_claim_identifiers(
+        self, bundle: Path
+    ) -> None:
+        """Preregistered and result claim identifiers are the same strings.
+
+        Every measured claim (including the memory gate) and every claim
+        unsupported by construction (including the causal and hardware-matched
+        ones) appears in both matrices under one identifier, so a claim is
+        traceable from preregistration to result without a translation table.
+        """
+
+        claims = json.loads((bundle / "claim-matrix.json").read_text(encoding="utf-8"))
+        published = sorted(item["claim_id"] for item in claims["claims"])
+        assert published == sorted(modal.PREREGISTERED_CLAIM_IDS)
+        assert claims["claim_ids"] == list(modal.PREREGISTERED_CLAIM_IDS)
+        assert claims["result_claim_ids"] == list(modal.RESULT_CLAIM_IDS)
+        assert set(modal.RESULT_CLAIM_IDS) <= set(published)
+        assert "memory-gate-passed" in published
+        assert "hardware-matched-comparison" in published
+        assert "pure-causal-compilation-effect" in published
+
+    def test_the_decode_feasibility_refusal_is_published(self, bundle: Path) -> None:
+        """The infeasibility proof ships with the preregistration, not just in code."""
+
+        verdict = json.loads(
+            (bundle / "decode-feasibility.json").read_text(encoding="utf-8")
+        )
+        preflight = json.loads(
+            (bundle / "offline-preflight.json").read_text(encoding="utf-8")
+        )
+        plan = json.loads((bundle / "experiment-plan.json").read_text(encoding="utf-8"))
+        assert verdict == modal.evaluate_decode_bandwidth_feasibility()
+        assert verdict["feasible"] is False
+        assert verdict["derivation"]["minimum_decode_only_seconds"] == "755.59501513728"
+        assert verdict["derivation"]["required_tokens_per_second"] == "28.8"
+        assert preflight["decode_feasibility"] == verdict
+        assert preflight["execution_refused_offline"] is True
+        assert plan["decode_feasibility"] == verdict
+        claims = json.loads((bundle / "claim-matrix.json").read_text(encoding="utf-8"))
+        states = {item["claim_id"]: item for item in claims["claims"]}
+        feasible_claim = states["controlled-cell-decode-feasible-on-l4"]
+        assert feasible_claim["state"] == "unsupported"
+        assert feasible_claim["evidence"] == "decode-feasibility.json"
+
+    def test_the_bundle_readme_states_the_arithmetic(self, bundle: Path) -> None:
+        readme = (bundle / "README.md").read_text(encoding="utf-8")
+        assert "16,397,461,266-byte weight image" in readme
+        assert "300,000,000,000 bytes per second" in readme
+        assert "755.59501513728 seconds" in readme
+        assert "480-second" in readme
+        assert "28.8 tokens per second" in readme
 
     def test_budget_chain_reconciles_to_the_hard_cap(self, bundle: Path) -> None:
         budget = json.loads((bundle / "budget-plan.json").read_text(encoding="utf-8"))
@@ -914,7 +968,18 @@ class TestCredentialExposureEvidence:
             (bundle / "result-contract.json").read_text(encoding="utf-8")
         )
         assert "credential-exposure.json" in contract["modal_envelope_files"]
-        assert "credential-exposure" in contract["verification_order"][1]
+        # The feasibility proof and the headroom binding are checked before the
+        # credential-exposure clearance, so the gate is now third rather than
+        # second; it still precedes every statistical step.
+        order = contract["verification_order"]
+        gate_index = next(
+            index for index, step in enumerate(order) if "credential-exposure" in step
+        )
+        assert gate_index == 3
+        assert all(
+            "cell" not in step and "statistic" not in step
+            for step in order[:gate_index]
+        )
 
     def test_a_missing_gate_verdict_refuses_results(self, tmp_path: Path) -> None:
         root = _result_envelope(tmp_path / "results")

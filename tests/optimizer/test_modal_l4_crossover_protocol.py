@@ -11,7 +11,9 @@ from typing import Any
 import pytest
 
 from llmtracefx.optimizer.lab.qwen3_8b import modal_l4_crossover as modal
+from llmtracefx.optimizer.lab.qwen3_8b import modal_l4_rates as rates_module
 from llmtracefx.optimizer.lab.qwen3_8b import vllm_compile
+from llmtracefx.optimizer.lab.qwen3_8b.modal_l4_rates import RateRefreshError
 
 NONCE = "b" * 32
 HEAD = "a" * 40
@@ -97,6 +99,12 @@ def _teardown(**overrides: Any) -> dict[str, Any]:
         "app_deletion_provider_verified": None,
         "functions_scaled_to_zero": True,
         "scale_zero_verified_via_control_plane": True,
+        "scale_zero_settling": {
+            "mechanism": modal.SCALE_ZERO_SETTLING_MECHANISM,
+            "is_scientific_retry": False,
+            "poll_timeout_seconds": modal.SCALE_ZERO_POLL_TIMEOUT_SECONDS,
+            "samples_taken": 1,
+        },
         "container_inventory_observable": False,
         "volume_deleted": True,
         "named_resource_listing_scope": "volumes_only",
@@ -251,10 +259,14 @@ class TestResourceAndLifecycleControls:
         assert modal.CLAIM_SURFACE["natural_end_to_end_causal_speedup"] == (
             "unsupported_by_construction"
         )
-        assert (
-            "provider container placement is chosen by Modal and is not observable"
-            in (modal.UNCONTROLLED_CACHE_LIMITATIONS)
-        )
+        # Placement is uncontrolled and the physical host is never identified,
+        # but per-pair same/different placement *is* derived and published from
+        # anonymized commitment groups, so the limitation says exactly that
+        # rather than the stronger, untrue "not observable".
+        placement = modal.UNCONTROLLED_CACHE_LIMITATIONS[0]
+        assert "is never controlled" in placement
+        assert "physical host is never identified" in placement
+        assert "anonymized placement group is observable" in placement
 
     def test_run_scoped_names_are_unique_per_nonce(self) -> None:
         first = modal.run_scoped_names(NONCE)
@@ -361,19 +373,242 @@ class TestRateAndBudgetReceipts:
         with pytest.raises(modal.ModalL4ContractError, match=match):
             modal.verify_official_rate_receipt(_rate_receipt(**{field: value}))
 
-    def test_absent_budget_receipt_is_null_not_headroom(self) -> None:
-        result = modal.verify_budget_headroom_receipt(None)
-        assert result["supported"] is False
-        assert result["headroom_usd"] is None
-        assert result["null_reason"]
+    def test_no_second_headroom_helper_contradicts_the_execution_gate(self) -> None:
+        """Headroom has exactly one adjudicator, and absence is never zero risk.
 
-    def test_insufficient_or_identifying_budget_receipt_refuses(self) -> None:
-        with pytest.raises(modal.ModalL4ContractError, match="headroom"):
-            modal.verify_budget_headroom_receipt({"headroom_usd": "1"})
-        with pytest.raises(modal.ModalL4ContractError, match="sanitized"):
-            modal.verify_budget_headroom_receipt(
-                {"headroom_usd": "50", "account_identifier": "acct"}
-            )
+        An earlier helper on this module returned ``supported: False`` for an
+        absent receipt, which reads as "no headroom recorded" -- the opposite of
+        the execution gate's rule that an absent limit is never an unlimited
+        one. It is removed rather than kept alongside, so there is one place
+        headroom is decided.
+        """
+
+        assert not hasattr(modal, "verify_budget_headroom_receipt")
+        with pytest.raises(RateRefreshError, match="refusing to infer"):
+            rates_module.account_headroom()
+
+
+class TestDecodeBandwidthFeasibility:
+    """The offline arithmetic proof that the approved design cannot run.
+
+    Every number below is derived from constants that are already sealed
+    elsewhere in the protocol, so the proof can be re-done by hand:
+
+        144 controlled requests x 96 output tokens = 13,824 tokens
+        13,824 tokens x 16,397,461,266 bytes  = 226,678,504,541,184 bytes
+        226,678,504,541,184 / 300,000,000,000 = 755.59501513728 seconds
+
+    against a sealed 480-second controlled-cell timeout, excluding container
+    start, weight load, engine init, prefill, and CUDA-graph capture.
+    """
+
+    def test_the_sealed_inputs_are_the_protocol_constants(self) -> None:
+        assert modal.STAGED_MODEL_BYTES == 16_397_461_266
+        assert modal.STAGED_MODEL_BYTES == vllm_compile.EXPECTED_MODEL_BYTES
+        assert modal.CONTROLLED_CELL_OUTPUT_TOKENS == 144 * 96 == 13_824
+        assert modal.L4_ADVERTISED_PEAK_BANDWIDTH_BYTES_PER_SECOND == 300_000_000_000
+        assert modal.CONTROLLED_CELL_TIMEOUT_SECONDS == 480
+
+    def test_the_derived_arithmetic_is_exact(self) -> None:
+        verdict = modal.evaluate_decode_bandwidth_feasibility()
+        derivation = verdict["derivation"]
+        assert derivation["weight_bytes_streamed_per_cell"] == 226_678_504_541_184
+        assert derivation["bytes_streamable_within_timeout"] == 144_000_000_000_000
+        assert derivation["minimum_decode_only_seconds"] == "755.59501513728"
+        assert derivation["required_tokens_per_second"] == "28.8"
+        assert derivation["theoretical_peak_tokens_per_second"] == "18.295515088183"
+        assert derivation["minimum_over_timeout_ratio"] == "1.574156281536"
+
+    def test_the_sealed_design_is_infeasible(self) -> None:
+        verdict = modal.evaluate_decode_bandwidth_feasibility()
+        assert verdict["feasible"] is False
+        assert verdict["uses_sealed_constants"] is True
+        assert verdict["computed_offline"] is True
+        assert "480s controlled-cell timeout" in verdict["verdict"]
+
+    def test_the_assumptions_and_exclusions_are_published(self) -> None:
+        verdict = modal.evaluate_decode_bandwidth_feasibility()
+        assert verdict["assumptions"] == list(modal.DECODE_FEASIBILITY_ASSUMPTIONS)
+        assert verdict["derivation"]["excluded_from_the_minimum"] == list(
+            modal.DECODE_FEASIBILITY_EXCLUSIONS
+        )
+        assert verdict["inputs"]["model_bytes_provenance"]
+        assert verdict["inputs"]["peak_bandwidth_provenance"]
+
+    def test_requiring_feasibility_refuses_the_sealed_design(self) -> None:
+        with pytest.raises(modal.ModalL4ContractError, match="infeasible"):
+            modal.require_controlled_cell_decode_feasible()
+
+    def test_the_refusal_names_the_deficit(self) -> None:
+        with pytest.raises(modal.ModalL4ContractError) as excinfo:
+            modal.require_controlled_cell_decode_feasible()
+        message = str(excinfo.value)
+        assert "755.59501513728s" in message
+        assert "480s" in message
+        assert "28.8" in message
+        assert "18.295515088183" in message
+
+    def test_the_eager_canary_alone_could_not_have_caught_this(self) -> None:
+        """One 96-token canary fits easily; only the full cell does not.
+
+        This is why the gate is arithmetic rather than an observation: a
+        passing canary says nothing about whether 144 of them fit in 480s.
+        """
+
+        canary = modal.evaluate_decode_bandwidth_feasibility(
+            output_tokens=modal.DECODE_STEPS,
+            timeout_seconds=modal.EAGER_CANARY_TIMEOUT_SECONDS,
+        )
+        assert canary["feasible"] is True
+        assert canary["derivation"]["minimum_decode_only_seconds"] == "5.24718760512"
+
+    def test_a_faster_hypothetical_device_is_feasible(self) -> None:
+        verdict = modal.evaluate_decode_bandwidth_feasibility(
+            peak_bandwidth_bytes_per_second=1_000_000_000_000
+        )
+        assert verdict["feasible"] is True
+        assert verdict["uses_sealed_constants"] is False
+        assert modal.require_controlled_cell_decode_feasible(verdict=verdict) == verdict
+
+    @pytest.mark.parametrize("field", sorted(("model_bytes", "output_tokens")))
+    def test_a_nonpositive_input_is_refused(self, field: str) -> None:
+        with pytest.raises(modal.ModalL4ContractError):
+            modal.evaluate_decode_bandwidth_feasibility(**{field: 0})
+
+    def test_the_remedy_policy_forbids_resizing_the_experiment(self) -> None:
+        policy = modal.evaluate_decode_bandwidth_feasibility()["remedy_policy"]
+        for forbidden in ("lowering n", "tuning the runner", "changing the GPU"):
+            assert forbidden in policy
+
+    def test_the_plan_carries_the_proof(self) -> None:
+        plan = modal.build_default_plan().to_dict()
+        assert plan["decode_feasibility"] == (
+            modal.evaluate_decode_bandwidth_feasibility()
+        )
+
+    def test_the_offline_document_refuses_first(self) -> None:
+        document = modal.offline_plan_document()
+        assert document["execution_refused_offline"] is True
+        assert document["decode_feasibility"]["feasible"] is False
+        assert "infeasible on the pinned accelerator" in document["blockers"][0]
+
+
+class TestCanonicalClaimIdentifiers:
+    def test_the_registry_groups_are_disjoint_and_complete(self) -> None:
+        offline = set(modal.OFFLINE_ONLY_CLAIM_IDS)
+        measured = set(modal.MEASURED_CLAIM_IDS)
+        blocked = set(modal.BLOCKED_CLAIM_IDS)
+        assert offline & measured == set()
+        assert offline & blocked == set()
+        assert measured & blocked == set()
+        assert set(modal.PREREGISTERED_CLAIM_IDS) == offline | measured | blocked
+        assert set(modal.RESULT_CLAIM_IDS) == measured | blocked
+
+    def test_every_result_claim_is_preregistered(self) -> None:
+        assert set(modal.RESULT_CLAIM_IDS) <= set(modal.PREREGISTERED_CLAIM_IDS)
+
+    def test_the_memory_gate_and_blocked_claims_are_in_both_matrices(self) -> None:
+        for claim_id in (
+            "memory-gate-passed",
+            "pure-causal-compilation-effect",
+            "hardware-matched-comparison",
+            "natural-end-to-end-causal-speedup",
+            "cache-state-controlled-comparison",
+            "compile-cuda-graph-component-timing",
+        ):
+            assert claim_id in modal.RESULT_CLAIM_IDS
+            assert claim_id in modal.PREREGISTERED_CLAIM_IDS
+
+    def test_blocked_ids_derive_from_the_reason_registry(self) -> None:
+        assert modal.BLOCKED_CLAIM_IDS == tuple(
+            sorted(modal.UNSUPPORTED_BY_CONSTRUCTION_CLAIMS)
+        )
+        assert all(modal.UNSUPPORTED_BY_CONSTRUCTION_CLAIMS.values())
+
+
+class TestReusedPrimitiveDeclaration:
+    def test_the_plan_and_the_results_path_share_one_list(self) -> None:
+        """The protocol's claim and the code that reuses them cannot drift.
+
+        These were two hand-maintained lists that disagreed: the plan named
+        ``_pair_effect_distributions``, which the Modal results path never
+        calls directly, and omitted the analysis document, the natural
+        evaluator, the quality bootstrap, and the two pair-curve primitives it
+        does call.
+        """
+
+        from llmtracefx.optimizer.lab.qwen3_8b import (
+            modal_l4_crossover_results as results,
+        )
+
+        assert (
+            results.REUSED_STATISTICAL_PRIMITIVES
+            is modal.REUSED_PROVIDER_NEUTRAL_PRIMITIVES
+        )
+        assert modal.STATISTICAL_PUBLICATION[
+            "reused_provider_neutral_primitives"
+        ] == list(modal.REUSED_PROVIDER_NEUTRAL_PRIMITIVES)
+        assert "_pair_effect_distributions" not in "".join(
+            modal.REUSED_PROVIDER_NEUTRAL_PRIMITIVES
+        )
+
+
+class TestScaleToZeroSettlingContract:
+    def test_the_settling_budget_is_finite_and_exact(self) -> None:
+        assert modal.SCALE_ZERO_POLL_ATTEMPTS == 12
+        assert modal.SCALE_ZERO_POLL_INTERVAL_SECONDS == 5
+        assert modal.SCALE_ZERO_POLL_TIMEOUT_SECONDS == 55
+        assert modal.SCALE_ZERO_POLL_TIMEOUT_SECONDS > modal.SCALEDOWN_WINDOW_SECONDS
+
+    def test_the_contract_publishes_the_mechanism_and_bound(self) -> None:
+        contract = modal.TEARDOWN_CONTRACT
+        assert contract["scale_to_zero_settling_mechanism"] == (
+            modal.SCALE_ZERO_SETTLING_MECHANISM
+        )
+        assert contract["scale_to_zero_settling_timeout_seconds"] == (
+            modal.SCALE_ZERO_POLL_TIMEOUT_SECONDS
+        )
+        assert contract["scale_to_zero_settling_is_scientific_retry"] is False
+
+    def test_a_single_immediate_sample_claim_is_not_enough(self) -> None:
+        """A receipt with no settling record cannot adjudicate complete."""
+
+        receipt = _teardown()
+        del receipt["scale_zero_settling"]
+        verdict = modal.evaluate_teardown_receipt(receipt)
+        assert verdict["complete"] is False
+        assert "scale_zero_settling" in verdict["failures"]
+
+    def test_settling_beyond_the_bounded_budget_is_refused(self) -> None:
+        receipt = _teardown()
+        receipt["scale_zero_settling"] = {
+            **receipt["scale_zero_settling"],
+            "samples_taken": modal.SCALE_ZERO_POLL_ATTEMPTS + 1,
+        }
+        verdict = modal.evaluate_teardown_receipt(receipt)
+        assert verdict["complete"] is False
+        assert "scale_zero_settling" in verdict["failures"]
+
+
+class TestSignedHeadroomReceiptSchema:
+    def test_the_receipt_binds_the_run_and_carries_no_identity(self) -> None:
+        assert modal.HEADROOM_RECEIPT_FIELDS == (
+            "schema_version",
+            "kind",
+            "protocol_id",
+            "plan_sha256",
+            "source_head",
+            "experiment_nonce",
+            "headroom_usd",
+            "confirmed_at",
+            "expires_at",
+        )
+        for fragment in ("account", "workspace", "profile", "email"):
+            assert fragment in modal.FORBIDDEN_HEADROOM_KEY_FRAGMENTS
+            assert not any(fragment in field for field in modal.HEADROOM_RECEIPT_FIELDS)
+
+    def test_the_receipt_window_is_bounded(self) -> None:
+        assert modal.MAX_HEADROOM_RECEIPT_WINDOW_SECONDS == 24 * 3600
 
 
 class TestMemoryGate:

@@ -45,16 +45,21 @@ from .modal_l4_crossover import (
     GPU_FUNCTION_USD_PER_SECOND,
     HARD_CAP_USD,
     OFFICIAL_RATE_URL,
+    PREREGISTERED_CLAIM_IDS,
     PROTOCOL_ID,
+    RESULT_CLAIM_IDS,
     STORAGE_PLANNED_USD,
     TOTAL_PLANNED_USD,
     UNCONTROLLED_CACHE_LIMITATIONS,
+    UNSUPPORTED_BY_CONSTRUCTION_CLAIMS,
+    UNSUPPORTED_BY_CONSTRUCTION_STATE,
     UNTOUCHED_MARGIN_USD,
     ModalL4ContractError,
     ModalL4Plan,
     assert_provider_sdk_absent,
     build_default_plan,
     evaluate_attempt_receipts,
+    evaluate_decode_bandwidth_feasibility,
     evaluate_memory_gate,
     evaluate_teardown_receipt,
     verify_ledger_document,
@@ -78,6 +83,7 @@ BUNDLE_FILES = (
     "SHA256SUMS",
     "budget-plan.json",
     "claim-matrix.json",
+    "decode-feasibility.json",
     "evidence-contract.json",
     "experiment-plan.json",
     "methodology.svg",
@@ -104,6 +110,7 @@ ORCHESTRATION_FILE = "orchestration-receipt.json"
 RESULT_ENVELOPE_FILES = (
     "application-ledger.json",
     "credential-exposure.json",
+    "decode-feasibility.json",
     "memory-gate.json",
     "modal-attempt-receipts.json",
     "modal-limitations.json",
@@ -193,11 +200,29 @@ records reservations at published list rates and is explicitly not
 provider proof; provider-reported spend stays null until an external
 sanitized receipt exists.
 
-A GPU memory admission gate precedes every measured cell. Immutable
+A GPU memory admission gate runs once, ahead of the whole measured
+block, as two isolated canaries: no measured cell is dispatched unless
+both pass. It is not re-run before each individual cell. Immutable
 runner arguments stay BF16, tensor parallel 1, one sequence, 0.94 memory
 utilization, no prefix or speculative decoding, and a context length of
 exactly the longest frozen prompt array plus 96. If either canary fails,
 the run publishes a refusal. Nothing is tuned to make it pass.
+
+One further refusal is decided here, offline, before any of that. A
+controlled cell generates 144 x 96 = 13,824 tokens, and batch-1 BF16
+decoding must stream at least one full 16,397,461,266-byte weight image
+per generated token. At the L4's advertised peak memory bandwidth of
+300,000,000,000 bytes per second that is 226,678,504,541,184 bytes, or
+755.59501513728 seconds of decoding alone -- against a sealed 480-second
+controlled-cell timeout, and before container start, weight load, engine
+initialization, prefill, or CUDA-graph capture. Sustaining the sealed
+design would need 28.8 tokens per second where the hardware's ceiling is
+about 18.295515088183. The approved design is therefore infeasible on
+this accelerator, and the execution preflight refuses it before
+authentication, before the official-rate fetch, before the provider SDK
+is imported, and before any provider call. It is refused rather than
+repaired: lowering the sample size, retuning the runner, extending the
+timeout, or changing the accelerator would be a different experiment.
 """
 
 
@@ -274,8 +299,19 @@ def _source_document(repo_root: Path) -> dict[str, Any]:
 
 
 def _claim_matrix() -> dict[str, Any]:
-    blocked = dict.fromkeys(BLOCKED_CLAIM_IDS, "unsupported_by_construction_on_modal")
-    claims = [
+    """Return the preregistered claim matrix over the canonical identifiers.
+
+    Every measured claim is named here with exactly the identifier the result
+    matrix will use, so a reader can follow one claim from preregistration to
+    result. Measured claims are preregistered as ``unsupported`` with
+    provenance ``not_observed``; claims that are unsupported by construction on
+    this provider carry the shared blocking reason and the same state in both
+    matrices; the remaining claims are facts about the offline protocol itself
+    and can only ever appear here.
+    """
+
+    feasibility = evaluate_decode_bandwidth_feasibility()
+    claims: list[dict[str, Any]] = [
         {
             "claim_id": "offline-protocol-defined",
             "state": "supported",
@@ -312,8 +348,17 @@ def _claim_matrix() -> dict[str, Any]:
             "provenance": "not_observed",
             "evidence": None,
         },
+        # The one measured claim that is already decided offline: the
+        # decode-bandwidth arithmetic needs no run, so it is published with its
+        # derivation as evidence rather than as "not observed".
         {
-            "claim_id": "fixed-token-count-crossover",
+            "claim_id": "controlled-cell-decode-feasible-on-l4",
+            "state": "supported" if feasibility["feasible"] else "unsupported",
+            "provenance": "offline_decode_bandwidth_arithmetic",
+            "evidence": "decode-feasibility.json",
+        },
+        {
+            "claim_id": "fixed-token-count-provider-conditioned-crossover",
             "state": "unsupported",
             "provenance": "not_observed",
             "evidence": None,
@@ -337,12 +382,6 @@ def _claim_matrix() -> dict[str, Any]:
             "evidence": None,
         },
         {
-            "claim_id": "cache-state-controlled-comparison",
-            "state": "not_applicable",
-            "provenance": "unobservable_provider_placement_and_page_cache",
-            "evidence": None,
-        },
-        {
             "claim_id": "memory-gate-passed",
             "state": "unsupported",
             "provenance": "not_observed",
@@ -355,13 +394,13 @@ def _claim_matrix() -> dict[str, Any]:
             "evidence": None,
         },
         {
-            "claim_id": "provider-billed-cost-within-hard-cap",
+            "claim_id": "provider-reported-spend-within-hard-cap",
             "state": "unsupported",
             "provenance": "not_observed",
             "evidence": None,
         },
         {
-            "claim_id": "provider-teardown",
+            "claim_id": "provider-teardown-complete",
             "state": "unsupported",
             "provenance": "not_observed",
             "evidence": None,
@@ -370,16 +409,24 @@ def _claim_matrix() -> dict[str, Any]:
     claims.extend(
         {
             "claim_id": claim_id,
-            "state": "not_applicable",
+            "state": UNSUPPORTED_BY_CONSTRUCTION_STATE,
             "provenance": reason,
             "evidence": None,
         }
-        for claim_id, reason in sorted(blocked.items())
+        for claim_id, reason in sorted(UNSUPPORTED_BY_CONSTRUCTION_CLAIMS.items())
     )
+    published = tuple(sorted(item["claim_id"] for item in claims))
+    if published != PREREGISTERED_CLAIM_IDS:
+        raise ModalL4EvidenceError(
+            "preregistered claim identifiers differ from the canonical "
+            f"registry: {sorted(set(published) ^ set(PREREGISTERED_CLAIM_IDS))}"
+        )
     return {
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "protocol_id": PROTOCOL_ID,
         "execution_state": "not_run",
+        "claim_ids": list(PREREGISTERED_CLAIM_IDS),
+        "result_claim_ids": list(RESULT_CLAIM_IDS),
         "claims": sorted(claims, key=lambda item: item["claim_id"]),
     }
 
@@ -429,6 +476,8 @@ def _result_contract(plan: Mapping[str, Any]) -> dict[str, Any]:
         "checksum_manifest": RESULT_CHECKSUM_FILE,
         "verification_order": [
             "modal envelope files exist and are canonical",
+            "the decode-bandwidth feasibility verdict recomputes and is feasible",
+            "the signed headroom receipt is bound to the authorized execution",
             "the credential-exposure gate is cleared by a coordinator attestation",
             "attempt receipts show one terminal attempt per planned lifecycle",
             "official rate receipt is at or below the committed rates",
@@ -440,12 +489,20 @@ def _result_contract(plan: Mapping[str, Any]) -> dict[str, Any]:
             "L4, runtime-pin, driver and nonce-bound commitment continuity holds",
             "the fresh official-rate capture recomputes and binds to the receipt",
             "the source-checkout receipt binds to the authorized clean checkout",
+            "the decode-feasibility envelope binds to the orchestration verdict",
             "the boolean-only local-profile verdict binds to the orchestration",
             "analysis, claim matrix, report, and figure regenerate byte-for-byte",
             "the SHA256SUMS manifest recomputes for every top-level file",
             "claims blocked by construction are not marked supported",
         ],
         "fail_closed": True,
+        # The canonical identifier registry, published in the result contract so
+        # a reader can check that a result bundle's claim matrix names exactly
+        # the claims the preregistration named, under the same identifiers.
+        "claim_ids": list(RESULT_CLAIM_IDS),
+        "preregistered_claim_ids": list(PREREGISTERED_CLAIM_IDS),
+        "unsupported_by_construction_claims": dict(UNSUPPORTED_BY_CONSTRUCTION_CLAIMS),
+        "unsupported_by_construction_state": UNSUPPORTED_BY_CONSTRUCTION_STATE,
         "blocked_claim_ids": sorted(BLOCKED_CLAIM_IDS),
         "invalidating_observations": plan["invalidating_observations"],
         "provider_spend_nullable": True,
@@ -491,7 +548,10 @@ def _contract(plan: Mapping[str, Any]) -> dict[str, Any]:
                     "public experiment nonce and run-scoped resource names",
                     "pinned base image reference",
                     "hash of the authorized structured rate receipt",
+                    "hash of the coordinator credential-exposure attestation",
+                    "hash of the authorized signed operator headroom receipt",
                     "hash of the resolved workspace path",
+                    "bounded UTC execution window with an explicit maximum",
                     "explicit acceptance of the Modal crash-reschedule residual",
                 ],
                 "authentication": "openssh_detached_signature",
@@ -544,16 +604,25 @@ def _contract(plan: Mapping[str, Any]) -> dict[str, Any]:
             "state": "absent",
             "required_bindings": [
                 "exact plan hash",
-                "exact clean source head",
+                "exact clean source head verified against a clean local checkout",
                 "public experiment nonce and run-scoped resource names",
                 "re-fetched and hashed official Modal rate receipt",
+                "hash of the coordinator credential-exposure attestation",
+                "hash of the signed operator headroom receipt, itself bound to "
+                "this plan, head, nonce, and execution window",
+                "bounded UTC execution window with an explicit maximum duration",
                 "standard local Modal profile with no credential or routing override",
                 "USD 6 hard cap with an untouched contingency margin",
                 "zero retries and one live cell",
                 "explicit timeout for every stage",
                 "terminal teardown obligation on every exit path",
             ],
+            "refused_before_authorization": [
+                "the decode-bandwidth feasibility proof, which runs before any "
+                "authentication, rate fetch, provider SDK import, or provider call"
+            ],
         },
+        "decode_feasibility": plan["decode_feasibility"],
     }
 
 
@@ -573,9 +642,9 @@ def _render_svg(plan: Mapping[str, Any]) -> str:
         )
     return f"""<svg xmlns="http://www.w3.org/2000/svg" width="840" height="180" viewBox="0 0 840 180" role="img" aria-labelledby="title desc">
 <title id="title">Modal L4 counterbalanced crossover schedule</title>
-<desc id="desc">Thirty-two single-use Modal containers form eight controlled and eight natural eager-compiled pairs on one L4.</desc>
+<desc id="desc">Thirty-two single-use Modal containers, each on its own single L4 GPU, form eight controlled and eight natural eager-compiled pairs. Which physical host each container lands on is chosen by the provider and is not controlled.</desc>
 <rect width="840" height="180" fill="white"/>
-<text x="24" y="34" font-family="system-ui" font-size="19" fill="#17202a">32 single-use L4 cells; one live cell at a time</text>
+<text x="24" y="34" font-family="system-ui" font-size="19" fill="#17202a">32 single-use cells, one L4 GPU each; one live cell at a time</text>
 {"".join(cells)}
 <rect x="24" y="145" width="14" height="14" fill="#175cd3"/><text x="44" y="157" font-family="system-ui" font-size="13">eager</text>
 <rect x="104" y="145" width="14" height="14" fill="#b54708"/><text x="124" y="157" font-family="system-ui" font-size="13">compiled</text>
@@ -647,6 +716,9 @@ def _expected_documents(repo_root: Path) -> dict[str, bytes]:
         "README.md": README.encode("utf-8"),
         "budget-plan.json": _canonical_json(_budget_document(plan)).encode("utf-8"),
         "claim-matrix.json": _canonical_json(claims).encode("utf-8"),
+        "decode-feasibility.json": _canonical_json(
+            evaluate_decode_bandwidth_feasibility()
+        ).encode("utf-8"),
         "evidence-contract.json": _canonical_json(_contract(plan)).encode("utf-8"),
         "experiment-plan.json": _canonical_json(plan).encode("utf-8"),
         "methodology.svg": _render_svg(plan).encode("utf-8"),
@@ -766,15 +838,41 @@ def verify_offline_bundle(
         or budget["provider_reported_spend_usd"] is not None
     ):
         raise ModalL4EvidenceError("offline refusal semantics drifted")
+    # The preregistered matrix must name exactly the canonical identifiers, and
+    # every claim unsupported by construction must carry the shared state and
+    # the shared blocking reason, so a preregistered claim and its later result
+    # claim are traceable to each other by identifier alone.
+    published = sorted(item["claim_id"] for item in claims["claims"])
+    if (
+        published != sorted(PREREGISTERED_CLAIM_IDS)
+        or claims.get("claim_ids") != list(PREREGISTERED_CLAIM_IDS)
+        or claims.get("result_claim_ids") != list(RESULT_CLAIM_IDS)
+    ):
+        raise ModalL4EvidenceError(
+            "preregistered claim identifiers differ from the canonical registry"
+        )
     blocked = {
-        item["claim_id"]: item["state"]
+        item["claim_id"]: (item["state"], item["provenance"])
         for item in claims["claims"]
         if item["claim_id"] in BLOCKED_CLAIM_IDS
     }
-    if set(blocked) != set(BLOCKED_CLAIM_IDS) or any(
-        state != "not_applicable" for state in blocked.values()
-    ):
+    if blocked != {
+        claim_id: (UNSUPPORTED_BY_CONSTRUCTION_STATE, reason)
+        for claim_id, reason in UNSUPPORTED_BY_CONSTRUCTION_CLAIMS.items()
+    }:
         raise ModalL4EvidenceError("claims blocked by construction are not closed")
+    # The offline decode-bandwidth refusal must be published, not quietly
+    # dropped: the preflight document, the standalone envelope, and the plan
+    # must all carry the identical verdict.
+    feasibility = _read_json(root / "decode-feasibility.json")
+    recomputed = evaluate_decode_bandwidth_feasibility()
+    if (
+        feasibility != recomputed
+        or preflight["decode_feasibility"] != recomputed
+        or plan["decode_feasibility"] != recomputed
+        or preflight["execution_refused_offline"] is recomputed["feasible"]
+    ):
+        raise ModalL4EvidenceError("decode-feasibility verdict is inconsistent")
     chain = budget["budget_chain"]
     if budget["budget_chain_sha256"] != _sha256_uri(
         _compact_json(chain).encode("utf-8")
@@ -1118,6 +1216,14 @@ def verify_result_bundle(bundle_dir: Path) -> dict[str, Any]:
     _require_envelope_binds_to_orchestration(
         "source-checkout.json", source_checkout, orchestration["source_checkout"]
     )
+    # The standalone decode-feasibility envelope is bound to the verdict
+    # analyze_modal_run already re-derived from its own inputs, so a bundle
+    # cannot ship a different (or friendlier) feasibility document than the one
+    # that admitted the run.
+    feasibility = _read_json(root / "decode-feasibility.json", require_canonical=False)
+    _require_envelope_binds_to_orchestration(
+        "decode-feasibility.json", feasibility, orchestration["decode_feasibility"]
+    )
     profile = _read_json(root / "profile-authentication.json", require_canonical=False)
     try:
         verify_profile_authentication(profile)
@@ -1176,10 +1282,13 @@ def _render_result_svg(analysis: Mapping[str, Any]) -> str:
     """Render the controlled mean-difference curve as a deterministic figure.
 
     The curve is compiled-minus-eager cumulative seconds across the 144
-    controlled requests. It starts positive (compile and warmup overhead) and
-    ends negative (the sustained speedup), so it crosses zero once: the sealed
-    provider-conditioned crossover. A zero baseline and, when observed, the
-    sustained-crossing request are marked. Every coordinate is formatted to two
+    controlled requests. The preregistered expectation is that it starts
+    positive (compile and warmup overhead) and ends negative (the sustained
+    speedup), in which case it crosses zero once. Whether it does is an
+    observation, not an assumption: the zero baseline is always drawn, the
+    sustained-crossing marker and the description that mentions it appear only
+    when a sustained crossing was actually observed, and a run without one
+    renders a figure that says so. Every coordinate is formatted to two
     decimals so two builds of the same run are byte-identical.
     """
 
@@ -1221,9 +1330,20 @@ def _render_result_svg(analysis: Mapping[str, Any]) -> str:
                 'font-family="system-ui" font-size="12" fill="#b54708">'
                 f"sustained crossing @ request {sustained}</text>"
             )
+    description = (
+        "Mean cumulative compiled-minus-eager seconds across "
+        f"{count} controlled requests, with the zero baseline and the observed "
+        "sustained provider-conditioned crossover request marked."
+        if crossing
+        else (
+            "Mean cumulative compiled-minus-eager seconds across "
+            f"{count} controlled requests, with the zero baseline marked. No "
+            "sustained provider-conditioned crossover was observed."
+        )
+    )
     return f"""<svg xmlns="http://www.w3.org/2000/svg" width="840" height="240" viewBox="0 0 840 240" role="img" aria-labelledby="title desc">
 <title id="title">Modal L4 controlled compiled-minus-eager cumulative time</title>
-<desc id="desc">Mean cumulative compiled-minus-eager seconds across 144 controlled requests, with the zero baseline and the sustained provider-conditioned crossover request marked.</desc>
+<desc id="desc">{description}</desc>
 <rect width="840" height="240" fill="white"/>
 <text x="24" y="20" font-family="system-ui" font-size="16" fill="#17202a">Controlled crossover: compiled minus eager cumulative seconds</text>
 {baseline}
@@ -1254,6 +1374,19 @@ def _render_result_report(analysis: Mapping[str, Any]) -> str:
     interval_lower = _endpoint_text(interval["lower"])
     interval_median = _endpoint_text(interval["median"])
     interval_upper = _endpoint_text(interval["upper"])
+
+    def _crossing_text(label: str, key: str) -> str:
+        count = controlled[key]
+        if count is None:
+            return f"No aggregate {label} crossing was observed."
+        return f"Aggregate {label} crossing at request {html.escape(str(count))}."
+
+    first_crossing_text = _crossing_text(
+        "first", "aggregate_first_crossing_request_count"
+    )
+    sustained_crossing_text = _crossing_text(
+        "sustained", "aggregate_sustained_crossing_request_count"
+    )
     claim_rows_parts: list[str] = []
     for claim in analysis["claim_matrix"]["claims"]:
         blockers = ", ".join(claim.get("blockers", [])) or "none"
@@ -1294,10 +1427,7 @@ def _render_result_report(analysis: Mapping[str, Any]) -> str:
   sealed single-use cells form {analysis["pair_count"]} adjacent eager/compiled
   lifecycle pairs, the whole-pair inferential unit.</p>
   <h2>Controlled crossover inference</h2>
-  <p>Aggregate first crossing at request
-  {html.escape(str(controlled["aggregate_first_crossing_request_count"]))};
-  aggregate sustained crossing at request
-  {html.escape(str(controlled["aggregate_sustained_crossing_request_count"]))}.
+  <p>{first_crossing_text} {sustained_crossing_text}
   The {controlled["resample_count"]}-resample whole-pair bootstrap places the
   sustained crossing between {html.escape(interval_lower)} and
   {html.escape(interval_upper)} (median {html.escape(interval_median)}, interval
@@ -1306,7 +1436,7 @@ def _render_result_report(analysis: Mapping[str, Any]) -> str:
   sign-flip p-value
   {html.escape(str(controlled["terminal_effect_sign_flip_p_value"]))};
   request-level resampling {html.escape(str(controlled["request_level_resampling"]))}.</p>
-  <figure><img src="crossover.svg" alt="Controlled compiled-minus-eager cumulative time with the crossover marked" width="840" height="240"></figure>
+  <figure><img src="crossover.svg" alt="Controlled compiled-minus-eager cumulative mean difference across the 144 controlled requests" width="840" height="240"></figure>
   <h2>Uncontrolled on this provider</h2>
   <ul>{limitation_items}</ul>
   <h2>Claim matrix</h2>
@@ -1349,6 +1479,7 @@ def _result_bundle_documents(
             **orchestration["credential_exposure"],
             "reason": exposure_reason,
         },
+        "decode-feasibility.json": orchestration["decode_feasibility"],
         "memory-gate.json": _expected_memory_gate_envelope(orchestration),
         "modal-attempt-receipts.json": {"receipts": orchestration["attempt_receipts"]},
         "modal-limitations.json": {

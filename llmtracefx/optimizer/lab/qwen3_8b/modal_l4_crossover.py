@@ -29,7 +29,7 @@ import sys
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from decimal import Decimal, localcontext
+from decimal import ROUND_DOWN, ROUND_UP, Decimal, localcontext
 from pathlib import Path
 from typing import Any
 
@@ -119,6 +119,77 @@ VRAM_HEADROOM_MIB = 512
 GPU_MEMORY_UTILIZATION = Decimal("0.94")
 DECODE_STEPS = CONTROLLED_SAMPLING.max_tokens
 MAX_MODEL_LEN_MARGIN_TOKENS = DECODE_STEPS
+
+# ---------------------------------------------------------------------------
+# Decode-bandwidth feasibility of one controlled cell.
+#
+# This is an arithmetic proof, computed offline from frozen constants, that
+# runs before any authentication, rate fetch, SDK import, or provider call.
+# It exists because a sealed timeout is a promise about physics, and the
+# sealed controlled-cell timeout turned out to be one this hardware cannot
+# keep.
+#
+# Assumptions, stated so a reviewer can attack them rather than guess them:
+#
+#   1. Batch-1 autoregressive BF16 decoding is memory-bandwidth bound. Every
+#      generated token requires reading at least one full image of the model
+#      weights from device memory. This is a *lower* bound: it ignores the KV
+#      cache, activations, and every non-weight read.
+#   2. The weight image is the exact staged byte count the protocol already
+#      verifies on the volume (``EXPECTED_MODEL_BYTES``), so no separate
+#      parameter-count estimate is introduced.
+#   3. The device streams at its advertised peak memory bandwidth. Real
+#      achieved bandwidth is strictly lower, so the derived minimum is
+#      optimistic in favour of feasibility.
+#   4. Initialization, weight load, prefill, and (for the compiled mode)
+#      torch.compile / CUDA-graph capture take non-negative time, and are
+#      excluded entirely from the minimum.
+#
+# Sources for the two inputs are recorded, not fetched: the staged byte count
+# is the protocol's own sealed staging inventory, and the L4 peak bandwidth is
+# the vendor-advertised figure for the accelerator this delta pins.
+# ---------------------------------------------------------------------------
+STAGED_MODEL_BYTES = EXPECTED_MODEL_BYTES
+CONTROLLED_CELL_OUTPUT_TOKENS = CONTROLLED_REQUESTS_PER_CELL * DECODE_STEPS
+L4_ADVERTISED_PEAK_BANDWIDTH_BYTES_PER_SECOND = 300_000_000_000
+DECODE_FEASIBILITY_KIND = "modal_l4_decode_bandwidth_feasibility"
+DECODE_FEASIBILITY_SCHEMA_VERSION = "1"
+# Reported rates that do not terminate as decimals are rounded down to this
+# many places. Rounding down understates achievable throughput, so it can only
+# make a *feasible* verdict look worse -- never make an infeasible one pass.
+# The verdict itself is decided by exact integer cross-multiplication and never
+# by a rounded value.
+DECODE_RATE_DECIMAL_PLACES = 12
+STAGED_MODEL_BYTES_PROVENANCE = (
+    "sealed staging inventory verified on the run-scoped model volume "
+    f"({EXPECTED_MODEL_FILE_COUNT} files, {EXPECTED_MODEL_BYTES} bytes)"
+)
+L4_BANDWIDTH_PROVENANCE = (
+    "NVIDIA L4 advertised peak memory bandwidth, recorded offline as an "
+    "operator-supplied constant and never fetched"
+)
+DECODE_FEASIBILITY_ASSUMPTIONS = (
+    "batch-1 BF16 autoregressive decoding is memory-bandwidth bound and must "
+    "stream at least one full model-weight image per generated token",
+    "the weight image is the exact staged byte count the staging gate verifies",
+    "the device sustains its advertised peak memory bandwidth, which no real "
+    "kernel exceeds",
+    "KV-cache, activation, and every other non-weight read is ignored, so the "
+    "derived time is a strict lower bound",
+)
+DECODE_FEASIBILITY_EXCLUSIONS = (
+    "container start and image pull",
+    "model weight load from the mounted volume",
+    "engine initialization and KV-cache allocation",
+    "prefill of the controlled prompts",
+    "torch.compile and CUDA-graph capture for the compiled mode",
+)
+DECODE_FEASIBILITY_REMEDY_POLICY = (
+    "an infeasible design is refused, not repaired: the sealed request count, "
+    "token count, timeout, accelerator, and sample size are preregistered, so "
+    "lowering n, tuning the runner, extending the timeout, or changing the GPU "
+    "would be a different experiment rather than this one"
+)
 
 MAX_LEDGER_ARTIFACT_BYTES = 1_048_576
 _SHA256 = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -210,7 +281,8 @@ CHANGED_FROM_BASE_PROTOCOL = (
     "accelerator is one NVIDIA L4 instead of one RTX 4090",
     "pricing is per-second composite instead of a single hourly rate",
     "host page-cache drops and dedicated-host control are removed",
-    "a fail-closed GPU memory admission gate precedes every measured cell",
+    "two fail-closed GPU memory admission canaries gate the whole measured "
+    "block; no cell is dispatched unless both pass",
     "authentication is a standard local Modal profile with no overrides",
     "teardown is a control-plane obligation with a storage allowance",
 )
@@ -235,7 +307,9 @@ OBSERVABLE_CACHE_CONTROLS = (
     "zero hidden generation warmups",
 )
 UNCONTROLLED_CACHE_LIMITATIONS = (
-    "provider container placement is chosen by Modal and is not observable",
+    "provider container placement is chosen by Modal and is never controlled; "
+    "the physical host is never identified, and only whether the two cells of "
+    "a pair shared an anonymized placement group is observable",
     "physical host reuse and host page-cache state are not observable",
     "volume and image backend caching are not observable",
     "container scheduling order across a pair is not enforceable",
@@ -247,10 +321,59 @@ CLAIM_SURFACE = {
     "cache_state_controlled_comparison": "unsupported_by_construction",
     "provider_reported_spend": "unsupported_without_provider_receipt",
 }
-BLOCKED_CLAIM_IDS = (
-    "natural-end-to-end-causal-speedup",
-    "compile-cuda-graph-component-timing",
+
+# ---------------------------------------------------------------------------
+# Canonical claim identifiers.
+#
+# One registry, used verbatim by the preregistered (offline) claim matrix, the
+# result claim matrix, the result contract, and the catalog verifier, so a
+# reader can trace a claim from preregistration to result by its identifier
+# alone. Three disjoint groups:
+#
+#   * offline-only claims are facts about the offline protocol itself and can
+#     never be produced by a run;
+#   * measured claims are preregistered as "not observed" and are adjudicated
+#     against evidence after a run -- they appear in BOTH matrices with the
+#     same identifier;
+#   * claims unsupported by construction can never be supported on this
+#     provider, and also appear in BOTH matrices with the same identifier and
+#     the same blocking reason.
+# ---------------------------------------------------------------------------
+OFFLINE_ONLY_CLAIM_IDS = (
+    "offline-protocol-defined",
+    "zero-spend-offline-generation",
+    "no-provider-authentication",
+    "exposed-profile-credential-never-used-by-experiment",
+    "exposed-profile-credential-revocation-confirmed",
+    "fresh-local-profile-created-without-sharing",
 )
+MEASURED_CLAIM_IDS = (
+    "application-ledger-within-hard-cap",
+    "controlled-cell-decode-feasible-on-l4",
+    "fixed-token-count-provider-conditioned-crossover",
+    "memory-gate-passed",
+    "natural-output-quality-preserved",
+    "numerically-reproducible-generation",
+    "output-identical-generation-crossover",
+    "provider-reported-spend-within-hard-cap",
+    "provider-teardown-complete",
+)
+UNSUPPORTED_BY_CONSTRUCTION_CLAIMS = {
+    "cache-state-controlled-comparison": "host_page_cache_not_observable",
+    "compile-cuda-graph-component-timing": "no_stable_offline_snapshot_hook",
+    "hardware-matched-comparison": "container_placement_uncontrolled_across_cells",
+    "natural-end-to-end-causal-speedup": "host_page_cache_and_placement_uncontrolled",
+    "pure-causal-compilation-effect": "host_page_cache_and_placement_uncontrolled",
+}
+BLOCKED_CLAIM_IDS = tuple(sorted(UNSUPPORTED_BY_CONSTRUCTION_CLAIMS))
+# The exact identifier set each matrix must publish. Both matrices carry the
+# measured claims and the blocked claims; only the preregistration carries the
+# offline-only claims.
+PREREGISTERED_CLAIM_IDS = tuple(
+    sorted({*OFFLINE_ONLY_CLAIM_IDS, *MEASURED_CLAIM_IDS, *BLOCKED_CLAIM_IDS})
+)
+RESULT_CLAIM_IDS = tuple(sorted({*MEASURED_CLAIM_IDS, *BLOCKED_CLAIM_IDS}))
+UNSUPPORTED_BY_CONSTRUCTION_STATE = "unsupported_by_construction"
 
 MEASUREMENT_DELTA = {
     "provider_lifecycle": {
@@ -305,6 +428,48 @@ AUTHENTICATION_POLICY = {
 # HOME nor any path -- is ever retained. This schema is validated identically
 # by the execution path that produces it and the result path that consumes it.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Signed operator headroom receipt.
+#
+# The provider exposes no pre-run spend authority, so headroom can only come
+# from a receipt an operator signed out of band. A bare signed dollar figure is
+# replayable: the same signature would authorize any plan, any source head, any
+# run, forever. The receipt is therefore a closed schema bound to exactly this
+# execution -- protocol, plan hash, source head, experiment nonce -- with a
+# strict UTC validity window that must cover the whole signed authorization
+# window, and its canonical hash is itself bound into the signed authorization.
+# No account, workspace, profile, or contact identifier may appear: the key set
+# is closed, so identity cannot be smuggled in even under a new name.
+# ---------------------------------------------------------------------------
+HEADROOM_RECEIPT_KIND = "llmtracefx.modal_l4_crossover.headroom_receipt"
+HEADROOM_RECEIPT_SCHEMA_VERSION = "1"
+HEADROOM_RECEIPT_FIELDS = (
+    "schema_version",
+    "kind",
+    "protocol_id",
+    "plan_sha256",
+    "source_head",
+    "experiment_nonce",
+    "headroom_usd",
+    "confirmed_at",
+    "expires_at",
+)
+# The longest a signed headroom confirmation may claim to remain valid. A
+# receipt is a statement about an account at a moment, so it is bounded to a
+# day rather than left open-ended.
+MAX_HEADROOM_RECEIPT_WINDOW_SECONDS = 24 * 3600
+FORBIDDEN_HEADROOM_KEY_FRAGMENTS = (
+    "account",
+    "workspace",
+    "profile",
+    "email",
+    "user",
+    "token",
+    "secret",
+    "customer",
+    "org",
+)
+
 PROFILE_AUTHENTICATION_GATE = "local_profile_authentication"
 PROFILE_AUTHENTICATION_SCHEMA_VERSION = "1"
 PROFILE_AUTHENTICATION_MECHANISM = "current_interpreter_python_m_modal_token_info"
@@ -424,6 +589,24 @@ CREDENTIAL_EXPOSURE_GATE = {
     ],
 }
 
+SCALEDOWN_WINDOW_SECONDS = 2
+# Bounded settling budget for the control-plane scale-to-zero observation at
+# teardown. The provider's scaledown window for these functions is
+# ``SCALEDOWN_WINDOW_SECONDS`` and its control plane is eventually consistent,
+# so a single sample taken the instant the ephemeral app context exits observes
+# timing rather than teardown. The budget is exact and finite -- twelve samples
+# five seconds apart, sixty seconds worst case -- so there is never an
+# unbounded wait, and a function that has not reported zero by the deadline is
+# recorded as unverified rather than assumed torn down. Repeatedly *reading* an
+# autoscaler counter is control-plane cleanup verification; it re-dispatches
+# nothing, replaces no receipt, and is never a scientific retry.
+SCALE_ZERO_POLL_INTERVAL_SECONDS = 5
+SCALE_ZERO_POLL_ATTEMPTS = 12
+SCALE_ZERO_POLL_TIMEOUT_SECONDS = SCALE_ZERO_POLL_INTERVAL_SECONDS * (
+    SCALE_ZERO_POLL_ATTEMPTS - 1
+)
+SCALE_ZERO_SETTLING_MECHANISM = "bounded_control_plane_polling"
+
 TEARDOWN_CONTRACT = {
     "run_scoped_names": True,
     "creates_credential_secret": False,
@@ -436,6 +619,11 @@ TEARDOWN_CONTRACT = {
     "function_teardown_observable_as": "control_plane_scale_to_zero_only",
     "container_inventory_observable": False,
     "verifies_scale_to_zero_through_control_plane": True,
+    # Scale-to-zero is observed by a bounded settling poll, never by a single
+    # immediate sample and never by an unbounded wait.
+    "scale_to_zero_settling_mechanism": SCALE_ZERO_SETTLING_MECHANISM,
+    "scale_to_zero_settling_timeout_seconds": SCALE_ZERO_POLL_TIMEOUT_SECONDS,
+    "scale_to_zero_settling_is_scientific_retry": False,
     "named_resource_listing_scope": "volumes_only",
     "deletes_run_created_volume": True,
     "deletes_run_created_noncredential_secrets": True,
@@ -570,6 +758,22 @@ UNSUPPORTED_PROVIDER_CONTROLS = {
 # The public results builder validates CloudRift authorization, ledger, host
 # page-cache and Docker receipts that Modal cannot produce. That is a refusal
 # path, not an invitation to synthesise those receipts.
+# The exact provider-neutral primitives the Modal results path calls. This is
+# the single source of truth: the preregistered plan publishes it, and the
+# results module imports it rather than keeping a second list that could drift
+# from the code (an earlier pair of lists disagreed, and one of them named a
+# function the Modal path never calls directly).
+REUSED_PROVIDER_NEUTRAL_PRIMITIVES = (
+    "cloudrift_crossover_results._validate_request",
+    "cloudrift_crossover_results._compute_pair_effects",
+    "cloudrift_crossover_results._identity_summary",
+    "cloudrift_crossover_results._analysis_document",
+    "cloudrift_crossover_results._natural_evaluation",
+    "cloudrift_crossover_results._quality_preservation",
+    "vllm_compile.PairCurve",
+    "vllm_compile.analyze_pair_curves",
+)
+
 STATISTICAL_PUBLICATION = {
     "delegated_builder": (
         "llmtracefx.optimizer.lab.qwen3_8b.cloudrift_crossover_results.build_bundle"
@@ -594,12 +798,7 @@ STATISTICAL_PUBLICATION = {
         "provider-neutral statistical primitives without claiming CloudRift or "
         "host-cache proof"
     ),
-    "reused_provider_neutral_primitives": (
-        "cloudrift_crossover_results._validate_request",
-        "cloudrift_crossover_results._compute_pair_effects",
-        "cloudrift_crossover_results._pair_effect_distributions",
-        "cloudrift_crossover_results._identity_summary",
-    ),
+    "reused_provider_neutral_primitives": list(REUSED_PROVIDER_NEUTRAL_PRIMITIVES),
     "receipt_fabrication_forbidden": True,
     "statistical_core_reimplementation_forbidden": True,
 }
@@ -611,7 +810,6 @@ CONTAINER_OUTPUT_ROOT = "/run-output"
 STAGING_IMAGE_PYTHON_VERSION = "3.12"
 STAGING_IMAGE_HF_HUB_PIN = "huggingface_hub==1.29.0"
 CONTAINER_MEMORY_MIB = MEMORY_GIB * 1024
-SCALEDOWN_WINDOW_SECONDS = 2
 
 
 class ModalL4ContractError(ValueError):
@@ -1406,36 +1604,144 @@ def verify_official_rate_receipt(receipt: Any) -> dict[str, Any]:
     }
 
 
-def verify_budget_headroom_receipt(receipt: Any) -> dict[str, Any]:
-    """Check a sanitized account budget/headroom receipt when supported.
+def evaluate_decode_bandwidth_feasibility(
+    *,
+    model_bytes: int = STAGED_MODEL_BYTES,
+    output_tokens: int = CONTROLLED_CELL_OUTPUT_TOKENS,
+    peak_bandwidth_bytes_per_second: int = (
+        L4_ADVERTISED_PEAK_BANDWIDTH_BYTES_PER_SECOND
+    ),
+    timeout_seconds: int = CONTROLLED_CELL_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Prove offline whether one controlled cell can decode inside its timeout.
 
-    Modal does not expose an authoritative pre-run spend authority, so a
-    missing receipt is recorded as null and never inferred as headroom.
+    The verdict is decided by exact integer arithmetic:
+
+        model_bytes * output_tokens  <=  peak_bandwidth * timeout_seconds
+
+    Both sides are exact integers, so the decision never depends on a rounded
+    or floating-point value. The derived seconds and token rates are reported
+    alongside so the arithmetic can be re-done by hand from the receipt.
+
+    Nothing here reads the network, the provider, or a credential; the defaults
+    are the sealed protocol constants, and the inputs are parameterised only so
+    the policy can be exercised against a hypothetical device offline.
     """
 
-    if receipt is None:
-        return {
-            "supported": False,
-            "headroom_usd": None,
-            "null_reason": "provider does not expose a pre-run budget receipt",
-        }
-    if not isinstance(receipt, Mapping):
-        raise ModalL4ContractError("budget headroom receipt must be an object")
-    headroom = _require_decimal(receipt.get("headroom_usd"), field="headroom_usd")
-    if headroom < TOTAL_PLANNED_USD:
-        raise ModalL4ContractError(
-            "account headroom is below the planned total; refusing to start"
-        )
-    for name in ("account_identifier", "account_id", "workspace", "email"):
-        if name in receipt:
-            raise ModalL4ContractError(
-                "budget headroom receipt must be sanitized of account identity"
-            )
-    return {
-        "supported": True,
-        "headroom_usd": canonical_decimal(headroom),
-        "null_reason": None,
+    values = {
+        "model_bytes": model_bytes,
+        "output_tokens": output_tokens,
+        "peak_bandwidth_bytes_per_second": peak_bandwidth_bytes_per_second,
+        "timeout_seconds": timeout_seconds,
     }
+    for field, value in values.items():
+        _require_positive_int(value, field=field)
+    required_bytes = model_bytes * output_tokens
+    streamable_bytes = peak_bandwidth_bytes_per_second * timeout_seconds
+    feasible = required_bytes <= streamable_bytes
+    with localcontext() as context:
+        context.prec = 60
+        minimum_decode_seconds = Decimal(required_bytes) / Decimal(
+            peak_bandwidth_bytes_per_second
+        )
+        required_tokens_per_second = Decimal(output_tokens) / Decimal(timeout_seconds)
+        peak_tokens_per_second = Decimal(peak_bandwidth_bytes_per_second) / Decimal(
+            model_bytes
+        )
+        shortfall_ratio = minimum_decode_seconds / Decimal(timeout_seconds)
+    quantum = Decimal(1).scaleb(-DECODE_RATE_DECIMAL_PLACES)
+    return {
+        "schema_version": DECODE_FEASIBILITY_SCHEMA_VERSION,
+        "kind": DECODE_FEASIBILITY_KIND,
+        "protocol_id": PROTOCOL_ID,
+        "feasible": feasible,
+        "computed_offline": True,
+        "uses_sealed_constants": values
+        == {
+            "model_bytes": STAGED_MODEL_BYTES,
+            "output_tokens": CONTROLLED_CELL_OUTPUT_TOKENS,
+            "peak_bandwidth_bytes_per_second": (
+                L4_ADVERTISED_PEAK_BANDWIDTH_BYTES_PER_SECOND
+            ),
+            "timeout_seconds": CONTROLLED_CELL_TIMEOUT_SECONDS,
+        },
+        "inputs": {
+            **values,
+            "controlled_requests_per_cell": CONTROLLED_REQUESTS_PER_CELL,
+            "output_tokens_per_request": DECODE_STEPS,
+            "accelerator": EXPECTED_GPU_NAME,
+            "model_bytes_provenance": STAGED_MODEL_BYTES_PROVENANCE,
+            "peak_bandwidth_provenance": L4_BANDWIDTH_PROVENANCE,
+        },
+        "assumptions": list(DECODE_FEASIBILITY_ASSUMPTIONS),
+        "derivation": {
+            "weight_bytes_streamed_per_cell": required_bytes,
+            "bytes_streamable_within_timeout": streamable_bytes,
+            "minimum_decode_only_seconds": canonical_decimal(minimum_decode_seconds),
+            "required_tokens_per_second": canonical_decimal(required_tokens_per_second),
+            "theoretical_peak_tokens_per_second": canonical_decimal(
+                peak_tokens_per_second.quantize(quantum, rounding=ROUND_DOWN)
+            ),
+            "minimum_over_timeout_ratio": canonical_decimal(
+                shortfall_ratio.quantize(quantum, rounding=ROUND_UP)
+            ),
+            "rounding": (
+                f"rates are reported to {DECODE_RATE_DECIMAL_PLACES} decimal "
+                "places; the verdict itself is exact integer arithmetic"
+            ),
+            "excluded_from_the_minimum": list(DECODE_FEASIBILITY_EXCLUSIONS),
+        },
+        "verdict": (
+            "one controlled cell can stream its weight images within the sealed "
+            "timeout"
+            if feasible
+            else (
+                "decode-only weight streaming alone exceeds the sealed "
+                f"{timeout_seconds}s controlled-cell timeout, before "
+                "initialization, weight load, prefill, or compilation"
+            )
+        ),
+        "remedy_policy": DECODE_FEASIBILITY_REMEDY_POLICY,
+    }
+
+
+def require_controlled_cell_decode_feasible(
+    *,
+    verdict: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Refuse an infeasible design before anything else can happen.
+
+    A caller may pass a verdict computed by
+    ``evaluate_decode_bandwidth_feasibility`` (for example one derived from a
+    hypothetical device); otherwise the sealed constants are used. An
+    infeasible verdict is terminal: the design is refused rather than resized,
+    retimed, or re-targeted.
+    """
+
+    result = (
+        dict(verdict)
+        if verdict is not None
+        else evaluate_decode_bandwidth_feasibility()
+    )
+    if result.get("feasible") is not True:
+        derivation = result.get("derivation")
+        detail = ""
+        if isinstance(derivation, Mapping):
+            detail = (
+                " decode-only minimum is "
+                f"{derivation.get('minimum_decode_only_seconds')}s against a "
+                f"{result.get('inputs', {}).get('timeout_seconds')}s ceiling, "
+                f"requiring {derivation.get('required_tokens_per_second')} "
+                "tokens/s against a theoretical peak of "
+                f"{derivation.get('theoretical_peak_tokens_per_second')} "
+                "tokens/s."
+            )
+        raise ModalL4ContractError(
+            "the approved design is infeasible on the pinned accelerator; "
+            "refusing before any authentication, rate fetch, provider SDK "
+            "import, or provider call." + detail
+        )
+    return result
 
 
 def evaluate_memory_gate(observation: Any) -> dict[str, Any]:
@@ -1848,6 +2154,22 @@ def evaluate_teardown_receipt(receipt: Any) -> dict[str, Any]:
     # scoped to volumes so it cannot be read as covering every resource.
     if receipt.get("named_resource_listing_scope") != "volumes_only":
         failures.append("named_resource_listing_scope")
+    # Scale-to-zero must have been observed by a bounded settling poll. A
+    # single immediate sample after the app context exits would record the
+    # provider's scaledown timing rather than its teardown, and an unbounded
+    # wait is not a receipt at all, so the mechanism, its finite budget, and
+    # its explicit non-retry status are all required.
+    settling = receipt.get("scale_zero_settling")
+    if (
+        not isinstance(settling, Mapping)
+        or settling.get("mechanism") != SCALE_ZERO_SETTLING_MECHANISM
+        or settling.get("is_scientific_retry") is not False
+        or settling.get("poll_timeout_seconds") != SCALE_ZERO_POLL_TIMEOUT_SECONDS
+        or not isinstance(settling.get("samples_taken"), int)
+        or isinstance(settling.get("samples_taken"), bool)
+        or not 1 <= int(settling["samples_taken"]) <= SCALE_ZERO_POLL_ATTEMPTS
+    ):
+        failures.append("scale_zero_settling")
     live = receipt.get("live_named_volumes")
     if not isinstance(live, Sequence) or isinstance(live, (str, bytes)) or list(live):
         failures.append("live_named_volumes")
@@ -1991,6 +2313,18 @@ class ModalL4Plan:
             },
             "runtime_image": runtime_image_identity(),
             "memory_gate": dict(MEMORY_GATE),
+            # The offline decode-bandwidth proof. It is part of the plan
+            # content -- and therefore part of the plan hash an authorization
+            # is bound to -- so an approval can never be signed against a plan
+            # whose feasibility arithmetic differs from the one being run.
+            "decode_feasibility": evaluate_decode_bandwidth_feasibility(),
+            "claim_ids": {
+                "offline_only": list(OFFLINE_ONLY_CLAIM_IDS),
+                "measured": list(MEASURED_CLAIM_IDS),
+                "unsupported_by_construction": dict(UNSUPPORTED_BY_CONSTRUCTION_CLAIMS),
+                "preregistered": list(PREREGISTERED_CLAIM_IDS),
+                "result": list(RESULT_CLAIM_IDS),
+            },
             "cache_claims": {
                 "removed_cloudrift_requirements": list(
                     REMOVED_CLOUDRIFT_CACHE_REQUIREMENTS
@@ -2114,6 +2448,31 @@ def offline_plan_document() -> dict[str, Any]:
 
     assert_provider_sdk_absent()
     plan = build_default_plan()
+    feasibility = evaluate_decode_bandwidth_feasibility()
+    blockers = [
+        (
+            "No coordinator attestation of exposed-credential revocation and "
+            "fresh unshared local profile creation is present."
+        ),
+        "No explicit execution authorization receipt is present.",
+        "No re-fetched and hashed official Modal rate receipt is present.",
+        "No memory-gate canary observation is present.",
+        "No provider attempt or terminal teardown receipt is present.",
+        "Provider-reported spend is unavailable and is never inferred.",
+    ]
+    if not feasibility["feasible"]:
+        # The refusal is terminal and comes first: it is decided offline from
+        # frozen constants, so no later receipt can unblock it.
+        blockers.insert(
+            0,
+            (
+                "The approved design is infeasible on the pinned accelerator: "
+                "decode-only weight streaming for one controlled cell needs at "
+                f"least {feasibility['derivation']['minimum_decode_only_seconds']}"
+                "s against the sealed "
+                f"{feasibility['inputs']['timeout_seconds']}s timeout."
+            ),
+        )
     return {
         "schema_version": PLAN_SCHEMA_VERSION,
         "kind": "llmtracefx.modal_l4_crossover.offline_plan",
@@ -2131,17 +2490,9 @@ def offline_plan_document() -> dict[str, Any]:
         "model_downloaded": False,
         "gpu_used": False,
         "spend_usd": "0",
-        "blockers": [
-            (
-                "No coordinator attestation of exposed-credential revocation and "
-                "fresh unshared local profile creation is present."
-            ),
-            "No explicit execution authorization receipt is present.",
-            "No re-fetched and hashed official Modal rate receipt is present.",
-            "No memory-gate canary observation is present.",
-            "No provider attempt or terminal teardown receipt is present.",
-            "Provider-reported spend is unavailable and is never inferred.",
-        ],
+        "decode_feasibility": feasibility,
+        "execution_refused_offline": not feasibility["feasible"],
+        "blockers": blockers,
         "unsupported_claims": [
             "compilation crossover",
             "performance improvement",

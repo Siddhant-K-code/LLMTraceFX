@@ -233,11 +233,18 @@ modal-l4-crossover-results-verify:  ## Verify an offline Modal L4 result bundle
 	uv run --offline --no-sync llmtracefx-modal-l4-crossover-evidence verify-results \
 		--bundle-dir $(MODAL_L4_CROSSOVER_RESULT_BUNDLE)
 
-# Runs every gate (coordinator credential-exposure clearance, environment,
-# signed authorization, official rate refresh, signed account headroom) and
-# stops before the provider SDK is imported. Requires EXPOSURE_ATTESTATION,
-# AUTHORIZATION, SIGNATURE, SIGNERS, RATE_RECEIPT, WORKSPACE, and the signed
-# headroom triple HEADROOM, HEADROOM_SIGNATURE and HEADROOM_SIGNERS.
+# Runs every gate and stops before the provider SDK is imported. The first gate
+# is the offline decode-bandwidth feasibility proof, and for the sealed design
+# it refuses there: one controlled cell needs at least 755.59501513728s of
+# decode-only weight streaming against its sealed 480s timeout on an L4, so the
+# command exits non-zero before authenticating, fetching a rate, or importing
+# the SDK. The remaining gates (coordinator credential-exposure clearance,
+# environment, signed authorization inside its bounded window, clean source
+# checkout, official rate refresh, run-bound signed account headroom) are still
+# wired and still required. Needs EXPOSURE_ATTESTATION, AUTHORIZATION,
+# SIGNATURE, SIGNERS, RATE_RECEIPT, WORKSPACE, and the signed headroom triple
+# HEADROOM, HEADROOM_SIGNATURE and HEADROOM_SIGNERS. HEADROOM must be the exact
+# receipt the authorization names, bound to this plan, head, nonce, and window.
 modal-l4-crossover-preflight:  ## Gate a Modal L4 run without importing the SDK
 	@test -n "$(AUTHORIZATION)" || { echo "AUTHORIZATION is required" >&2; exit 2; }
 	@test -n "$(EXPOSURE_ATTESTATION)" || { echo "EXPOSURE_ATTESTATION is required" >&2; exit 2; }
