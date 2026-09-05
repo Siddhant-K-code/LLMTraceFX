@@ -59,7 +59,7 @@ from ..schema import (
     unavailable,
 )
 from ..verdicts import classify_request
-from .base import CacheAuditCapability
+from .base import AdapterAuditIdentity, CacheAuditCapability
 
 #: Pinned by ``pyproject.toml``'s ``mlx`` extra; a capability check refuses
 #: any other installed version rather than assuming compatible behavior.
@@ -697,13 +697,13 @@ class MLXLocalCacheAdapter:
                 max_cache_bytes=max_cache_bytes,
             )
         )
+        capability = check_mlx_capabilities(self._runtime, backend=self.backend)
+        if not capability.supported:
+            raise MLXCacheAdapterError(
+                "unsupported MLX runtime: " + "; ".join(capability.reasons)
+            )
 
         if model_path is not None:
-            capability = check_mlx_capabilities(self._runtime, backend=self.backend)
-            if not capability.supported:
-                raise MLXCacheAdapterError(
-                    "cannot load a local model_path: " + "; ".join(capability.reasons)
-                )
             local_path = _validate_local_model_path(model_path)
             model_artifact_digest = _sha256_model_directory(local_path)
             model, tokenizer, model_key = self._runtime.load_model(local_path)
@@ -749,6 +749,20 @@ class MLXLocalCacheAdapter:
     def capabilities(self) -> CacheAuditCapability:
         return check_mlx_capabilities(self._runtime, backend=self.backend)
 
+    def audit_identity(self) -> AdapterAuditIdentity:
+        return AdapterAuditIdentity(
+            backend_version=REQUIRED_MLX_LM_VERSION,
+            runtime_identity={
+                "mlx": self._runtime.mlx_version or "unavailable",
+                "mlx_lm": self._runtime.mlx_lm_version or "unavailable",
+                "platform_machine": self._runtime.platform_machine,
+                "platform_system": self._runtime.platform_system,
+            },
+            cache_type="mlx_lru_prompt_cache",
+            max_entries=self._max_cache_entries,
+            max_bytes=self._max_cache_bytes,
+        )
+
     def load_saved_cache(
         self,
         cache_path: Path,
@@ -764,6 +778,12 @@ class MLXLocalCacheAdapter:
         before the underlying ``.safetensors`` payload is opened at all.
         """
 
+        capability = self.capabilities()
+        if not capability.supported:
+            raise MLXCacheAdapterError(
+                "cannot load saved cache with unsupported MLX runtime: "
+                + "; ".join(capability.reasons)
+            )
         if request.input_token_ids is None:
             raise MLXCacheAdapterError(
                 "cannot bind a saved cache without exact request token IDs"

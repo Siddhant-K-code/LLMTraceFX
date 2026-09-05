@@ -148,6 +148,46 @@ def _verify_public_synthetic_provenance(
         )
 
 
+def _verify_manifest_backend_contract(manifest: AuditManifest) -> None:
+    if manifest.publication_mode is PublicationMode.PUBLIC_REDACTED:
+        return
+    if manifest.backend == "synthetic_reference":
+        if (
+            manifest.backend_version != "1"
+            or manifest.cache_config.cache_type != "token_trie"
+            or manifest.cache_config.hash_algorithm is not None
+            or manifest.cache_config.hash_block_size is not None
+            or manifest.cache_config.physical_block_sizes
+            or manifest.cache_config.fine_grained_hits
+            or manifest.model_artifact_digest is not None
+            or manifest.runtime_identity.get("synthetic_engine")
+            != "independent-state-machine-v2"
+        ):
+            raise CacheAuditBundleError(
+                "synthetic-reference manifest contradicts adapter-owned identity"
+            )
+        return
+    if manifest.backend == "mlx_lm_local":
+        from .adapters.mlx import REQUIRED_MLX_LM_VERSION, REQUIRED_MLX_VERSION
+
+        if (
+            manifest.backend_version != REQUIRED_MLX_LM_VERSION
+            or manifest.runtime_identity.get("mlx") != REQUIRED_MLX_VERSION
+            or manifest.runtime_identity.get("mlx_lm") != REQUIRED_MLX_LM_VERSION
+            or manifest.cache_config.cache_type != "mlx_lru_prompt_cache"
+            or manifest.cache_config.hash_algorithm is not None
+            or manifest.cache_config.hash_block_size is not None
+            or manifest.cache_config.physical_block_sizes
+            or manifest.cache_config.fine_grained_hits
+            or manifest.model_artifact_digest is None
+        ):
+            raise CacheAuditBundleError(
+                "MLX manifest contradicts pinned adapter-owned identity"
+            )
+        return
+    raise CacheAuditBundleError(f"unsupported bundle backend: {manifest.backend}")
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(
         read_bounded_regular_bytes(path, MAX_EVIDENCE_ARTIFACT_BYTES)
@@ -216,6 +256,7 @@ def write_bundle(
         raise CacheAuditBundleError(
             "manifest generating-package digest does not match this package"
         )
+    _verify_manifest_backend_contract(manifest)
     if manifest.publication_mode is PublicationMode.PUBLIC_SYNTHETIC:
         _verify_public_synthetic_provenance(manifest, records)
         _verify_reference_oracle(manifest, records)
@@ -496,6 +537,7 @@ def verify_bundle(bundle_dir: Path) -> dict[str, Any]:
         raise CacheAuditBundleError(
             "bundle belongs to a different llmtracefx cache-audit package"
         )
+    _verify_manifest_backend_contract(manifest)
     records = _load_records(bundle_dir / "request-evidence.jsonl")
     if tuple(record.spec.request_id for record in records) != manifest.request_order:
         raise CacheAuditBundleError("request evidence order does not match manifest")

@@ -162,6 +162,83 @@ def test_writer_rejects_workload_digest_mismatch(tmp_path: Path) -> None:
         )
 
 
+def test_runner_rejects_caller_backend_and_cache_metadata_mismatch(
+    tmp_path: Path,
+) -> None:
+    request = adversarial_requests()[:1]
+    with pytest.raises(ValueError, match="backend version"):
+        run_audit(
+            adapter=ReferenceCacheAdapter(),
+            requests=request,
+            cache_config=CacheConfig(namespace_id="synthetic", cache_type="token_trie"),
+            output_dir=tmp_path / "wrong-version",
+            backend_version="caller-claim",
+            model_id="synthetic-tiny-model",
+            tokenizer_id="integer-tokenizer-v1",
+        )
+    with pytest.raises(ValueError, match="max_entries"):
+        run_audit(
+            adapter=ReferenceCacheAdapter(max_entries=4),
+            requests=request,
+            cache_config=CacheConfig(
+                namespace_id="synthetic",
+                cache_type="token_trie",
+                max_entries=5,
+            ),
+            output_dir=tmp_path / "wrong-limit",
+            backend_version="1",
+            model_id="synthetic-tiny-model",
+            tokenizer_id="integer-tokenizer-v1",
+        )
+
+
+def test_runner_persists_adapter_owned_runtime_and_limits(tmp_path: Path) -> None:
+    manifest, _ = run_audit(
+        adapter=ReferenceCacheAdapter(max_entries=7, max_bytes=8192),
+        requests=adversarial_requests()[:1],
+        cache_config=CacheConfig(namespace_id="synthetic", cache_type="token_trie"),
+        output_dir=tmp_path / "bundle",
+        backend_version="1",
+        model_id="synthetic-tiny-model",
+        tokenizer_id="integer-tokenizer-v1",
+        created_at="2026-01-01T00:00:00Z",
+    )
+    assert manifest.runtime_identity["synthetic_engine"] == (
+        "independent-state-machine-v2"
+    )
+    assert manifest.cache_config.max_entries == 7
+    assert manifest.cache_config.max_bytes == 8192
+
+
+def test_writer_rejects_mlx_manifest_identity_mismatch(tmp_path: Path) -> None:
+    manifest, records = run_audit(
+        adapter=ReferenceCacheAdapter(),
+        requests=adversarial_requests()[:1],
+        cache_config=CacheConfig(namespace_id="synthetic", cache_type="token_trie"),
+        output_dir=tmp_path / "source",
+        backend_version="1",
+        model_id="synthetic-tiny-model",
+        tokenizer_id="integer-tokenizer-v1",
+        created_at="2026-01-01T00:00:00Z",
+    )
+    with pytest.raises(CacheAuditBundleError, match="MLX manifest"):
+        write_bundle(
+            tmp_path / "invalid-mlx",
+            replace(
+                manifest,
+                backend="mlx_lm_local",
+                backend_version="0.0.0",
+                cache_config=replace(
+                    manifest.cache_config,
+                    cache_type="mlx_lru_prompt_cache",
+                ),
+                model_artifact_digest="sha256:" + "1" * 64,
+                runtime_identity={"mlx": "0.0.0", "mlx_lm": "0.0.0"},
+            ),
+            records,
+        )
+
+
 def test_public_synthetic_rejects_non_reference_backend(tmp_path: Path) -> None:
     source = tmp_path / "source"
     manifest, records = run_audit(
@@ -174,7 +251,7 @@ def test_public_synthetic_rejects_non_reference_backend(tmp_path: Path) -> None:
         tokenizer_id="integer-tokenizer-v1",
         created_at="2026-01-01T00:00:00Z",
     )
-    with pytest.raises(CacheAuditBundleError, match="synthetic reference"):
+    with pytest.raises(CacheAuditBundleError, match="adapter-owned identity"):
         write_bundle(
             tmp_path / "invalid",
             replace(

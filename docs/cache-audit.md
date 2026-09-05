@@ -152,6 +152,12 @@ HTML/SVG rendering, public privacy rules, and the digest of the generating
 repository or requires `--package-root`; it never imports whichever unrelated
 `llmtracefx` happens to be installed.
 
+Backend version, runtime identity, cache type, and cache limits are supplied by
+the adapter. Caller-provided values are checked for agreement and are never
+persisted as authoritative metadata. The MLX adapter performs its pinned-version
+capability check for local-path loading, already-loaded models, and every saved
+cache load.
+
 The report's primary sentence is:
 
 > The engine reported X cached tokens/blocks. Given the exact input and cache

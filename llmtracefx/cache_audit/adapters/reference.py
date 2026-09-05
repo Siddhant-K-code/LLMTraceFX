@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import platform
+import sys
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -24,7 +26,7 @@ from ..schema import (
     unavailable,
 )
 from ..verdicts import classify_request
-from .base import CacheAuditCapability
+from .base import AdapterAuditIdentity, CacheAuditCapability
 
 
 def _fact(
@@ -276,6 +278,8 @@ class ReferenceCacheAdapter:
         self._baseline = SyntheticNoCacheBaseline(corrupt_baseline_requests)
         self._bytes_per_token = bytes_per_token
         self._model_key = model_key
+        self._max_entries = max_entries
+        self._max_bytes = max_bytes
 
     @property
     def backend(self) -> str:
@@ -300,6 +304,20 @@ class ReferenceCacheAdapter:
                 "model_quality",
                 "billed_cost",
             ),
+        )
+
+    def audit_identity(self) -> AdapterAuditIdentity:
+        return AdapterAuditIdentity(
+            backend_version="1",
+            runtime_identity={
+                "implementation": platform.python_implementation(),
+                "platform": sys.platform,
+                "python": platform.python_version(),
+                "synthetic_engine": "independent-state-machine-v2",
+            },
+            cache_type="token_trie",
+            max_entries=self._max_entries,
+            max_bytes=self._max_bytes,
         )
 
     @staticmethod

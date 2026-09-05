@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import platform
 import subprocess
-import sys
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,6 +69,13 @@ def run_audit(
             "direct public_redacted runs are refused; create a private bundle and "
             "sanitize it after verification"
         )
+    identity = adapter.audit_identity()
+    if backend_version != identity.backend_version:
+        raise ValueError(
+            "caller backend version does not match adapter: "
+            f"{backend_version!r} != {identity.backend_version!r}"
+        )
+    authoritative_cache_config = identity.authoritative_cache_config(cache_config)
     ordered = tuple(sorted(requests, key=lambda request: request.order))
     if tuple(request.order for request in ordered) != tuple(range(len(ordered))):
         raise ValueError("request order must be contiguous and zero-based")
@@ -86,17 +91,13 @@ def run_audit(
         .isoformat(timespec="microseconds")
         .replace("+00:00", "Z"),
         backend=adapter.backend,
-        backend_version=backend_version,
+        backend_version=identity.backend_version,
         adapter_version=ADAPTER_VERSION,
         model_id=model_id,
         tokenizer_id=tokenizer_id,
         model_artifact_digest=model_artifact_digest,
-        runtime_identity={
-            "python": platform.python_version(),
-            "implementation": platform.python_implementation(),
-            "platform": sys.platform,
-        },
-        cache_config=cache_config,
+        runtime_identity=identity.runtime_identity,
+        cache_config=authoritative_cache_config,
         publication_mode=publication_mode,
         request_order=tuple(request.request_id for request in ordered),
         workload_digest=workload_digest(ordered),

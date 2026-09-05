@@ -305,9 +305,13 @@ def test_capability_check_reasons_are_ordered_and_never_short_circuit() -> None:
 
 
 def test_run_raises_when_capabilities_unsupported() -> None:
-    adapter = _adapter(FakeMLXRuntime(platform_system="Linux"))
     with pytest.raises(MLXCacheAdapterError):
-        adapter.run([_spec("cold", (1, 2, 3), order=0)])
+        _adapter(FakeMLXRuntime(platform_system="Linux"))
+
+
+def test_already_loaded_model_refuses_unpinned_runtime() -> None:
+    with pytest.raises(MLXCacheAdapterError, match="mlx_version_mismatch"):
+        _adapter(FakeMLXRuntime(mlx_version="0.32.1"))
 
 
 # --- constructor / model-path validation ----------------------------------
@@ -577,6 +581,20 @@ def test_saved_cache_identity_round_trips_through_json() -> None:
     )
     restored = SavedCacheIdentity.from_json(identity.to_json())
     assert restored == identity
+
+
+def test_saved_cache_load_rechecks_runtime_capabilities(tmp_path: Path) -> None:
+    runtime = FakeMLXRuntime()
+    adapter = _adapter(runtime)
+    runtime._mlx_version = "0.32.1"
+    loader = Mock()
+    with pytest.raises(MLXCacheAdapterError, match="unsupported MLX runtime"):
+        adapter.load_saved_cache(
+            tmp_path / "cache.safetensors",
+            request=_spec("saved", (1, 2, 3), order=0),
+            loader=loader,
+        )
+    loader.assert_not_called()
 
 
 def test_load_saved_cache_succeeds_and_invokes_loader_once(tmp_path: Path) -> None:
