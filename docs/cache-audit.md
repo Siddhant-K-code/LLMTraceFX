@@ -26,31 +26,31 @@ Create the deterministic synthetic workload and run the download-free reference
 positive control:
 
 ```console
-llmtracefx-cache-audit compile --output workload.json
-llmtracefx-cache-audit run \
+uv run llmtracefx-cache-audit compile --output workload.json
+uv run llmtracefx-cache-audit run \
   --backend reference \
   --workload workload.json \
   --publication-mode public_synthetic \
   --output-dir cache-audit-bundle
-llmtracefx-cache-audit verify cache-audit-bundle
-llmtracefx-cache-audit report cache-audit-bundle
+uv run llmtracefx-cache-audit verify cache-audit-bundle
+uv run llmtracefx-cache-audit report cache-audit-bundle
 ```
 
 The reference backend tests the evidence pipeline; it is not evidence about MLX
 or vLLM. Inspect real-backend readiness before attempting a run:
 
 ```console
-llmtracefx-cache-audit capabilities --backend mlx
-llmtracefx-cache-audit capabilities --backend vllm
+uv run llmtracefx-cache-audit capabilities --backend mlx
+uv run llmtracefx-cache-audit capabilities --backend vllm
 ```
 
 The CLI is offline by default. Real MLX execution accepts an existing local
-model path only. It does not resolve Hub IDs or download weights. Live vLLM
-execution is refused unless the exact pinned CUDA runtime and full event
-configuration are present.
+model path only. It does not resolve Hub IDs or download weights. The vLLM
+adapter supports only offline capability/configuration and event parsing; it
+does not execute requests.
 
 ```console
-llmtracefx-cache-audit run \
+uv run llmtracefx-cache-audit run \
   --backend mlx \
   --model-path /already/approved/local/checkpoint \
   --model-id public-safe-model-label \
@@ -72,10 +72,12 @@ persisted in the evidence manifest.
 | `recomputed` | Prompt work overlaps attested reuse beyond the runtime's declared policy-required work. |
 | `evicted` | Controlled state/events prove a previously resident candidate was removed before the miss. |
 | `unsupported` | The backend or available instrumentation cannot support the requested claim. |
-| `invalid` | Evidence is contradictory, identity is ambiguous, execution failed, or correctness failed. |
+| `invalid` | Cache evidence is contradictory, identity is ambiguous, or execution failed. |
 
 Timing, memory, cost, and output correctness are independent claim dimensions.
-They do not promote a cache verdict.
+They do not promote or rewrite a cache verdict. Failed or missing output
+equivalence makes output/performance claims ineligible without changing cache
+truth.
 
 ## MLX-LM 0.31.3 semantics
 
@@ -118,6 +120,12 @@ The runtime capability gate requires:
 - `VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES=0`, avoiding the default truncated
   external hash representation;
 - valid hash and physical block sizes.
+- a runtime-exported, version-bound attestation digest;
+- full 256-bit `sha256_bytes` event-hash representation.
+
+Caller or environment strings do not satisfy the runtime-attestation gate.
+Arrival-to-first-token is reported as a TTFT-like duration; queue duration is
+unavailable without a distinct scheduling timestamp.
 
 Aggregate hit counters and sampled residency histograms are corroboration only.
 They cannot prove a per-request hit. Preemption/recompute, hybrid group
@@ -139,7 +147,10 @@ A bundle contains:
 
 The offline verifier checks the exact file allowlist, checksums, strict schemas,
 request order, verdict predicates, derived claim matrix and summary, deterministic
-HTML/SVG rendering, and public privacy rules.
+HTML/SVG rendering, public privacy rules, and the digest of the generating
+`llmtracefx.cache_audit` package. The portable wrapper searches the containing
+repository or requires `--package-root`; it never imports whichever unrelated
+`llmtracefx` happens to be installed.
 
 The report's primary sentence is:
 
@@ -156,7 +167,15 @@ catalog-eligible.
 approved synthetic reference workload and identities, preserving independent
 verification without allowing arbitrary token arrays to be published.
 
-`public_redacted` bundles remove exact input/output token arrays, replace
+`public_redacted` bundles cannot be produced directly by `run`. First write and
+verify a private bundle, then sanitize it:
+
+```console
+uv run llmtracefx-cache-audit run --backend reference --output-dir private-audit
+uv run llmtracefx-cache-audit sanitize private-audit --output-dir public-audit
+```
+
+The redacted bundle removes exact input/output token arrays, replaces
 request, pair, namespace, model, tokenizer, runtime, and limitation identifiers,
 and downgrade identity-dependent verdicts to `attested_only` or `unsupported`.
 They also exclude prompts, native cache hashes, cache tensors, salts,

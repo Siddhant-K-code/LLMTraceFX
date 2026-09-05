@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Sequence
 
-from .schema import RequestSpec, ScenarioKind
+from .schema import PairRole, RequestSpec, ScenarioKind
 
 
 def adversarial_requests(*, block_size: int = 4) -> tuple[RequestSpec, ...]:
@@ -24,6 +24,7 @@ def adversarial_requests(*, block_size: int = 4) -> tuple[RequestSpec, ...]:
         mutation_position: int | None = None,
         namespace_id: str = "tenant-a",
         predecessors: tuple[str, ...] = (),
+        pair_role: PairRole = PairRole.SINGLE,
     ) -> RequestSpec:
         return RequestSpec(
             request_id=request_id,
@@ -33,19 +34,21 @@ def adversarial_requests(*, block_size: int = 4) -> tuple[RequestSpec, ...]:
             input_token_count=len(tokens),
             output_tokens=2,
             pair_id="base-pair" if request_id in {"cold", "identical"} else None,
+            pair_role=pair_role,
             mutation_position=mutation_position,
             expected_predecessors=predecessors,
             namespace_id=namespace_id,
         )
 
     items: list[RequestSpec] = []
-    items.append(request("cold", ScenarioKind.COLD, base))
+    items.append(request("cold", ScenarioKind.COLD, base, pair_role=PairRole.CONTROL))
     items.append(
         request(
             "identical",
             ScenarioKind.IDENTICAL_PREFIX,
             base,
             predecessors=("cold",),
+            pair_role=PairRole.TREATMENT,
         )
     )
     items.append(

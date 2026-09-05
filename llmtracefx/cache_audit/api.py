@@ -12,7 +12,7 @@ from .bundle import (
 )
 from .report_html import render_html
 from .runner import run_audit
-from .schema import AuditManifest, RequestEvidence, RequestSpec
+from .schema import AuditManifest, PublicationMode, RequestEvidence, RequestSpec
 from .workloads import adversarial_requests
 
 
@@ -38,6 +38,8 @@ def sanitize_audit_bundle(source: Path, destination: Path) -> dict[str, object]:
     """Create and verify a public-redacted copy of a private/synthetic bundle."""
 
     manifest, records = read_bundle(source)
+    if manifest.publication_mode is not PublicationMode.PRIVATE:
+        raise ValueError("sanitize requires a verified private source bundle")
     public_manifest, public_records = sanitize_bundle_records(manifest, records)
     write_bundle(destination, public_manifest, public_records)
     return verify_bundle(destination)

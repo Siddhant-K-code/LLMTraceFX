@@ -4,6 +4,7 @@ from dataclasses import replace
 
 from llmtracefx.cache_audit.adapters.reference import ReferenceCacheAdapter
 from llmtracefx.cache_audit.schema import (
+    EligibilityStatus,
     EvidenceBasis,
     EvidenceFact,
     Limitation,
@@ -31,9 +32,16 @@ def test_blocking_limitation_is_unsupported() -> None:
 
 
 def test_unexpected_prompt_overlap_is_recomputed() -> None:
-    record = _record()
+    record = ReferenceCacheAdapter().run(adversarial_requests()[:2])[1]
+    required = record.reuse.policy_required_prompt_tokens.value
+    assert isinstance(required, int)
     reuse = replace(
         record.reuse,
+        observed_prompt_tokens=EvidenceFact(
+            value=required + 2,
+            basis=EvidenceBasis.OBSERVED,
+            source="test",
+        ),
         unexpected_recomputed_tokens=EvidenceFact(
             value=2,
             basis=EvidenceBasis.INDEPENDENTLY_DERIVED,
@@ -47,15 +55,13 @@ def test_unexpected_prompt_overlap_is_recomputed() -> None:
 
 
 def test_positive_attestation_without_oracle_is_attested_only() -> None:
-    record = _record()
+    record = ReferenceCacheAdapter().run(adversarial_requests()[:2])[1]
     reuse = replace(
         record.reuse,
+        semantic_prefix_tokens=unavailable("test", "identity_redacted"),
         policy_reusable_tokens=unavailable("test", "identity_redacted"),
-        engine_cached_tokens=EvidenceFact(
-            value=4,
-            basis=EvidenceBasis.ENGINE_ATTESTED,
-            source="test",
-        ),
+        policy_required_prompt_tokens=unavailable("test", "identity_redacted"),
+        unexpected_recomputed_tokens=unavailable("test", "identity_redacted"),
     )
     classified = classify_request(
         replace(record, reuse=reuse, verdict=None, verdict_reasons=())
@@ -63,7 +69,7 @@ def test_positive_attestation_without_oracle_is_attested_only() -> None:
     assert classified.verdict is Verdict.ATTESTED_ONLY
 
 
-def test_failed_correctness_is_invalid() -> None:
+def test_failed_correctness_does_not_change_cache_verdict() -> None:
     record = _record()
     output = replace(
         record.output,
@@ -76,10 +82,11 @@ def test_failed_correctness_is_invalid() -> None:
     classified = classify_request(
         replace(record, output=output, verdict=None, verdict_reasons=())
     )
-    assert classified.verdict is Verdict.INVALID
+    assert classified.verdict is Verdict.VERIFIED_MISS
+    assert classified.eligibility.output_equivalence is EligibilityStatus.INELIGIBLE
 
 
-def test_failed_token_identity_is_invalid_even_when_correctness_is_true() -> None:
+def test_failed_token_identity_does_not_change_cache_verdict() -> None:
     record = _record()
     output = replace(
         record.output,
@@ -92,8 +99,8 @@ def test_failed_token_identity_is_invalid_even_when_correctness_is_true() -> Non
     classified = classify_request(
         replace(record, output=output, verdict=None, verdict_reasons=())
     )
-    assert classified.verdict is Verdict.INVALID
-    assert classified.verdict_reasons == ("output_token_identity_mismatch",)
+    assert classified.verdict is Verdict.VERIFIED_MISS
+    assert classified.eligibility.output_equivalence is EligibilityStatus.INELIGIBLE
 
 
 def test_estimated_prompt_work_cannot_produce_a_verified_verdict() -> None:
@@ -111,3 +118,42 @@ def test_estimated_prompt_work_cannot_produce_a_verified_verdict() -> None:
     )
     assert classified.verdict is Verdict.INVALID
     assert classified.verdict_reasons == ("observed_prompt_tokens_basis_invalid",)
+
+
+def test_cold_miss_is_not_recomputed() -> None:
+    record = _record()
+    assert record.verdict is Verdict.VERIFIED_MISS
+    assert record.reuse.unexpected_recomputed_tokens.value == 0
+
+
+def test_eviction_requires_residency_absence_and_subsequent_miss() -> None:
+    record = _record()
+    reuse = replace(
+        record.reuse,
+        eviction_observed=EvidenceFact(
+            value=True,
+            basis=EvidenceBasis.OBSERVED,
+            source="test",
+        ),
+    )
+    classified = classify_request(
+        replace(record, reuse=reuse, verdict=None, verdict_reasons=())
+    )
+    assert classified.verdict is Verdict.INVALID
+    assert classified.verdict_reasons == ("eviction_proof_incomplete",)
+
+
+def test_missing_semantic_prefix_cannot_verify_hit() -> None:
+    record = ReferenceCacheAdapter().run(adversarial_requests()[:2])[1]
+    classified = classify_request(
+        replace(
+            record,
+            reuse=replace(
+                record.reuse,
+                semantic_prefix_tokens=unavailable("test", "semantic_prefix_missing"),
+            ),
+            verdict=None,
+            verdict_reasons=(),
+        )
+    )
+    assert classified.verdict is Verdict.ATTESTED_ONLY

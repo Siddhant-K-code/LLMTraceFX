@@ -94,7 +94,7 @@ def _load_workload(path: Path | None) -> tuple[RequestSpec, ...]:
         raise ValueError(f"cannot read workload: {exc}") from exc
     if not isinstance(value, dict) or set(value) != {"schema_version", "requests"}:
         raise ValueError("workload must contain only schema_version and requests")
-    if value["schema_version"] != "1" or not isinstance(value["requests"], list):
+    if value["schema_version"] != "2" or not isinstance(value["requests"], list):
         raise ValueError("unsupported workload schema")
     return tuple(RequestSpec.from_dict(item) for item in value["requests"])
 
@@ -115,7 +115,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "compile":
         requests = adversarial_requests(block_size=args.block_size)
         payload = {
-            "schema_version": "1",
+            "schema_version": "2",
             "requests": [request.to_dict() for request in requests],
         }
         if args.output.exists():
@@ -125,6 +125,11 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         return {"compiled": True, "requests": len(requests), "output": str(args.output)}
 
     if args.command == "run":
+        if args.publication_mode == PublicationMode.PUBLIC_REDACTED.value:
+            raise ValueError(
+                "direct public_redacted runs are refused: run privately, verify the "
+                "private bundle, then use `llmtracefx-cache-audit sanitize`"
+            )
         requests = _load_workload(args.workload)
         adapter: CacheAuditAdapter
         if args.backend == "reference":
@@ -197,6 +202,8 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
 
     if args.command == "sanitize":
         manifest, records = read_bundle(args.bundle)
+        if manifest.publication_mode is not PublicationMode.PRIVATE:
+            raise ValueError("sanitize requires a verified private source bundle")
         public_manifest, public_records = sanitize_bundle_records(manifest, records)
         write_bundle(args.output_dir, public_manifest, public_records)
         result = verify_bundle(args.output_dir)

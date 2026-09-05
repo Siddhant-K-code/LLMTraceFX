@@ -9,7 +9,7 @@ from typing import Any, Generic, TypeVar, cast
 
 from llmtracefx.optimizer.schema import Measurement, SchemaValidationError
 
-CACHE_AUDIT_SCHEMA_VERSION = "1"
+CACHE_AUDIT_SCHEMA_VERSION = "2"
 T = TypeVar("T")
 
 
@@ -52,6 +52,8 @@ class ScenarioKind(str, Enum):
 
 
 class Verdict(str, Enum):
+    """Cache-reuse verdict only; output eligibility is tracked separately."""
+
     INVALID = "invalid"
     UNSUPPORTED = "unsupported"
     EVICTED = "evicted"
@@ -60,6 +62,19 @@ class Verdict(str, Enum):
     PARTIAL_REUSE = "partial_reuse"
     VERIFIED_HIT = "verified_hit"
     ATTESTED_ONLY = "attested_only"
+
+
+class EligibilityStatus(str, Enum):
+    ELIGIBLE = "eligible"
+    INELIGIBLE = "ineligible"
+    UNAVAILABLE = "unavailable"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class PairRole(str, Enum):
+    SINGLE = "single"
+    CONTROL = "control"
+    TREATMENT = "treatment"
 
 
 class TerminalState(str, Enum):
@@ -306,6 +321,8 @@ class RequestSpec:
     mutation_position: int | None = None
     expected_predecessors: tuple[str, ...] = ()
     namespace_id: str = "default"
+    replicate_id: str = "replicate-0"
+    pair_role: PairRole = PairRole.SINGLE
 
     def __post_init__(self) -> None:
         _string(self.request_id, "RequestSpec.request_id")
@@ -326,6 +343,11 @@ class RequestSpec:
                     "RequestSpec.mutation_position is outside the input"
                 )
         _string(self.namespace_id, "RequestSpec.namespace_id")
+        _string(self.replicate_id, "RequestSpec.replicate_id")
+        if self.pair_id is None and self.pair_role is not PairRole.SINGLE:
+            raise SchemaValidationError("paired roles require RequestSpec.pair_id")
+        if self.pair_id is not None and self.pair_role is PairRole.SINGLE:
+            raise SchemaValidationError("RequestSpec.pair_id requires a paired role")
 
     def to_dict(self, *, include_tokens: bool = True) -> dict[str, Any]:
         return {
@@ -343,6 +365,8 @@ class RequestSpec:
             "mutation_position": self.mutation_position,
             "expected_predecessors": list(self.expected_predecessors),
             "namespace_id": self.namespace_id,
+            "replicate_id": self.replicate_id,
+            "pair_role": self.pair_role.value,
         }
 
     @classmethod
@@ -359,6 +383,8 @@ class RequestSpec:
             "mutation_position",
             "expected_predecessors",
             "namespace_id",
+            "replicate_id",
+            "pair_role",
         }
         _exact(data, keys, "RequestSpec")
         tokens = (
@@ -371,8 +397,9 @@ class RequestSpec:
             raise SchemaValidationError("RequestSpec.input_token_count is inconsistent")
         try:
             scenario = ScenarioKind(data["scenario"])
+            pair_role = PairRole(data["pair_role"])
         except (TypeError, ValueError) as exc:
-            raise SchemaValidationError("RequestSpec.scenario is invalid") from exc
+            raise SchemaValidationError("RequestSpec enum value is invalid") from exc
         return cls(
             request_id=_string(data["request_id"], "RequestSpec.request_id"),
             scenario=scenario,
@@ -390,6 +417,8 @@ class RequestSpec:
                 data["expected_predecessors"], "RequestSpec.expected_predecessors"
             ),
             namespace_id=_string(data["namespace_id"], "RequestSpec.namespace_id"),
+            replicate_id=_string(data["replicate_id"], "RequestSpec.replicate_id"),
+            pair_role=pair_role,
         )
 
 
@@ -407,6 +436,12 @@ class ReuseEvidence:
     unexpected_recomputed_tokens: EvidenceFact[int]
     eviction_observed: EvidenceFact[bool]
     preemption_observed: EvidenceFact[bool]
+    prior_residency_observed: EvidenceFact[bool] = field(
+        default_factory=lambda: unavailable("cache", "prior_residency_unavailable")
+    )
+    residency_absence_observed: EvidenceFact[bool] = field(
+        default_factory=lambda: unavailable("cache", "residency_absence_unavailable")
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -556,13 +591,34 @@ class TimingEvidence:
     prefill: Measurement | None = None
     decode: Measurement | None = None
     total: Measurement | None = None
+    scope: str = "unavailable"
+    exclusions: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        _string(self.scope, "TimingEvidence.scope")
+        for index, exclusion in enumerate(self.exclusions):
+            _string(exclusion, f"TimingEvidence.exclusions[{index}]")
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        measurements = {
             name: None if value is None else value.to_dict()
             for name, value in (
-                (name, getattr(self, name)) for name in self.__dataclass_fields__
+                (name, getattr(self, name))
+                for name in (
+                    "client_ttft",
+                    "in_process_first_token",
+                    "queue",
+                    "scheduling",
+                    "prefill",
+                    "decode",
+                    "total",
+                )
             )
+        }
+        return {
+            **measurements,
+            "scope": self.scope,
+            "exclusions": list(self.exclusions),
         }
 
     @classmethod
@@ -573,8 +629,18 @@ class TimingEvidence:
         return cls(
             **{
                 name: None if data[name] is None else Measurement.from_dict(data[name])
-                for name in keys
-            }
+                for name in (
+                    "client_ttft",
+                    "in_process_first_token",
+                    "queue",
+                    "scheduling",
+                    "prefill",
+                    "decode",
+                    "total",
+                )
+            },
+            scope=_string(data["scope"], "TimingEvidence.scope"),
+            exclusions=_strings(data["exclusions"], "TimingEvidence.exclusions"),
         )
 
 
@@ -699,6 +765,53 @@ class CostEvidence:
 
 
 @dataclass(frozen=True)
+class ClaimEligibility:
+    """Eligibility gates distinct from the cache-reuse verdict."""
+
+    output_equivalence: EligibilityStatus
+    performance: EligibilityStatus
+    quality: EligibilityStatus
+    reasons: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "output_equivalence": self.output_equivalence.value,
+            "performance": self.performance.value,
+            "quality": self.quality.value,
+            "reasons": list(self.reasons),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> ClaimEligibility:
+        data = _object(value, "ClaimEligibility")
+        _exact(
+            data,
+            {"output_equivalence", "performance", "quality", "reasons"},
+            "ClaimEligibility",
+        )
+        try:
+            return cls(
+                output_equivalence=EligibilityStatus(data["output_equivalence"]),
+                performance=EligibilityStatus(data["performance"]),
+                quality=EligibilityStatus(data["quality"]),
+                reasons=_strings(data["reasons"], "ClaimEligibility.reasons"),
+            )
+        except (TypeError, ValueError) as exc:
+            raise SchemaValidationError(
+                "ClaimEligibility enum value is invalid"
+            ) from exc
+
+
+def unavailable_eligibility() -> ClaimEligibility:
+    return ClaimEligibility(
+        output_equivalence=EligibilityStatus.UNAVAILABLE,
+        performance=EligibilityStatus.INELIGIBLE,
+        quality=EligibilityStatus.UNAVAILABLE,
+        reasons=("not_classified",),
+    )
+
+
+@dataclass(frozen=True)
 class RequestEvidence:
     spec: RequestSpec
     reuse: ReuseEvidence
@@ -713,6 +826,7 @@ class RequestEvidence:
     cache_after: CacheStateSnapshot | None = None
     events: tuple[CacheEventRecord, ...] = ()
     cost: CostEvidence = field(default_factory=CostEvidence)
+    eligibility: ClaimEligibility = field(default_factory=unavailable_eligibility)
 
     def to_dict(self, *, include_tokens: bool = True) -> dict[str, Any]:
         return {
@@ -733,6 +847,7 @@ class RequestEvidence:
             ),
             "events": [event.to_dict() for event in self.events],
             "cost": self.cost.to_dict(),
+            "eligibility": self.eligibility.to_dict(),
         }
 
     @classmethod
@@ -752,6 +867,7 @@ class RequestEvidence:
             "cache_after",
             "events",
             "cost",
+            "eligibility",
         }
         _exact(data, keys, "RequestEvidence")
         try:
@@ -791,6 +907,7 @@ class RequestEvidence:
             ),
             events=tuple(CacheEventRecord.from_dict(item) for item in events_value),
             cost=CostEvidence.from_dict(data["cost"]),
+            eligibility=ClaimEligibility.from_dict(data["eligibility"]),
         )
 
 
@@ -810,6 +927,8 @@ class AuditManifest:
     request_order: tuple[str, ...]
     workload_digest: str
     seed: int
+    generator_commit: str | None = None
+    generator_package_digest: str | None = None
     limitations: tuple[Limitation, ...] = field(default_factory=tuple)
     schema_version: str = CACHE_AUDIT_SCHEMA_VERSION
 
@@ -836,6 +955,21 @@ class AuditManifest:
             raise SchemaValidationError(
                 "AuditManifest.model_artifact_digest must be a SHA-256 digest"
             )
+        if (
+            self.generator_commit is not None
+            and re.fullmatch(r"[0-9a-f]{40}", self.generator_commit) is None
+        ):
+            raise SchemaValidationError(
+                "AuditManifest.generator_commit must be a full git SHA"
+            )
+        if (
+            self.generator_package_digest is not None
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", self.generator_package_digest)
+            is None
+        ):
+            raise SchemaValidationError(
+                "AuditManifest.generator_package_digest must be a SHA-256 digest"
+            )
         _integer(self.seed, "AuditManifest.seed")
         if len(set(self.request_order)) != len(self.request_order):
             raise SchemaValidationError(
@@ -861,6 +995,8 @@ class AuditManifest:
             "publication_mode": self.publication_mode.value,
             "request_order": list(self.request_order),
             "workload_digest": self.workload_digest,
+            "generator_commit": self.generator_commit,
+            "generator_package_digest": self.generator_package_digest,
             "seed": self.seed,
             "limitations": [item.to_dict() for item in self.limitations],
         }
@@ -883,6 +1019,8 @@ class AuditManifest:
             "publication_mode",
             "request_order",
             "workload_digest",
+            "generator_commit",
+            "generator_package_digest",
             "seed",
             "limitations",
         }
@@ -933,6 +1071,19 @@ class AuditManifest:
             ),
             workload_digest=_string(
                 data["workload_digest"], "AuditManifest.workload_digest"
+            ),
+            generator_commit=(
+                None
+                if data["generator_commit"] is None
+                else _string(data["generator_commit"], "AuditManifest.generator_commit")
+            ),
+            generator_package_digest=(
+                None
+                if data["generator_package_digest"] is None
+                else _string(
+                    data["generator_package_digest"],
+                    "AuditManifest.generator_package_digest",
+                )
             ),
             seed=_integer(data["seed"], "AuditManifest.seed"),
             limitations=tuple(Limitation.from_dict(item) for item in limitations_value),

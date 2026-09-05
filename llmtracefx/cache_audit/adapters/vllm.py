@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib.metadata
 import math
 import os
+import re
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -146,6 +147,10 @@ class VLLMCapabilityConfig:
     hash_block_size: int | None = None
     physical_block_sizes: tuple[int, ...] = ()
     fine_grained_hits: bool = False
+    runtime_attestation_digest: str | None = None
+    runtime_attestation_exported: bool = False
+    hash_representation: str | None = None
+    hash_width_bits: int | None = None
 
     @classmethod
     def from_environment(
@@ -172,6 +177,10 @@ class VLLMCapabilityConfig:
             hash_block_size=_parse_int(env.get(_ENV_HASH_BLOCK_SIZE)),
             physical_block_sizes=_parse_int_tuple(env.get(_ENV_PHYSICAL_BLOCK_SIZES)),
             fine_grained_hits=_parse_bool(env.get(_ENV_FINE_GRAINED_HITS)),
+            runtime_attestation_digest=None,
+            runtime_attestation_exported=False,
+            hash_representation=None,
+            hash_width_bits=None,
         )
 
 
@@ -185,6 +194,14 @@ def assess_vllm_capabilities(config: VLLMCapabilityConfig) -> CacheAuditCapabili
 
     reasons: list[str] = []
 
+    if not config.runtime_attestation_exported:
+        reasons.append("runtime_exported_attestation_missing")
+    if (
+        config.runtime_attestation_digest is None
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", config.runtime_attestation_digest)
+        is None
+    ):
+        reasons.append("runtime_attestation_digest_invalid")
     if config.version != REQUIRED_VLLM_VERSION:
         reasons.append(
             "vllm_not_installed" if config.version is None else "vllm_version_mismatch"
@@ -205,6 +222,10 @@ def assess_vllm_capabilities(config: VLLMCapabilityConfig) -> CacheAuditCapabili
         reasons.append("kv_cache_events_disabled")
     if config.kv_events_use_int_block_hashes != REQUIRED_KV_EVENTS_USE_INT_BLOCK_HASHES:
         reasons.append("kv_events_int_block_hashes_enabled")
+    if config.hash_representation != "sha256_bytes":
+        reasons.append("kv_event_hash_representation_invalid")
+    if config.hash_width_bits != 256:
+        reasons.append("kv_event_hash_width_invalid")
     if config.hash_block_size is None or config.hash_block_size <= 0:
         reasons.append("hash_block_size_not_positive")
     if not config.physical_block_sizes:
@@ -493,6 +514,7 @@ class KVEventStreamReport:
     sequence_gaps: tuple[tuple[int, int], ...]
     duplicate_sequences: tuple[int, ...]
     ambiguous_block_hashes: tuple[tuple[tuple[int, ...], ...], ...] = ()
+    inconsistent_block_metadata: bool = False
 
     @property
     def has_gaps(self) -> bool:
@@ -511,6 +533,25 @@ class KVEventStreamReport:
     @property
     def has_ambiguous_block_hashes(self) -> bool:
         return bool(self.ambiguous_block_hashes)
+
+    @property
+    def ineligibility_reasons(self) -> tuple[str, ...]:
+        reasons = []
+        if not self.events:
+            reasons.append("kv_events_missing")
+        if self.has_gaps:
+            reasons.append("kv_event_sequence_gaps")
+        if self.has_duplicate_sequences:
+            reasons.append("kv_event_duplicate_sequences")
+        if self.has_ambiguous_block_hashes:
+            reasons.append("kv_event_hash_identity_ambiguous")
+        if self.inconsistent_block_metadata:
+            reasons.append("kv_event_block_metadata_inconsistent")
+        return tuple(reasons)
+
+    @property
+    def eligible(self) -> bool:
+        return not self.ineligibility_reasons
 
 
 def parse_kv_event_stream(
@@ -552,12 +593,19 @@ def parse_kv_event_stream(
         for _, token_id_tuples in sorted(hash_token_ids.items())
         if len(token_id_tuples) > 1
     )
+    stored_metadata = {
+        (event.block_size, event.group_idx)
+        for event in events
+        if event.event_type is KVEventType.BLOCK_STORED
+    }
+    inconsistent_block_metadata = len(stored_metadata) > 1
 
     return KVEventStreamReport(
         events=events,
         sequence_gaps=sequence_gaps,
         duplicate_sequences=duplicate_sequences,
         ambiguous_block_hashes=ambiguous_block_hashes,
+        inconsistent_block_metadata=inconsistent_block_metadata,
     )
 
 
@@ -599,8 +647,8 @@ class VLLMRequestObservation:
     finished_time: float | None = None
 
     @property
-    def queue_duration(self) -> float | None:
-        """Arrival-to-first-token wait, or ``None`` unless both timestamps exist."""
+    def arrival_to_first_token_duration(self) -> float | None:
+        """TTFT-like arrival-to-first-token duration, not engine queue time."""
 
         if self.arrival_time is None or self.first_token_time is None:
             return None
@@ -610,14 +658,11 @@ class VLLMRequestObservation:
     def ttft_duration(self) -> float | None:
         """Time-to-first-token, or ``None`` unless both timestamps exist.
 
-        This synthetic schema exposes only ``arrival_time`` (there is no
-        separate engine-scheduled timestamp), so queueing delay and
-        time-to-first-token cannot be distinguished from each other; this
-        property intentionally mirrors :attr:`queue_duration` so callers can
-        key on whichever name matches their terminology.
+        This synthetic schema exposes no separate scheduled timestamp, so an
+        engine queue duration is unavailable.
         """
 
-        return self.queue_duration
+        return self.arrival_to_first_token_duration
 
     @property
     def complete_duration(self) -> float | None:
@@ -646,7 +691,7 @@ class VLLMRequestObservation:
             "arrival_time": self.arrival_time,
             "first_token_time": self.first_token_time,
             "finished_time": self.finished_time,
-            "queue_duration": self.queue_duration,
+            "arrival_to_first_token_duration": self.arrival_to_first_token_duration,
             "ttft_duration": self.ttft_duration,
             "complete_duration": self.complete_duration,
         }

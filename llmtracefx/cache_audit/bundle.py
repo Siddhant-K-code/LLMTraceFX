@@ -51,22 +51,56 @@ BUNDLE_DATA_FILES = (
 )
 BUNDLE_FILES = (*BUNDLE_DATA_FILES, "SHA256SUMS")
 _CHECKSUM = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]*)$")
-_PORTABLE_VERIFIER = '''"""Offline verifier for this cache-audit bundle."""
+_PORTABLE_VERIFIER = '''"""Offline verifier bound to this bundle's generating package."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import sys
 from pathlib import Path
 
-from llmtracefx.cache_audit.bundle import verify_bundle
+
+def package_digest(root: Path) -> str:
+    package = root / "llmtracefx" / "cache_audit"
+    digest = hashlib.sha256()
+    for path in sorted(package.rglob("*.py")):
+        relative = path.relative_to(package).as_posix().encode("utf-8")
+        content = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return "sha256:" + digest.hexdigest()
+
+
+def resolve_package(bundle: Path, requested: Path | None) -> Path:
+    manifest = json.loads((bundle / "audit-manifest.json").read_text(encoding="utf-8"))
+    expected = manifest.get("generator_package_digest")
+    if not isinstance(expected, str):
+        raise SystemExit("bundle has no generating-package digest")
+    candidates = [requested.resolve()] if requested is not None else []
+    candidates.extend((bundle.resolve(), *bundle.resolve().parents))
+    for root in candidates:
+        if (root / "llmtracefx" / "cache_audit" / "bundle.py").is_file():
+            if package_digest(root) == expected:
+                return root
+    raise SystemExit(
+        "matching llmtracefx source not found; pass --package-root for the "
+        "repository or installed package recorded by this bundle"
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("verify",))
     parser.add_argument("--public-dir", type=Path, default=Path(__file__).parent)
+    parser.add_argument("--package-root", type=Path)
     args = parser.parse_args()
+    root = resolve_package(args.public_dir, args.package_root)
+    sys.path.insert(0, str(root))
+    from llmtracefx.cache_audit.bundle import verify_bundle
     print(json.dumps({"verified": True, **verify_bundle(args.public_dir)}, sort_keys=True))
 
 
@@ -79,6 +113,21 @@ class CacheAuditBundleError(ValueError):
     """Raised when a cache-audit evidence bundle fails closed."""
 
 
+def package_source_digest() -> str:
+    """Digest the exact cache-audit Python sources used by this verifier."""
+
+    package_dir = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for path in sorted(package_dir.rglob("*.py")):
+        relative = path.relative_to(package_dir).as_posix().encode("utf-8")
+        content = path.read_bytes()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return "sha256:" + digest.hexdigest()
+
+
 def _verify_public_synthetic_provenance(
     manifest: AuditManifest, records: Sequence[RequestEvidence]
 ) -> None:
@@ -88,6 +137,10 @@ def _verify_public_synthetic_provenance(
         or manifest.model_id != "synthetic-tiny-model"
         or manifest.tokenizer_id != "integer-tokenizer-v1"
         or tuple(record.spec for record in records) != approved
+        or manifest.adapter_version != "2"
+        or manifest.workload_digest != workload_digest(approved)
+        or manifest.generator_commit is None
+        or manifest.generator_package_digest != package_source_digest()
     ):
         raise CacheAuditBundleError(
             "public_synthetic publication requires the approved built-in "
@@ -159,6 +212,10 @@ def write_bundle(
         raise CacheAuditBundleError(
             "recorded request specifications do not match manifest"
         )
+    if manifest.generator_package_digest != package_source_digest():
+        raise CacheAuditBundleError(
+            "manifest generating-package digest does not match this package"
+        )
     if manifest.publication_mode is PublicationMode.PUBLIC_SYNTHETIC:
         _verify_public_synthetic_provenance(manifest, records)
         _verify_reference_oracle(manifest, records)
@@ -177,7 +234,7 @@ def write_bundle(
     )
     atomic_write_text(
         output_dir / "summary.json",
-        canonical_json(build_summary(records)),
+        canonical_json(build_summary(records, manifest)),
     )
     atomic_write_text(
         output_dir / "reuse-alignment.svg",
@@ -297,6 +354,8 @@ def _verify_public_redacted_shape(
         or manifest.cache_config.cache_type != "redacted-cache"
         or manifest.cache_config.hash_algorithm is not None
         or manifest.cache_config.cache_salt_relationship is not None
+        or manifest.generator_commit is not None
+        or manifest.generator_package_digest is None
     ):
         raise CacheAuditBundleError("public-redacted manifest is not de-identified")
     expected_ids = tuple(f"request-{index:04d}" for index in range(len(records)))
@@ -317,6 +376,10 @@ def _verify_public_redacted_shape(
             raise CacheAuditBundleError("public-redacted request identifier is invalid")
         if re.fullmatch(r"namespace-[0-9]{4}", record.spec.namespace_id) is None:
             raise CacheAuditBundleError("public-redacted namespace is invalid")
+        if re.fullmatch(r"replicate-[0-9]{4}", record.spec.replicate_id) is None:
+            raise CacheAuditBundleError(
+                "public-redacted replicate identifier is invalid"
+            )
         if (
             record.spec.pair_id is not None
             and re.fullmatch(r"pair-[0-9]{4}", record.spec.pair_id) is None
@@ -392,12 +455,7 @@ def _verify_reference_oracle(
         max_bytes=manifest.cache_config.max_bytes or (1 << 30),
     ).run([record.spec for record in records])
     for expected, observed in zip(expected_records, records, strict=True):
-        fields = (
-            "semantic_prefix_tokens",
-            "policy_reusable_tokens",
-            "policy_required_prompt_tokens",
-            "unexpected_recomputed_tokens",
-        )
+        fields = tuple(expected.reuse.__dataclass_fields__)
         for field in fields:
             if (
                 getattr(expected.reuse, field).value
@@ -410,6 +468,10 @@ def _verify_reference_oracle(
         if expected.output.output_token_ids != observed.output.output_token_ids:
             raise CacheAuditBundleError(
                 f"output control mismatch for {observed.spec.request_id}"
+            )
+        if expected.output.baseline_token_ids != observed.output.baseline_token_ids:
+            raise CacheAuditBundleError(
+                f"baseline control mismatch for {observed.spec.request_id}"
             )
 
 
@@ -430,6 +492,10 @@ def verify_bundle(bundle_dir: Path) -> dict[str, Any]:
             raise CacheAuditBundleError(f"{name} must be a regular non-symlink file")
     _verify_checksums(bundle_dir)
     manifest = AuditManifest.from_dict(_load_json(bundle_dir / "audit-manifest.json"))
+    if manifest.generator_package_digest != package_source_digest():
+        raise CacheAuditBundleError(
+            "bundle belongs to a different llmtracefx cache-audit package"
+        )
     records = _load_records(bundle_dir / "request-evidence.jsonl")
     if tuple(record.spec.request_id for record in records) != manifest.request_order:
         raise CacheAuditBundleError("request evidence order does not match manifest")
@@ -491,9 +557,13 @@ def verify_bundle(bundle_dir: Path) -> dict[str, Any]:
             raise CacheAuditBundleError(
                 f"verdict reasons mismatch for request {record.spec.request_id}"
             )
+        if classified.eligibility != record.eligibility:
+            raise CacheAuditBundleError(
+                f"claim eligibility mismatch for request {record.spec.request_id}"
+            )
     if _load_json(bundle_dir / "claim-matrix.json") != build_claim_matrix(records):
         raise CacheAuditBundleError("claim matrix is not derived from request evidence")
-    if _load_json(bundle_dir / "summary.json") != build_summary(records):
+    if _load_json(bundle_dir / "summary.json") != build_summary(records, manifest):
         raise CacheAuditBundleError("summary is not derived from request evidence")
     if read_bounded_regular_text(
         bundle_dir / "reuse-alignment.svg",
@@ -612,7 +682,7 @@ def sanitized_records(
         )
     }
     sanitized: list[RequestEvidence] = []
-    for record in records:
+    for index, record in enumerate(records):
         spec = replace(
             record.spec,
             request_id=request_ids[record.spec.request_id],
@@ -625,6 +695,7 @@ def sanitized_records(
                 for predecessor in record.spec.expected_predecessors
             ),
             namespace_id=namespace_ids[record.spec.namespace_id],
+            replicate_id=f"replicate-{index:04d}",
         )
         redacted = replace(
             record,
@@ -660,6 +731,12 @@ def sanitized_records(
                     "redacted.unavailable", "token_identity_redacted"
                 ),
                 preemption_observed=unavailable(
+                    "redacted.unavailable", "token_identity_redacted"
+                ),
+                prior_residency_observed=unavailable(
+                    "redacted.unavailable", "token_identity_redacted"
+                ),
+                residency_absence_observed=unavailable(
                     "redacted.unavailable", "token_identity_redacted"
                 ),
             ),
@@ -759,6 +836,7 @@ def sanitized_manifest(
         publication_mode=PublicationMode.PUBLIC_REDACTED,
         request_order=tuple(record.spec.request_id for record in records),
         workload_digest=workload_digest([record.spec for record in records]),
+        generator_commit=None,
         limitations=_redacted_limitations(manifest.limitations),
     )
 

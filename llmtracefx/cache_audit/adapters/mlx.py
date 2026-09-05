@@ -636,8 +636,21 @@ def _validate_local_model_path(model_path: str | Path) -> Path:
     return path
 
 
-def _fact(value: Any, basis: EvidenceBasis, source: str) -> EvidenceFact:
-    return EvidenceFact(value=value, basis=basis, source=source)
+def _fact(
+    value: Any,
+    basis: EvidenceBasis,
+    source: str,
+    *,
+    scope: str = "request",
+    limitations: tuple[str, ...] = (),
+) -> EvidenceFact:
+    return EvidenceFact(
+        value=value,
+        basis=basis,
+        source=source,
+        scope=scope,
+        limitations=limitations,
+    )
 
 
 def _seconds(value: float) -> Measurement:
@@ -915,7 +928,9 @@ class MLXLocalCacheAdapter:
                 ),
                 engine_cached_blocks=unavailable(self.backend, "token_granular_cache"),
                 engine_created_tokens=_fact(
-                    0, EvidenceBasis.ENGINE_ATTESTED, "prompt_cache.fetch_nearest_cache"
+                    0,
+                    EvidenceBasis.INDEPENDENTLY_DERIVED,
+                    "adapter.uncached_remainder_length",
                 ),
                 observed_prompt_tokens=unavailable(self.backend, code),
                 policy_required_prompt_tokens=_fact(
@@ -928,6 +943,15 @@ class MLXLocalCacheAdapter:
                 preemption_observed=unavailable(
                     self.backend, "preemption_not_implemented"
                 ),
+                prior_residency_observed=_fact(
+                    cache is not None,
+                    EvidenceBasis.OBSERVED,
+                    "prompt_cache.fetch_nearest_cache",
+                    scope="cache_namespace",
+                ),
+                residency_absence_observed=unavailable(
+                    self.backend, "controlled_absence_probe_not_run"
+                ),
             ),
             timing=TimingEvidence(),
             memory=MemoryEvidence(
@@ -935,16 +959,19 @@ class MLXLocalCacheAdapter:
                     self._runtime.active_memory(),
                     EvidenceBasis.OBSERVED,
                     "mlx.get_active_memory",
+                    scope="process_global_allocator_gauge",
                 ),
                 runtime_peak_bytes=_fact(
                     self._runtime.peak_memory(),
                     EvidenceBasis.OBSERVED,
                     "mlx.get_peak_memory",
+                    scope="process_global_allocator_gauge_since_reset",
                 ),
                 allocator_cache_bytes=_fact(
                     self._runtime.cache_memory(),
                     EvidenceBasis.OBSERVED,
                     "mlx.get_cache_memory",
+                    scope="process_global_allocator_gauge",
                 ),
                 logical_cache_bytes=_fact(
                     self._runtime.cache_nbytes(cache) if cache is not None else 0,
@@ -1036,11 +1063,6 @@ class MLXLocalCacheAdapter:
             trimmable=self._runtime.cache_can_trim(cache),
         )
         self._evicted_entry_ids.update(newly_evicted)
-        request_was_evicted = request.scenario in {
-            ScenarioKind.EVICTION_COUNT,
-            ScenarioKind.EVICTION_BYTES,
-        } and bool(set(request.expected_predecessors) & self._evicted_entry_ids)
-
         # Baseline: regenerate the exact same prompt from scratch on a fresh
         # cache. This is the only ground truth this harness has for output
         # correctness -- it proves cache reuse did not change what the model
@@ -1087,8 +1109,8 @@ class MLXLocalCacheAdapter:
                 engine_cached_blocks=unavailable(self.backend, "token_granular_cache"),
                 engine_created_tokens=_fact(
                     len(rest),
-                    EvidenceBasis.ENGINE_ATTESTED,
-                    "prompt_cache.fetch_nearest_cache",
+                    EvidenceBasis.INDEPENDENTLY_DERIVED,
+                    "adapter.uncached_remainder_length",
                 ),
                 observed_prompt_tokens=_fact(
                     progress["actual"],
@@ -1105,13 +1127,21 @@ class MLXLocalCacheAdapter:
                     EvidenceBasis.INDEPENDENTLY_DERIVED,
                     "oracle.prompt_work_delta",
                 ),
-                eviction_observed=_fact(
-                    request_was_evicted,
-                    EvidenceBasis.INDEPENDENTLY_DERIVED,
-                    "oracle.controlled_eviction",
+                eviction_observed=unavailable(
+                    self.backend,
+                    "native_eviction_or_controlled_absence_probe_unavailable",
                 ),
                 preemption_observed=unavailable(
                     self.backend, "preemption_not_implemented"
+                ),
+                prior_residency_observed=_fact(
+                    engine_cached_tokens > 0,
+                    EvidenceBasis.OBSERVED,
+                    "prompt_cache.fetch_nearest_cache",
+                    scope="cache_namespace",
+                ),
+                residency_absence_observed=unavailable(
+                    self.backend, "controlled_absence_probe_not_run"
                 ),
             ),
             timing=TimingEvidence(
@@ -1121,16 +1151,31 @@ class MLXLocalCacheAdapter:
                     else None
                 ),
                 total=_seconds(total_seconds),
+                scope="in_process_generation_section",
+                exclusions=(
+                    "prompt_cache_lookup",
+                    "prompt_cache_insertion",
+                    "no_cache_baseline",
+                ),
             ),
             memory=MemoryEvidence(
                 runtime_active_bytes=_fact(
-                    active_after, EvidenceBasis.OBSERVED, "mlx.get_active_memory"
+                    active_after,
+                    EvidenceBasis.OBSERVED,
+                    "mlx.get_active_memory",
+                    scope="process_global_allocator_gauge",
                 ),
                 runtime_peak_bytes=_fact(
-                    peak_after, EvidenceBasis.OBSERVED, "mlx.get_peak_memory"
+                    peak_after,
+                    EvidenceBasis.OBSERVED,
+                    "mlx.get_peak_memory",
+                    scope="process_global_allocator_gauge_since_reset",
                 ),
                 allocator_cache_bytes=_fact(
-                    cache_after, EvidenceBasis.OBSERVED, "mlx.get_cache_memory"
+                    cache_after,
+                    EvidenceBasis.OBSERVED,
+                    "mlx.get_cache_memory",
+                    scope="process_global_allocator_gauge",
                 ),
                 logical_cache_bytes=_fact(
                     cache_nbytes, EvidenceBasis.OBSERVED, "prompt_cache.entry_nbytes"

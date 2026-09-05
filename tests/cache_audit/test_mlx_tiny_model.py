@@ -8,7 +8,7 @@ from llmtracefx.cache_audit.adapters.mlx import (
     MLXLocalCacheAdapter,
     ProductionMLXRuntime,
 )
-from llmtracefx.cache_audit.schema import RequestSpec, ScenarioKind, Verdict
+from llmtracefx.cache_audit.schema import PairRole, RequestSpec, ScenarioKind, Verdict
 
 
 class _IntegerTokenizer:
@@ -31,6 +31,7 @@ def _request(request_id: str, tokens: tuple[int, ...], order: int) -> RequestSpe
         request_id=request_id,
         scenario=ScenarioKind.IDENTICAL_PREFIX,
         pair_id="tiny-mlx",
+        pair_role=PairRole.CONTROL if order == 0 else PairRole.TREATMENT,
         order=order,
         namespace_id="tiny-mlx",
         input_token_ids=tokens,

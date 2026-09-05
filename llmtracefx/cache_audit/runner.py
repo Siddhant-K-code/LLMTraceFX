@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import platform
+import subprocess
 import sys
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .adapters.base import CacheAuditAdapter
-from .bundle import write_bundle
+from .bundle import package_source_digest, write_bundle
 from .schema import (
     AuditManifest,
     CacheConfig,
@@ -20,12 +21,26 @@ from .schema import (
 )
 from .workloads import workload_digest
 
-ADAPTER_VERSION = "1"
+ADAPTER_VERSION = "2"
 
 
 def _run_id(backend: str, requests: Sequence[RequestSpec], seed: int) -> str:
     material = f"{backend}:{seed}:{workload_digest(requests)}".encode("ascii")
     return "cache-audit-" + hashlib.sha256(material).hexdigest()[:16]
+
+
+def source_commit() -> str | None:
+    """Return the repository commit containing this package, when available."""
+
+    repository = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and len(value) == 40 else None
 
 
 def run_audit(
@@ -51,6 +66,11 @@ def run_audit(
         )
     if adapter.backend == "mlx_lm_local" and model_artifact_digest is None:
         raise ValueError("MLX audits require a model artifact digest")
+    if publication_mode is PublicationMode.PUBLIC_REDACTED:
+        raise ValueError(
+            "direct public_redacted runs are refused; create a private bundle and "
+            "sanitize it after verification"
+        )
     ordered = tuple(sorted(requests, key=lambda request: request.order))
     if tuple(request.order for request in ordered) != tuple(range(len(ordered))):
         raise ValueError("request order must be contiguous and zero-based")
@@ -81,6 +101,8 @@ def run_audit(
         request_order=tuple(request.request_id for request in ordered),
         workload_digest=workload_digest(ordered),
         seed=seed,
+        generator_commit=source_commit(),
+        generator_package_digest=package_source_digest(),
     )
     write_bundle(output_dir, manifest, records)
     return manifest, records

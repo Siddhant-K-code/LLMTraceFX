@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -17,6 +19,7 @@ from llmtracefx.cache_audit.bundle import (
 from llmtracefx.cache_audit.runner import run_audit
 from llmtracefx.cache_audit.schema import (
     CacheConfig,
+    EligibilityStatus,
     PublicationMode,
     ScenarioKind,
     Verdict,
@@ -106,6 +109,39 @@ def test_controlled_eviction_and_gated_extensions() -> None:
     assert {record.verdict for record in gated} == {Verdict.UNSUPPORTED}
 
 
+def test_independent_engine_attestation_mutation_does_not_change_oracle() -> None:
+    records = ReferenceCacheAdapter(cached_token_offsets={"identical": -1}).run(
+        adversarial_requests()[:2]
+    )
+    warm = records[1]
+    assert (
+        warm.reuse.policy_reusable_tokens.value
+        == len(warm.spec.input_token_ids or ()) - 1
+    )
+    assert warm.verdict is Verdict.INVALID
+    assert "engine_attestation_mismatch" in warm.verdict_reasons
+
+
+def test_independent_prompt_operation_off_by_one_detects_recomputation() -> None:
+    records = ReferenceCacheAdapter(prompt_operation_offsets={"identical": 1}).run(
+        adversarial_requests()[:2]
+    )
+    assert records[1].verdict is Verdict.RECOMPUTED
+    assert records[1].reuse.policy_reusable_tokens.value == (
+        records[1].reuse.engine_cached_tokens.value
+    )
+
+
+def test_independent_baseline_failure_only_gates_output() -> None:
+    records = ReferenceCacheAdapter(corrupt_baseline_requests=("identical",)).run(
+        adversarial_requests()[:2]
+    )
+    warm = records[1]
+    assert warm.verdict is Verdict.VERIFIED_HIT
+    assert warm.eligibility.output_equivalence is EligibilityStatus.INELIGIBLE
+    assert warm.output.output_token_ids != warm.output.baseline_token_ids
+
+
 def test_writer_rejects_workload_digest_mismatch(tmp_path: Path) -> None:
     source = tmp_path / "source"
     manifest, records = run_audit(
@@ -191,7 +227,7 @@ def test_verifier_recomputes_output_token_identity(tmp_path: Path) -> None:
     )
     output = tmp_path / "contradictory"
     write_bundle(output, manifest, [contradictory])
-    with pytest.raises(CacheAuditBundleError, match="output token identity"):
+    with pytest.raises(CacheAuditBundleError, match="baseline control mismatch"):
         verify_bundle(output)
 
 
@@ -247,3 +283,44 @@ def test_public_redaction_removes_correlating_identifiers_and_downgrades_verdict
         "customer-tokenizer",
     ):
         assert private_value not in public_text
+
+
+def test_portable_verifier_refuses_unrelated_installed_package(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    run_audit(
+        adapter=ReferenceCacheAdapter(),
+        requests=adversarial_requests()[:1],
+        cache_config=CacheConfig(namespace_id="synthetic", cache_type="token_trie"),
+        output_dir=bundle,
+        backend_version="1",
+        model_id="synthetic-tiny-model",
+        tokenizer_id="integer-tokenizer-v1",
+        created_at="2026-01-01T00:00:00Z",
+    )
+    fake_root = tmp_path / "fake-package"
+    fake_module = fake_root / "llmtracefx" / "cache_audit"
+    fake_module.mkdir(parents=True)
+    (fake_module / "bundle.py").write_text("# unrelated package\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(bundle / "evidence_bundle.py"),
+            "verify",
+            "--public-dir",
+            str(bundle),
+            "--package-root",
+            str(fake_root),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "matching llmtracefx source not found" in result.stderr
+
+
+def test_documented_commands_work_from_clean_checkout() -> None:
+    text = Path("docs/cache-audit.md").read_text(encoding="utf-8")
+    assert "uv run llmtracefx-cache-audit compile" in text
+    assert "uv run llmtracefx-cache-audit run" in text
+    assert "\nllmtracefx-cache-audit " not in text

@@ -1,9 +1,11 @@
-"""Deterministic synthetic positive-control cache adapter."""
+"""Independent synthetic engine and oracle positive control."""
 
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+from collections import OrderedDict
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 from ..expected import MLXCacheOracle
 from ..schema import (
@@ -25,12 +27,229 @@ from ..verdicts import classify_request
 from .base import CacheAuditCapability
 
 
-def _fact(value: int | bool, basis: EvidenceBasis, source: str) -> EvidenceFact:
-    return EvidenceFact(value=value, basis=basis, source=source)
+def _fact(
+    value: int | bool | list[str],
+    basis: EvidenceBasis,
+    source: str,
+    *,
+    scope: str = "synthetic_arithmetic_control",
+    limitations: tuple[str, ...] = (),
+) -> EvidenceFact:
+    return EvidenceFact(
+        value=value,
+        basis=basis,
+        source=source,
+        scope=scope,
+        limitations=limitations,
+    )
+
+
+def _common_prefix(left: Sequence[int], right: Sequence[int]) -> int:
+    for index, (left_token, right_token) in enumerate(zip(left, right, strict=False)):
+        if left_token != right_token:
+            return index
+    return min(len(left), len(right))
+
+
+@dataclass(frozen=True)
+class _EngineEntry:
+    entry_id: str
+    namespace_id: str
+    tokens: tuple[int, ...]
+    nbytes: int
+
+
+@dataclass(frozen=True)
+class SyntheticEngineObservation:
+    cached_tokens: int
+    created_tokens: int
+    prompt_policy_operations: int
+    output_token_ids: tuple[int, ...]
+    entry_count_before: int
+    logical_bytes_before: int
+    entry_count_after: int
+    logical_bytes_after: int
+    prior_residency_observed: bool
+    residency_absence_observed: bool
+    eviction_observed: bool
+
+
+class SyntheticCacheEngine:
+    """Synthetic cache implementation with state independent from the oracle."""
+
+    def __init__(
+        self,
+        *,
+        max_entries: int,
+        max_bytes: int,
+        bytes_per_token: int,
+        cached_token_offsets: Mapping[str, int] | None = None,
+        prompt_operation_offsets: Mapping[str, int] | None = None,
+    ) -> None:
+        self._max_entries = max_entries
+        self._max_bytes = max_bytes
+        self._bytes_per_token = bytes_per_token
+        self._entries: OrderedDict[str, _EngineEntry] = OrderedDict()
+        self._ever_resident: set[str] = set()
+        self._cached_token_offsets = dict(cached_token_offsets or {})
+        self._prompt_operation_offsets = dict(prompt_operation_offsets or {})
+
+    @property
+    def entry_count(self) -> int:
+        return len(self._entries)
+
+    @property
+    def logical_bytes(self) -> int:
+        return sum(entry.nbytes for entry in self._entries.values())
+
+    def _lookup(
+        self, namespace_id: str, request: tuple[int, ...]
+    ) -> tuple[int, str | None]:
+        candidates = [
+            entry
+            for entry in self._entries.values()
+            if entry.namespace_id == namespace_id
+        ]
+        exact = next((entry for entry in candidates if entry.tokens == request), None)
+        if exact is not None:
+            self._entries.move_to_end(exact.entry_id)
+            return len(request), exact.entry_id
+
+        shorter = [
+            entry
+            for entry in candidates
+            if len(entry.tokens) < len(request)
+            and tuple(request[: len(entry.tokens)]) == entry.tokens
+        ]
+        if shorter:
+            entry = max(shorter, key=lambda item: (len(item.tokens), item.entry_id))
+            self._entries.move_to_end(entry.entry_id)
+            return len(entry.tokens), entry.entry_id
+
+        longer = [
+            (_common_prefix(entry.tokens, request), entry)
+            for entry in candidates
+            if len(entry.tokens) > len(request)
+        ]
+        longer = [item for item in longer if item[0] > 0]
+        if longer:
+            common, entry = max(
+                longer,
+                key=lambda item: (item[0], -len(item[1].tokens), item[1].entry_id),
+            )
+            self._entries.move_to_end(entry.entry_id)
+            return min(len(request) - 1, common), entry.entry_id
+        return 0, None
+
+    @staticmethod
+    def _generate(tokens: tuple[int, ...], count: int) -> tuple[int, ...]:
+        payload = b"|".join(str(token).encode("ascii") for token in tokens)
+        digest = hashlib.sha256(payload).digest()
+        return tuple(digest[index] for index in range(count))
+
+    def _insert(self, entry: _EngineEntry) -> set[str]:
+        duplicate = next(
+            (
+                entry_id
+                for entry_id, candidate in self._entries.items()
+                if candidate.namespace_id == entry.namespace_id
+                and candidate.tokens == entry.tokens
+            ),
+            None,
+        )
+        if duplicate is not None:
+            del self._entries[duplicate]
+        self._entries[entry.entry_id] = entry
+        self._ever_resident.add(entry.entry_id)
+        evicted: set[str] = set()
+        while (
+            len(self._entries) > self._max_entries
+            or self.logical_bytes > self._max_bytes
+        ):
+            entry_id, _ = self._entries.popitem(last=False)
+            evicted.add(entry_id)
+        return evicted
+
+    def execute(self, request: RequestSpec) -> SyntheticEngineObservation:
+        if request.input_token_ids is None:
+            raise ValueError("synthetic engine requires exact input token IDs")
+        tokens = request.input_token_ids
+        entries_before = self.entry_count
+        bytes_before = self.logical_bytes
+        predecessor_resident = any(
+            predecessor in self._entries
+            for predecessor in request.expected_predecessors
+        )
+        predecessor_ever_resident = any(
+            predecessor in self._ever_resident
+            for predecessor in request.expected_predecessors
+        )
+        predecessor_absent = (
+            bool(request.expected_predecessors) and not predecessor_resident
+        )
+        cached_tokens, matched_entry = self._lookup(request.namespace_id, tokens)
+        cached_tokens += self._cached_token_offsets.get(request.request_id, 0)
+        cached_tokens = max(0, min(len(tokens), cached_tokens))
+        created_tokens = len(tokens) - cached_tokens
+        operations = created_tokens + self._prompt_operation_offsets.get(
+            request.request_id, 0
+        )
+        operations = max(0, operations)
+        output = self._generate(tokens, request.output_tokens)
+        full_sequence = tokens + output
+        nbytes = len(full_sequence) * self._bytes_per_token
+        self._insert(
+            _EngineEntry(
+                entry_id=request.request_id,
+                namespace_id=request.namespace_id,
+                tokens=full_sequence,
+                nbytes=nbytes,
+            )
+        )
+        controlled_eviction = (
+            request.scenario
+            in {ScenarioKind.EVICTION_COUNT, ScenarioKind.EVICTION_BYTES}
+            and predecessor_ever_resident
+            and predecessor_absent
+            and matched_entry is None
+            and cached_tokens == 0
+        )
+        return SyntheticEngineObservation(
+            cached_tokens=cached_tokens,
+            created_tokens=created_tokens,
+            prompt_policy_operations=operations,
+            output_token_ids=output,
+            entry_count_before=entries_before,
+            logical_bytes_before=bytes_before,
+            entry_count_after=self.entry_count,
+            logical_bytes_after=self.logical_bytes,
+            prior_residency_observed=predecessor_resident
+            or predecessor_ever_resident
+            or matched_entry is not None,
+            residency_absence_observed=predecessor_absent,
+            eviction_observed=controlled_eviction,
+        )
+
+
+class SyntheticNoCacheBaseline:
+    """Independent no-cache execution path for deterministic equivalence."""
+
+    def __init__(self, corrupt_requests: Sequence[str] = ()) -> None:
+        self._corrupt_requests = set(corrupt_requests)
+
+    def execute(self, request: RequestSpec) -> tuple[int, ...]:
+        if request.input_token_ids is None:
+            raise ValueError("synthetic baseline requires exact input token IDs")
+        text = "|".join(map(str, request.input_token_ids))
+        digest = hashlib.new("sha256", text.encode("ascii")).digest()
+        output = tuple(digest[index] for index in range(request.output_tokens))
+        if request.request_id in self._corrupt_requests and output:
+            return ((output[0] + 1) % 256, *output[1:])
+        return output
 
 
 class ReferenceCacheAdapter:
-    """A transparent oracle-backed engine used only as synthetic evidence."""
+    """Run an independent synthetic engine, oracle, and no-cache baseline."""
 
     def __init__(
         self,
@@ -39,11 +258,22 @@ class ReferenceCacheAdapter:
         max_bytes: int = 1 << 30,
         bytes_per_token: int = 64,
         model_key: str = "synthetic-tiny-model",
+        cached_token_offsets: Mapping[str, int] | None = None,
+        prompt_operation_offsets: Mapping[str, int] | None = None,
+        corrupt_baseline_requests: Sequence[str] = (),
     ) -> None:
         self._oracle = MLXCacheOracle(
             max_entries=max_entries,
             max_bytes=max_bytes,
         )
+        self._engine = SyntheticCacheEngine(
+            max_entries=max_entries,
+            max_bytes=max_bytes,
+            bytes_per_token=bytes_per_token,
+            cached_token_offsets=cached_token_offsets,
+            prompt_operation_offsets=prompt_operation_offsets,
+        )
+        self._baseline = SyntheticNoCacheBaseline(corrupt_baseline_requests)
         self._bytes_per_token = bytes_per_token
         self._model_key = model_key
 
@@ -55,84 +285,82 @@ class ReferenceCacheAdapter:
         return CacheAuditCapability(
             backend=self.backend,
             supported=True,
-            reasons=("synthetic_positive_control_only",),
+            reasons=("synthetic_arithmetic_positive_control_only",),
             observable_facts=(
-                "engine_cached_tokens",
-                "prompt_tokens_processed",
-                "logical_cache_bytes",
-                "output_token_ids",
+                "synthetic_engine_cached_tokens",
+                "synthetic_engine_policy_operations",
+                "synthetic_engine_cache_state",
+                "deterministic_output_token_ids",
             ),
             unavailable_facts=(
+                "runtime_compute_avoidance",
                 "client_ttft",
                 "engine_queue_time",
                 "runtime_allocator_memory",
+                "model_quality",
                 "billed_cost",
             ),
         )
 
     @staticmethod
-    def _output(tokens: Sequence[int], count: int) -> tuple[int, ...]:
-        encoded = ",".join(str(token) for token in tokens).encode("ascii")
-        digest = hashlib.sha256(encoded).digest()
-        return tuple(digest[index] for index in range(count))
+    def _snapshot(entries: int, logical_bytes: int) -> CacheStateSnapshot:
+        return CacheStateSnapshot(
+            entry_count=_fact(
+                entries, EvidenceBasis.OBSERVED, "synthetic_engine.resident_entries"
+            ),
+            logical_bytes=_fact(
+                logical_bytes,
+                EvidenceBasis.OBSERVED,
+                "synthetic_engine.logical_bytes",
+                limitations=("not_runtime_or_allocator_memory",),
+            ),
+            valid_token_offsets=unavailable(
+                "synthetic_engine", "cache_offsets_not_exposed"
+            ),
+            cache_classes=_fact(
+                ["SyntheticTokenCache"],
+                EvidenceBasis.OBSERVED,
+                "synthetic_engine.cache_type",
+            ),
+            complete=True,
+        )
 
     def run(self, requests: Sequence[RequestSpec]) -> list[RequestEvidence]:
         records: list[RequestEvidence] = []
-        evicted: set[str] = set()
+        gated_scenarios = {
+            ScenarioKind.MIXED_LENGTH_CONCURRENT,
+            ScenarioKind.SAVED_CACHE_MISMATCH,
+            ScenarioKind.QUANTIZED_CACHE,
+            ScenarioKind.ROTATING_CACHE,
+            ScenarioKind.MULTIMODAL_IDENTITY,
+            ScenarioKind.HASH_COLLISION,
+            ScenarioKind.PREEMPTION,
+            ScenarioKind.SPECULATIVE,
+        }
         for request in requests:
             if request.input_token_ids is None:
                 raise ValueError("reference execution requires exact input token IDs")
-            cache_before = CacheStateSnapshot(
-                entry_count=_fact(
-                    self._oracle.entry_count,
-                    EvidenceBasis.OBSERVED,
-                    "synthetic_reference.cache_entries",
-                ),
-                logical_bytes=_fact(
-                    self._oracle.nbytes,
-                    EvidenceBasis.OBSERVED,
-                    "synthetic_reference.cache_bytes",
-                ),
-                valid_token_offsets=unavailable(
-                    "synthetic_reference", "cache_offsets_not_exposed"
-                ),
-                cache_classes=EvidenceFact(
-                    value=["SyntheticTokenCache"],
-                    basis=EvidenceBasis.OBSERVED,
-                    source="synthetic_reference.cache_type",
-                ),
-                complete=True,
-            )
             expectation = self._oracle.lookup(
                 self._model_key,
                 request.namespace_id,
                 request.input_token_ids,
             )
-            output = self._output(request.input_token_ids, request.output_tokens)
-            cache_tokens = request.input_token_ids + output
-            cache_bytes = len(cache_tokens) * self._bytes_per_token
-            newly_evicted = self._oracle.insert(
+            observation = self._engine.execute(request)
+            baseline = self._baseline.execute(request)
+            output_identity = observation.output_token_ids == baseline
+            full_sequence = request.input_token_ids + observation.output_token_ids
+            self._oracle.insert(
                 entry_id=request.request_id,
                 model_key=self._model_key,
                 namespace_id=request.namespace_id,
-                tokens=cache_tokens,
-                nbytes=cache_bytes,
+                tokens=full_sequence,
+                nbytes=len(full_sequence) * self._bytes_per_token,
             )
-            evicted.update(newly_evicted)
-            request_was_evicted = request.scenario in {
-                ScenarioKind.EVICTION_COUNT,
-                ScenarioKind.EVICTION_BYTES,
-            } and bool(set(request.expected_predecessors) & evicted)
-            gated_scenarios = {
-                ScenarioKind.MIXED_LENGTH_CONCURRENT,
-                ScenarioKind.SAVED_CACHE_MISMATCH,
-                ScenarioKind.QUANTIZED_CACHE,
-                ScenarioKind.ROTATING_CACHE,
-                ScenarioKind.MULTIMODAL_IDENTITY,
-                ScenarioKind.HASH_COLLISION,
-                ScenarioKind.PREEMPTION,
-                ScenarioKind.SPECULATIVE,
-            }
+            recomputed = max(
+                0,
+                observation.prompt_policy_operations
+                - expectation.policy_required_prompt_tokens,
+            )
             limitations = (
                 (
                     Limitation(
@@ -147,19 +375,18 @@ class ReferenceCacheAdapter:
                 if request.scenario in gated_scenarios
                 else ()
             )
-            observed_prompt = expectation.policy_required_prompt_tokens
             record = RequestEvidence(
                 spec=request,
                 reuse=ReuseEvidence(
                     semantic_prefix_tokens=_fact(
                         expectation.semantic_prefix_tokens,
                         EvidenceBasis.INDEPENDENTLY_DERIVED,
-                        "oracle.longest_common_prefix",
+                        "independent_oracle.longest_common_prefix",
                     ),
                     policy_reusable_tokens=_fact(
                         expectation.policy_reusable_tokens,
                         EvidenceBasis.INDEPENDENTLY_DERIVED,
-                        "oracle.mlx_lru_policy",
+                        "independent_oracle.synthetic_policy",
                     ),
                     reusable_blocks=unavailable(
                         "synthetic_reference", "token_granular_cache"
@@ -168,100 +395,103 @@ class ReferenceCacheAdapter:
                         "synthetic_reference", "token_granular_cache"
                     ),
                     engine_cached_tokens=_fact(
-                        expectation.policy_reusable_tokens,
+                        observation.cached_tokens,
                         EvidenceBasis.ENGINE_ATTESTED,
-                        "synthetic_reference.cached_tokens",
+                        "synthetic_engine.cached_token_counter",
                     ),
                     engine_cached_blocks=unavailable(
                         "synthetic_reference", "token_granular_cache"
                     ),
                     engine_created_tokens=_fact(
-                        request.input_token_count - expectation.policy_reusable_tokens,
+                        observation.created_tokens,
                         EvidenceBasis.ENGINE_ATTESTED,
-                        "synthetic_reference.created_tokens",
+                        "synthetic_engine.created_token_counter",
                     ),
                     observed_prompt_tokens=_fact(
-                        observed_prompt,
+                        observation.prompt_policy_operations,
                         EvidenceBasis.OBSERVED,
-                        "synthetic_reference.model_input_counter",
+                        "synthetic_engine.policy_operation_counter",
+                        limitations=("not_observed_runtime_compute",),
                     ),
                     policy_required_prompt_tokens=_fact(
                         expectation.policy_required_prompt_tokens,
                         EvidenceBasis.INDEPENDENTLY_DERIVED,
-                        "oracle.mlx_lru_policy",
+                        "independent_oracle.synthetic_policy",
                     ),
                     unexpected_recomputed_tokens=_fact(
-                        0,
+                        recomputed,
                         EvidenceBasis.INDEPENDENTLY_DERIVED,
-                        "oracle.prompt_work_delta",
+                        "independent_oracle.operation_delta",
+                        limitations=("synthetic_operations_not_runtime_compute",),
+                    ),
+                    prior_residency_observed=_fact(
+                        observation.prior_residency_observed,
+                        EvidenceBasis.OBSERVED,
+                        "synthetic_engine.residency_probe",
+                    ),
+                    residency_absence_observed=_fact(
+                        observation.residency_absence_observed,
+                        EvidenceBasis.OBSERVED,
+                        "synthetic_engine.residency_probe",
                     ),
                     eviction_observed=_fact(
-                        request_was_evicted,
-                        EvidenceBasis.INDEPENDENTLY_DERIVED,
-                        "oracle.controlled_eviction",
+                        observation.eviction_observed,
+                        EvidenceBasis.OBSERVED,
+                        "synthetic_engine.controlled_residency_probe",
                     ),
                     preemption_observed=unavailable(
                         "synthetic_reference", "preemption_not_implemented"
                     ),
                 ),
-                timing=TimingEvidence(),
+                timing=TimingEvidence(
+                    scope="unavailable",
+                    exclusions=("synthetic_control_emits_no_runtime_timing",),
+                ),
                 memory=MemoryEvidence(
                     runtime_active_bytes=unavailable(
-                        "synthetic_reference", "no_allocator"
+                        "synthetic_reference", "no_runtime_allocator"
                     ),
                     runtime_peak_bytes=unavailable(
-                        "synthetic_reference", "no_allocator"
+                        "synthetic_reference", "no_runtime_allocator"
                     ),
                     allocator_cache_bytes=unavailable(
-                        "synthetic_reference", "no_allocator"
+                        "synthetic_reference", "no_runtime_allocator"
                     ),
                     logical_cache_bytes=_fact(
-                        self._oracle.nbytes,
+                        observation.logical_bytes_after,
                         EvidenceBasis.OBSERVED,
-                        "synthetic_reference.cache_bytes",
+                        "synthetic_engine.logical_bytes",
+                        limitations=("not_runtime_or_allocator_memory",),
                     ),
                     physical_cache_blocks=unavailable(
                         "synthetic_reference", "token_granular_cache"
                     ),
                 ),
                 output=OutputEvidence(
-                    output_token_ids=output,
-                    baseline_token_ids=output,
+                    output_token_ids=observation.output_token_ids,
+                    baseline_token_ids=baseline,
                     token_identity=_fact(
-                        True,
+                        output_identity,
                         EvidenceBasis.OBSERVED,
-                        "synthetic_reference.output_tokens",
+                        "synthetic_engine.separate_execution_comparison",
                     ),
                     correctness=_fact(
-                        True,
+                        output_identity,
                         EvidenceBasis.OBSERVED,
-                        "synthetic_reference.baseline",
+                        "synthetic_baseline.deterministic_equivalence",
+                        limitations=("not_model_quality",),
                     ),
                     finish_reason="length",
                 ),
                 terminal_state=TerminalState.COMPLETED,
                 limitations=limitations,
-                cache_before=cache_before,
-                cache_after=CacheStateSnapshot(
-                    entry_count=_fact(
-                        self._oracle.entry_count,
-                        EvidenceBasis.OBSERVED,
-                        "synthetic_reference.cache_entries",
-                    ),
-                    logical_bytes=_fact(
-                        self._oracle.nbytes,
-                        EvidenceBasis.OBSERVED,
-                        "synthetic_reference.cache_bytes",
-                    ),
-                    valid_token_offsets=unavailable(
-                        "synthetic_reference", "cache_offsets_not_exposed"
-                    ),
-                    cache_classes=EvidenceFact(
-                        value=["SyntheticTokenCache"],
-                        basis=EvidenceBasis.OBSERVED,
-                        source="synthetic_reference.cache_type",
-                    ),
-                    complete=True,
+                cache_before=self._snapshot(
+                    observation.entry_count_before,
+                    observation.logical_bytes_before,
+                ),
+                cache_after=self._snapshot(
+                    observation.entry_count_after,
+                    observation.logical_bytes_after,
                 ),
             )
             records.append(classify_request(record))

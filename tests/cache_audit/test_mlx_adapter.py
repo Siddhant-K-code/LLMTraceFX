@@ -32,7 +32,12 @@ from llmtracefx.cache_audit.adapters.mlx import (
     write_saved_cache_sidecar,
 )
 from llmtracefx.cache_audit.expected import MLXCacheOracle
-from llmtracefx.cache_audit.schema import RequestSpec, ScenarioKind, Verdict
+from llmtracefx.cache_audit.schema import (
+    EvidenceBasis,
+    RequestSpec,
+    ScenarioKind,
+    Verdict,
+)
 from llmtracefx.optimizer.schema import MetricProvenance
 
 _BYTES_PER_TOKEN = 128
@@ -414,7 +419,7 @@ def test_interior_mutation_is_partial_reuse() -> None:
     assert record.reuse.semantic_prefix_tokens.value < len(mutated)
 
 
-def test_corrupted_cache_reuse_is_invalid_on_output_mismatch() -> None:
+def test_corrupted_output_does_not_mutate_cache_truth() -> None:
     adapter = _adapter(FakeMLXRuntime(corrupt_when_cached=True))
     prompt = (21, 22, 23, 24, 25)
     adapter.run([_spec("cold", prompt, order=0)])
@@ -422,8 +427,8 @@ def test_corrupted_cache_reuse_is_invalid_on_output_mismatch() -> None:
         [_spec("identical", prompt, order=1, scenario=ScenarioKind.IDENTICAL_PREFIX)]
     )[0]
     assert record.output.correctness.value is False
-    assert record.verdict is Verdict.INVALID
-    assert record.verdict_reasons == ("output_token_identity_mismatch",)
+    assert record.verdict is Verdict.VERIFIED_HIT
+    assert record.eligibility.output_equivalence.value == "ineligible"
 
 
 def test_exact_empty_remainder_is_refused_not_silently_regenerated() -> None:
@@ -517,7 +522,12 @@ def test_memory_and_timing_evidence_are_observed_and_wall_clock() -> None:
 
     assert record.memory.runtime_active_bytes.value is not None
     assert record.memory.runtime_active_bytes.value >= 0
+    assert record.memory.runtime_active_bytes.scope == "process_global_allocator_gauge"
     assert record.memory.runtime_peak_bytes.value is not None
+    assert (
+        record.memory.runtime_peak_bytes.scope
+        == "process_global_allocator_gauge_since_reset"
+    )
     assert record.memory.allocator_cache_bytes.value is not None
     assert record.memory.logical_cache_bytes.value is not None
     assert record.memory.logical_cache_bytes.value > 0
@@ -533,6 +543,12 @@ def test_memory_and_timing_evidence_are_observed_and_wall_clock() -> None:
     assert record.timing.total.value >= 0
     assert record.timing.in_process_first_token is not None
     assert record.timing.in_process_first_token.value >= 0
+    assert record.timing.scope == "in_process_generation_section"
+    assert "prompt_cache_lookup" in record.timing.exclusions
+    assert (
+        record.reuse.engine_created_tokens.basis is EvidenceBasis.INDEPENDENTLY_DERIVED
+    )
+    assert record.reuse.eviction_observed.value is None
 
 
 def test_refusal_record_has_no_timing_but_has_partial_memory_facts() -> None:

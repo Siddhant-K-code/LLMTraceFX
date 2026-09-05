@@ -36,6 +36,10 @@ def _valid_config(**overrides: Any) -> VLLMCapabilityConfig:
         hash_block_size=4,
         physical_block_sizes=(8, 16),
         fine_grained_hits=False,
+        runtime_attestation_digest="sha256:" + "a" * 64,
+        runtime_attestation_exported=True,
+        hash_representation="sha256_bytes",
+        hash_width_bits=256,
     )
     return replace(base, **overrides)
 
@@ -98,6 +102,68 @@ def test_valid_configuration_is_supported_with_no_refusal_reasons() -> None:
     assert result.reasons == ("read_only_offline_configuration_verified",)
     assert "engine_cached_blocks" in result.observable_facts
     assert "client_ttft" in result.unavailable_facts
+
+
+def test_environment_claims_never_satisfy_runtime_attestation() -> None:
+    config = VLLMCapabilityConfig.from_environment(
+        environ={
+            "LLMTRACEFX_VLLM_COMMIT": REQUIRED_VLLM_COMMIT,
+            "LLMTRACEFX_VLLM_PREFIX_CACHING_HASH_ALGO": (
+                REQUIRED_PREFIX_CACHING_HASH_ALGO
+            ),
+            "LLMTRACEFX_VLLM_ENABLE_PREFIX_CACHING": "1",
+            "LLMTRACEFX_VLLM_ENABLE_KV_CACHE_EVENTS": "1",
+            "VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES": "0",
+            "LLMTRACEFX_VLLM_HASH_BLOCK_SIZE": "4",
+            "LLMTRACEFX_VLLM_PHYSICAL_BLOCK_SIZES": "8",
+            "PYTHONHASHSEED": "0",
+        }
+    )
+    result = assess_vllm_capabilities(config)
+    assert result.supported is False
+    assert "runtime_exported_attestation_missing" in result.reasons
+
+
+def test_event_stream_missing_gapped_duplicate_and_ambiguous_are_ineligible() -> None:
+    assert parse_kv_event_stream([]).ineligibility_reasons == ("kv_events_missing",)
+
+    gapped = parse_kv_event_stream(
+        [_block_stored(sequence=0), _block_removed(sequence=2)]
+    )
+    assert "kv_event_sequence_gaps" in gapped.ineligibility_reasons
+    assert gapped.eligible is False
+
+    duplicate = parse_kv_event_stream(
+        [_block_stored(sequence=0), _block_removed(sequence=0)]
+    )
+    assert "kv_event_duplicate_sequences" in duplicate.ineligibility_reasons
+
+    ambiguous = parse_kv_event_stream(
+        [
+            _block_stored(sequence=0, block_hashes=["same"]),
+            _block_stored(
+                sequence=1,
+                block_hashes=["same"],
+                token_ids=[9, 8, 7, 6],
+            ),
+        ]
+    )
+    assert "kv_event_hash_identity_ambiguous" in ambiguous.ineligibility_reasons
+
+
+def test_event_stream_inconsistent_block_metadata_is_ineligible() -> None:
+    report = parse_kv_event_stream(
+        [
+            _block_stored(sequence=0, block_size=2, token_ids=[1, 2]),
+            _block_stored(
+                sequence=1,
+                block_size=4,
+                token_ids=[1, 2, 3, 4],
+            ),
+        ]
+    )
+    assert report.inconsistent_block_metadata is True
+    assert "kv_event_block_metadata_inconsistent" in report.ineligibility_reasons
 
 
 def test_capability_to_dict_matches_expected_shape() -> None:
@@ -567,7 +633,7 @@ def test_parse_valid_request_observation_and_durations() -> None:
     assert observation.num_cache_creation_tokens == 4
     assert observation.finished is True
     assert observation.finish_reason == "stop"
-    assert observation.queue_duration == pytest.approx(0.5)
+    assert observation.arrival_to_first_token_duration == pytest.approx(0.5)
     assert observation.ttft_duration == pytest.approx(0.5)
     assert observation.complete_duration == pytest.approx(1.5)
 
@@ -620,7 +686,7 @@ def test_parse_allows_null_timing_and_yields_null_durations() -> None:
         )
     )
     assert observation.arrival_time is None
-    assert observation.queue_duration is None
+    assert observation.arrival_to_first_token_duration is None
     assert observation.ttft_duration is None
     assert observation.complete_duration is None
 
@@ -631,7 +697,7 @@ def test_parse_allows_partial_null_timing() -> None:
             arrival_time=0.0, first_token_time=None, finished_time=None
         )
     )
-    assert observation.queue_duration is None
+    assert observation.arrival_to_first_token_duration is None
     assert observation.complete_duration is None
 
 
@@ -726,6 +792,7 @@ def test_request_observation_redact_removes_token_arrays_but_keeps_counts() -> N
     assert redacted["num_cache_creation_tokens"] == 4
     assert redacted["finished"] is True
     assert redacted["finish_reason"] == "stop"
-    assert redacted["queue_duration"] == pytest.approx(0.5)
+    assert redacted["arrival_to_first_token_duration"] == pytest.approx(0.5)
+    assert "queue_duration" not in redacted
     assert redacted["ttft_duration"] == pytest.approx(0.5)
     assert redacted["complete_duration"] == pytest.approx(1.5)

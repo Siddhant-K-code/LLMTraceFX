@@ -10,7 +10,7 @@ from .schema import AuditManifest, RequestEvidence
 
 
 def _esc(value: object) -> str:
-    return html.escape(str(value), quote=True)
+    return html.escape("unavailable" if value is None else str(value), quote=True)
 
 
 def render_reuse_alignment_svg(records: Sequence[RequestEvidence]) -> str:
@@ -24,26 +24,32 @@ def render_reuse_alignment_svg(records: Sequence[RequestEvidence]) -> str:
         y = 34 + index * row_height
         expected = record.reuse.policy_reusable_tokens.value
         attested = record.reuse.engine_cached_tokens.value
-        expected_width = (
-            0 if not isinstance(expected, int) else max(0, expected) * scale
-        )
-        attested_width = (
-            0 if not isinstance(attested, int) else max(0, attested) * scale
-        )
+        expected_available = isinstance(expected, int)
+        attested_available = isinstance(attested, int)
+        expected_width = max(0, expected or 0) * scale if expected_available else 640
+        attested_width = max(0, attested or 0) * scale if attested_available else 640
         bars.extend(
             (
                 f'<text x="8" y="{y + 13}" font-size="12">'
                 f"{_esc(record.spec.request_id)}</text>",
                 f'<rect x="260" y="{y}" width="{expected_width:.2f}" height="10" '
-                'fill="#2563eb"/>',
+                f'fill="{"#2563eb" if expected_available else "url(#unavailable)"}"/>',
                 f'<rect x="260" y="{y + 13}" width="{attested_width:.2f}" '
-                'height="10" fill="#0f766e"/>',
+                f'height="10" fill="{"#0f766e" if attested_available else "url(#unavailable)"}"/>',
+                (
+                    ""
+                    if expected_available and attested_available
+                    else f'<text x="905" y="{y + 13}" font-size="11">unavailable</text>'
+                ),
             )
         )
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}" role="img" '
         'aria-label="Expected and engine-attested reusable tokens">'
+        '<defs><pattern id="unavailable" width="8" height="8" '
+        'patternUnits="userSpaceOnUse"><path d="M0 8L8 0" '
+        'stroke="#94a3b8" stroke-width="2"/></pattern></defs>'
         '<rect width="100%" height="100%" fill="#ffffff"/>'
         '<text x="260" y="16" font-size="12" fill="#2563eb">expected</text>'
         '<text x="340" y="16" font-size="12" fill="#0f766e">engine-attested</text>'
@@ -64,11 +70,16 @@ def render_html(
             "<tr>"
             f"<td>{_esc(row['request_id'])}</td>"
             f"<td>{_esc(row['scenario'])}</td>"
-            f"<td>{_esc(row['expected_policy_reusable_tokens'])}</td>"
-            f"<td>{_esc(row['engine_cached_tokens'])}</td>"
-            f"<td>{_esc(row['observed_prompt_tokens'])}</td>"
-            f"<td>{_esc(row['correctness'])}</td>"
-            f"<td>{_esc(row['verdict'])}</td>"
+            f"<td>{_esc(row['expected_policy_reuse']['value'])}<br>"
+            f"<small>{_esc(row['expected_policy_reuse']['basis'])}</small></td>"
+            f"<td>{_esc(row['engine_cached']['value'])}<br>"
+            f"<small>{_esc(row['engine_cached']['source'])}</small></td>"
+            f"<td>{_esc(row['observed_prompt_work']['value'])}<br>"
+            f"<small>{_esc(row['observed_prompt_work']['scope'])}</small></td>"
+            f"<td>{_esc(row['correctness']['value'])}<br>"
+            f"<small>{_esc(row['claim_eligibility']['output_equivalence'])}</small></td>"
+            f"<td>{_esc(row['cache_reuse_verdict'])}<br>"
+            f"<small>{_esc(', '.join(row['verdict_reasons']))}</small></td>"
             "</tr>"
         )
         statements.append(f"<li>{_esc(row['statement'])}</li>")
@@ -88,6 +99,9 @@ def render_html(
         f'<p class="meta">Run {_esc(manifest.run_id)} · backend '
         f"{_esc(manifest.backend)} {_esc(manifest.backend_version)} · "
         f"publication {_esc(manifest.publication_mode.value)}</p>"
+        f'<p class="meta">Evidence label: {_esc(manifest.backend)}; '
+        "synthetic evidence validates arithmetic and wiring only. "
+        "unavailable values are hatched, never rendered as zero.</p>"
         "<p>A cache counter is evidence, not proof of skipped work, latency, "
         "memory savings, or correctness.</p>"
         "<h2>Per-request truth table</h2>"
@@ -97,5 +111,17 @@ def render_html(
         + "".join(rows)
         + '</tbody></table><h2>Claims</h2><ol class="claim">'
         + "".join(statements)
-        + "</ol></body></html>\n"
+        + "</ol><h2>Limitations and eligibility</h2><p>"
+        + _esc(
+            "; ".join(
+                sorted(
+                    {
+                        reason
+                        for row in matrix["rows"]
+                        for reason in row["claim_eligibility"]["reasons"]
+                    }
+                )
+            )
+        )
+        + "</p></body></html>\n"
     )
