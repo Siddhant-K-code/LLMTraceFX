@@ -594,7 +594,6 @@ def _verify_public_synthetic_provenance(
         or manifest.adapter_version != "2"
         or manifest.workload_digest != workload_digest(approved)
         or manifest.generator_commit is None
-        or manifest.generator_package_digest != package_source_digest()
     ):
         raise CacheAuditBundleError(
             "public_synthetic publication requires the approved built-in "
@@ -1316,11 +1315,17 @@ def verify_bundle(bundle_dir: Path) -> dict[str, Any]:
             raise CacheAuditBundleError(f"{name} must be a regular non-symlink file")
     _verify_checksums(bundle_dir)
     manifest = AuditManifest.from_dict(_load_json(bundle_dir / "audit-manifest.json"))
-    if manifest.generator_package_digest != package_source_digest():
+    current_package_matches = (
+        manifest.generator_package_digest == package_source_digest()
+    )
+    repository_chronology_corroboration = _verify_manifest_chronology(manifest)
+    if (
+        not current_package_matches
+        and repository_chronology_corroboration != "verified"
+    ):
         raise CacheAuditBundleError(
             "bundle belongs to a different llmtracefx cache-audit package"
         )
-    repository_chronology_corroboration = _verify_manifest_chronology(manifest)
     _verify_manifest_backend_contract(manifest)
     records = _load_records(bundle_dir / "request-evidence.jsonl")
     if tuple(record.spec.request_id for record in records) != manifest.request_order:
