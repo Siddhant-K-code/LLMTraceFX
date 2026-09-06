@@ -25,8 +25,7 @@ from typing import Any
 
 import pytest
 
-from vllm_kv_truth import evidence
-from vllm_kv_truth import lifecycle
+from vllm_kv_truth import evidence, lifecycle
 
 VALID_HEAD = "a" * 40
 VALID_NONCE = "c" * 40
@@ -45,9 +44,7 @@ def _source_archive_bytes(commit: str = VALID_HEAD) -> bytes:
         info.size = len(data)
         tar.addfile(info, fileobj=io.BytesIO(data))
         runner_data = b"# exact fixture runner source\n"
-        runner_info = tarfile.TarInfo(
-            name="vllm_kv_truth/runner.py"
-        )
+        runner_info = tarfile.TarInfo(name="vllm_kv_truth/runner.py")
         runner_info.size = len(runner_data)
         tar.addfile(runner_info, fileobj=io.BytesIO(runner_data))
     return buffer.getvalue()
@@ -63,11 +60,11 @@ def _write_source_archive(path: Path, commit: str = VALID_HEAD) -> None:
 
 
 def _fixture_event_batch(sequence: int, request_token_ids: Sequence[int]) -> Any:
+    from vllm_kv_truth import runner as runner_mod
     from vllm_kv_truth.vllm_live import (
         compute_sha256_cbor_block_hashes,
         parse_live_kv_event_batch,
     )
-    from vllm_kv_truth import runner as runner_mod
 
     token_ids = list(request_token_ids[:16])
     block_hash = compute_sha256_cbor_block_hashes(
@@ -185,11 +182,11 @@ def _fixture_eviction_records() -> tuple[Any, ...]:
 
 
 def _fixture_runtime_attestation() -> dict[str, Any]:
+    from vllm_kv_truth import runner as runner_mod
     from vllm_kv_truth.vllm_live import (
         canonical_json,
         required_source_file_digests,
     )
-    from vllm_kv_truth import runner as runner_mod
 
     identity: dict[str, Any] = {
         "schema_version": "1",

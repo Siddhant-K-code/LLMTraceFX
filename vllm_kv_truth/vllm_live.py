@@ -103,9 +103,7 @@ _COMMIT_HEX = re.compile(r"^[0-9a-f]{40}$")
 #: equals this fixed list exactly, in addition to every comparison having
 #: succeeded (see :func:`_parse_source_file_digests`).
 _SOURCE_MANIFEST_PATH = (
-    Path(__file__).resolve().parent
-    / "data"
-    / "qwen3-8b-vllm-source-manifest-v1.json"
+    Path(__file__).resolve().parent / "data" / "qwen3-8b-vllm-source-manifest-v1.json"
 )
 
 

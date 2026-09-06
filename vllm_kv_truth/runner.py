@@ -36,6 +36,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from llmtracefx.optimizer.collectors._shared import atomic_write_text
+from llmtracefx.optimizer.lab.qwen3_8b.cloudrift_runner import (
+    BASE_IMAGE_REFERENCE,
+    EXPECTED_DRIVER,
+    EXPECTED_GPU_NAME,
+    EXPECTED_MEMORY_MIB,
+    RUNTIME_PINS,
+)
+from llmtracefx.optimizer.lab.qwen3_8b.vllm_compile import (
+    EXPECTED_MODEL_BYTES,
+    EXPECTED_MODEL_FILE_COUNT,
+    MODEL_ID,
+    MODEL_REVISION,
+    VLLM_SOURCE_COMMIT,
+)
+from llmtracefx.optimizer.schema import SchemaValidationError
 from vllm_kv_truth.vllm_live import (
     END_OF_REPLAY_SEQUENCE,
     REQUIRED_ENDPOINT_ROLE,
@@ -56,16 +72,7 @@ from vllm_kv_truth.vllm_live import (
     required_source_file_paths,
     sha256_digest,
 )
-from llmtracefx.optimizer.collectors._shared import atomic_write_text
-from llmtracefx.optimizer.schema import SchemaValidationError
 
-from llmtracefx.optimizer.lab.qwen3_8b.cloudrift_runner import (
-    BASE_IMAGE_REFERENCE,
-    EXPECTED_DRIVER,
-    EXPECTED_GPU_NAME,
-    EXPECTED_MEMORY_MIB,
-    RUNTIME_PINS,
-)
 from .workload import (
     BLOCK_SIZE,
     EVICTION_LANE_REQUESTS,
@@ -73,13 +80,6 @@ from .workload import (
     NUM_GPU_BLOCKS_OVERRIDE,
     PREFIX_MATCH_UNIT,
     KVTruthProbe,
-)
-from llmtracefx.optimizer.lab.qwen3_8b.vllm_compile import (
-    EXPECTED_MODEL_BYTES,
-    EXPECTED_MODEL_FILE_COUNT,
-    MODEL_ID,
-    MODEL_REVISION,
-    VLLM_SOURCE_COMMIT,
 )
 
 #: The committed, real, per-file Qwen3-8B model hash manifest this module

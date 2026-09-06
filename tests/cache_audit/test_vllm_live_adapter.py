@@ -5,6 +5,8 @@ from typing import Any
 
 import pytest
 
+from llmtracefx.cache_audit.schema import EvidenceBasis
+from llmtracefx.optimizer.schema import SchemaValidationError
 from vllm_kv_truth.vllm_live import (
     DEFAULT_DATA_PARALLEL_RANK,
     END_OF_REPLAY_SEQUENCE,
@@ -31,8 +33,6 @@ from vllm_kv_truth.vllm_live import (
     required_source_file_paths,
     sha256_digest,
 )
-from llmtracefx.cache_audit.schema import EvidenceBasis
-from llmtracefx.optimizer.schema import SchemaValidationError
 
 
 def _hex(label: str) -> str:

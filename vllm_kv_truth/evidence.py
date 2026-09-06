@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from vllm_kv_truth.vllm_live import parse_runtime_attestation
+from llmtracefx.deploy.errors import DeploymentPlanError
 from llmtracefx.optimizer._artifact_io import (
     ArtifactReadError,
     read_bounded_regular_bytes,
@@ -52,9 +52,8 @@ from llmtracefx.optimizer.collectors._shared import atomic_write_text
 from vllm_kv_truth.runner import (
     PROTOCOL_ID,
 )
+from vllm_kv_truth.vllm_live import parse_runtime_attestation
 from vllm_kv_truth.workload import NESTED_PROBES
-
-from llmtracefx.deploy.errors import DeploymentPlanError
 
 MAX_RECEIPT_ARTIFACT_BYTES = 8 * 1024 * 1024
 

@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from vllm_kv_truth import runner
 from vllm_kv_truth.vllm_live import (
     SourceFileDigest,
     canonical_json,
@@ -18,7 +19,6 @@ from vllm_kv_truth.vllm_live import (
     required_source_file_digests,
     required_source_file_paths,
 )
-from vllm_kv_truth import runner
 from vllm_kv_truth.workload import (
     BLOCK_SIZE,
     EVICTION_LANE_REQUESTS,

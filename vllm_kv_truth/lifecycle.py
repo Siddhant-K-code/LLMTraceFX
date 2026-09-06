@@ -72,6 +72,7 @@ from llmtracefx.cache_audit.adapters.vllm import (
     REQUIRED_VLLM_COMMIT,
     REQUIRED_VLLM_VERSION,
 )
+from llmtracefx.deploy.errors import DeploymentPlanError
 from llmtracefx.optimizer._artifact_io import (
     ArtifactReadError,
     read_bounded_regular_bytes,
@@ -95,7 +96,6 @@ from vllm_kv_truth.runner import (
 )
 
 from . import evidence
-from llmtracefx.deploy.errors import DeploymentPlanError
 
 MAX_CONFIG_ARTIFACT_BYTES = 64 * 1024
 MAX_AUTHORIZATION_ARTIFACT_BYTES = 64 * 1024
