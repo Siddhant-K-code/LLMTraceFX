@@ -78,7 +78,7 @@ from llmtracefx.optimizer._artifact_io import (
     read_bounded_regular_text,
     reject_non_finite_json_constant,
 )
-from llmtracefx.optimizer.lab.qwen3_8b.kv_truth_runner import (
+from vllm_kv_truth.runner import (
     BASE_IMAGE_REFERENCE,
     EXPECTED_DRIVER,
     EXPECTED_GPU_NAME,
@@ -94,8 +94,8 @@ from llmtracefx.optimizer.lab.qwen3_8b.kv_truth_runner import (
     verify_protocol_receipt,
 )
 
-from . import vllm_kv_truth_evidence as evidence
-from .errors import DeploymentPlanError
+from . import evidence
+from llmtracefx.deploy.errors import DeploymentPlanError
 
 MAX_CONFIG_ARTIFACT_BYTES = 64 * 1024
 MAX_AUTHORIZATION_ARTIFACT_BYTES = 64 * 1024
@@ -117,6 +117,7 @@ MINIMUM_DISK_FREE_BYTES = 250_000_000_000
 
 MODEL_CONVERSION_MANIFEST_PATH = (
     Path(__file__).resolve().parents[1]
+    / "llmtracefx"
     / "optimizer"
     / "lab"
     / "qwen3_8b"
@@ -1210,7 +1211,7 @@ class RunPaths:
 
 
 _COMMIT_HEAD_MEMBER = "COMMIT_HEAD"
-_RUNNER_SOURCE_MEMBER = "llmtracefx/optimizer/lab/qwen3_8b/kv_truth_runner.py"
+_RUNNER_SOURCE_MEMBER = "vllm_kv_truth/runner.py"
 
 
 def _validate_safe_tar_member(member: tarfile.TarInfo) -> None:
@@ -1469,7 +1470,7 @@ def build_docker_run_argv(
         derived_image_id,
         "python3",
         "-m",
-        "llmtracefx.optimizer.lab.qwen3_8b.kv_truth_runner",
+        "vllm_kv_truth.runner",
         "--lane",
         invocation.lane,
         "--model-path",

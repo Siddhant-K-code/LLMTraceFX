@@ -1,7 +1,7 @@
 """Hermetic, no-GPU tests for the vLLM KV-truth host orchestrator.
 
-Every test here drives :mod:`llmtracefx.deploy.vllm_kv_truth_lifecycle`
-through a fake :class:`~llmtracefx.deploy.vllm_kv_truth_lifecycle.CommandRunner`
+Every test here drives :mod:`vllm_kv_truth.lifecycle`
+through a fake :class:`~vllm_kv_truth.lifecycle.CommandRunner`
 that never spawns a process, opens a socket, or touches the network/GPU. The
 fake still has to answer every real ``ssh``/``scp``/``docker`` argv the
 orchestrator builds with a plausible, stage-appropriate transcript, which is
@@ -25,8 +25,8 @@ from typing import Any
 
 import pytest
 
-from llmtracefx.deploy import vllm_kv_truth_evidence as evidence
-from llmtracefx.deploy import vllm_kv_truth_lifecycle as lifecycle
+from vllm_kv_truth import evidence
+from vllm_kv_truth import lifecycle
 
 VALID_HEAD = "a" * 40
 VALID_NONCE = "c" * 40
@@ -46,7 +46,7 @@ def _source_archive_bytes(commit: str = VALID_HEAD) -> bytes:
         tar.addfile(info, fileobj=io.BytesIO(data))
         runner_data = b"# exact fixture runner source\n"
         runner_info = tarfile.TarInfo(
-            name="llmtracefx/optimizer/lab/qwen3_8b/kv_truth_runner.py"
+            name="vllm_kv_truth/runner.py"
         )
         runner_info.size = len(runner_data)
         tar.addfile(runner_info, fileobj=io.BytesIO(runner_data))
@@ -63,11 +63,11 @@ def _write_source_archive(path: Path, commit: str = VALID_HEAD) -> None:
 
 
 def _fixture_event_batch(sequence: int, request_token_ids: Sequence[int]) -> Any:
-    from llmtracefx.cache_audit.adapters.vllm_live import (
+    from vllm_kv_truth.vllm_live import (
         compute_sha256_cbor_block_hashes,
         parse_live_kv_event_batch,
     )
-    from llmtracefx.optimizer.lab.qwen3_8b import kv_truth_runner as runner_mod
+    from vllm_kv_truth import runner as runner_mod
 
     token_ids = list(request_token_ids[:16])
     block_hash = compute_sha256_cbor_block_hashes(
@@ -104,8 +104,8 @@ def _fixture_event_batch(sequence: int, request_token_ids: Sequence[int]) -> Any
 
 
 def _fixture_reset_batch() -> Any:
-    from llmtracefx.cache_audit.adapters.vllm_live import parse_live_kv_event_batch
-    from llmtracefx.optimizer.lab.qwen3_8b import kv_truth_runner as runner_mod
+    from vllm_kv_truth import runner as runner_mod
+    from vllm_kv_truth.vllm_live import parse_live_kv_event_batch
 
     return parse_live_kv_event_batch(
         runner_mod.KV_EVENTS_TOPIC.encode(),
@@ -117,8 +117,8 @@ def _fixture_reset_batch() -> Any:
 def _fixture_b_lane_records(*, cache_enabled: bool = True) -> tuple[Any, ...]:
     """One exact, event-bearing ``RequestRecord`` per fixed nested probe."""
 
-    from llmtracefx.optimizer.lab.qwen3_8b import kv_truth_runner as runner_mod
-    from llmtracefx.optimizer.lab.qwen3_8b.kv_truth_workload import NESTED_PROBES
+    from vllm_kv_truth import runner as runner_mod
+    from vllm_kv_truth.workload import NESTED_PROBES
 
     ids = runner_mod.request_ids()
     return tuple(
@@ -156,10 +156,10 @@ def _fixture_eviction_records() -> tuple[Any, ...]:
     the plan's ``evicted`` verdict: zero cached tokens and full prompt work
     with a valid boundary."""
 
-    from llmtracefx.optimizer.lab.qwen3_8b import kv_truth_runner as runner_mod
+    from vllm_kv_truth import runner as runner_mod
 
     ids = runner_mod.eviction_lane_request_ids()
-    from llmtracefx.optimizer.lab.qwen3_8b.kv_truth_workload import (
+    from vllm_kv_truth.workload import (
         EVICTION_LANE_REQUESTS,
     )
 
@@ -185,11 +185,11 @@ def _fixture_eviction_records() -> tuple[Any, ...]:
 
 
 def _fixture_runtime_attestation() -> dict[str, Any]:
-    from llmtracefx.cache_audit.adapters.vllm_live import (
+    from vllm_kv_truth.vllm_live import (
         canonical_json,
         required_source_file_digests,
     )
-    from llmtracefx.optimizer.lab.qwen3_8b import kv_truth_runner as runner_mod
+    from vllm_kv_truth import runner as runner_mod
 
     identity: dict[str, Any] = {
         "schema_version": "1",
@@ -288,7 +288,7 @@ def _fixture_runtime_attestation() -> dict[str, Any]:
 
 
 def _fixture_lane_receipt_bytes(*, lane: str, records: tuple[Any, ...]) -> bytes:
-    from llmtracefx.optimizer.lab.qwen3_8b import kv_truth_runner as runner_mod
+    from vllm_kv_truth import runner as runner_mod
 
     lane_result = runner_mod.LaneResult(
         lane=lane,
@@ -989,7 +989,7 @@ class TestRemoteOrchestratorFullRun:
             assert (
                 f"EXPECTED_REPOSITORY_COMMIT={auth.repository_head}" in command_string
             )
-            from llmtracefx.optimizer.lab.qwen3_8b.kv_truth_runner import (
+            from vllm_kv_truth.runner import (
                 VLLM_SOURCE_COMMIT,
             )
 

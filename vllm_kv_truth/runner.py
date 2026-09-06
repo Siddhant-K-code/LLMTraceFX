@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
-from llmtracefx.cache_audit.adapters.vllm_live import (
+from vllm_kv_truth.vllm_live import (
     END_OF_REPLAY_SEQUENCE,
     REQUIRED_ENDPOINT_ROLE,
     REQUIRED_REPLAY_ENDPOINT_ROLE,
@@ -59,14 +59,14 @@ from llmtracefx.cache_audit.adapters.vllm_live import (
 from llmtracefx.optimizer.collectors._shared import atomic_write_text
 from llmtracefx.optimizer.schema import SchemaValidationError
 
-from .cloudrift_runner import (
+from llmtracefx.optimizer.lab.qwen3_8b.cloudrift_runner import (
     BASE_IMAGE_REFERENCE,
     EXPECTED_DRIVER,
     EXPECTED_GPU_NAME,
     EXPECTED_MEMORY_MIB,
     RUNTIME_PINS,
 )
-from .kv_truth_workload import (
+from .workload import (
     BLOCK_SIZE,
     EVICTION_LANE_REQUESTS,
     NESTED_PROBES,
@@ -74,7 +74,7 @@ from .kv_truth_workload import (
     PREFIX_MATCH_UNIT,
     KVTruthProbe,
 )
-from .vllm_compile import (
+from llmtracefx.optimizer.lab.qwen3_8b.vllm_compile import (
     EXPECTED_MODEL_BYTES,
     EXPECTED_MODEL_FILE_COUNT,
     MODEL_ID,
@@ -90,7 +90,13 @@ from .vllm_compile import (
 #: protocol also pins, so reusing it avoids maintaining a second, redundant
 #: copy of the same real upstream facts.
 _QWEN3_8B_MODEL_MANIFEST_PATH = (
-    Path(__file__).parent / "data" / "qwen3-8b-conversion-manifest-v1.json"
+    Path(__file__).resolve().parents[1]
+    / "llmtracefx"
+    / "optimizer"
+    / "lab"
+    / "qwen3_8b"
+    / "data"
+    / "qwen3-8b-conversion-manifest-v1.json"
 )
 
 #: Environment variables the deploy orchestrator (``vllm_kv_truth_lifecycle``)
@@ -583,7 +589,7 @@ def collect_source_file_digests(
     """Hash the pinned vLLM 0.28.0 critical source files from the actually
     installed package tree and independently compare each recomputed digest
     against the committed manifest's real expected SHA-256 value
-    (:func:`~llmtracefx.cache_audit.adapters.vllm_live.required_source_file_digests`,
+    (:func:`~vllm_kv_truth.vllm_live.required_source_file_digests`,
     fetched once from the pinned upstream commit -- source fetch only, no
     provider/model/image access). ``matches_manifest`` therefore reflects a
     genuine byte-content comparison against real expected values, not merely

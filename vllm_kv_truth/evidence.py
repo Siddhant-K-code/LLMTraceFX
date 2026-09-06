@@ -1,13 +1,13 @@
 """Private/public evidence bundling for ``qwen3-8b-vllm-kv-truth-v1``.
 
 This module turns the raw, per-lane facts the host orchestrator collects
-(receipts from :mod:`llmtracefx.optimizer.lab.qwen3_8b.kv_truth_runner`,
+(receipts from :mod:`vllm_kv_truth.runner`,
 teardown/transfer receipts, the authorization/config public records) into:
 
 1. a **private raw bundle** -- everything, including whatever sensitive
    detail a real run legitimately produces (this module never itself reads
    host/user/key/IP values; it only ever sees what
-   :mod:`llmtracefx.deploy.vllm_kv_truth_lifecycle` already redacted before
+   :mod:`vllm_kv_truth.lifecycle` already redacted before
    handing data here);
 2. a **public-redacted bundle** -- deterministic, portable, and safe to
    publish: no host/user/IP/port/key path, GPU UUID, salt, native hash, raw
@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from llmtracefx.cache_audit.adapters.vllm_live import parse_runtime_attestation
+from vllm_kv_truth.vllm_live import parse_runtime_attestation
 from llmtracefx.optimizer._artifact_io import (
     ArtifactReadError,
     read_bounded_regular_bytes,
@@ -49,12 +49,12 @@ from llmtracefx.optimizer._artifact_io import (
     reject_non_finite_json_constant,
 )
 from llmtracefx.optimizer.collectors._shared import atomic_write_text
-from llmtracefx.optimizer.lab.qwen3_8b.kv_truth_runner import (
+from vllm_kv_truth.runner import (
     PROTOCOL_ID,
 )
-from llmtracefx.optimizer.lab.qwen3_8b.kv_truth_workload import NESTED_PROBES
+from vllm_kv_truth.workload import NESTED_PROBES
 
-from .errors import DeploymentPlanError
+from llmtracefx.deploy.errors import DeploymentPlanError
 
 MAX_RECEIPT_ARTIFACT_BYTES = 8 * 1024 * 1024
 
@@ -480,8 +480,8 @@ class PrivateEvidenceBundle:
 
     This dataclass itself never contains a host/user/IP/key value -- those
     are excluded even from the *private* bundle by construction, because
-    :class:`~llmtracefx.deploy.vllm_kv_truth_lifecycle.ProtectedExecutionConfig`
-    and :class:`~llmtracefx.deploy.vllm_kv_truth_lifecycle.StrictSSHOptions`
+    :class:`~vllm_kv_truth.lifecycle.ProtectedExecutionConfig`
+    and :class:`~vllm_kv_truth.lifecycle.StrictSSHOptions`
     only ever expose ``public_record()`` views to callers outside that
     module. "Private" here means "not yet redacted for external
     publication" (e.g. it may still carry exact token arrays and native
@@ -601,7 +601,7 @@ class PrivateEvidenceBundle:
 #: Key names that legitimately contain a forbidden fragment as a mere
 #: substring but never carry a sensitive value themselves -- e.g.
 #: ``strict_host_key_checking`` is a fixed boolean *policy* flag from
-#: :meth:`~llmtracefx.deploy.vllm_kv_truth_lifecycle.StrictSSHOptions.public_record`,
+#: :meth:`~vllm_kv_truth.lifecycle.StrictSSHOptions.public_record`,
 #: never a host-identifying value, despite containing ``"host"``. Every
 #: entry here must be an exact key name, never a fragment, so this can never
 #: widen into an accidental bypass of the scanner it lives next to.

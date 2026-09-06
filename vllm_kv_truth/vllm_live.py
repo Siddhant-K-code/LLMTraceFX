@@ -26,7 +26,7 @@ present, self-consistent, and sealed inside the mappings handed to
 This module never imports ``vllm``, ``torch``, ``zmq``, or ``msgspec``, opens
 no socket, and performs no GPU or network work. It only parses and validates
 mappings that a separate, gated in-container exporter is expected to produce
-(see ``llmtracefx.optimizer.lab.qwen3_8b.kv_truth_runner`` for the pinned
+(see ``vllm_kv_truth.runner`` for the pinned
 protocol that consumes this validator) and normalizes already msgpack-decoded
 KV-cache event batches captured from vLLM's ZMQ publisher.
 
@@ -62,16 +62,15 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from llmtracefx.optimizer.schema import SchemaValidationError
-
-from ..schema import CacheEventRecord, EvidenceBasis
-from .base import CacheAuditCapability
-from .vllm import (
+from llmtracefx.cache_audit.adapters.base import CacheAuditCapability
+from llmtracefx.cache_audit.adapters.vllm import (
     REQUIRED_KV_EVENTS_USE_INT_BLOCK_HASHES,
     REQUIRED_PREFIX_CACHING_HASH_ALGO,
     REQUIRED_VLLM_COMMIT,
     REQUIRED_VLLM_VERSION,
 )
+from llmtracefx.cache_audit.schema import CacheEventRecord, EvidenceBasis
+from llmtracefx.optimizer.schema import SchemaValidationError
 
 BACKEND = "vllm_live"
 
@@ -104,10 +103,7 @@ _COMMIT_HEX = re.compile(r"^[0-9a-f]{40}$")
 #: equals this fixed list exactly, in addition to every comparison having
 #: succeeded (see :func:`_parse_source_file_digests`).
 _SOURCE_MANIFEST_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "optimizer"
-    / "lab"
-    / "qwen3_8b"
+    Path(__file__).resolve().parent
     / "data"
     / "qwen3-8b-vllm-source-manifest-v1.json"
 )

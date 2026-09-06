@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from llmtracefx.optimizer.lab.qwen3_8b import kv_truth_workload as workload
+from vllm_kv_truth import workload
 
 #: The plan's exact preregistered table:
 #: | Probe | Expected reusable tokens / blocks |

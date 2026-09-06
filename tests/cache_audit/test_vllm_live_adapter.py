@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from llmtracefx.cache_audit.adapters.vllm_live import (
+from vllm_kv_truth.vllm_live import (
     DEFAULT_DATA_PARALLEL_RANK,
     END_OF_REPLAY_SEQUENCE,
     REQUIRED_KV_EVENTS_USE_INT_BLOCK_HASHES,

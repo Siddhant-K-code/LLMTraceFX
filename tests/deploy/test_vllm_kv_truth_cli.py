@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from llmtracefx.deploy import vllm_kv_truth_evidence as evidence
-from llmtracefx.deploy.vllm_kv_truth_cli import _build_parser, main
+from vllm_kv_truth import evidence
+from vllm_kv_truth.cli import _build_parser, main
 
 
 class TestArgumentParser:

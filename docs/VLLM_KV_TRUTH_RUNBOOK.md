@@ -106,7 +106,7 @@ operational cutoff + cleanup reserve <= boot-derived absolute cap
 
 Set `authorization_expiry` no earlier than the end of cleanup. Calculate
 `authorization_sha256` with
-`llmtracefx.deploy.vllm_kv_truth_lifecycle.build_authorization_seal` over the
+`vllm_kv_truth.lifecycle.build_authorization_seal` over the
 authorization object without `authorization_sha256`. Optional detached
 OpenSSH signing uses both `signature_path` and `authorized_signers_path`;
 supplying only one is invalid.

@@ -16,8 +16,8 @@ from typing import Any
 
 import pytest
 
-from llmtracefx.deploy import vllm_kv_truth_evidence as evidence
-from llmtracefx.optimizer.lab.qwen3_8b.kv_truth_workload import NESTED_PROBES
+from vllm_kv_truth import evidence
+from vllm_kv_truth.workload import NESTED_PROBES
 
 VALID_NONCE = "d" * 40
 

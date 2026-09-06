@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from llmtracefx.cache_audit.adapters.vllm_live import (
+from vllm_kv_truth.vllm_live import (
     SourceFileDigest,
     canonical_json,
     compute_sha256_cbor_block_hashes,
@@ -18,8 +18,8 @@ from llmtracefx.cache_audit.adapters.vllm_live import (
     required_source_file_digests,
     required_source_file_paths,
 )
-from llmtracefx.optimizer.lab.qwen3_8b import kv_truth_runner as runner
-from llmtracefx.optimizer.lab.qwen3_8b.kv_truth_workload import (
+from vllm_kv_truth import runner
+from vllm_kv_truth.workload import (
     BLOCK_SIZE,
     EVICTION_LANE_REQUESTS,
     NESTED_PROBES,

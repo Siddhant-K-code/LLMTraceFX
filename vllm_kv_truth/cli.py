@@ -12,8 +12,8 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import vllm_kv_truth_evidence as evidence
-from .vllm_kv_truth_lifecycle import (
+from . import evidence
+from .lifecycle import (
     HostOrchestrationError,
     ProtectedExecutionConfig,
     RemoteOrchestrator,
