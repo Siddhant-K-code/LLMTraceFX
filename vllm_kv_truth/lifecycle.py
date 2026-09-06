@@ -2274,23 +2274,38 @@ class RemoteOrchestrator:
                 f"rmdir {_quote(self.config.remote_workspace)}; fi",
             ]
         )
-        result = checked(
-            self.runner,
-            self.ssh_options.ssh_command("bash -s"),
-            description="stage_teardown_cleanup",
-            timeout=300,
-            input_text=script,
-        )
-        residual_containers, residual_gpu_processes = self._verify_teardown_output(
-            result.stdout
-        )
-        checked(
-            self.runner,
-            self.ssh_options.ssh_command("sudo -n shutdown -h now"),
-            description="stage_teardown_shutdown",
-            timeout=30,
-            input_text=None,
-        )
+        cleanup_error: BaseException | None = None
+        residual_containers = 0
+        residual_gpu_processes = 0
+        try:
+            result = checked(
+                self.runner,
+                self.ssh_options.ssh_command("bash -s"),
+                description="stage_teardown_cleanup",
+                timeout=300,
+                input_text=script,
+            )
+            residual_containers, residual_gpu_processes = self._verify_teardown_output(
+                result.stdout
+            )
+        except BaseException as exc:
+            cleanup_error = exc
+        try:
+            checked(
+                self.runner,
+                self.ssh_options.ssh_command("sudo -n shutdown -h now"),
+                description="stage_teardown_shutdown",
+                timeout=30,
+                input_text=None,
+            )
+        except BaseException as exc:
+            if cleanup_error is not None:
+                raise HostOrchestrationError(
+                    "teardown cleanup failed and shutdown could not be issued"
+                ) from exc
+            raise
+        if cleanup_error is not None:
+            raise cleanup_error
         self._finalize_evidence_bundle(
             local_bundle_dir,
             residual_containers=residual_containers,
