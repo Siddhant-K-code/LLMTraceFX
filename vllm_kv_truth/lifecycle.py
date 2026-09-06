@@ -2270,7 +2270,8 @@ class RemoteOrchestrator:
                 'echo "RESIDUAL_GPU_PROCESSES=$('
                 "nvidia-smi --query-compute-apps=pid --format=csv,noheader "
                 '2>/dev/null | sed "/^[[:space:]]*$/d" | wc -l)"',
-                f"rmdir {_quote(self.config.remote_workspace)}",
+                f"if [ -d {_quote(self.config.remote_workspace)} ]; then "
+                f"rmdir {_quote(self.config.remote_workspace)}; fi",
             ]
         )
         result = checked(

@@ -463,7 +463,9 @@ def build_engine_kwargs(
         "dtype": config.cache_dtype,
         "kv_cache_dtype": config.cache_dtype,
         "seed": SAMPLING_SEED,
-        "disable_log_stats": True,
+        # RequestOutput.metrics is populated only when vLLM request stats are
+        # enabled. This protocol records those version-bound timing fields.
+        "disable_log_stats": False,
         "kv_events_config": kv_events_config_kwargs() if cache_enabled else None,
     }
 
@@ -1341,7 +1343,12 @@ class _LLMEngineHandle:
             raise KVTruthProtocolError(
                 f"engine never produced a finished RequestOutput for " f"{request_id!r}"
             )
-        return _view_of(final_output)
+        view = _view_of(final_output)
+        if "metrics_unavailable" in view.timing.null_reasons:
+            raise KVTruthProtocolError(
+                "vLLM omitted RequestOutput.metrics while request stats were enabled"
+            )
+        return view
 
 
 def build_llm(

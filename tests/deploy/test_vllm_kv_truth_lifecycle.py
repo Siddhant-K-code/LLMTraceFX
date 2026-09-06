@@ -1035,6 +1035,10 @@ class TestRemoteOrchestratorFullRun:
         )
         script = cleanup_call.input_text or ""
         assert (
+            f"if [ -d {orchestrator.config.remote_workspace} ]; then "
+            f"rmdir {orchestrator.config.remote_workspace}; fi"
+        ) in script
+        assert (
             "docker ps -q" not in script.replace("docker ps -q --filter", "PLACEHOLDER")
             or "--filter" in script
         )
@@ -1091,6 +1095,22 @@ class TestRemoteOrchestratorFullRun:
         descriptions = {call.description for call in runner.calls}
         assert "stage_teardown_cleanup" in descriptions
         assert orchestrator.state == lifecycle.OrchestratorState.COMPLETE
+
+    def test_teardown_reaches_shutdown_when_preflight_fails(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner(fail_stages=frozenset({"stage_preflight"}))
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(lifecycle.HostOrchestrationError):
+            orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        descriptions = {call.description for call in runner.calls}
+        assert "stage_teardown_cleanup" in descriptions
+        assert "stage_teardown_shutdown" in descriptions
 
     def test_teardown_still_runs_on_keyboard_interrupt(self, tmp_path: Path) -> None:
         class _InterruptingRunner(FakeCommandRunner):

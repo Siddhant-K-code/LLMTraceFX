@@ -205,6 +205,7 @@ def test_build_engine_kwargs_uses_local_verified_path_not_remote_id() -> None:
     assert kwargs["enable_prefix_caching"] is True
     assert kwargs["prefix_caching_hash_algo"] == "sha256_cbor"
     assert kwargs["seed"] == runner.SAMPLING_SEED
+    assert kwargs["disable_log_stats"] is False
     assert kwargs["kv_events_config"] == runner.kv_events_config_kwargs()
 
 
@@ -1778,6 +1779,17 @@ class _FakeLLMEngine:
     def step(self) -> list[Any]:
         request_id, prompt_token_ids = self._pending.pop(0)
         self._finished_ids.add(request_id)
+        metrics = type(
+            "Metrics",
+            (),
+            {
+                "queued_ts": 1.0,
+                "scheduled_ts": 1.1,
+                "first_token_ts": 1.2,
+                "last_token_ts": 1.3,
+                "first_token_latency": 0.2,
+            },
+        )()
         completion = type(
             "Completion",
             (),
@@ -1792,6 +1804,7 @@ class _FakeLLMEngine:
                 "num_cached_tokens": min(1, len(prompt_token_ids)),
                 "outputs": [completion],
                 "finished": True,
+                "metrics": metrics,
             },
         )()
         return [output]
@@ -1860,6 +1873,24 @@ def test_build_llm_constructs_a_real_llm_engine_end_to_end_with_a_fake_vllm_modu
     assert output.request_id == "req-0"
     assert output.output_token_ids == (7, 8, 9)
     assert handle.reset_prefix_cache() is True
+
+
+def test_real_engine_handle_rejects_missing_request_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_vllm_module(monkeypatch)
+
+    class _MissingMetricsEngine(_FakeLLMEngine):
+        def step(self) -> list[Any]:
+            outputs = super().step()
+            delattr(type(outputs[0]), "metrics")
+            return outputs
+
+    handle = runner._LLMEngineHandle(_MissingMetricsEngine())
+    with pytest.raises(
+        runner.KVTruthProtocolError, match="omitted RequestOutput.metrics"
+    ):
+        handle.generate_one("req-0", [1, 2, 3], {"temperature": 0.0})
 
 
 def test_build_llm_a_lane_constructs_a_cache_disabled_engine(
