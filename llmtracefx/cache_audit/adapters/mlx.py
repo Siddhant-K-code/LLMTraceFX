@@ -28,7 +28,7 @@ import stat
 import tempfile
 import time
 from collections.abc import Callable, Hashable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any, Protocol
@@ -74,6 +74,7 @@ REQUIRED_SYMBOLS = (
     "mlx_lm.models.cache.LRUPromptCache",
     "mlx_lm.models.cache.can_trim_prompt_cache",
     "mlx_lm.stream_generate",
+    "mlx_lm.sample_utils.make_sampler",
     "mlx.core.synchronize",
     "mlx.core.get_active_memory",
     "mlx.core.get_peak_memory",
@@ -91,7 +92,10 @@ _OBSERVABLE_FACTS = (
     "runtime_peak_bytes",
     "allocator_cache_bytes",
     "logical_cache_bytes",
+    "client_ttft",
     "in_process_first_token",
+    "prefill",
+    "decode",
     "total",
 )
 _UNAVAILABLE_FACTS = (
@@ -100,11 +104,8 @@ _UNAVAILABLE_FACTS = (
     "engine_cached_blocks",
     "physical_cache_blocks",
     "preemption_observed",
-    "client_ttft",
     "queue",
     "scheduling",
-    "prefill",
-    "decode",
 )
 
 
@@ -118,6 +119,22 @@ class MLXGenerationStep:
 
     token: int
     finish_reason: str | None = None
+    prompt_tokens: int | None = None
+    prompt_tps: float | None = None
+    generation_tokens: int | None = None
+    generation_tps: float | None = None
+
+
+@dataclass(frozen=True)
+class MLXStageObservation:
+    """Allocator and logical-cache gauges at one named adapter boundary."""
+
+    request_id: str | None
+    stage: str
+    active_bytes: int
+    peak_bytes: int
+    allocator_cache_bytes: int
+    logical_cache_bytes: int | None = None
 
 
 class MLXCacheRuntime(Protocol):
@@ -228,6 +245,10 @@ def _default_symbol_probe() -> tuple[str, ...]:
         from mlx_lm import stream_generate  # noqa: F401
     except ImportError:
         missing.append("mlx_lm.stream_generate")
+    try:
+        from mlx_lm.sample_utils import make_sampler  # noqa: F401
+    except ImportError:
+        missing.append("mlx_lm.sample_utils.make_sampler")
     try:
         from mlx_lm.models.cache import (  # noqa: F401
             LRUPromptCache,
@@ -403,6 +424,8 @@ class ProductionMLXRuntime:
         prompt_progress_callback: Callable[[int, int], None],
     ) -> Iterator[MLXGenerationStep]:
         _, mlx_lm = self._ready()
+        from mlx_lm.sample_utils import make_sampler
+
         for response in mlx_lm.stream_generate(
             model,
             tokenizer,
@@ -410,9 +433,15 @@ class ProductionMLXRuntime:
             max_tokens=max_tokens,
             prompt_cache=cache,
             prompt_progress_callback=prompt_progress_callback,
+            sampler=make_sampler(temp=0.0),
         ):
             yield MLXGenerationStep(
-                token=int(response.token), finish_reason=response.finish_reason
+                token=int(response.token),
+                finish_reason=response.finish_reason,
+                prompt_tokens=int(response.prompt_tokens),
+                prompt_tps=float(response.prompt_tps),
+                generation_tokens=int(response.generation_tokens),
+                generation_tps=float(response.generation_tps),
             )
 
 
@@ -800,6 +829,8 @@ class MLXLocalCacheAdapter:
         model_path: str | Path | None = None,
         max_cache_entries: int = 10,
         max_cache_bytes: int = 1 << 63,
+        correctness_evaluator: Callable[[tuple[int, ...]], bool] | None = None,
+        stage_observer: Callable[[MLXStageObservation], None] | None = None,
     ) -> None:
         loaded_provided = (
             model is not None or tokenizer is not None or model_key is not None
@@ -863,6 +894,10 @@ class MLXLocalCacheAdapter:
         )
         self._evicted_entry_ids: set[str] = set()
         self._cache_classes: set[str] = set()
+        self._correctness_evaluator = correctness_evaluator
+        self._stage_observer = stage_observer
+        self._observed_resident_requests: set[tuple[str, tuple[int, ...]]] = set()
+        self._observe_stage("lifecycle_ready")
 
     @property
     def backend(self) -> str:
@@ -944,6 +979,28 @@ class MLXLocalCacheAdapter:
     def _runtime_key(self, namespace_id: str) -> Hashable:
         return (self._model_key, namespace_id)
 
+    def _observe_stage(
+        self,
+        stage: str,
+        request: RequestSpec | None = None,
+        *,
+        logical_cache_bytes: int | None = None,
+    ) -> float:
+        if self._stage_observer is None:
+            return 0.0
+        started = time.perf_counter()
+        self._stage_observer(
+            MLXStageObservation(
+                request_id=None if request is None else request.request_id,
+                stage=stage,
+                active_bytes=self._runtime.active_memory(),
+                peak_bytes=self._runtime.peak_memory(),
+                allocator_cache_bytes=self._runtime.cache_memory(),
+                logical_cache_bytes=logical_cache_bytes,
+            )
+        )
+        return time.perf_counter() - started
+
     def _oracle_snapshot(self) -> CacheStateSnapshot:
         return CacheStateSnapshot(
             entry_count=_fact(
@@ -977,7 +1034,8 @@ class MLXLocalCacheAdapter:
             raise MLXCacheAdapterError(
                 "MLX runtime is unsupported: " + "; ".join(capability.reasons)
             )
-        return [self._run_one(request) for request in requests]
+        records = [self._run_one(request) for request in requests]
+        return [self._attach_baseline(record) for record in records]
 
     def _unsupported_record(self, spec: RequestSpec, *, code: str) -> RequestEvidence:
         record = RequestEvidence(
@@ -1025,6 +1083,7 @@ class MLXLocalCacheAdapter:
             return self._unsupported_record(request, code="rotating_cache_unsupported")
 
         cache_before = self._oracle_snapshot()
+        self._observe_stage("request_before_lookup", request)
         expectation = self._oracle.lookup(
             self._model_key, request.namespace_id, request.input_token_ids
         )
@@ -1033,10 +1092,20 @@ class MLXLocalCacheAdapter:
                 request, code="non_trimmable_cache_reuse_unsupported"
             )
         runtime_key = self._runtime_key(request.namespace_id)
+        request_start = time.perf_counter()
         cache, rest = self._runtime.fetch(runtime_key, request.input_token_ids)
+        fetch_seconds = time.perf_counter() - request_start
         if cache is not None:
             self._cache_classes.update(self._runtime.cache_classes(cache))
         engine_cached_tokens = request.input_token_count - len(rest)
+        logical_cache_bytes = (
+            self._runtime.cache_nbytes(cache) if cache is not None else 0
+        )
+        self._observe_stage(
+            "request_after_lookup",
+            request,
+            logical_cache_bytes=logical_cache_bytes,
+        )
 
         if len(rest) == 0:
             return self._refuse_exact_empty_remainder(
@@ -1051,6 +1120,7 @@ class MLXLocalCacheAdapter:
             runtime_key,
             engine_cached_tokens,
             cache_before,
+            fetch_seconds,
         )
 
     def _refuse_exact_empty_remainder(
@@ -1175,11 +1245,11 @@ class MLXLocalCacheAdapter:
         runtime_key: Hashable,
         engine_cached_tokens: int,
         cache_before: CacheStateSnapshot,
+        fetch_seconds: float,
     ) -> RequestEvidence:
         assert request.input_token_ids is not None
         if cache is None:
             cache = self._runtime.make_cache(self._model)
-        self._cache_classes.update(self._runtime.cache_classes(cache))
 
         progress: dict[str, int] = {"actual": 0, "total": 0}
 
@@ -1192,6 +1262,9 @@ class MLXLocalCacheAdapter:
         first_token_seconds: float | None = None
         output_tokens: list[int] = []
         finish_reason: str | None = None
+        prompt_seconds: float | None = None
+        decode_seconds: float | None = None
+        client_first_token_seconds: float | None = None
         for step in self._runtime.generate(
             self._model,
             self._tokenizer,
@@ -1203,15 +1276,31 @@ class MLXLocalCacheAdapter:
             if first_token_seconds is None:
                 self._runtime.synchronize()
                 first_token_seconds = time.perf_counter() - wall_start
+                client_first_token_seconds = fetch_seconds + first_token_seconds
+            if (
+                prompt_seconds is None
+                and step.prompt_tokens is not None
+                and step.prompt_tps is not None
+                and step.prompt_tps > 0
+            ):
+                prompt_seconds = step.prompt_tokens / step.prompt_tps
+            if (
+                step.generation_tokens is not None
+                and step.generation_tps is not None
+                and step.generation_tps > 0
+            ):
+                decode_seconds = step.generation_tokens / step.generation_tps
             output_tokens.append(step.token)
             finish_reason = step.finish_reason
             if len(output_tokens) >= request.output_tokens:
                 break
         self._runtime.synchronize()
         total_seconds = time.perf_counter() - wall_start
+        client_total_seconds = fetch_seconds + total_seconds
         active_after = self._runtime.active_memory()
         peak_after = self._runtime.peak_memory()
         cache_after = self._runtime.cache_memory()
+        self._observe_stage("request_after_generation", request)
 
         full_sequence = tuple(request.input_token_ids) + tuple(output_tokens)
         cache_nbytes = self._runtime.cache_nbytes(cache)
@@ -1225,27 +1314,29 @@ class MLXLocalCacheAdapter:
             trimmable=self._runtime.cache_can_trim(cache),
         )
         self._evicted_entry_ids.update(newly_evicted)
-        # Baseline: regenerate the exact same prompt from scratch on a fresh
-        # cache. This is the only ground truth this harness has for output
-        # correctness -- it proves cache reuse did not change what the model
-        # would have produced without it.
-        baseline_cache = self._runtime.make_cache(self._model)
-        baseline_tokens: list[int] = []
-        for step in self._runtime.generate(
-            self._model,
-            self._tokenizer,
-            baseline_cache,
-            request.input_token_ids,
-            max_tokens=request.output_tokens,
-            prompt_progress_callback=lambda *_: None,
-        ):
-            baseline_tokens.append(step.token)
-            if len(baseline_tokens) >= request.output_tokens:
-                break
-
-        token_identity = tuple(output_tokens) == tuple(baseline_tokens)
+        self._observe_stage(
+            "request_after_insertion",
+            request,
+            logical_cache_bytes=cache_nbytes,
+        )
+        correctness = (
+            None
+            if self._correctness_evaluator is None
+            else self._correctness_evaluator(tuple(output_tokens))
+        )
         unexpected_recomputed = max(
             0, progress["actual"] - expectation.policy_required_prompt_tokens
+        )
+        request_key = (request.namespace_id, tuple(request.input_token_ids))
+        prior_resident = engine_cached_tokens > 0
+        if prior_resident:
+            self._observed_resident_requests.add(request_key)
+        controlled_absence = (
+            request.scenario
+            in {ScenarioKind.EVICTION_COUNT, ScenarioKind.EVICTION_BYTES}
+            and request_key in self._observed_resident_requests
+            and cache_before.entry_count.value is not None
+            and engine_cached_tokens == 0
         )
 
         record = RequestEvidence(
@@ -1289,35 +1380,67 @@ class MLXLocalCacheAdapter:
                     EvidenceBasis.INDEPENDENTLY_DERIVED,
                     "oracle.prompt_work_delta",
                 ),
-                eviction_observed=unavailable(
-                    self.backend,
-                    "native_eviction_or_controlled_absence_probe_unavailable",
+                eviction_observed=(
+                    _fact(
+                        True,
+                        EvidenceBasis.OBSERVED,
+                        "controlled_fetch_hit_then_capacity_pressure_then_miss",
+                        scope="cache_namespace",
+                    )
+                    if controlled_absence
+                    else unavailable(
+                        self.backend,
+                        "controlled_absence_probe_not_run",
+                    )
                 ),
                 preemption_observed=unavailable(
                     self.backend, "preemption_not_implemented"
                 ),
                 prior_residency_observed=_fact(
-                    engine_cached_tokens > 0,
+                    prior_resident or controlled_absence,
                     EvidenceBasis.OBSERVED,
-                    "prompt_cache.fetch_nearest_cache",
+                    (
+                        "controlled_prior_fetch_hit"
+                        if controlled_absence
+                        else "prompt_cache.fetch_nearest_cache"
+                    ),
                     scope="cache_namespace",
                 ),
-                residency_absence_observed=unavailable(
-                    self.backend, "controlled_absence_probe_not_run"
+                residency_absence_observed=(
+                    _fact(
+                        True,
+                        EvidenceBasis.OBSERVED,
+                        "prompt_cache.fetch_nearest_cache",
+                        scope="cache_namespace",
+                    )
+                    if controlled_absence
+                    else unavailable(self.backend, "controlled_absence_probe_not_run")
                 ),
             ),
             timing=TimingEvidence(
+                client_ttft=(
+                    _seconds(client_first_token_seconds)
+                    if client_first_token_seconds is not None
+                    else None
+                ),
                 in_process_first_token=(
                     _seconds(first_token_seconds)
                     if first_token_seconds is not None
                     else None
                 ),
-                total=_seconds(total_seconds),
-                scope="in_process_generation_section",
+                prefill=(
+                    _seconds(prompt_seconds) if prompt_seconds is not None else None
+                ),
+                decode=(
+                    _seconds(decode_seconds) if decode_seconds is not None else None
+                ),
+                total=_seconds(client_total_seconds),
+                scope="runtime_cache_fetch_and_mlx_lm_stream_generate",
                 exclusions=(
-                    "prompt_cache_lookup",
                     "prompt_cache_insertion",
                     "no_cache_baseline",
+                    "harness_inspection_between_fetch_and_generation",
+                    f"in_process_generation_total={total_seconds:.9f}s",
                 ),
             ),
             memory=MemoryEvidence(
@@ -1346,16 +1469,19 @@ class MLXLocalCacheAdapter:
             ),
             output=OutputEvidence(
                 output_token_ids=tuple(output_tokens),
-                baseline_token_ids=tuple(baseline_tokens),
-                token_identity=_fact(
-                    token_identity,
-                    EvidenceBasis.OBSERVED,
-                    "baseline_regeneration.token_match",
+                baseline_token_ids=None,
+                token_identity=unavailable(
+                    self.backend,
+                    "baseline_deferred_until_lifecycle_measurements_complete",
                 ),
-                correctness=_fact(
-                    token_identity,
-                    EvidenceBasis.OBSERVED,
-                    "baseline_regeneration.correctness",
+                correctness=(
+                    unavailable(self.backend, "baseline_deferred")
+                    if correctness is None
+                    else _fact(
+                        correctness,
+                        EvidenceBasis.OBSERVED,
+                        "configured_deterministic_evaluator",
+                    )
                 ),
                 finish_reason=finish_reason,
             ),
@@ -1364,3 +1490,55 @@ class MLXLocalCacheAdapter:
             cache_after=self._oracle_snapshot(),
         )
         return classify_request(record)
+
+    def _attach_baseline(self, record: RequestEvidence) -> RequestEvidence:
+        request = record.spec
+        if (
+            record.terminal_state is not TerminalState.COMPLETED
+            or request.input_token_ids is None
+            or record.output.output_token_ids is None
+        ):
+            return record
+        baseline_cache = self._runtime.make_cache(self._model)
+        baseline_tokens: list[int] = []
+        for step in self._runtime.generate(
+            self._model,
+            self._tokenizer,
+            baseline_cache,
+            request.input_token_ids,
+            max_tokens=request.output_tokens,
+            prompt_progress_callback=lambda *_: None,
+        ):
+            baseline_tokens.append(step.token)
+            if len(baseline_tokens) >= request.output_tokens:
+                break
+        self._runtime.synchronize()
+        self._observe_stage("request_after_baseline", request)
+        token_identity = record.output.output_token_ids == tuple(baseline_tokens)
+        correctness = (
+            token_identity
+            if self._correctness_evaluator is None
+            else self._correctness_evaluator(record.output.output_token_ids)
+        )
+        completed = replace(
+            record,
+            output=replace(
+                record.output,
+                baseline_token_ids=tuple(baseline_tokens),
+                token_identity=_fact(
+                    token_identity,
+                    EvidenceBasis.OBSERVED,
+                    "baseline_regeneration.token_match",
+                ),
+                correctness=_fact(
+                    correctness,
+                    EvidenceBasis.OBSERVED,
+                    (
+                        "configured_deterministic_evaluator"
+                        if self._correctness_evaluator is not None
+                        else "baseline_regeneration.correctness"
+                    ),
+                ),
+            ),
+        )
+        return classify_request(completed)

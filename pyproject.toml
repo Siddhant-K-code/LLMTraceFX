@@ -124,6 +124,7 @@ llmtracefx-modal-l4-crossover-evidence = "llmtracefx.optimizer.lab.qwen3_8b.moda
 llmtracefx-modal-l4-execute = "llmtracefx.optimizer.lab.qwen3_8b.modal_l4_execute:main"
 llmtracefx-evidence = "llmtracefx.evidence.cli:main"
 llmtracefx-cache-audit = "llmtracefx.cache_audit.cli:main"
+llmtracefx-real-mlx-cache-audit = "llmtracefx.cache_audit.real_mlx:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

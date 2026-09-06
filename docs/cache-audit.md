@@ -246,3 +246,38 @@ publishable from the reference control. A later MLX result may make a timing or
 memory claim only when its own claim-matrix cell has compatible raw paired
 samples. vLLM and MLX are never ranked as interchangeable cache
 implementations.
+
+## Private real-MLX experiment
+
+`llmtracefx-real-mlx-cache-audit` is the fail-closed Apple Silicon workflow.
+It never downloads a model. `compile` copies and re-verifies the pinned
+eight-file artifact in a private temporary snapshot, loads only its tokenizer,
+and privately freezes the exact 1025/769/513-token arrays.
+`calibrate` loads and verifies the committed eight-file conversion contract,
+requires two fresh-cache `CACHE_OK` outputs to match exactly, and writes a new
+calibrated workload. `replicate` runs one independent child-process unit:
+
+```console
+uv run llmtracefx-real-mlx-cache-audit compile --model-dir MODEL --output workload.json
+uv run llmtracefx-real-mlx-cache-audit calibrate --model-dir MODEL \
+  --workload workload.json --output calibrated.json
+uv run llmtracefx-real-mlx-cache-audit replicate --model-dir MODEL \
+  --workload calibrated.json --replicate-id replicate-0 --output-dir attempts/replicate-0
+```
+
+Run IDs `replicate-0` through `replicate-5` sequentially under an external
+90-minute parent-process boundary. Each is an independent unit; failed attempts
+are recorded with `record-failure`, never replaced. `aggregate` requires all six
+attempt directories and at least five complete runs. Verify the private
+aggregate first, then use `sanitize` to create the publishable
+`public_redacted` aggregate.
+
+Within each lifecycle, all cache-assisted requests finish before the independent
+fresh-cache correctness baselines run. Reported client timing sums only the
+runtime cache fetch and generation clocks; oracle work, stage collection,
+insertion, and baseline generation are excluded.
+
+Article claims may use only a verified compatible claim-matrix cell and its raw
+paired observations. A hit alone never proves saved work or latency; missing
+facts remain null. Token index 256 is an MLX KV allocation-step boundary, not a
+block-cache claim. These gates do not alter any synthetic-control claim.
