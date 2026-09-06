@@ -1,0 +1,31 @@
+{
+  "schema_version": "1",
+  "manifest_id": "qwen3-8b-vllm-kv-truth-source-manifest-v1",
+  "vllm_version": "0.28.0",
+  "vllm_commit": "2cf0a6915ce544dc493a0990f2ea38d81601128a",
+  "note": "This manifest fixes the exact set of vLLM 0.28.0 source files the live runtime-attestation identity receipt must independently hash and compare, at commit 2cf0a6915ce544dc493a0990f2ea38d81601128a, together with each file's expected upstream SHA-256 digest, fetched once (source fetch only; no provider/model/image access) from the pinned commit and recorded here so this offline validator can compare actual recomputed digests against real expected values -- never merely trust a caller-supplied matches_manifest boolean. This local, offline-installable validator enforces that the identity receipt's source_file_digests set covers exactly this fixed path list -- no missing critical surface and no unexplained extra entries -- and that every one of them recomputes to exactly its expected digest below.",
+  "critical_source_files": [
+    "vllm/config/cache.py",
+    "vllm/config/kv_events.py",
+    "vllm/distributed/kv_events.py",
+    "vllm/outputs.py",
+    "vllm/utils/hashing.py",
+    "vllm/v1/core/block_pool.py",
+    "vllm/v1/core/kv_cache_manager.py",
+    "vllm/v1/core/kv_cache_utils.py",
+    "vllm/v1/core/sched/scheduler.py",
+    "vllm/v1/metrics/stats.py"
+  ],
+  "critical_source_file_sha256": {
+    "vllm/config/cache.py": "8790351601be188ed1cc7ad9de2af1978b238269da4724873af1185c91165ef6",
+    "vllm/config/kv_events.py": "b1dbaee3e6830e381e9157fe3bab0d65c357da88ff7cdf8b1e4b3a4e75c82a87",
+    "vllm/distributed/kv_events.py": "1b3d156c647d94ba7bdaf065bfebdaef7bad9bffe9f0e7ebacea4a22a2da6ac9",
+    "vllm/outputs.py": "54c21778c544e78509420817ab53d7b91a2beec6d7ca11a65e32458dc2cf3058",
+    "vllm/utils/hashing.py": "89b4bd2bd246a5bfdcf00d766ea38a8182376aecfd6b6b7d5c47d96b1559243e",
+    "vllm/v1/core/block_pool.py": "ddee56dccb2208411b3a035918e917ce8f56a9858471e9ca12b420d5d79bc69c",
+    "vllm/v1/core/kv_cache_manager.py": "2d20c3d98845cfd8d88a2f66b8fc6402ea1fcfbee16879d2364a4a9e45b8fa47",
+    "vllm/v1/core/kv_cache_utils.py": "088f2201bee86fade694e78141b6e99a5cd0cdd23c5c7ab3526dd119f76e4aec",
+    "vllm/v1/core/sched/scheduler.py": "4b79ab760c3864af6838d555c01335deea3aac97c9be2be415fa0e5dab32f07e",
+    "vllm/v1/metrics/stats.py": "7682d3086bf5395f163f423677485432ee2c035aada2f370c0f82b291e53ca47"
+  }
+}
