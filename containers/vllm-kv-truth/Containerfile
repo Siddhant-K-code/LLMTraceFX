@@ -1,0 +1,29 @@
+FROM vllm/vllm-openai:v0.28.0@sha256:2286e8533ca8b6bc777594bae30524f1426ba46ca21797524e06df6a94b06635
+
+ARG RUNNER_COMMIT
+
+LABEL org.opencontainers.image.source="https://github.com/Siddhant-K-code/LLMTraceFX"
+LABEL org.opencontainers.image.revision="${RUNNER_COMMIT}"
+LABEL org.llmtracefx.protocol="qwen3-8b-vllm-kv-truth-v1"
+
+COPY . /opt/llmtracefx/source
+
+RUN python3 -c "import re,sys; value=sys.argv[1]; assert re.fullmatch(r'[0-9a-f]{40}', value)" "${RUNNER_COMMIT}" \
+    && printf '%s\n' "${RUNNER_COMMIT}" > /opt/llmtracefx/RUNNER_COMMIT \
+    && python3 -m pip install \
+        --disable-pip-version-check \
+        --force-reinstall \
+        --no-cache-dir \
+        --no-deps \
+        --no-index \
+        --no-build-isolation \
+        /opt/llmtracefx/source
+
+ENV HF_HUB_OFFLINE=1
+ENV TRANSFORMERS_OFFLINE=1
+ENV VLLM_NO_USAGE_STATS=1
+ENV VLLM_KV_EVENTS_USE_INT_BLOCK_HASHES=0
+ENV PYTHONHASHSEED=0
+
+WORKDIR /opt/llmtracefx/source
+ENTRYPOINT []

@@ -114,6 +114,7 @@ llmtracefx-dashboard = "llmtracefx.realtime_dashboard:main"
 llmtracefx-optimizer = "llmtracefx.optimizer.cli:main"
 llmtracefx-deploy = "llmtracefx.deploy.cli:main"
 llmtracefx-cloudrift = "llmtracefx.deploy.cloudrift_cli:main"
+llmtracefx-vllm-kv-truth = "vllm_kv_truth.cli:main"
 llmtracefx-m5-lab = "llmtracefx.optimizer.lab.cli:main"
 llmtracefx-m5-frontier = "llmtracefx.optimizer.lab.frontier:main"
 llmtracefx-m5-control = "llmtracefx.optimizer.lab.qwen3_8b.cli:main"
@@ -127,7 +128,7 @@ llmtracefx-cache-audit = "llmtracefx.cache_audit.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["llmtracefx*"]
+include = ["llmtracefx*", "vllm_kv_truth*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
@@ -137,6 +138,7 @@ llmtracefx = [
     "optimizer/lab/data/*.json",
     "optimizer/lab/qwen3_8b/data/*.json",
 ]
+vllm_kv_truth = ["data/*.json"]
 
 # Black configuration
 [tool.black]
