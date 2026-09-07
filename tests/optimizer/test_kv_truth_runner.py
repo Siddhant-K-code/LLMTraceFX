@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -586,6 +588,24 @@ def test_view_of_records_per_field_null_reason_for_a_missing_metrics_field() -> 
     assert "metrics_scheduled_ts_unavailable" in view.timing.null_reasons
 
 
+def test_view_of_records_null_reason_for_present_none_metrics_field() -> None:
+    metrics = type(
+        "Metrics",
+        (),
+        {
+            "queued_ts": None,
+            "scheduled_ts": 1.0,
+            "first_token_ts": 1.1,
+            "last_token_ts": 1.2,
+            "first_token_latency": 0.1,
+        },
+    )()
+    output = _real_shaped_output(num_cached_tokens=0, metrics=metrics)
+    view = runner._view_of(output)
+    assert view.timing.queued_ts is None
+    assert "metrics_queued_ts_unavailable" in view.timing.null_reasons
+
+
 def test_view_of_records_malformed_reason_for_a_non_numeric_metrics_field() -> None:
     metrics = type("Metrics", (), {"queued_ts": "not-a-number"})()
     output = _real_shaped_output(num_cached_tokens=0, metrics=metrics)
@@ -887,6 +907,48 @@ def test_verify_protocol_receipt_rejects_resealed_unknown_key(tmp_path: Path) ->
     output.write_text(runner.canonical_json(raw), encoding="utf-8")
     with pytest.raises(runner.KVTruthProtocolError, match="exact schema"):
         runner.verify_protocol_receipt(output)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda record: record.update(timing=None), "timing"),
+        (
+            lambda record: record["timing"].update(null_reasons=[]),
+            "null lacks a reason",
+        ),
+        (
+            lambda record: record.update(event_batches=[{}]),
+            "event batch",
+        ),
+    ],
+)
+def test_verify_protocol_receipt_rejects_resealed_malformed_nested_evidence(
+    tmp_path: Path,
+    mutation: Any,
+    message: str,
+) -> None:
+    result = runner.run_a_lane(_FakeEngine(cache_disabled=True))
+    output = tmp_path / "receipt.json"
+    raw = runner.build_protocol_receipt(result).to_dict()
+    mutation(raw["lane_result"]["records"][0])
+    raw["digest"] = runner.sha256_digest(
+        {key: value for key, value in raw.items() if key != "digest"}
+    )
+    output.write_text(runner.canonical_json(raw), encoding="utf-8")
+    with pytest.raises(runner.KVTruthProtocolError, match=message):
+        runner.verify_protocol_receipt(output)
+
+
+def test_runner_module_executes_its_cli() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-m", "vllm_kv_truth.runner", "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0
+    assert "qwen3-8b-vllm-kv-truth-v1" in completed.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -1888,7 +1950,7 @@ def test_real_engine_handle_rejects_missing_request_metrics(
 
     handle = runner._LLMEngineHandle(_MissingMetricsEngine())
     with pytest.raises(
-        runner.KVTruthProtocolError, match="omitted RequestOutput.metrics"
+        runner.KVTruthProtocolError, match="omitted or malformed RequestOutput.metrics"
     ):
         handle.generate_one("req-0", [1, 2, 3], {"temperature": 0.0})
 

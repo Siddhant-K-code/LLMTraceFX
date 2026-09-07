@@ -141,6 +141,15 @@ def _fixture_b_lane_records(*, cache_enabled: bool = True) -> tuple[Any, ...]:
             ),
             prompt_token_ids=probe.request_tokens,
             output_token_ids=(7, 8),
+            timing=runner_mod.RequestTiming(
+                queued_ts=1.0,
+                scheduled_ts=1.1,
+                first_token_ts=1.2,
+                last_token_ts=1.3,
+                first_token_latency=0.2,
+                finished_request_stats=None,
+                null_reasons=("finished_request_stats_unavailable",),
+            ),
         )
         for index, (request_id, probe) in enumerate(
             zip(ids, NESTED_PROBES, strict=True)
@@ -175,6 +184,15 @@ def _fixture_eviction_records() -> tuple[Any, ...]:
             ),
             prompt_token_ids=EVICTION_LANE_REQUESTS[index],
             output_token_ids=(7, 8),
+            timing=runner_mod.RequestTiming(
+                queued_ts=1.0,
+                scheduled_ts=1.1,
+                first_token_ts=1.2,
+                last_token_ts=1.3,
+                first_token_latency=0.2,
+                finished_request_stats=None,
+                null_reasons=("finished_request_stats_unavailable",),
+            ),
         )
         for index, request_id in enumerate(ids)
     ]

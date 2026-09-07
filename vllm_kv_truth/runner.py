@@ -26,6 +26,7 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
+import math
 import re
 import subprocess
 import sys
@@ -1220,7 +1221,9 @@ def _extract_timing(output: Any) -> RequestTiming:
                 continue
             raw = getattr(metrics, name)
             coerced = _coerce_optional_float(raw)
-            if raw is not None and coerced is None:
+            if raw is None:
+                null_reasons.append(f"metrics_{name}_unavailable")
+            elif coerced is None:
                 null_reasons.append(f"metrics_{name}_malformed")
             values[name] = coerced
     finished_request_stats = _extract_finished_request_stats(output, metrics)
@@ -1344,9 +1347,12 @@ class _LLMEngineHandle:
                 f"engine never produced a finished RequestOutput for " f"{request_id!r}"
             )
         view = _view_of(final_output)
-        if "metrics_unavailable" in view.timing.null_reasons:
+        if "metrics_unavailable" in view.timing.null_reasons or any(
+            reason.endswith("_malformed") for reason in view.timing.null_reasons
+        ):
             raise KVTruthProtocolError(
-                "vLLM omitted RequestOutput.metrics while request stats were enabled"
+                "vLLM omitted or malformed RequestOutput.metrics while request "
+                "stats were enabled"
             )
         return view
 
@@ -1451,7 +1457,7 @@ class LiveKVEventSubscriber:
 
     def start(self) -> None:
         try:
-            import zmq  # type: ignore[import-not-found]
+            import zmq
         except ImportError as exc:
             raise KVTruthProtocolError(
                 "zmq is not importable in this environment; refusing to "
@@ -1512,7 +1518,7 @@ class LiveKVEventSubscriber:
         """Decode one multipart message; returns ``False`` on the replay
         end-of-buffer sentinel, ``True`` otherwise."""
 
-        import msgspec  # type: ignore[import-not-found]
+        import msgspec
 
         if len(frames) != 3:
             raise KVTruthProtocolError(
@@ -2148,6 +2154,123 @@ def write_protocol_receipt(receipt: ProtocolReceipt, output: Path) -> None:
     atomic_write_text(output, canonical_json(receipt.to_dict()) + "\n")
 
 
+def _parse_receipt_event_batch(value: Any) -> LiveKVEventBatch:
+    expected_keys = {
+        "sequence",
+        "topic",
+        "ts",
+        "data_parallel_rank",
+        "events",
+    }
+    if not isinstance(value, dict) or set(value) != expected_keys:
+        raise KVTruthProtocolError(
+            "protocol receipt event batch does not match the exact schema"
+        )
+    try:
+        topic = value["topic"]
+        sequence = value["sequence"]
+        if (
+            not isinstance(topic, str)
+            or not isinstance(sequence, int)
+            or isinstance(sequence, bool)
+        ):
+            raise TypeError
+        return parse_live_kv_event_batch(
+            topic.encode("utf-8"),
+            sequence.to_bytes(8, "big"),
+            [value["ts"], value["events"], value["data_parallel_rank"]],
+        )
+    except (KeyError, OverflowError, TypeError, ValueError) as exc:
+        raise KVTruthProtocolError("protocol receipt event batch is malformed") from exc
+
+
+def _validate_receipt_timing(value: Any) -> None:
+    timing_fields = {
+        "queued_ts",
+        "scheduled_ts",
+        "first_token_ts",
+        "last_token_ts",
+        "first_token_latency",
+    }
+    expected_keys = {
+        *timing_fields,
+        "finished_request_stats",
+        "null_reasons",
+    }
+    if not isinstance(value, dict) or set(value) != expected_keys:
+        raise KVTruthProtocolError(
+            "protocol receipt request timing does not match the exact schema"
+        )
+    null_reasons = value["null_reasons"]
+    if (
+        not isinstance(null_reasons, list)
+        or not all(isinstance(reason, str) for reason in null_reasons)
+        or len(set(null_reasons)) != len(null_reasons)
+        or "metrics_unavailable" in null_reasons
+        or any(reason.endswith("_malformed") for reason in null_reasons)
+    ):
+        raise KVTruthProtocolError("protocol receipt request timing is malformed")
+    allowed_reasons = {
+        *(f"metrics_{field}_unavailable" for field in timing_fields),
+        "finished_request_stats_unavailable",
+    }
+    if not set(null_reasons) <= allowed_reasons:
+        raise KVTruthProtocolError(
+            "protocol receipt request timing has an unknown null reason"
+        )
+    for field_name in timing_fields:
+        field_value = value[field_name]
+        reason = f"metrics_{field_name}_unavailable"
+        if field_value is None:
+            if reason not in null_reasons:
+                raise KVTruthProtocolError(
+                    "protocol receipt request timing null lacks a reason"
+                )
+        elif (
+            isinstance(field_value, bool)
+            or not isinstance(field_value, (int, float))
+            or not math.isfinite(float(field_value))
+            or float(field_value) < 0
+            or reason in null_reasons
+        ):
+            raise KVTruthProtocolError(
+                "protocol receipt request timing field is malformed"
+            )
+    ordered_timestamps = [
+        value[field]
+        for field in ("queued_ts", "scheduled_ts", "first_token_ts", "last_token_ts")
+        if value[field] is not None
+    ]
+    if ordered_timestamps != sorted(ordered_timestamps):
+        raise KVTruthProtocolError(
+            "protocol receipt request timing chronology is invalid"
+        )
+    stats = value["finished_request_stats"]
+    stats_reason = "finished_request_stats_unavailable"
+    if stats is None:
+        if stats_reason not in null_reasons:
+            raise KVTruthProtocolError(
+                "protocol receipt finished-request stats null lacks a reason"
+            )
+    elif (
+        not isinstance(stats, dict)
+        or not stats
+        or stats_reason in null_reasons
+        or any(
+            not isinstance(name, str)
+            or not (name.endswith("_time") or name.endswith("_duration"))
+            or isinstance(stat_value, bool)
+            or not isinstance(stat_value, (int, float))
+            or not math.isfinite(float(stat_value))
+            or float(stat_value) < 0
+            for name, stat_value in stats.items()
+        )
+    ):
+        raise KVTruthProtocolError(
+            "protocol receipt finished-request stats are malformed"
+        )
+
+
 def _validate_lane_result_payload(lane: str, value: Any) -> None:
     if not isinstance(value, dict):
         raise KVTruthProtocolError("protocol receipt lane_result is not an object")
@@ -2173,14 +2296,7 @@ def _validate_lane_result_payload(lane: str, value: Any) -> None:
     ):
         raise KVTruthProtocolError("protocol receipt lane_result fields are malformed")
 
-    parsed_reset = [
-        parse_live_kv_event_batch(
-            batch["topic"].encode("utf-8"),
-            int(batch["sequence"]).to_bytes(8, "big"),
-            [batch["ts"], batch["events"], batch["data_parallel_rank"]],
-        )
-        for batch in reset_batches
-    ]
+    parsed_reset = [_parse_receipt_event_batch(batch) for batch in reset_batches]
     if lane == "A":
         if parsed_reset or reset_reasons:
             raise KVTruthProtocolError("A lane must not contain a reset event boundary")
@@ -2232,6 +2348,7 @@ def _validate_lane_result_payload(lane: str, value: Any) -> None:
         output_ids = record["output_token_ids"]
         reasons = record["boundary_reasons"]
         batches = record["event_batches"]
+        _validate_receipt_timing(record["timing"])
         if (
             not isinstance(prompt_ids, list)
             or not all(
@@ -2252,14 +2369,7 @@ def _validate_lane_result_payload(lane: str, value: Any) -> None:
             or not isinstance(batches, list)
         ):
             raise KVTruthProtocolError("protocol receipt request record is malformed")
-        parsed_batches = [
-            parse_live_kv_event_batch(
-                batch["topic"].encode("utf-8"),
-                int(batch["sequence"]).to_bytes(8, "big"),
-                [batch["ts"], batch["events"], batch["data_parallel_rank"]],
-            )
-            for batch in batches
-        ]
+        parsed_batches = [_parse_receipt_event_batch(batch) for batch in batches]
         if lane == "A":
             if parsed_batches or record["num_cached_tokens"] is not None:
                 raise KVTruthProtocolError(
@@ -2621,3 +2731,7 @@ __all__ = [
     "verify_protocol_receipt",
     "write_protocol_receipt",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
