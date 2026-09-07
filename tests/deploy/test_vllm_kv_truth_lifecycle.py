@@ -911,7 +911,11 @@ class FakeCommandRunner:
             local_path.write_bytes(self.scp_download_target_bytes)
             return lifecycle.CommandResult(returncode=0, stdout="", stderr="")
         if description == "stage_teardown_cleanup":
-            stdout = "RESIDUAL_CONTAINERS=0\nRESIDUAL_GPU_PROCESSES=0\n"
+            stdout = (
+                "RESIDUAL_CONTAINERS=0\n"
+                "RESIDUAL_GPU_PROCESSES=0\n"
+                "SHUTDOWN_ISSUED=1\n"
+            )
             return lifecycle.CommandResult(returncode=0, stdout=stdout, stderr="")
         return lifecycle.CommandResult(returncode=0, stdout="", stderr="")
 
@@ -970,7 +974,6 @@ class TestRemoteOrchestratorFullRun:
         assert "stage_eviction_lane" in descriptions
         assert "stage_transfer_evidence_archive" in descriptions
         assert "stage_teardown_cleanup" in descriptions
-        assert "stage_teardown_shutdown" in descriptions
 
         # The private/public evidence bundle wiring actually ran: a private
         # bundle with a real teardown receipt and a portably-verifiable
@@ -1237,9 +1240,50 @@ class TestRemoteOrchestratorFullRun:
         assert "-f containers/vllm-kv-truth/Containerfile" in script
         assert f"--build-arg RUNNER_COMMIT={VALID_HEAD}" in script
         assert "--network none" in script
+        authorized_archive_digest = (
+            orchestrator.authorization.derived_image_source_digest.removeprefix(
+                "sha256:"
+            )
+        )
+        assert authorized_archive_digest in script
         assert "COPY" not in script
         assert f"{orchestrator.paths.model_dir}:/model" not in script
         assert orchestrator.derived_image_id == DERIVED_IMAGE_ID
+
+    def test_image_build_rechecks_remote_archive_against_authorization_digest(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        config = _config(tmp_path)
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=config,
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_identity_gate()
+        config.local_runner_archive.write_bytes(
+            config.local_runner_archive.read_bytes() + b"replaced-after-upload"
+        )
+        replaced_digest = hashlib.sha256(
+            config.local_runner_archive.read_bytes()
+        ).hexdigest()
+
+        orchestrator.stage_image_preparation()
+
+        image_call = next(
+            call
+            for call in runner.calls
+            if call.description == "stage_image_preparation"
+        )
+        script = image_call.input_text or ""
+        authorized_digest = (
+            orchestrator.authorization.derived_image_source_digest.removeprefix(
+                "sha256:"
+            )
+        )
+        assert authorized_digest in script
+        assert replaced_digest not in script
 
     def test_teardown_only_targets_run_scoped_label(self, tmp_path: Path) -> None:
         runner = FakeCommandRunner()
@@ -1265,6 +1309,10 @@ class TestRemoteOrchestratorFullRun:
         assert f"rm -rf {orchestrator.paths.hf_scratch_dir}" in script
         assert f"rm -rf {orchestrator.paths.repo_dir}" in script
         assert f"rm -f {orchestrator.paths.source_archive_remote_path}" in script
+        assert "sudo -n shutdown -h +1" in script
+        assert script.index("authorized_keys") < script.index(
+            "sudo -n shutdown -h +1", script.index("authorized_keys")
+        )
         assert (
             "docker ps -q" not in script.replace("docker ps -q --filter", "PLACEHOLDER")
             or "--filter" in script
@@ -1382,7 +1430,6 @@ class TestRemoteOrchestratorFullRun:
         assert failed_receipt["reserved_minutes"] >= 35
         descriptions = [call.description for call in runner.calls]
         assert "stage_teardown_cleanup" in descriptions
-        assert "stage_teardown_shutdown" in descriptions
         cleanup = next(
             call
             for call in runner.calls
@@ -1406,9 +1453,8 @@ class TestRemoteOrchestratorFullRun:
             orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
         descriptions = {call.description for call in runner.calls}
         assert "stage_teardown_cleanup" in descriptions
-        assert "stage_teardown_shutdown" in descriptions
 
-    def test_teardown_attempts_shutdown_when_cleanup_fails(
+    def test_teardown_attempts_shutdown_in_same_session_when_cleanup_fails(
         self, tmp_path: Path
     ) -> None:
         runner = FakeCommandRunner(fail_stages=frozenset({"stage_teardown_cleanup"}))
@@ -1422,8 +1468,69 @@ class TestRemoteOrchestratorFullRun:
             orchestrator.stage_teardown(tmp_path / "bundle")
         descriptions = {call.description for call in runner.calls}
         assert "stage_teardown_cleanup" in descriptions
-        assert "stage_teardown_shutdown" in descriptions
+        cleanup = next(
+            call
+            for call in runner.calls
+            if call.description == "stage_teardown_cleanup"
+        )
+        assert "finish_teardown" in (cleanup.input_text or "")
+        assert "sudo -n shutdown -h +1" in (cleanup.input_text or "")
         assert orchestrator.state == lifecycle.OrchestratorState.TEARDOWN
+
+    def test_teardown_reports_shutdown_failure_from_same_session(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner(
+            responses={
+                "stage_teardown_cleanup": lifecycle.CommandResult(
+                    returncode=1,
+                    stdout="",
+                    stderr="LLMTRACEFX_REASON=teardown_shutdown_failed\n",
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="teardown_shutdown_failed",
+        ):
+            orchestrator.stage_teardown(tmp_path / "bundle")
+
+    def test_teardown_refuses_missing_shutdown_marker_with_receipt(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner(
+            responses={
+                "stage_teardown_cleanup": lifecycle.CommandResult(
+                    returncode=0,
+                    stdout="RESIDUAL_CONTAINERS=0\nRESIDUAL_GPU_PROCESSES=0\n",
+                    stderr="",
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="teardown_shutdown_failed",
+        ):
+            orchestrator.stage_teardown(tmp_path / "bundle")
+        receipt = json.loads(
+            orchestrator.operation_receipt_path.read_text(
+                encoding="utf-8"
+            ).splitlines()[-1]
+        )
+        assert receipt["substage"] == "verify_cleanup_shutdown"
+        assert receipt["reason_code"] == "teardown_shutdown_failed"
 
     def test_teardown_still_runs_on_keyboard_interrupt(self, tmp_path: Path) -> None:
         class _InterruptingRunner(FakeCommandRunner):
@@ -1453,6 +1560,51 @@ class TestRemoteOrchestratorFullRun:
         )
         with pytest.raises(KeyboardInterrupt):
             orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        descriptions = {call.description for call in runner.calls}
+        assert "stage_teardown_cleanup" in descriptions
+
+    def test_teardown_still_runs_on_sigterm(self, tmp_path: Path) -> None:
+        installed_handlers: dict[int, object] = {}
+
+        def fake_signal(signum: int, handler: object) -> object:
+            installed_handlers[signum] = handler
+            return lifecycle.signal.SIG_DFL
+
+        class _TerminatingRunner(FakeCommandRunner):
+            def run(
+                self,
+                argv: Sequence[str],
+                *,
+                description: str,
+                timeout: float,
+                input_text: str | None = None,
+            ) -> lifecycle.CommandResult:
+                if description == "stage_canary":
+                    handler = installed_handlers[lifecycle.signal.SIGTERM]
+                    assert callable(handler)
+                    handler(lifecycle.signal.SIGTERM, None)
+                return super().run(
+                    argv,
+                    description=description,
+                    timeout=timeout,
+                    input_text=input_text,
+                )
+
+        runner = _TerminatingRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(lifecycle.signal, "getsignal", lambda _signum: None)
+            monkeypatch.setattr(lifecycle.signal, "signal", fake_signal)
+            with pytest.raises(
+                lifecycle.HostOrchestrationError,
+                match="run/signal: run_interrupted",
+            ):
+                orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
         descriptions = {call.description for call in runner.calls}
         assert "stage_teardown_cleanup" in descriptions
 
@@ -1805,7 +1957,10 @@ class TestRemoteOrchestratorFullRun:
             runner=runner,
             now_fn=lambda: BILLING_STARTED_AT,
         )
-        with pytest.raises(lifecycle.HostOrchestrationError, match="does not match"):
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="evidence_download_failed",
+        ):
             orchestrator.stage_transfer_evidence(tmp_path / "bundle")
 
     def test_transfer_evidence_rejects_tampered_lane_receipt(
@@ -1836,7 +1991,8 @@ class TestRemoteOrchestratorFullRun:
             now_fn=lambda: BILLING_STARTED_AT,
         )
         with pytest.raises(
-            lifecycle.HostOrchestrationError, match="failed local verification"
+            lifecycle.HostOrchestrationError,
+            match="evidence_download_failed",
         ):
             orchestrator.stage_transfer_evidence(tmp_path / "bundle")
 
@@ -1862,7 +2018,8 @@ class TestRemoteOrchestratorFullRun:
             now_fn=lambda: BILLING_STARTED_AT,
         )
         with pytest.raises(
-            lifecycle.HostOrchestrationError, match="failed local verification"
+            lifecycle.HostOrchestrationError,
+            match="evidence_download_failed",
         ):
             orchestrator.stage_transfer_evidence(tmp_path / "bundle")
 
@@ -1882,8 +2039,42 @@ class TestRemoteOrchestratorFullRun:
             runner=runner,
             now_fn=lambda: BILLING_STARTED_AT,
         )
-        with pytest.raises(lifecycle.HostOrchestrationError, match="unsafe member"):
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="evidence_download_failed",
+        ):
             orchestrator.stage_transfer_evidence(tmp_path / "bundle")
+
+    def test_transfer_evidence_rejects_empty_digest_with_receipt(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner(
+            responses={
+                "stage_transfer_evidence_digest": lifecycle.CommandResult(
+                    returncode=0,
+                    stdout="",
+                    stderr="",
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="evidence_digest_failed",
+        ):
+            orchestrator.stage_transfer_evidence(tmp_path / "bundle")
+        receipt = json.loads(
+            orchestrator.operation_receipt_path.read_text(
+                encoding="utf-8"
+            ).splitlines()[-1]
+        )
+        assert receipt["substage"] == "verify_remote_digest"
+        assert receipt["reason_code"] == "evidence_digest_failed"
 
     def test_teardown_skips_finalization_when_transfer_never_ran(
         self, tmp_path: Path
@@ -1909,7 +2100,11 @@ class TestRemoteOrchestratorFullRun:
             responses={
                 "stage_teardown_cleanup": lifecycle.CommandResult(
                     returncode=0,
-                    stdout="RESIDUAL_CONTAINERS=1\nRESIDUAL_GPU_PROCESSES=0\n",
+                    stdout=(
+                        "RESIDUAL_CONTAINERS=1\n"
+                        "RESIDUAL_GPU_PROCESSES=0\n"
+                        "SHUTDOWN_ISSUED=1\n"
+                    ),
                     stderr="",
                 )
             }
@@ -1920,7 +2115,10 @@ class TestRemoteOrchestratorFullRun:
             runner=runner,
             now_fn=lambda: BILLING_STARTED_AT,
         )
-        with pytest.raises(lifecycle.HostOrchestrationError, match="residual"):
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="teardown_cleanup_failed",
+        ):
             orchestrator.stage_teardown(tmp_path / "bundle")
 
     def test_a_failed_remote_stage_raises_without_leaking_stderr(

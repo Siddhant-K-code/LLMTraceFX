@@ -200,7 +200,7 @@ model_download_interface_missing, model_download_version_mismatch,
 model_download_failed, model_inventory_mismatch, canary_failed,
 pair_lane_failed, eviction_lane_failed, evidence_archive_failed,
 evidence_digest_failed, evidence_download_failed,
-teardown_cleanup_failed, teardown_shutdown_failed
+run_interrupted, teardown_cleanup_failed, teardown_shutdown_failed
 ```
 
 Successful acquisition also writes a private schema-1
@@ -209,9 +209,15 @@ image ID, explicit network mode, run label, downloader package/version/
 interface/source, exact model revision, and verified inventory totals.
 
 The terminal reports `stage/substage`, reason code, and the corresponding safe
-message. Teardown still runs after any failure. `SAFE TO TERMINATE INSTANCE
+message. Once trusted configuration and authorization have been loaded and
+lifecycle execution begins, teardown still runs after any stage failure or
+SIGTERM/SIGHUP. Input or signature rejection happens before all remote
+activity and therefore before lifecycle teardown. `SAFE TO TERMINATE INSTANCE
 NOW` retains its existing meaning and is emitted only after scoped cleanup,
 temporary-key removal, zero-residual checks, and shutdown issuance succeed.
+Shutdown is scheduled from the same authenticated SSH session that removes
+the temporary key, so key removal cannot prevent the shutdown command from
+being issued.
 
 ## 7. Evidence and termination
 

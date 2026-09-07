@@ -42,10 +42,10 @@ the delegated task's hard requirements):
 5. Every GPU-lane container runs with ``--network none``, the fixed offline
    environment, and a run-scoped Docker label so teardown can find and stop
    *only* this run's containers -- never every container on the host.
-6. Teardown always runs, in a fixed order, transferring and locally
-   verifying evidence *before* any remote deletion, and never issues an
-   unscoped ``rm -rf`` or ``docker rm``/``docker stop`` against unvalidated
-   input.
+6. Once lifecycle execution begins, teardown runs in a fixed order,
+   transferring and locally verifying evidence *before* any remote deletion,
+   and never issues an unscoped ``rm -rf`` or ``docker rm``/``docker stop``
+   against unvalidated input.
 
 The in-container runner generates its own identity receipt and runtime
 attestation from installed package/source/model/GPU state. This host module
@@ -62,6 +62,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import stat
 import subprocess
 import tarfile
@@ -1163,6 +1164,10 @@ _SAFE_REASON_MESSAGES: dict[str, tuple[str, str]] = {
         "evidence_transfer",
         "the evidence archive transfer failed",
     ),
+    "run_interrupted": (
+        "interruption",
+        "the coordinator received a termination signal",
+    ),
     "teardown_cleanup_failed": (
         "teardown",
         "scoped remote cleanup or key removal failed",
@@ -1819,6 +1824,8 @@ class RemoteOrchestrator:
                 input_text=input_text,
             )
         except HostOrchestrationError as exc:
+            if exc.reason_code == "run_interrupted":
+                raise
             result = CommandResult(
                 returncode=-1,
                 stdout="",
@@ -1869,20 +1876,25 @@ class RemoteOrchestrator:
         substage: str,
         description: str,
         reason_code: str,
-        reserve_stage: str,
+        reserve_stage: str | None,
     ) -> NoReturn:
         category, message = _SAFE_REASON_MESSAGES[reason_code]
+        reserved_minutes = (
+            CLEANUP_RESERVE_MINUTES
+            if reserve_stage is None
+            else remaining_reserve_minutes(stage_index(reserve_stage))
+        )
         self.operation_receipts.append(
             OperationReceipt(
                 stage=stage,
                 substage=substage,
                 command_description=description,
-                return_code=0,
+                return_code=-1,
                 timed_out=False,
                 stderr_category=category,
                 stderr_message=message,
                 reason_code=reason_code,
-                reserved_minutes=remaining_reserve_minutes(stage_index(reserve_stage)),
+                reserved_minutes=reserved_minutes,
             )
         )
         self._persist_operation_receipts()
@@ -2189,10 +2201,9 @@ class RemoteOrchestrator:
                 reason_code="image_preparation_failed",
                 reserve_stage=reserve_stage,
             )
-        archive_bytes, _ = read_runner_archive_commit_marker(
-            self.config.local_runner_archive
-        )
-        local_archive_digest = hashlib.sha256(archive_bytes).hexdigest()
+        authorized_archive_digest = self.authorization.derived_image_source_digest[
+            len("sha256:") :
+        ]
 
         script = "\n".join(
             [
@@ -2207,7 +2218,7 @@ class RemoteOrchestrator:
                 f"echo BASE_IMAGE_ID=$(docker image inspect "
                 f"{_quote(BASE_IMAGE_REFERENCE)} "
                 '--format "{{.Id}}")',
-                f"echo {_quote(local_archive_digest)}  "
+                f"echo {_quote(authorized_archive_digest)}  "
                 f"{_quote(self.paths.source_archive_remote_path)} | sha256sum -c -",
                 f"rm -rf {_quote(self.paths.repo_dir)}",
                 f"mkdir -p {_quote(self.paths.repo_dir)}",
@@ -2776,10 +2787,23 @@ class RemoteOrchestrator:
             reserve_stage="private_verify_redact_report_export",
             input_text=None,
         )
-        remote_digest = digest_result.stdout.split()[0].strip()
+        digest_fields = digest_result.stdout.split()
+        if not digest_fields:
+            self._local_failure(
+                stage="evidence_transfer",
+                substage="verify_remote_digest",
+                description="stage_transfer_evidence_digest_verify",
+                reason_code="evidence_digest_failed",
+                reserve_stage="private_verify_redact_report_export",
+            )
+        remote_digest = digest_fields[0].strip()
         if _SHA256_HEX.fullmatch(remote_digest) is None:
-            raise HostOrchestrationError(
-                "remote evidence archive digest output was malformed"
+            self._local_failure(
+                stage="evidence_transfer",
+                substage="verify_remote_digest",
+                description="stage_transfer_evidence_digest_verify",
+                reason_code="evidence_digest_failed",
+                reserve_stage="private_verify_redact_report_export",
             )
         local_bundle_dir.mkdir(parents=True, exist_ok=True)
         local_tar = local_bundle_dir / "evidence.tar"
@@ -2793,18 +2817,42 @@ class RemoteOrchestrator:
             reserve_stage="private_verify_redact_report_export",
             input_text=None,
         )
-        local_bytes = local_tar.read_bytes()
+        try:
+            local_bytes = read_bounded_regular_bytes(
+                local_tar,
+                MAX_SOURCE_ARCHIVE_BYTES,
+            )
+        except (ArtifactReadError, OSError):
+            self._local_failure(
+                stage="evidence_transfer",
+                substage="read_downloaded_archive",
+                description="stage_transfer_evidence_local_read",
+                reason_code="evidence_download_failed",
+                reserve_stage="private_verify_redact_report_export",
+            )
         local_digest = hashlib.sha256(local_bytes).hexdigest()
         if local_digest != remote_digest:
-            raise HostOrchestrationError(
-                "locally verified evidence archive digest does not match the "
-                "digest computed on the remote host before transfer"
+            self._local_failure(
+                stage="evidence_transfer",
+                substage="verify_downloaded_digest",
+                description="stage_transfer_evidence_local_digest_verify",
+                reason_code="evidence_download_failed",
+                reserve_stage="private_verify_redact_report_export",
             )
         raw_evidence_dir = local_bundle_dir / "raw_evidence"
-        extract_safe_tar(local_bytes, raw_evidence_dir)
-        claim_matrix, lane_receipts = self._build_claim_matrix_and_lane_receipts(
-            raw_evidence_dir / "evidence"
-        )
+        try:
+            extract_safe_tar(local_bytes, raw_evidence_dir)
+            claim_matrix, lane_receipts = self._build_claim_matrix_and_lane_receipts(
+                raw_evidence_dir / "evidence"
+            )
+        except (ArtifactReadError, HostOrchestrationError, OSError, tarfile.TarError):
+            self._local_failure(
+                stage="evidence_transfer",
+                substage="verify_downloaded_archive",
+                description="stage_transfer_evidence_local_archive_verify",
+                reason_code="evidence_download_failed",
+                reserve_stage="private_verify_redact_report_export",
+            )
         private_bundle = evidence.PrivateEvidenceBundle(
             run_mode=evidence.RUN_MODE_REAL_RUN,
             experiment_nonce=self.authorization.nonce,
@@ -2870,6 +2918,26 @@ class RemoteOrchestrator:
         script = "\n".join(
             [
                 "set -eu",
+                "reason=teardown_cleanup_failed",
+                "shutdown_attempted=0",
+                "finish_teardown() {",
+                "  status=$?",
+                "  trap - EXIT",
+                '  if [ "$shutdown_attempted" -eq 0 ]; then',
+                "    shutdown_attempted=1",
+                "    if sudo -n shutdown -h +1; then",
+                '      echo "SHUTDOWN_ISSUED=1"',
+                "    else",
+                '      echo "LLMTRACEFX_REASON=teardown_shutdown_failed" >&2',
+                "      exit 1",
+                "    fi",
+                "  fi",
+                '  if [ "$status" -ne 0 ]; then',
+                '    echo "LLMTRACEFX_REASON=$reason" >&2',
+                "  fi",
+                '  exit "$status"',
+                "}",
+                "trap finish_teardown EXIT",
                 f"docker ps -q --filter {_quote(label_filter)} | "
                 "xargs -r docker stop",
                 f"docker ps -aq --filter {_quote(label_filter)} | "
@@ -2901,46 +2969,40 @@ class RemoteOrchestrator:
                 '2>/dev/null | sed "/^[[:space:]]*$/d" | wc -l)"',
                 f"if [ -d {_quote(self.config.remote_workspace)} ]; then "
                 f"rmdir {_quote(self.config.remote_workspace)}; fi",
+                "reason=teardown_shutdown_failed",
+                "shutdown_attempted=1",
+                "sudo -n shutdown -h +1",
+                'echo "SHUTDOWN_ISSUED=1"',
+                "trap - EXIT",
             ]
         )
-        cleanup_error: BaseException | None = None
-        residual_containers = 0
-        residual_gpu_processes = 0
+        result = self._checked(
+            self.ssh_options.ssh_command("bash -s"),
+            stage="teardown",
+            substage="cleanup_key_removal_shutdown",
+            description="stage_teardown_cleanup",
+            timeout=300,
+            default_reason="teardown_cleanup_failed",
+            reserve_stage=None,
+            input_text=script,
+        )
         try:
-            result = self._checked(
-                self.ssh_options.ssh_command("bash -s"),
-                stage="teardown",
-                substage="cleanup_key_removal",
-                description="stage_teardown_cleanup",
-                timeout=300,
-                default_reason="teardown_cleanup_failed",
-                reserve_stage=None,
-                input_text=script,
-            )
             residual_containers, residual_gpu_processes = self._verify_teardown_output(
                 result.stdout
             )
-        except BaseException as exc:
-            cleanup_error = exc
-        try:
-            self._checked(
-                self.ssh_options.ssh_command("sudo -n shutdown -h now"),
-                stage="teardown",
-                substage="shutdown",
-                description="stage_teardown_shutdown",
-                timeout=30,
-                default_reason="teardown_shutdown_failed",
-                reserve_stage=None,
-                input_text=None,
+        except (HostOrchestrationError, ValueError):
+            reason_code = (
+                "teardown_shutdown_failed"
+                if "SHUTDOWN_ISSUED=1" not in result.stdout.splitlines()
+                else "teardown_cleanup_failed"
             )
-        except BaseException as exc:
-            if cleanup_error is not None:
-                raise HostOrchestrationError(
-                    "teardown cleanup failed and shutdown could not be issued"
-                ) from exc
-            raise
-        if cleanup_error is not None:
-            raise cleanup_error
+            self._local_failure(
+                stage="teardown",
+                substage="verify_cleanup_shutdown",
+                description="stage_teardown_verify",
+                reason_code=reason_code,
+                reserve_stage=None,
+            )
         self._finalize_evidence_bundle(
             local_bundle_dir,
             residual_containers=residual_containers,
@@ -2957,11 +3019,16 @@ class RemoteOrchestrator:
             for line in stdout.splitlines()
             if "=" in line
             and line.split("=", 1)[0]
-            in {"RESIDUAL_CONTAINERS", "RESIDUAL_GPU_PROCESSES"}
+            in {
+                "RESIDUAL_CONTAINERS",
+                "RESIDUAL_GPU_PROCESSES",
+                "SHUTDOWN_ISSUED",
+            }
         )
         if (
             "RESIDUAL_CONTAINERS" not in markers
             or "RESIDUAL_GPU_PROCESSES" not in markers
+            or markers.get("SHUTDOWN_ISSUED") != "1"
         ):
             raise HostOrchestrationError(
                 "teardown residual-state check produced no parsable markers"
@@ -2984,6 +3051,26 @@ class RemoteOrchestrator:
         """Execute every stage in order; teardown always runs in ``finally``,
         even if an earlier stage raised or the process is interrupted."""
 
+        installed_handlers: dict[int, Any] = {}
+
+        def handle_termination(signum: int, _frame: Any) -> NoReturn:
+            raise HostOrchestrationError(
+                "the coordinator received a termination signal",
+                stage="run",
+                substage="signal",
+                reason_code="run_interrupted",
+            )
+
+        for signal_name in ("SIGTERM", "SIGHUP"):
+            signum = getattr(signal, signal_name, None)
+            if signum is None:
+                continue
+            try:
+                installed_handlers[signum] = signal.getsignal(signum)
+                signal.signal(signum, handle_termination)
+            except (OSError, ValueError):
+                installed_handlers.pop(signum, None)
+
         try:
             self.stage_preflight()
             self.stage_identity_gate()
@@ -3000,5 +3087,11 @@ class RemoteOrchestrator:
             self._record("run", False, detail=type(exc).__name__)
             raise
         finally:
-            self.stage_teardown(local_evidence_bundle_dir)
+            for signum in installed_handlers:
+                signal.signal(signum, signal.SIG_IGN)
+            try:
+                self.stage_teardown(local_evidence_bundle_dir)
+            finally:
+                for signum, previous_handler in installed_handlers.items():
+                    signal.signal(signum, previous_handler)
         return tuple(self.outcomes)
