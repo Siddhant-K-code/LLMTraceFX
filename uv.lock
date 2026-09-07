@@ -1379,7 +1379,7 @@ requires-dist = [
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.22.0" },
     { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'mlx'", specifier = "==0.32.2" },
     { name = "mlx-lm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'mlx'", specifier = "==0.31.3" },
-    { name = "mlx-vlm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'mlx'", specifier = "==0.6.8" },
+    { name = "mlx-vlm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'mlx'", specifier = "==0.6.17" },
     { name = "modal", marker = "extra == 'modal'", specifier = ">=1.0.5" },
     { name = "modal", marker = "extra == 'modal-l4-execute'", specifier = "==1.5.5" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.5.0" },
@@ -1724,7 +1724,7 @@ wheels = [
 
 [[package]]
 name = "mlx-vlm"
-version = "0.6.8"
+version = "0.6.17"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi" },
@@ -1732,20 +1732,21 @@ dependencies = [
     { name = "miniaudio" },
     { name = "mlx" },
     { name = "mlx-audio" },
-    { name = "mlx-lm" },
     { name = "numpy" },
     { name = "opencv-python" },
     { name = "pillow" },
     { name = "python-multipart" },
     { name = "requests" },
+    { name = "sentencepiece" },
     { name = "starlette" },
     { name = "tqdm" },
     { name = "transformers" },
     { name = "uvicorn" },
+    { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6b/a3/8ee5bbc0c32a061bda3fe17873f81d7b85c7fe2ceb39daacccb1caad7671/mlx_vlm-0.6.8.tar.gz", hash = "sha256:acbd4f2652a61e71c0942177b9570331d3ed2d654c4f60f4e356680721bc09c2", size = 1654754, upload-time = "2026-07-27T19:33:51.704Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c5/a1/4b21ea85918e5223144bbe80cb649f5953c105ea440f0eba45dd00a5b863/mlx_vlm-0.6.17.tar.gz", hash = "sha256:5e4ff5426af093b3cf41b4e5e33c272db82fa33000cb3c36a1aab9e218ad7ee7", size = 2043597, upload-time = "2026-08-26T17:08:38.01Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/63/6d/8ce3e2874e98e2e9b1a1d0331d5766a916bf63031ef9857ba76ed630d22a/mlx_vlm-0.6.8-py3-none-any.whl", hash = "sha256:5250c8245076e576274009b3c6c9ecd6672c686aeede5ed03e9b61ee836dac4f", size = 2090215, upload-time = "2026-07-27T19:33:50.196Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/42/f275566dba66b54c21e039344c4fb90fd3a3749fc251754545249b45dc8d/mlx_vlm-0.6.17-py3-none-any.whl", hash = "sha256:d24723244ef89b2a6140bec45e38c078689ea89450edfc0e348ad149f5af3b1c", size = 2590205, upload-time = "2026-08-26T17:08:36.148Z" },
 ]
 
 [[package]]
