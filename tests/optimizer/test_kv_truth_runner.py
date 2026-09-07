@@ -2069,8 +2069,6 @@ def _install_fake_zmq_module(
     import sys
     import types
 
-    import cbor2
-
     _FakeZmqContext._instance = None
     context = _FakeZmqContext()
 
@@ -2084,7 +2082,7 @@ def _install_fake_zmq_module(
 
     msgspec_module = types.ModuleType("msgspec")
     msgpack_module = types.ModuleType("msgspec.msgpack")
-    msgpack_module.decode = lambda data: cbor2.loads(data)  # type: ignore[attr-defined]
+    msgpack_module.decode = lambda data: json.loads(data)  # type: ignore[attr-defined]
     msgspec_module.msgpack = msgpack_module  # type: ignore[attr-defined]
 
     monkeypatch.setitem(sys.modules, "zmq", zmq_module)
@@ -2116,11 +2114,9 @@ def _encode_batch_payload(
     exercising the default-rank case a real batch produces when published
     from the default data-parallel rank."""
 
-    import cbor2
-
     if data_parallel_rank is None:
-        return cbor2.dumps([float(sequence), []])
-    return cbor2.dumps([float(sequence), [], data_parallel_rank])
+        return json.dumps([float(sequence), []]).encode()
+    return json.dumps([float(sequence), [], data_parallel_rank]).encode()
 
 
 def test_live_kv_event_subscriber_refuses_non_loopback_endpoints() -> None:
