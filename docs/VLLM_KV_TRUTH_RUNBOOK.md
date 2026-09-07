@@ -56,6 +56,9 @@ Before GO, perform only the coordinator-approved read-only preflight: boot
 time, UTC clock, one GPU, GPU name/memory/driver/compute capability, zero GPU
 processes, zero containers, zero swap, RAM, disk, Python 3.12, Docker, and
 noninteractive sudo. Do not download the model or image during preflight.
+The vanilla host does **not** need `huggingface-cli`, `hf`, `pip`, or `uv`.
+Model acquisition is deliberately unavailable until the derived image has
+passed its downloader attestation.
 
 ## 3. Write protected execution config
 
@@ -86,6 +89,9 @@ The authorization must bind:
 - the exact merged repository head and `sha256:<archive digest>`;
 - protocol, digest-pinned base image, vLLM commit/version, immutable model
   revision and committed inventory digest;
+- authorization schema `2` and the exact downloader package
+  `huggingface-hub==1.13.0`, interface
+  `huggingface_hub.snapshot_download`, and digest-pinned base-image source;
 - one RTX 4090 and exact driver/memory expectations;
 - boot/billing timestamp, list rate, total cap, explicit operational cutoff,
   cleanup reserve of at least 35 minutes, authorization time/expiry, nonce;
@@ -103,6 +109,25 @@ Require both:
 now + all remaining stage allowances <= operational cutoff + cleanup reserve
 operational cutoff + cleanup reserve <= boot-derived absolute cap
 ```
+
+The fixed 210-minute reserve ledger is evaluated by stage identity in this
+order:
+
+| Stage | Allowance | Reserve at start |
+|---|---:|---:|
+| Preflight/planning reserve | 15 min | 210 min |
+| SSH identity and checked source transfer | 5 min | 195 min |
+| Image pull/build/inspect/downloader attestation | 20 min | 190 min |
+| In-image model acquisition and host inventory verification | 40 min | 170 min |
+| Event-bearing no-warmup canary | 15 min | 130 min |
+| Four fresh A/B lifecycle pairs | 60 min | 115 min |
+| Fixed eviction lane | 10 min | 55 min |
+| Private verify/redact/report/export | 10 min | 45 min |
+| Transfer verification, cleanup, key removal, shutdown | 35 min | 35 min |
+
+Reordering image preparation ahead of acquisition does not reduce or
+reallocate any allowance: the total remains 210 minutes, the stop-new-work
+point remains 175 minutes, and teardown retains its full 35-minute reserve.
 
 Set `authorization_expiry` no earlier than the end of cleanup. Calculate
 `authorization_sha256` with
@@ -123,12 +148,72 @@ llmtracefx-vllm-kv-truth run \
 ```
 
 There are zero retries and zero replacement runs. The command performs its
-own read-only preflight, exact model acquisition and verification, pinned
-image pull/build/inspection, event canary, four AB/BA/BA/AB lifecycle pairs,
-eviction lane, evidence transfer, local verification/redaction, scoped
-cleanup, and OS shutdown.
+own read-only preflight, SSH identity and checked source transfer, pinned image
+pull/build/inspection and downloader attestation, exact in-image model
+acquisition and host-side verification, event canary, four AB/BA/BA/AB
+lifecycle pairs, eviction lane, evidence transfer, local
+verification/redaction, scoped cleanup, temporary-key removal, and OS
+shutdown.
 
-## 6. Evidence and termination
+The model-download container is bound to the inspected derived image ID,
+labeled with the run nonce, and mounts only the run-scoped model destination
+and HF scratch directory. It is the only runtime container with networking
+enabled (`bridge`). Its checked Python module calls `snapshot_download` with
+the exact model ID and revision, an exact 15-file allowlist, and `token=False`.
+Scratch and Hugging Face local metadata are removed before a host-side
+15-file/16,397,461,266-byte SHA-256 verification. No GPU container can start
+until that verification succeeds. Canary, pair, and eviction containers all
+use `--network none` plus the fixed offline environment.
+
+Before the one command above, confirm only this checklist:
+
+1. The source archive is from the exact clean, tested, merged `origin/main`.
+2. Authorization schema 2 seals that head, archive digest, runtime/model/image
+   pins, downloader identity, budget, nonce, and zero-retry policy.
+3. The protected config names a fresh key, dedicated known-hosts file, and
+   empty local evidence destination.
+4. The coordinator has issued GO and the full 210-minute reserve gate passes.
+
+## 6. Private failure diagnostics
+
+Each command operation appends a mode-`0600`
+`private-operation-receipts.jsonl` record under the protected local evidence
+directory. This file is private and is not part of the public evidence schema.
+Each schema-1 record contains only:
+
+```text
+stage, substage, command_description, return_code, timed_out,
+stderr_category, stderr_message, reason_code, reserved_minutes
+```
+
+No argv, host, user, IP, key/known-hosts path, credential, remote/model path,
+prompt/token content, or raw stderr is retained. Failure text is selected from
+a bounded allowlist. Current reason codes are:
+
+```text
+operation_timeout, operation_start_failed,
+preflight_missing_linux, preflight_missing_nvidia_smi,
+preflight_missing_docker, preflight_missing_sudo,
+preflight_missing_python3, preflight_probe_failed,
+identity_gate_failed, source_transfer_failed, image_preparation_failed,
+model_download_interface_missing, model_download_version_mismatch,
+model_download_failed, model_inventory_mismatch, canary_failed,
+pair_lane_failed, eviction_lane_failed, evidence_archive_failed,
+evidence_digest_failed, evidence_download_failed,
+teardown_cleanup_failed, teardown_shutdown_failed
+```
+
+Successful acquisition also writes a private schema-1
+`private-model-acquisition-receipt.json` binding the authorization, inspected
+image ID, explicit network mode, run label, downloader package/version/
+interface/source, exact model revision, and verified inventory totals.
+
+The terminal reports `stage/substage`, reason code, and the corresponding safe
+message. Teardown still runs after any failure. `SAFE TO TERMINATE INSTANCE
+NOW` retains its existing meaning and is emitted only after scoped cleanup,
+temporary-key removal, zero-residual checks, and shutdown issuance succeed.
+
+## 7. Evidence and termination
 
 Keep the transferred private bundle private. Verify the public-redacted
 bundle offline:
@@ -148,3 +233,12 @@ That message proves only host cleanup checks and shutdown issuance. The
 coordinator must separately terminate the reservation in the provider
 console and preserve provider confirmation. Never claim provider deletion
 from OS state or from the application list-rate ledger.
+
+## 8. Failed-attempt provenance
+
+The authorized attempt at repository head
+`2720134ca6f285d06ae2b42f4fc3d260bda3c45d` stopped in preflight because the
+old probe treated a host `huggingface-cli` executable as mandatory under
+`set -e`. Teardown succeeded. No model download, image pull/build, canary,
+pair, eviction, or GPU workload occurred, so that attempt created no
+scientific evidence claim.

@@ -5,6 +5,10 @@ ARG RUNNER_COMMIT
 LABEL org.opencontainers.image.source="https://github.com/Siddhant-K-code/LLMTraceFX"
 LABEL org.opencontainers.image.revision="${RUNNER_COMMIT}"
 LABEL org.llmtracefx.protocol="qwen3-8b-vllm-kv-truth-v1"
+LABEL org.llmtracefx.downloader.package="huggingface-hub"
+LABEL org.llmtracefx.downloader.version="1.13.0"
+LABEL org.llmtracefx.downloader.interface="huggingface_hub.snapshot_download"
+LABEL org.llmtracefx.downloader.source="vllm/vllm-openai:v0.28.0@sha256:2286e8533ca8b6bc777594bae30524f1426ba46ca21797524e06df6a94b06635"
 
 COPY . /opt/llmtracefx/source
 

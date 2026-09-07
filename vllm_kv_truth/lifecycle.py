@@ -31,13 +31,18 @@ the delegated task's hard requirements):
    absolute timestamp from the plan's already-terminated VM is hardcoded
    anywhere in this module; every cutoff is computed from the
    caller-supplied boot time, rate, cap, and explicit operational cutoff.
-3. Model acquisition is verified file-by-file against the already-committed
-   15-file/16,397,461,266-byte SHA-256 inventory
+3. Checked source and the digest-pinned image are staged before acquisition.
+   The image must attest the exact ``huggingface_hub.snapshot_download``
+   package/version/interface/source; only then may one labeled, explicitly
+   networked, non-GPU container acquire the model. The vanilla host never
+   needs a Hugging Face CLI or Python package.
+4. Model acquisition is verified file-by-file on the host against the
+   already-committed 15-file/16,397,461,266-byte SHA-256 inventory
    (``qwen3-8b-conversion-manifest-v1.json``), not just a count/byte total.
-4. Every GPU-lane container runs with ``--network none``, the fixed offline
+5. Every GPU-lane container runs with ``--network none``, the fixed offline
    environment, and a run-scoped Docker label so teardown can find and stop
    *only* this run's containers -- never every container on the host.
-5. Teardown always runs, in a fixed order, transferring and locally
+6. Teardown always runs, in a fixed order, transferring and locally
    verifying evidence *before* any remote deletion, and never issues an
    unscoped ``rm -rf`` or ``docker rm``/``docker stop`` against unvalidated
    input.
@@ -66,7 +71,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, NoReturn, Protocol
 
 from llmtracefx.cache_audit.adapters.vllm import (
     REQUIRED_VLLM_COMMIT,
@@ -96,6 +101,12 @@ from vllm_kv_truth.runner import (
 )
 
 from . import evidence
+from .model_download import (
+    DOWNLOADER_INTERFACE,
+    DOWNLOADER_PACKAGE,
+    DOWNLOADER_SOURCE,
+    DOWNLOADER_VERSION,
+)
 
 MAX_CONFIG_ARTIFACT_BYTES = 64 * 1024
 MAX_AUTHORIZATION_ARTIFACT_BYTES = 64 * 1024
@@ -128,6 +139,21 @@ MODEL_CONVERSION_MANIFEST_PATH = (
 
 class HostOrchestrationError(DeploymentPlanError):
     """Raised whenever a config/authorization/stage invariant is violated."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str | None = None,
+        substage: str | None = None,
+        reason_code: str | None = None,
+    ) -> None:
+        self.stage = stage
+        self.substage = substage
+        self.reason_code = reason_code
+        if stage is not None and substage is not None and reason_code is not None:
+            message = f"{stage}/{substage}: {reason_code}: {message}"
+        super().__init__(message)
 
 
 def canonical_json(value: Any) -> str:
@@ -421,9 +447,9 @@ class BudgetStage:
 #: boot time, rate, and cap independently impose an absolute ceiling.
 BUDGET_STAGES: tuple[BudgetStage, ...] = (
     BudgetStage("existing_preflight_planning_reserve", 15),
-    BudgetStage("approval_handoff_ssh_identity_gate", 5),
-    BudgetStage("model_acquisition_verification", 40),
+    BudgetStage("approval_handoff_ssh_identity_source_transfer", 5),
     BudgetStage("image_pull_rebuild_inspect_attestation", 20),
+    BudgetStage("model_acquisition_verification", 40),
     BudgetStage("no_warmup_canary_event_feasibility_gate", 15),
     BudgetStage("four_fresh_ab_lifecycle_pairs", 60),
     BudgetStage("fixed_eviction_lane", 10),
@@ -534,9 +560,9 @@ def list_rate_cost_usd(elapsed_minutes: Decimal, rate_usd_per_hour: Decimal) -> 
 # Explicit, self-sealed run authorization.
 # ---------------------------------------------------------------------------
 
-AUTHORIZATION_SCHEMA_VERSION = "1"
+AUTHORIZATION_SCHEMA_VERSION = "2"
 AUTHORIZATION_SIGNER_IDENTITY = "vllm-kv-truth-coordinator"
-AUTHORIZATION_SIGNATURE_NAMESPACE = "llmtracefx-vllm-kv-truth-authorization-v1"
+AUTHORIZATION_SIGNATURE_NAMESPACE = "llmtracefx-vllm-kv-truth-authorization-v2"
 
 _AUTHORIZATION_REQUIRED_KEYS = frozenset(
     {
@@ -550,6 +576,10 @@ _AUTHORIZATION_REQUIRED_KEYS = frozenset(
         "model_id",
         "model_revision",
         "model_inventory_sha256",
+        "model_download_package",
+        "model_download_version",
+        "model_download_interface",
+        "model_download_source",
         "gpu_expected_count",
         "gpu_expected_name",
         "gpu_expected_driver",
@@ -639,6 +669,10 @@ class RunAuthorization:
             "model_id": MODEL_ID,
             "model_revision": MODEL_REVISION,
             "model_inventory_sha256": self.model_inventory_sha256,
+            "model_download_package": DOWNLOADER_PACKAGE,
+            "model_download_version": DOWNLOADER_VERSION,
+            "model_download_interface": DOWNLOADER_INTERFACE,
+            "model_download_source": DOWNLOADER_SOURCE,
             "gpu_expected_count": self.gpu_expected_count,
             "gpu_expected_name": EXPECTED_GPU_NAME,
             "gpu_expected_driver": EXPECTED_DRIVER,
@@ -686,6 +720,10 @@ class RunAuthorization:
             "vllm_commit": REQUIRED_VLLM_COMMIT,
             "model_id": MODEL_ID,
             "model_revision": MODEL_REVISION,
+            "model_download_package": DOWNLOADER_PACKAGE,
+            "model_download_version": DOWNLOADER_VERSION,
+            "model_download_interface": DOWNLOADER_INTERFACE,
+            "model_download_source": DOWNLOADER_SOURCE,
             "gpu_expected_name": EXPECTED_GPU_NAME,
             "gpu_expected_driver": EXPECTED_DRIVER,
             "gpu_expected_memory_mib": EXPECTED_MEMORY_MIB,
@@ -962,6 +1000,8 @@ class CommandResult:
     returncode: int
     stdout: str
     stderr: str
+    timed_out: bool = False
+    start_failed: bool = False
 
     @property
     def ok(self) -> bool:
@@ -1008,12 +1048,20 @@ class SubprocessCommandRunner:
                 env={"PATH": _SAFE_EXECUTION_PATH, "LANG": "C", "LC_ALL": "C"},
                 check=False,
             )
-        except subprocess.TimeoutExpired as exc:
-            raise HostOrchestrationError(f"{description} timed out") from exc
-        except OSError as exc:
-            raise HostOrchestrationError(
-                f"{description} could not start: {exc}"
-            ) from exc
+        except subprocess.TimeoutExpired:
+            return CommandResult(
+                returncode=-1,
+                stdout="",
+                stderr="",
+                timed_out=True,
+            )
+        except OSError:
+            return CommandResult(
+                returncode=-1,
+                stdout="",
+                stderr="",
+                start_failed=True,
+            )
         return CommandResult(
             returncode=completed.returncode,
             stdout=completed.stdout,
@@ -1043,6 +1091,134 @@ def checked(
     if not result.ok:
         raise HostOrchestrationError(f"stage failed: {description}")
     return result
+
+
+_SAFE_REASON_MESSAGES: dict[str, tuple[str, str]] = {
+    "operation_timeout": ("timeout", "the operation timed out"),
+    "operation_start_failed": ("local_start", "the operation could not start"),
+    "preflight_missing_linux": (
+        "host_prerequisite",
+        "the remote host did not identify as Linux",
+    ),
+    "preflight_missing_nvidia_smi": (
+        "host_prerequisite",
+        "the remote host does not provide nvidia-smi",
+    ),
+    "preflight_missing_docker": (
+        "host_prerequisite",
+        "the remote host does not provide Docker",
+    ),
+    "preflight_missing_sudo": (
+        "host_prerequisite",
+        "the remote host does not provide noninteractive sudo",
+    ),
+    "preflight_missing_python3": (
+        "host_prerequisite",
+        "the remote host does not provide Python 3",
+    ),
+    "preflight_probe_failed": (
+        "remote_command",
+        "the vanilla-host preflight probe failed",
+    ),
+    "identity_gate_failed": (
+        "remote_command",
+        "the SSH identity gate failed",
+    ),
+    "source_transfer_failed": (
+        "transfer",
+        "the checked source transfer failed",
+    ),
+    "image_preparation_failed": (
+        "container_image",
+        "the pinned image preparation or attestation failed",
+    ),
+    "model_download_interface_missing": (
+        "downloader_attestation",
+        "the pinned image lacks the authorized downloader interface",
+    ),
+    "model_download_version_mismatch": (
+        "downloader_attestation",
+        "the pinned image downloader version does not match authorization",
+    ),
+    "model_download_failed": (
+        "model_acquisition",
+        "the in-container model download failed",
+    ),
+    "model_inventory_mismatch": (
+        "model_inventory",
+        "the downloaded model inventory does not match the exact manifest",
+    ),
+    "canary_failed": ("gpu_lane", "the event-bearing canary failed"),
+    "pair_lane_failed": ("gpu_lane", "a fixed pair lane failed"),
+    "eviction_lane_failed": ("gpu_lane", "the fixed eviction lane failed"),
+    "evidence_archive_failed": (
+        "evidence_transfer",
+        "the remote evidence archive could not be prepared",
+    ),
+    "evidence_digest_failed": (
+        "evidence_transfer",
+        "the remote evidence digest could not be computed",
+    ),
+    "evidence_download_failed": (
+        "evidence_transfer",
+        "the evidence archive transfer failed",
+    ),
+    "teardown_cleanup_failed": (
+        "teardown",
+        "scoped remote cleanup or key removal failed",
+    ),
+    "teardown_shutdown_failed": (
+        "teardown",
+        "the remote shutdown command failed",
+    ),
+}
+_SAFE_REASON_MARKER = re.compile(r"^LLMTRACEFX_REASON=([a-z0-9_]{1,80})$")
+_MAX_SAFE_FAILURE_MESSAGE_LENGTH = 160
+
+
+@dataclass(frozen=True)
+class OperationReceipt:
+    """Private, path-free result for one local or remote operation."""
+
+    stage: str
+    substage: str
+    command_description: str
+    return_code: int
+    timed_out: bool
+    stderr_category: str
+    stderr_message: str
+    reason_code: str | None
+    reserved_minutes: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": "1",
+            "stage": self.stage,
+            "substage": self.substage,
+            "command_description": self.command_description,
+            "return_code": self.return_code,
+            "timed_out": self.timed_out,
+            "stderr_category": self.stderr_category,
+            "stderr_message": self.stderr_message,
+            "reason_code": self.reason_code,
+            "reserved_minutes": self.reserved_minutes,
+        }
+
+
+def _safe_failure(result: CommandResult, default_reason: str) -> tuple[str, str, str]:
+    if result.timed_out:
+        reason = "operation_timeout"
+    elif result.start_failed:
+        reason = "operation_start_failed"
+    else:
+        reason = default_reason
+        for line in result.stderr.splitlines():
+            match = _SAFE_REASON_MARKER.fullmatch(line.strip())
+            if match is not None and match.group(1) in _SAFE_REASON_MESSAGES:
+                reason = match.group(1)
+                break
+    category, message = _SAFE_REASON_MESSAGES[reason]
+    return reason, category, message[:_MAX_SAFE_FAILURE_MESSAGE_LENGTH]
 
 
 # ---------------------------------------------------------------------------
@@ -1204,6 +1380,10 @@ class RunPaths:
     @property
     def receipts_dir(self) -> str:
         return f"{self.remote_workspace}/receipts"
+
+    @property
+    def hf_scratch_dir(self) -> str:
+        return f"{self.remote_workspace}/hf-scratch"
 
     @property
     def source_archive_remote_path(self) -> str:
@@ -1482,6 +1662,44 @@ def build_docker_run_argv(
     )
 
 
+def build_model_download_argv(
+    *,
+    authorization: RunAuthorization,
+    paths: RunPaths,
+    derived_image_id: str,
+) -> tuple[str, ...]:
+    """Build the only network-enabled container command in the protocol."""
+
+    return (
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "bridge",
+        "--label",
+        docker_run_label(authorization.nonce),
+        "--name",
+        container_name(authorization.nonce, "model-download"),
+        "-e",
+        "HF_HOME=/hf",
+        "-e",
+        "HF_HUB_DISABLE_TELEMETRY=1",
+        "-v",
+        f"{paths.model_dir}:/model",
+        "-v",
+        f"{paths.hf_scratch_dir}:/hf",
+        _require_pattern(derived_image_id, _SHA256_REF, field_name="derived_image_id"),
+        "python3",
+        "-m",
+        "vllm_kv_truth.model_download",
+        "download",
+        "--destination",
+        "/model",
+        "--scratch",
+        "/hf",
+    )
+
+
 def container_name(nonce: str, tag: str) -> str:
     return _require_label(f"kv-truth-{nonce}-{tag}"[:128], field_name="container_name")
 
@@ -1492,8 +1710,8 @@ class OrchestratorState(str, Enum):
     PENDING = "pending"
     PREFLIGHT = "preflight"
     IDENTITY_GATE = "identity_gate"
-    MODEL_ACQUISITION = "model_acquisition"
     IMAGE_PREPARATION = "image_preparation"
+    MODEL_ACQUISITION = "model_acquisition"
     CANARY = "canary"
     AB_PAIRS = "ab_pairs"
     EVICTION_LANE = "eviction_lane"
@@ -1542,6 +1760,138 @@ class RemoteOrchestrator:
         self.outcomes: list[StageOutcome] = []
         self.derived_image_id: str | None = None
         self.expected_runner_source_digest: str | None = None
+        self.downloader_attestation: dict[str, str] | None = None
+        self.operation_receipts: list[OperationReceipt] = []
+
+    @property
+    def operation_receipt_path(self) -> Path:
+        return self.config.local_evidence_dir / "private-operation-receipts.jsonl"
+
+    def _persist_operation_receipts(self) -> None:
+        directory = self.config.local_evidence_dir
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if directory.is_symlink():
+            raise HostOrchestrationError(
+                "local evidence directory must not be a symlink"
+            )
+        text = "".join(
+            canonical_json(receipt.to_dict()) + "\n"
+            for receipt in self.operation_receipts
+        )
+        temporary = directory / f".operation-receipts.{os.getpid()}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(temporary, flags, 0o600)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, self.operation_receipt_path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+    def _checked(
+        self,
+        argv: Sequence[str],
+        *,
+        stage: str,
+        substage: str,
+        description: str,
+        timeout: float,
+        default_reason: str,
+        reserve_stage: str | None,
+        input_text: str | None = None,
+    ) -> CommandResult:
+        reserved_minutes = (
+            CLEANUP_RESERVE_MINUTES
+            if reserve_stage is None
+            else remaining_reserve_minutes(stage_index(reserve_stage))
+        )
+        try:
+            result = self.runner.run(
+                argv,
+                description=description,
+                timeout=timeout,
+                input_text=input_text,
+            )
+        except HostOrchestrationError as exc:
+            result = CommandResult(
+                returncode=-1,
+                stdout="",
+                stderr="",
+                timed_out="timed out" in str(exc).lower(),
+                start_failed="timed out" not in str(exc).lower(),
+            )
+        if result.ok:
+            receipt = OperationReceipt(
+                stage=stage,
+                substage=substage,
+                command_description=description,
+                return_code=result.returncode,
+                timed_out=False,
+                stderr_category="none",
+                stderr_message="",
+                reason_code=None,
+                reserved_minutes=reserved_minutes,
+            )
+        else:
+            reason, category, message = _safe_failure(result, default_reason)
+            receipt = OperationReceipt(
+                stage=stage,
+                substage=substage,
+                command_description=description,
+                return_code=result.returncode,
+                timed_out=result.timed_out,
+                stderr_category=category,
+                stderr_message=message,
+                reason_code=reason,
+                reserved_minutes=reserved_minutes,
+            )
+        self.operation_receipts.append(receipt)
+        self._persist_operation_receipts()
+        if not result.ok:
+            raise HostOrchestrationError(
+                receipt.stderr_message,
+                stage=stage,
+                substage=substage,
+                reason_code=receipt.reason_code,
+            )
+        return result
+
+    def _local_failure(
+        self,
+        *,
+        stage: str,
+        substage: str,
+        description: str,
+        reason_code: str,
+        reserve_stage: str,
+    ) -> NoReturn:
+        category, message = _SAFE_REASON_MESSAGES[reason_code]
+        self.operation_receipts.append(
+            OperationReceipt(
+                stage=stage,
+                substage=substage,
+                command_description=description,
+                return_code=0,
+                timed_out=False,
+                stderr_category=category,
+                stderr_message=message,
+                reason_code=reason_code,
+                reserved_minutes=remaining_reserve_minutes(stage_index(reserve_stage)),
+            )
+        )
+        self._persist_operation_receipts()
+        raise HostOrchestrationError(
+            message,
+            stage=stage,
+            substage=substage,
+            reason_code=reason_code,
+        )
 
     def _require_derived_image_id(self) -> str:
         if self.derived_image_id is None:
@@ -1598,6 +1948,23 @@ class RemoteOrchestrator:
         script = "\n".join(
             [
                 "set -eu",
+                "command -v uname >/dev/null 2>&1 || "
+                "{ echo LLMTRACEFX_REASON=preflight_missing_linux >&2; exit 1; }",
+                'test "$(uname -s)" = Linux || '
+                "{ echo LLMTRACEFX_REASON=preflight_missing_linux >&2; exit 1; }",
+                "command -v nvidia-smi >/dev/null 2>&1 || "
+                "{ echo LLMTRACEFX_REASON=preflight_missing_nvidia_smi >&2; exit 1; }",
+                "command -v docker >/dev/null 2>&1 || "
+                "{ echo LLMTRACEFX_REASON=preflight_missing_docker >&2; exit 1; }",
+                "command -v sudo >/dev/null 2>&1 || "
+                "{ echo LLMTRACEFX_REASON=preflight_missing_sudo >&2; exit 1; }",
+                "command -v python3 >/dev/null 2>&1 || "
+                "{ echo LLMTRACEFX_REASON=preflight_missing_python3 >&2; exit 1; }",
+                "for tool in date uptime df free awk sed wc; do "
+                'command -v "$tool" >/dev/null 2>&1 || '
+                "{ echo LLMTRACEFX_REASON=preflight_probe_failed >&2; exit 1; }; "
+                "done",
+                'echo "OS_NAME=$(uname -s)"',
                 'echo "NOW_EPOCH=$(date -u +%s)"',
                 'echo "BOOT_EPOCH=$(date -u -d "$(uptime -s)" +%s)"',
                 'echo "GPU_COUNT=$(nvidia-smi --list-gpus | wc -l)"',
@@ -1619,17 +1986,28 @@ class RemoteOrchestrator:
                 ')"',
                 'echo "DOCKER_VERSION=$(docker version '
                 "--format '{{.Server.Version}}')\"",
-                'echo "HF_CLI=$(command -v huggingface-cli)"',
             ]
         )
-        result = checked(
-            self.runner,
+        result = self._checked(
             self.ssh_options.ssh_command("bash -s"),
+            stage="preflight",
+            substage="host_probe",
             description="stage_preflight",
             timeout=60,
+            default_reason="preflight_probe_failed",
+            reserve_stage="existing_preflight_planning_reserve",
             input_text=script,
         )
-        self._verify_preflight_output(result.stdout)
+        try:
+            self._verify_preflight_output(result.stdout)
+        except (HostOrchestrationError, ValueError):
+            self._local_failure(
+                stage="preflight",
+                substage="validate_markers",
+                description="stage_preflight_validate",
+                reason_code="preflight_probe_failed",
+                reserve_stage="existing_preflight_planning_reserve",
+            )
         self._record("preflight", True)
         return self.outcomes[-1]
 
@@ -1641,6 +2019,7 @@ class RemoteOrchestrator:
                 markers[key.strip()] = value.strip()
         required = {
             "NOW_EPOCH",
+            "OS_NAME",
             "BOOT_EPOCH",
             "GPU_COUNT",
             "GPU",
@@ -1652,12 +2031,13 @@ class RemoteOrchestrator:
             "SWAP_USED_BYTES",
             "PYTHON_VERSION",
             "DOCKER_VERSION",
-            "HF_CLI",
         }
         if set(markers) != required:
             raise HostOrchestrationError(
                 "preflight output markers differ from the exact required set"
             )
+        if markers["OS_NAME"] != "Linux":
+            raise HostOrchestrationError("preflight host operating system is not Linux")
         parts = [part.strip() for part in markers["GPU"].split(",")]
         if len(parts) != 4:
             raise HostOrchestrationError("preflight GPU inventory line is malformed")
@@ -1701,10 +2081,6 @@ class RemoteOrchestrator:
             raise HostOrchestrationError("preflight Python version is not 3.12.x")
         if not markers["DOCKER_VERSION"]:
             raise HostOrchestrationError("preflight Docker version is empty")
-        if not markers["HF_CLI"].startswith("/"):
-            raise HostOrchestrationError(
-                "preflight did not find an absolute huggingface-cli executable"
-            )
         now = datetime.fromtimestamp(int(markers["NOW_EPOCH"]), tz=timezone.utc)
         boot = datetime.fromtimestamp(int(markers["BOOT_EPOCH"]), tz=timezone.utc)
         if abs((boot - self.authorization.billing_started_at).total_seconds()) > 2:
@@ -1716,11 +2092,48 @@ class RemoteOrchestrator:
                 "preflight remote clock differs from the coordinator clock"
             )
 
-    # -- stage 2: approval handoff / ssh identity gate ---------------------
+    # -- stage 2: approval handoff / identity and source transfer -----------
 
     def stage_identity_gate(self) -> StageOutcome:
-        self._require_budget("approval_handoff_ssh_identity_gate")
+        reserve_stage = "approval_handoff_ssh_identity_source_transfer"
+        self._require_budget(reserve_stage)
         self.state = OrchestratorState.IDENTITY_GATE
+        try:
+            archive_bytes, archive_commit = read_runner_archive_commit_marker(
+                self.config.local_runner_archive
+            )
+        except HostOrchestrationError:
+            self._local_failure(
+                stage="identity_source_transfer",
+                substage="validate_source_archive",
+                description="stage_identity_source_validate",
+                reason_code="source_transfer_failed",
+                reserve_stage=reserve_stage,
+            )
+        if archive_commit != self.authorization.repository_head:
+            self._local_failure(
+                stage="identity_source_transfer",
+                substage="validate_source_archive",
+                description="stage_identity_source_validate",
+                reason_code="source_transfer_failed",
+                reserve_stage=reserve_stage,
+            )
+        local_archive_digest = hashlib.sha256(archive_bytes).hexdigest()
+        if (
+            f"sha256:{local_archive_digest}"
+            != self.authorization.derived_image_source_digest
+        ):
+            self._local_failure(
+                stage="identity_source_transfer",
+                substage="validate_source_archive",
+                description="stage_identity_source_validate",
+                reason_code="source_transfer_failed",
+                reserve_stage=reserve_stage,
+            )
+        self.expected_runner_source_digest = runner_source_digest_from_archive(
+            archive_bytes
+        )
+
         script = "\n".join(
             [
                 "set -eu",
@@ -1736,101 +2149,57 @@ class RemoteOrchestrator:
                 '"$AUTHORIZED_KEYS")" = "1"',
             ]
         )
-        checked(
-            self.runner,
+        self._checked(
             self.ssh_options.ssh_command("bash -s"),
+            stage="identity_source_transfer",
+            substage="identity_gate",
             description="stage_identity_gate",
-            timeout=30,
+            timeout=20,
+            default_reason="identity_gate_failed",
+            reserve_stage=reserve_stage,
             input_text=script,
         )
-        self._record("identity_gate", True)
-        return self.outcomes[-1]
-
-    # -- stage 3: model acquisition and per-file verification ---------------
-
-    def stage_model_acquisition(self) -> StageOutcome:
-        self._require_budget("model_acquisition_verification")
-        self.state = OrchestratorState.MODEL_ACQUISITION
-        download_script = "\n".join(
-            [
-                "set -eu",
-                f"rm -rf {_quote(self.paths.model_dir)}",
-                f"mkdir -p {_quote(self.paths.model_dir)}",
-                f"rm -rf {_quote(self.paths.remote_workspace + '/hf-home')}",
-                "env -i PATH=/usr/local/bin:/usr/bin:/bin "
-                f"HOME={_quote(self.paths.remote_workspace)} "
-                f"HF_HOME={_quote(self.paths.remote_workspace + '/hf-home')} "
-                "HF_HUB_DISABLE_TELEMETRY=1 "
-                "huggingface-cli download "
-                f"{_quote(MODEL_ID)} --revision {_quote(MODEL_REVISION)} "
-                f"--local-dir {_quote(self.paths.model_dir)}",
-                f"rm -rf {_quote(self.paths.remote_workspace + '/hf-home')}",
-                f"rm -rf {_quote(self.paths.model_dir + '/.cache')}",
-            ]
-        )
-        checked(
-            self.runner,
-            self.ssh_options.ssh_command("bash -s"),
-            description="stage_model_acquisition_download",
-            timeout=1800,
-            input_text=download_script,
-        )
-        verification_script = build_model_inventory_verification_script(self.paths)
-        checked(
-            self.runner,
-            self.ssh_options.ssh_command("bash -s"),
-            description="stage_model_acquisition_verify",
-            timeout=600,
-            input_text=verification_script,
-        )
-        self._record("model_acquisition", True)
-        return self.outcomes[-1]
-
-    # -- stage 4: checked source staging, image pull/build, inspection ------
-
-    def stage_image_preparation(self) -> StageOutcome:
-        self._require_budget("image_pull_rebuild_inspect_attestation")
-        self.state = OrchestratorState.IMAGE_PREPARATION
-
-        # Verify the checked source archive's embedded commit purely
-        # locally (no network, no live `git fetch` against any remote)
-        # before it is ever staged onto the host.
-        archive_bytes, archive_commit = read_runner_archive_commit_marker(
-            self.config.local_runner_archive
-        )
-        if archive_commit != self.authorization.repository_head:
-            raise HostOrchestrationError(
-                "checked source archive's embedded commit does not match the "
-                "authorization's repository_head "
-                f"({archive_commit} != {self.authorization.repository_head})"
-            )
-        local_archive_digest = hashlib.sha256(archive_bytes).hexdigest()
-        if (
-            f"sha256:{local_archive_digest}"
-            != self.authorization.derived_image_source_digest
-        ):
-            raise HostOrchestrationError(
-                "checked source archive digest does not match the authorization's "
-                "derived_image_source_digest"
-            )
-        self.expected_runner_source_digest = runner_source_digest_from_archive(
-            archive_bytes
-        )
-
-        checked(
-            self.runner,
+        self._checked(
             self.ssh_options.scp_upload_command(
                 self.config.local_runner_archive,
                 self.paths.source_archive_remote_path,
             ),
-            description="stage_image_preparation_upload_source",
-            timeout=600,
+            stage="identity_source_transfer",
+            substage="source_upload",
+            description="stage_identity_source_upload",
+            timeout=280,
+            default_reason="source_transfer_failed",
+            reserve_stage=reserve_stage,
             input_text=None,
         )
+        self._record("identity_source_transfer", True)
+        return self.outcomes[-1]
+
+    # -- stage 3: pinned image pull/build/inspection/downloader attestation --
+
+    def stage_image_preparation(self) -> StageOutcome:
+        reserve_stage = "image_pull_rebuild_inspect_attestation"
+        self._require_budget(reserve_stage)
+        self.state = OrchestratorState.IMAGE_PREPARATION
+        if self.expected_runner_source_digest is None:
+            self._local_failure(
+                stage="image_preparation",
+                substage="source_binding",
+                description="stage_image_preparation_source_binding",
+                reason_code="image_preparation_failed",
+                reserve_stage=reserve_stage,
+            )
+        archive_bytes, _ = read_runner_archive_commit_marker(
+            self.config.local_runner_archive
+        )
+        local_archive_digest = hashlib.sha256(archive_bytes).hexdigest()
 
         script = "\n".join(
             [
                 "set -eu",
+                "reason=image_preparation_failed",
+                'trap \'status=$?; if [ "$status" -ne 0 ]; then '
+                'echo "LLMTRACEFX_REASON=$reason" >&2; fi\' EXIT',
                 f"docker pull {_quote(BASE_IMAGE_REFERENCE)}",
                 f"echo BASE_REPODIGESTS=$(docker image inspect "
                 f"{_quote(BASE_IMAGE_REFERENCE)} "
@@ -1851,6 +2220,7 @@ class RemoteOrchestrator:
                 f"test \"$(sed -n '1p' containers/vllm-kv-truth/Containerfile)\" "
                 f"= {_quote('FROM ' + BASE_IMAGE_REFERENCE)}",
                 "docker build -q "
+                "--network none "
                 f"--label {_quote(docker_run_label(self.authorization.nonce))} "
                 f"--build-arg RUNNER_COMMIT={_quote(self.authorization.repository_head)} "
                 "-f containers/vllm-kv-truth/Containerfile "
@@ -1858,20 +2228,63 @@ class RemoteOrchestrator:
                 "echo DERIVED_IMAGE_ID=$(docker image inspect "
                 f"kv-truth-derived-{_quote(self.authorization.nonce)} "
                 '--format "{{.Id}}")',
+                "echo DOWNLOADER_PACKAGE=$(docker image inspect "
+                f"kv-truth-derived-{_quote(self.authorization.nonce)} "
+                "--format '{{ index .Config.Labels "
+                '"org.llmtracefx.downloader.package" }}\')',
+                "echo DOWNLOADER_VERSION=$(docker image inspect "
+                f"kv-truth-derived-{_quote(self.authorization.nonce)} "
+                "--format '{{ index .Config.Labels "
+                '"org.llmtracefx.downloader.version" }}\')',
+                "echo DOWNLOADER_INTERFACE=$(docker image inspect "
+                f"kv-truth-derived-{_quote(self.authorization.nonce)} "
+                "--format '{{ index .Config.Labels "
+                '"org.llmtracefx.downloader.interface" }}\')',
+                "echo DOWNLOADER_SOURCE=$(docker image inspect "
+                f"kv-truth-derived-{_quote(self.authorization.nonce)} "
+                "--format '{{ index .Config.Labels "
+                '"org.llmtracefx.downloader.source" }}\')',
+                f"docker run --rm --network none --label "
+                f"{_quote(docker_run_label(self.authorization.nonce))} "
+                f"kv-truth-derived-{_quote(self.authorization.nonce)} "
+                "python3 -m vllm_kv_truth.model_download attest",
+                "trap - EXIT",
             ]
         )
-        result = checked(
-            self.runner,
+        result = self._checked(
             self.ssh_options.ssh_command("bash -s"),
+            stage="image_preparation",
+            substage="pull_build_inspect_attest",
             description="stage_image_preparation",
-            timeout=1800,
+            timeout=1200,
+            default_reason="image_preparation_failed",
+            reserve_stage=reserve_stage,
             input_text=script,
         )
-        self.derived_image_id = self._verify_image_preparation_output(result.stdout)
+        try:
+            (
+                self.derived_image_id,
+                self.downloader_attestation,
+            ) = self._verify_image_preparation_output(result.stdout)
+        except HostOrchestrationError as exc:
+            reason = (
+                exc.reason_code
+                if exc.reason_code in _SAFE_REASON_MESSAGES
+                else "image_preparation_failed"
+            )
+            self._local_failure(
+                stage="image_preparation",
+                substage="verify_attestation",
+                description="stage_image_preparation_verify",
+                reason_code=reason,
+                reserve_stage=reserve_stage,
+            )
         self._record("image_preparation", True)
         return self.outcomes[-1]
 
-    def _verify_image_preparation_output(self, stdout: str) -> str:
+    def _verify_image_preparation_output(
+        self, stdout: str
+    ) -> tuple[str, dict[str, str]]:
         markers = dict(
             line.strip().split("=", 1)
             for line in stdout.splitlines()
@@ -1882,6 +2295,10 @@ class RemoteOrchestrator:
                 "BASE_IMAGE_ID",
                 "EXPECTED_HEAD",
                 "DERIVED_IMAGE_ID",
+                "DOWNLOADER_PACKAGE",
+                "DOWNLOADER_VERSION",
+                "DOWNLOADER_INTERFACE",
+                "DOWNLOADER_SOURCE",
             }
         )
         if "BASE_REPODIGESTS" not in markers:
@@ -1924,7 +2341,194 @@ class RemoteOrchestrator:
             raise HostOrchestrationError(
                 "derived image id is malformed or identical to the base image id"
             )
-        return derived_id
+        expected_downloader = {
+            "package": DOWNLOADER_PACKAGE,
+            "version": DOWNLOADER_VERSION,
+            "interface": DOWNLOADER_INTERFACE,
+            "source": DOWNLOADER_SOURCE,
+        }
+        label_attestation = {
+            key.removeprefix("DOWNLOADER_").lower(): markers.get(key, "")
+            for key in (
+                "DOWNLOADER_PACKAGE",
+                "DOWNLOADER_VERSION",
+                "DOWNLOADER_INTERFACE",
+                "DOWNLOADER_SOURCE",
+            )
+        }
+        if label_attestation != expected_downloader:
+            reason = (
+                "model_download_version_mismatch"
+                if all(
+                    label_attestation.get(key) == expected_downloader[key]
+                    for key in ("package", "interface", "source")
+                )
+                else "model_download_interface_missing"
+            )
+            raise HostOrchestrationError(
+                _SAFE_REASON_MESSAGES[reason][1],
+                reason_code=reason,
+            )
+        runtime_lines = [
+            line.strip()
+            for line in stdout.splitlines()
+            if line.strip().startswith("{") and '"package"' in line
+        ]
+        if len(runtime_lines) != 1:
+            raise HostOrchestrationError(
+                _SAFE_REASON_MESSAGES["model_download_interface_missing"][1],
+                reason_code="model_download_interface_missing",
+            )
+        try:
+            runtime_attestation = json.loads(runtime_lines[0])
+        except ValueError as exc:
+            raise HostOrchestrationError(
+                _SAFE_REASON_MESSAGES["model_download_interface_missing"][1],
+                reason_code="model_download_interface_missing",
+            ) from exc
+        if runtime_attestation != {"schema_version": "1", **expected_downloader}:
+            reason = (
+                "model_download_version_mismatch"
+                if runtime_attestation.get("version") != DOWNLOADER_VERSION
+                else "model_download_interface_missing"
+            )
+            raise HostOrchestrationError(
+                _SAFE_REASON_MESSAGES[reason][1],
+                reason_code=reason,
+            )
+        return derived_id, expected_downloader
+
+    # -- stage 4: in-image model acquisition and host inventory verification
+
+    def _persist_model_acquisition_receipt(
+        self,
+        *,
+        download_attestation: Mapping[str, Any],
+    ) -> None:
+        payload = {
+            "schema_version": "1",
+            "protocol_id": PROTOCOL_ID,
+            "authorization_sha256": self.authorization.authorization_sha256,
+            "derived_image_id": self._require_derived_image_id(),
+            "base_image_reference": BASE_IMAGE_REFERENCE,
+            "network_mode": "bridge",
+            "container_label": docker_run_label(self.authorization.nonce),
+            "downloader": dict(download_attestation),
+            "model_id": MODEL_ID,
+            "model_revision": MODEL_REVISION,
+            "model_inventory_sha256": self.authorization.model_inventory_sha256,
+            "verified_file_count": EXPECTED_MODEL_FILE_COUNT,
+            "verified_total_bytes": EXPECTED_MODEL_BYTES,
+        }
+        directory = self.config.local_evidence_dir
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target = directory / "private-model-acquisition-receipt.json"
+        temporary = directory / f".model-acquisition-receipt.{os.getpid()}.tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = os.open(temporary, flags, 0o600)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(canonical_json(payload) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, target)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+    def stage_model_acquisition(self) -> StageOutcome:
+        reserve_stage = "model_acquisition_verification"
+        self._require_budget(reserve_stage)
+        self.state = OrchestratorState.MODEL_ACQUISITION
+        derived_image_id = self._require_derived_image_id()
+        if self.downloader_attestation is None:
+            self._local_failure(
+                stage="model_acquisition",
+                substage="downloader_binding",
+                description="stage_model_acquisition_binding",
+                reason_code="model_download_interface_missing",
+                reserve_stage=reserve_stage,
+            )
+        download_argv = build_model_download_argv(
+            authorization=self.authorization,
+            paths=self.paths,
+            derived_image_id=derived_image_id,
+        )
+        download_script = "\n".join(
+            [
+                "set -eu",
+                f"rm -rf {_quote(self.paths.model_dir)} "
+                f"{_quote(self.paths.hf_scratch_dir)}",
+                f"mkdir -p {_quote(self.paths.model_dir)} "
+                f"{_quote(self.paths.hf_scratch_dir)}",
+                "cleanup_download_scratch() { "
+                f"rm -rf {_quote(self.paths.hf_scratch_dir)} "
+                f"{_quote(self.paths.model_dir + '/.cache')}; "
+                "}",
+                "trap cleanup_download_scratch EXIT HUP INT TERM",
+                " ".join(_quote(part) for part in download_argv),
+                "cleanup_download_scratch",
+                "trap - EXIT HUP INT TERM",
+            ]
+        )
+        result = self._checked(
+            self.ssh_options.ssh_command("bash -s"),
+            stage="model_acquisition",
+            substage="container_download",
+            description="stage_model_acquisition_download",
+            timeout=1800,
+            default_reason="model_download_failed",
+            reserve_stage=reserve_stage,
+            input_text=download_script,
+        )
+        receipt_lines = [
+            line.strip()
+            for line in result.stdout.splitlines()
+            if line.strip().startswith("{") and '"model_revision"' in line
+        ]
+        try:
+            download_attestation = json.loads(receipt_lines[-1])
+        except (IndexError, ValueError):
+            self._local_failure(
+                stage="model_acquisition",
+                substage="download_receipt",
+                description="stage_model_acquisition_receipt",
+                reason_code="model_download_failed",
+                reserve_stage=reserve_stage,
+            )
+        expected_download_attestation = {
+            "schema_version": "1",
+            **self.downloader_attestation,
+            "model_id": MODEL_ID,
+            "model_revision": MODEL_REVISION,
+        }
+        if download_attestation != expected_download_attestation:
+            self._local_failure(
+                stage="model_acquisition",
+                substage="download_receipt",
+                description="stage_model_acquisition_receipt",
+                reason_code="model_download_interface_missing",
+                reserve_stage=reserve_stage,
+            )
+        verification_script = build_model_inventory_verification_script(self.paths)
+        self._checked(
+            self.ssh_options.ssh_command("bash -s"),
+            stage="model_acquisition",
+            substage="inventory_verify",
+            description="stage_model_acquisition_verify",
+            timeout=600,
+            default_reason="model_inventory_mismatch",
+            reserve_stage=reserve_stage,
+            input_text=verification_script,
+        )
+        self._persist_model_acquisition_receipt(
+            download_attestation=download_attestation
+        )
+        self._record("model_acquisition", True)
+        return self.outcomes[-1]
 
     # -- stage 5: no-warmup canary -----------------------------------------
 
@@ -1942,11 +2546,14 @@ class RemoteOrchestrator:
             invocation=invocation,
             derived_image_id=self._require_derived_image_id(),
         )
-        checked(
-            self.runner,
+        self._checked(
             self.ssh_options.ssh_command(" ".join(_quote(part) for part in argv)),
+            stage="canary",
+            substage="event_feasibility",
             description="stage_canary",
             timeout=900,
+            default_reason="canary_failed",
+            reserve_stage="no_warmup_canary_event_feasibility_gate",
             input_text=None,
         )
         self._record("canary", True)
@@ -1972,13 +2579,16 @@ class RemoteOrchestrator:
                     invocation=invocation,
                     derived_image_id=self._require_derived_image_id(),
                 )
-                checked(
-                    self.runner,
+                self._checked(
                     self.ssh_options.ssh_command(
                         " ".join(_quote(part) for part in argv)
                     ),
+                    stage="four_ab_pairs",
+                    substage=tag,
                     description=f"stage_four_ab_pairs[{tag}]",
                     timeout=900,
+                    default_reason="pair_lane_failed",
+                    reserve_stage="four_fresh_ab_lifecycle_pairs",
                     input_text=None,
                 )
                 self._record(tag, True)
@@ -2001,11 +2611,14 @@ class RemoteOrchestrator:
             invocation=invocation,
             derived_image_id=self._require_derived_image_id(),
         )
-        checked(
-            self.runner,
+        self._checked(
             self.ssh_options.ssh_command(" ".join(_quote(part) for part in argv)),
+            stage="eviction_lane",
+            substage="fixed_eviction",
             description="stage_eviction_lane",
             timeout=900,
+            default_reason="eviction_lane_failed",
+            reserve_stage="fixed_eviction_lane",
             input_text=None,
         )
         self._record("eviction_lane", True)
@@ -2096,7 +2709,14 @@ class RemoteOrchestrator:
             raise HostOrchestrationError(
                 f"lane receipt {tag!r} has no valid measured KV-event boundary"
             )
-        return receipt.to_dict()
+        payload = receipt.to_dict()
+        if not isinstance(payload, dict) or not all(
+            isinstance(key, str) for key in payload
+        ):
+            raise HostOrchestrationError(
+                f"lane receipt {tag!r} did not serialize to a string-keyed object"
+            )
+        return {key: value for key, value in payload.items() if isinstance(key, str)}
 
     def _build_claim_matrix_and_lane_receipts(
         self, evidence_dir: Path
@@ -2133,21 +2753,27 @@ class RemoteOrchestrator:
         self._require_budget("private_verify_redact_report_export")
         self.state = OrchestratorState.EVIDENCE_EXPORT
         remote_tar = f"{self.config.remote_workspace}/evidence.tar"
-        checked(
-            self.runner,
+        self._checked(
             self.ssh_options.ssh_command(
                 f"tar -cf {_quote(remote_tar)} -C "
                 f"{_quote(self.config.remote_workspace)} evidence receipts"
             ),
+            stage="evidence_transfer",
+            substage="archive",
             description="stage_transfer_evidence_archive",
             timeout=300,
+            default_reason="evidence_archive_failed",
+            reserve_stage="private_verify_redact_report_export",
             input_text=None,
         )
-        digest_result = checked(
-            self.runner,
+        digest_result = self._checked(
             self.ssh_options.ssh_command(f"sha256sum {_quote(remote_tar)}"),
+            stage="evidence_transfer",
+            substage="digest",
             description="stage_transfer_evidence_digest",
             timeout=60,
+            default_reason="evidence_digest_failed",
+            reserve_stage="private_verify_redact_report_export",
             input_text=None,
         )
         remote_digest = digest_result.stdout.split()[0].strip()
@@ -2157,11 +2783,14 @@ class RemoteOrchestrator:
             )
         local_bundle_dir.mkdir(parents=True, exist_ok=True)
         local_tar = local_bundle_dir / "evidence.tar"
-        checked(
-            self.runner,
+        self._checked(
             self.ssh_options.scp_download_command(remote_tar, local_tar),
+            stage="evidence_transfer",
+            substage="download",
             description="stage_transfer_evidence_download",
             timeout=300,
+            default_reason="evidence_download_failed",
+            reserve_stage="private_verify_redact_report_export",
             input_text=None,
         )
         local_bytes = local_tar.read_bytes()
@@ -2252,7 +2881,7 @@ class RemoteOrchestrator:
                 f"rm -rf {_quote(self.paths.repo_dir)}",
                 f"rm -rf {_quote(self.paths.evidence_dir)}",
                 f"rm -rf {_quote(self.paths.receipts_dir)}",
-                f"rm -rf {_quote(self.config.remote_workspace + '/hf-home')}",
+                f"rm -rf {_quote(self.paths.hf_scratch_dir)}",
                 f"rm -f {_quote(self.paths.source_archive_remote_path)}",
                 f"rm -f {_quote(self.config.remote_workspace + '/evidence.tar')}",
                 'AUTHORIZED_KEYS="$HOME/.ssh/authorized_keys"',
@@ -2278,11 +2907,14 @@ class RemoteOrchestrator:
         residual_containers = 0
         residual_gpu_processes = 0
         try:
-            result = checked(
-                self.runner,
+            result = self._checked(
                 self.ssh_options.ssh_command("bash -s"),
+                stage="teardown",
+                substage="cleanup_key_removal",
                 description="stage_teardown_cleanup",
                 timeout=300,
+                default_reason="teardown_cleanup_failed",
+                reserve_stage=None,
                 input_text=script,
             )
             residual_containers, residual_gpu_processes = self._verify_teardown_output(
@@ -2291,11 +2923,14 @@ class RemoteOrchestrator:
         except BaseException as exc:
             cleanup_error = exc
         try:
-            checked(
-                self.runner,
+            self._checked(
                 self.ssh_options.ssh_command("sudo -n shutdown -h now"),
+                stage="teardown",
+                substage="shutdown",
                 description="stage_teardown_shutdown",
                 timeout=30,
+                default_reason="teardown_shutdown_failed",
+                reserve_stage=None,
                 input_text=None,
             )
         except BaseException as exc:
@@ -2352,8 +2987,8 @@ class RemoteOrchestrator:
         try:
             self.stage_preflight()
             self.stage_identity_gate()
-            self.stage_model_acquisition()
             self.stage_image_preparation()
+            self.stage_model_acquisition()
             self.stage_canary()
             self.stage_four_ab_pairs()
             self.stage_eviction_lane()

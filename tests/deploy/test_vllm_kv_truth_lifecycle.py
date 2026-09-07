@@ -370,6 +370,10 @@ def _authorization_payload(**overrides: Any) -> dict[str, Any]:
         "model_id": lifecycle.MODEL_ID,
         "model_revision": lifecycle.MODEL_REVISION,
         "model_inventory_sha256": _model_inventory_sha256(),
+        "model_download_package": lifecycle.DOWNLOADER_PACKAGE,
+        "model_download_version": lifecycle.DOWNLOADER_VERSION,
+        "model_download_interface": lifecycle.DOWNLOADER_INTERFACE,
+        "model_download_source": lifecycle.DOWNLOADER_SOURCE,
         "gpu_expected_count": 1,
         "gpu_expected_name": lifecycle.EXPECTED_GPU_NAME,
         "gpu_expected_driver": lifecycle.EXPECTED_DRIVER,
@@ -783,6 +787,7 @@ class RecordedCall:
 
 def _preflight_stdout(**overrides: str) -> str:
     values = {
+        "OS_NAME": "Linux",
         "NOW_EPOCH": str(int(BILLING_STARTED_AT.timestamp())),
         "BOOT_EPOCH": str(int(BILLING_STARTED_AT.timestamp())),
         "GPU_COUNT": "1",
@@ -799,10 +804,37 @@ def _preflight_stdout(**overrides: str) -> str:
         "SWAP_USED_BYTES": "0",
         "PYTHON_VERSION": "3.12.3",
         "DOCKER_VERSION": "29.6.1",
-        "HF_CLI": "/usr/local/bin/huggingface-cli",
     }
     values.update(overrides)
     return "\n".join(f"{key}={value}" for key, value in values.items())
+
+
+def _image_preparation_stdout(**overrides: str) -> str:
+    expected_digest = lifecycle.BASE_IMAGE_REFERENCE.split("@", 1)[-1]
+    markers = {
+        "BASE_REPODIGESTS": f'["vllm/vllm-openai@{expected_digest}"]',
+        "BASE_IMAGE_ID": "sha256:" + "1" * 64,
+        "EXPECTED_HEAD": VALID_HEAD,
+        "DERIVED_IMAGE_ID": DERIVED_IMAGE_ID,
+        "DOWNLOADER_PACKAGE": lifecycle.DOWNLOADER_PACKAGE,
+        "DOWNLOADER_VERSION": lifecycle.DOWNLOADER_VERSION,
+        "DOWNLOADER_INTERFACE": lifecycle.DOWNLOADER_INTERFACE,
+        "DOWNLOADER_SOURCE": lifecycle.DOWNLOADER_SOURCE,
+    }
+    markers.update(overrides)
+    downloader = {
+        "schema_version": "1",
+        "package": markers["DOWNLOADER_PACKAGE"],
+        "version": markers["DOWNLOADER_VERSION"],
+        "interface": markers["DOWNLOADER_INTERFACE"],
+        "source": markers["DOWNLOADER_SOURCE"],
+    }
+    return "\n".join(
+        [
+            *(f"{key}={value}" for key, value in markers.items()),
+            json.dumps(downloader, sort_keys=True, separators=(",", ":")),
+        ]
+    )
 
 
 @dataclass
@@ -849,16 +881,23 @@ class FakeCommandRunner:
             stdout = _preflight_stdout()
             return lifecycle.CommandResult(returncode=0, stdout=stdout, stderr="")
         if description == "stage_image_preparation":
-            expected_digest = lifecycle.BASE_IMAGE_REFERENCE.split("@", 1)[-1]
-            stdout = "\n".join(
-                [
-                    f'BASE_REPODIGESTS=["vllm/vllm-openai@{expected_digest}"]',
-                    "BASE_IMAGE_ID=sha256:" + "1" * 64,
-                    f"EXPECTED_HEAD={VALID_HEAD}",
-                    f"DERIVED_IMAGE_ID={DERIVED_IMAGE_ID}",
-                ]
-            )
+            stdout = _image_preparation_stdout()
             return lifecycle.CommandResult(returncode=0, stdout=stdout, stderr="")
+        if description == "stage_model_acquisition_download":
+            payload = {
+                "schema_version": "1",
+                "package": lifecycle.DOWNLOADER_PACKAGE,
+                "version": lifecycle.DOWNLOADER_VERSION,
+                "interface": lifecycle.DOWNLOADER_INTERFACE,
+                "source": lifecycle.DOWNLOADER_SOURCE,
+                "model_id": lifecycle.MODEL_ID,
+                "model_revision": lifecycle.MODEL_REVISION,
+            }
+            return lifecycle.CommandResult(
+                returncode=0,
+                stdout=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                stderr="",
+            )
         if description == "stage_transfer_evidence_digest":
             digest = hashlib.sha256(self.scp_download_target_bytes).hexdigest()
             return lifecycle.CommandResult(
@@ -921,9 +960,10 @@ class TestRemoteOrchestratorFullRun:
         descriptions = {call.description for call in runner.calls}
         assert "stage_preflight" in descriptions
         assert "stage_identity_gate" in descriptions
+        assert "stage_identity_source_upload" in descriptions
+        assert "stage_image_preparation" in descriptions
         assert "stage_model_acquisition_download" in descriptions
         assert "stage_model_acquisition_verify" in descriptions
-        assert "stage_image_preparation" in descriptions
         assert "stage_canary" in descriptions
         assert any(d.startswith("stage_four_ab_pairs[pair1") for d in descriptions)
         assert any(d.startswith("stage_four_ab_pairs[pair4") for d in descriptions)
@@ -958,6 +998,159 @@ class TestRemoteOrchestratorFullRun:
         assert public.to_dict()["run_mode"] == evidence.RUN_MODE_REAL_RUN
         evidence.assert_publication_safe(public.to_dict())
 
+    def test_full_run_uses_the_reordered_stage_and_reserve_sequence(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        descriptions = [call.description for call in runner.calls]
+        assert descriptions.index("stage_identity_source_upload") < descriptions.index(
+            "stage_image_preparation"
+        )
+        assert descriptions.index("stage_image_preparation") < descriptions.index(
+            "stage_model_acquisition_download"
+        )
+        assert descriptions.index(
+            "stage_model_acquisition_verify"
+        ) < descriptions.index("stage_canary")
+
+        receipts = [
+            json.loads(line)
+            for line in orchestrator.operation_receipt_path.read_text(
+                encoding="utf-8"
+            ).splitlines()
+        ]
+        first_by_stage = {
+            receipt["stage"]: receipt["reserved_minutes"] for receipt in receipts
+        }
+        assert first_by_stage["preflight"] == 210
+        assert first_by_stage["identity_source_transfer"] == 195
+        assert first_by_stage["image_preparation"] == 190
+        assert first_by_stage["model_acquisition"] == 170
+        assert first_by_stage["canary"] == 130
+        assert first_by_stage["four_ab_pairs"] == 115
+        assert first_by_stage["eviction_lane"] == 55
+        assert first_by_stage["evidence_transfer"] == 45
+        assert first_by_stage["teardown"] == 35
+
+    def test_vanilla_host_preflight_has_no_host_downloader_dependency(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        outcome = orchestrator.stage_preflight()
+        script = runner.calls[-1].input_text or ""
+        assert outcome.ok
+        assert "HF_CLI" not in script
+        assert "command -v huggingface-cli" not in script
+
+    def test_model_acquisition_uses_only_labeled_digest_bound_container_mounts(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        auth = _authorization()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=auth,
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_identity_gate()
+        orchestrator.stage_image_preparation()
+        orchestrator.stage_model_acquisition()
+        call = next(
+            item
+            for item in runner.calls
+            if item.description == "stage_model_acquisition_download"
+        )
+        script = call.input_text or ""
+        assert "huggingface-cli" not in script
+        assert "--network bridge" in script
+        assert lifecycle.docker_run_label(auth.nonce) in script
+        assert DERIVED_IMAGE_ID in script
+        assert script.count(" -v ") == 2
+        assert f"{orchestrator.paths.model_dir}:/model" in script
+        assert f"{orchestrator.paths.hf_scratch_dir}:/hf" in script
+        assert "cleanup_download_scratch" in script
+        receipt = json.loads(
+            (
+                _config(tmp_path).local_evidence_dir
+                / "private-model-acquisition-receipt.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert receipt["downloader"]["version"] == lifecycle.DOWNLOADER_VERSION
+        assert receipt["downloader"]["source"] == lifecycle.DOWNLOADER_SOURCE
+        assert receipt["verified_file_count"] == 15
+        assert receipt["verified_total_bytes"] == 16_397_461_266
+
+    @pytest.mark.parametrize(
+        ("marker", "reason"),
+        [
+            ("DOWNLOADER_PACKAGE", "model_download_interface_missing"),
+            ("DOWNLOADER_VERSION", "model_download_version_mismatch"),
+        ],
+    )
+    def test_image_attestation_refuses_missing_or_wrong_downloader(
+        self, tmp_path: Path, marker: str, reason: str
+    ) -> None:
+        value = "" if marker == "DOWNLOADER_PACKAGE" else "0.0.0"
+        runner = FakeCommandRunner(
+            responses={
+                "stage_image_preparation": lifecycle.CommandResult(
+                    returncode=0,
+                    stdout=_image_preparation_stdout(**{marker: value}),
+                    stderr="",
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_identity_gate()
+        with pytest.raises(lifecycle.HostOrchestrationError, match=reason):
+            orchestrator.stage_image_preparation()
+        assert not any(
+            call.description == "stage_model_acquisition_download"
+            for call in runner.calls
+        )
+
+    def test_model_inventory_mismatch_refuses_before_any_gpu_container(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner(
+            fail_stages=frozenset({"stage_model_acquisition_verify"})
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="model_inventory_mismatch"
+        ):
+            orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        assert not any(
+            call.description == "stage_canary"
+            or call.description.startswith("stage_four_ab_pairs")
+            or call.description == "stage_eviction_lane"
+            for call in runner.calls
+        )
+
     def test_ab_pairs_use_the_fixed_ab_ba_ba_ab_order(self, tmp_path: Path) -> None:
         runner = FakeCommandRunner()
         orchestrator = lifecycle.RemoteOrchestrator(
@@ -968,8 +1161,8 @@ class TestRemoteOrchestratorFullRun:
         )
         orchestrator.stage_preflight()
         orchestrator.stage_identity_gate()
-        orchestrator.stage_model_acquisition()
         orchestrator.stage_image_preparation()
+        orchestrator.stage_model_acquisition()
         orchestrator.stage_canary()
         orchestrator.stage_four_ab_pairs()
         tags = [
@@ -993,8 +1186,8 @@ class TestRemoteOrchestratorFullRun:
         )
         orchestrator.stage_preflight()
         orchestrator.stage_identity_gate()
-        orchestrator.stage_model_acquisition()
         orchestrator.stage_image_preparation()
+        orchestrator.stage_model_acquisition()
         orchestrator.stage_canary()
         orchestrator.stage_four_ab_pairs()
         orchestrator.stage_eviction_lane()
@@ -1033,6 +1226,7 @@ class TestRemoteOrchestratorFullRun:
             runner=runner,
             now_fn=lambda: BILLING_STARTED_AT,
         )
+        orchestrator.stage_identity_gate()
         orchestrator.stage_image_preparation()
         call = next(
             call
@@ -1042,7 +1236,9 @@ class TestRemoteOrchestratorFullRun:
         script = call.input_text or ""
         assert "-f containers/vllm-kv-truth/Containerfile" in script
         assert f"--build-arg RUNNER_COMMIT={VALID_HEAD}" in script
+        assert "--network none" in script
         assert "COPY" not in script
+        assert f"{orchestrator.paths.model_dir}:/model" not in script
         assert orchestrator.derived_image_id == DERIVED_IMAGE_ID
 
     def test_teardown_only_targets_run_scoped_label(self, tmp_path: Path) -> None:
@@ -1065,6 +1261,10 @@ class TestRemoteOrchestratorFullRun:
             f"if [ -d {orchestrator.config.remote_workspace} ]; then "
             f"rmdir {orchestrator.config.remote_workspace}; fi"
         ) in script
+        assert f"rm -rf {orchestrator.paths.model_dir}" in script
+        assert f"rm -rf {orchestrator.paths.hf_scratch_dir}" in script
+        assert f"rm -rf {orchestrator.paths.repo_dir}" in script
+        assert f"rm -f {orchestrator.paths.source_archive_remote_path}" in script
         assert (
             "docker ps -q" not in script.replace("docker ps -q --filter", "PLACEHOLDER")
             or "--filter" in script
@@ -1122,6 +1322,75 @@ class TestRemoteOrchestratorFullRun:
         descriptions = {call.description for call in runner.calls}
         assert "stage_teardown_cleanup" in descriptions
         assert orchestrator.state == lifecycle.OrchestratorState.COMPLETE
+
+    @pytest.mark.parametrize(
+        "failed_description",
+        [
+            "stage_preflight",
+            "stage_identity_gate",
+            "stage_identity_source_upload",
+            "stage_image_preparation",
+            "stage_model_acquisition_download",
+            "stage_model_acquisition_verify",
+            "stage_canary",
+            "stage_four_ab_pairs[pair1-slot1-a]",
+            "stage_four_ab_pairs[pair1-slot2-b]",
+            "stage_four_ab_pairs[pair2-slot1-b]",
+            "stage_four_ab_pairs[pair2-slot2-a]",
+            "stage_four_ab_pairs[pair3-slot1-b]",
+            "stage_four_ab_pairs[pair3-slot2-a]",
+            "stage_four_ab_pairs[pair4-slot1-a]",
+            "stage_four_ab_pairs[pair4-slot2-b]",
+            "stage_eviction_lane",
+            "stage_transfer_evidence_archive",
+            "stage_transfer_evidence_digest",
+            "stage_transfer_evidence_download",
+        ],
+    )
+    def test_every_substage_failure_is_receipted_and_tears_down_safely(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        failed_description: str,
+    ) -> None:
+        runner = FakeCommandRunner(fail_stages=frozenset({failed_description}))
+        config = _config(tmp_path)
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=config,
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(lifecycle.HostOrchestrationError):
+            orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        receipts = [
+            json.loads(line)
+            for line in orchestrator.operation_receipt_path.read_text(
+                encoding="utf-8"
+            ).splitlines()
+        ]
+        failed_receipt = next(
+            receipt
+            for receipt in receipts
+            if receipt["command_description"] == failed_description
+        )
+        assert failed_receipt["return_code"] == 1
+        assert failed_receipt["timed_out"] is False
+        assert failed_receipt["reason_code"] in lifecycle._SAFE_REASON_MESSAGES
+        assert failed_receipt["stderr_message"] != "denied"
+        assert len(failed_receipt["stderr_message"]) <= 160
+        assert failed_receipt["reserved_minutes"] >= 35
+        descriptions = [call.description for call in runner.calls]
+        assert "stage_teardown_cleanup" in descriptions
+        assert "stage_teardown_shutdown" in descriptions
+        cleanup = next(
+            call
+            for call in runner.calls
+            if call.description == "stage_teardown_cleanup"
+        )
+        assert "authorized_keys" in (cleanup.input_text or "")
+        assert config.authorized_key_marker in (cleanup.input_text or "")
+        assert "SAFE TO TERMINATE INSTANCE NOW" in capsys.readouterr().out
 
     def test_teardown_reaches_shutdown_when_preflight_fails(
         self, tmp_path: Path
@@ -1235,7 +1504,9 @@ class TestRemoteOrchestratorFullRun:
             runner=runner,
             now_fn=lambda: BILLING_STARTED_AT,
         )
-        with pytest.raises(lifecycle.HostOrchestrationError, match="GPU name"):
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="preflight_probe_failed"
+        ):
             orchestrator.stage_preflight()
 
     def test_preflight_rejects_wrong_gpu_count(self, tmp_path: Path) -> None:
@@ -1254,8 +1525,37 @@ class TestRemoteOrchestratorFullRun:
             runner=runner,
             now_fn=lambda: BILLING_STARTED_AT,
         )
-        with pytest.raises(lifecycle.HostOrchestrationError, match="GPU count"):
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="preflight_probe_failed"
+        ):
             orchestrator.stage_preflight()
+
+    def test_preflight_surfaces_allowlisted_missing_docker_reason(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner(
+            responses={
+                "stage_preflight": lifecycle.CommandResult(
+                    returncode=1,
+                    stdout="",
+                    stderr=(
+                        "private host detail\n"
+                        "LLMTRACEFX_REASON=preflight_missing_docker\n"
+                    ),
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="preflight_missing_docker"
+        ) as excinfo:
+            orchestrator.stage_preflight()
+        assert "private host detail" not in str(excinfo.value)
 
     @pytest.mark.parametrize(
         ("marker", "value", "message"),
@@ -1285,7 +1585,9 @@ class TestRemoteOrchestratorFullRun:
             runner=runner,
             now_fn=lambda: BILLING_STARTED_AT,
         )
-        with pytest.raises(lifecycle.HostOrchestrationError, match=message):
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="preflight_probe_failed"
+        ):
             orchestrator.stage_preflight()
 
     def test_image_preparation_rejects_wrong_base_digest(self, tmp_path: Path) -> None:
@@ -1313,7 +1615,10 @@ class TestRemoteOrchestratorFullRun:
             runner=runner,
             now_fn=lambda: BILLING_STARTED_AT,
         )
-        with pytest.raises(lifecycle.HostOrchestrationError, match="RepoDigests"):
+        orchestrator.stage_identity_gate()
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="image_preparation_failed"
+        ):
             orchestrator.stage_image_preparation()
 
     def test_image_preparation_rejects_wrong_derived_image_id(
@@ -1342,7 +1647,10 @@ class TestRemoteOrchestratorFullRun:
             runner=runner,
             now_fn=lambda: BILLING_STARTED_AT,
         )
-        with pytest.raises(lifecycle.HostOrchestrationError, match="derived image id"):
+        orchestrator.stage_identity_gate()
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="image_preparation_failed"
+        ):
             orchestrator.stage_image_preparation()
 
     def test_image_preparation_rejects_archive_with_wrong_embedded_commit(
@@ -1362,8 +1670,10 @@ class TestRemoteOrchestratorFullRun:
             runner=FakeCommandRunner(),
             now_fn=lambda: BILLING_STARTED_AT,
         )
-        with pytest.raises(lifecycle.HostOrchestrationError, match="repository_head"):
-            orchestrator.stage_image_preparation()
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="source_transfer_failed"
+        ):
+            orchestrator.stage_identity_gate()
 
     def test_image_preparation_rejects_archive_digest_not_authorized(
         self, tmp_path: Path
@@ -1377,9 +1687,9 @@ class TestRemoteOrchestratorFullRun:
             now_fn=lambda: BILLING_STARTED_AT,
         )
         with pytest.raises(
-            lifecycle.HostOrchestrationError, match="derived_image_source_digest"
+            lifecycle.HostOrchestrationError, match="source_transfer_failed"
         ):
-            orchestrator.stage_image_preparation()
+            orchestrator.stage_identity_gate()
 
     def test_image_preparation_rejects_remote_confirmed_wrong_head(
         self, tmp_path: Path
@@ -1410,7 +1720,10 @@ class TestRemoteOrchestratorFullRun:
             runner=runner,
             now_fn=lambda: BILLING_STARTED_AT,
         )
-        with pytest.raises(lifecycle.HostOrchestrationError, match="repository_head"):
+        orchestrator.stage_identity_gate()
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="image_preparation_failed"
+        ):
             orchestrator.stage_image_preparation()
 
     def test_image_preparation_rejects_archive_with_unsafe_member_path(
@@ -1433,8 +1746,10 @@ class TestRemoteOrchestratorFullRun:
             runner=FakeCommandRunner(),
             now_fn=lambda: BILLING_STARTED_AT,
         )
-        with pytest.raises(lifecycle.HostOrchestrationError, match="unsafe member"):
-            orchestrator.stage_image_preparation()
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="source_transfer_failed"
+        ):
+            orchestrator.stage_identity_gate()
 
     def test_image_preparation_rejects_archive_missing_commit_marker(
         self, tmp_path: Path
@@ -1454,9 +1769,9 @@ class TestRemoteOrchestratorFullRun:
             now_fn=lambda: BILLING_STARTED_AT,
         )
         with pytest.raises(
-            lifecycle.HostOrchestrationError, match="COMMIT_HEAD marker"
+            lifecycle.HostOrchestrationError, match="source_transfer_failed"
         ):
-            orchestrator.stage_image_preparation()
+            orchestrator.stage_identity_gate()
 
     def test_image_preparation_uploads_the_checked_source_archive(
         self, tmp_path: Path
@@ -1468,11 +1783,11 @@ class TestRemoteOrchestratorFullRun:
             runner=runner,
             now_fn=lambda: BILLING_STARTED_AT,
         )
-        orchestrator.stage_image_preparation()
+        orchestrator.stage_identity_gate()
         upload_calls = [
             call
             for call in runner.calls
-            if call.description == "stage_image_preparation_upload_source"
+            if call.description == "stage_identity_source_upload"
         ]
         assert len(upload_calls) == 1
         assert upload_calls[0].argv[0] == "scp"
@@ -1621,6 +1936,41 @@ class TestRemoteOrchestratorFullRun:
         with pytest.raises(lifecycle.HostOrchestrationError) as excinfo:
             orchestrator.stage_preflight()
         assert "denied" not in str(excinfo.value)
+
+    def test_timeout_receipt_is_bounded_and_contains_no_raw_stderr(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner(
+            responses={
+                "stage_preflight": lifecycle.CommandResult(
+                    returncode=-1,
+                    stdout="",
+                    stderr="private-host.example /secret/key TOKEN=value",
+                    timed_out=True,
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(lifecycle.HostOrchestrationError, match="operation_timeout"):
+            orchestrator.stage_preflight()
+        receipt = json.loads(
+            orchestrator.operation_receipt_path.read_text(
+                encoding="utf-8"
+            ).splitlines()[-1]
+        )
+        serialized = json.dumps(receipt)
+        assert receipt["timed_out"] is True
+        assert receipt["return_code"] == -1
+        assert receipt["stderr_category"] == "timeout"
+        assert receipt["stderr_message"] == "the operation timed out"
+        assert "private-host" not in serialized
+        assert "/secret/key" not in serialized
+        assert "TOKEN=value" not in serialized
 
 
 class TestNoNetworkOrProcessSpawned:

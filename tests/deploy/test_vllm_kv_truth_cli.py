@@ -11,11 +11,14 @@ from __future__ import annotations
 import json
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from vllm_kv_truth import cli as cli_module
 from vllm_kv_truth import evidence
 from vllm_kv_truth.cli import _build_parser, main
+from vllm_kv_truth.lifecycle import HostOrchestrationError
 
 
 class TestArgumentParser:
@@ -176,3 +179,49 @@ class TestRunCommandRejectsBadInputs:
         assert exit_code == 1
         captured = capsys.readouterr()
         assert "x" not in captured.out
+
+    def test_run_reports_safe_failed_substage_and_reason(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        authorization = SimpleNamespace(signature_path=None)
+        monkeypatch.setattr(
+            cli_module.ProtectedExecutionConfig,
+            "load",
+            lambda _path: SimpleNamespace(local_evidence_dir=Path("unused")),
+        )
+        monkeypatch.setattr(
+            cli_module.RunAuthorization,
+            "read",
+            lambda _path: authorization,
+        )
+
+        class RefusingOrchestrator:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
+            def run(self, **_kwargs: object) -> tuple[object, ...]:
+                raise HostOrchestrationError(
+                    "the remote host does not provide Docker",
+                    stage="preflight",
+                    substage="host_probe",
+                    reason_code="preflight_missing_docker",
+                )
+
+        monkeypatch.setattr(cli_module, "SubprocessCommandRunner", lambda: object())
+        monkeypatch.setattr(cli_module, "RemoteOrchestrator", RefusingOrchestrator)
+        exit_code = main(
+            [
+                "run",
+                "--execution-config",
+                "protected.json",
+                "--authorization",
+                "authorization.json",
+            ]
+        )
+        assert exit_code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert (
+            "preflight/host_probe: preflight_missing_docker: "
+            "the remote host does not provide Docker"
+        ) in captured.err

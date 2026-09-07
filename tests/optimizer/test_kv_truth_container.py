@@ -23,6 +23,12 @@ def test_containerfile_is_bound_to_the_exact_offline_runtime() -> None:
     assert "COPY . /opt/llmtracefx/source" in text
     assert "--no-build-isolation" in text
     assert 'org.llmtracefx.protocol="qwen3-8b-vllm-kv-truth-v1"' in text
+    assert 'org.llmtracefx.downloader.package="huggingface-hub"' in text
+    assert 'org.llmtracefx.downloader.version="1.13.0"' in text
+    assert (
+        'org.llmtracefx.downloader.interface="huggingface_hub.snapshot_download"'
+        in text
+    )
 
 
 def test_containerfile_has_no_download_or_public_service_step() -> None:
@@ -32,7 +38,6 @@ def test_containerfile_has_no_download_or_public_service_step() -> None:
         "wget ",
         "apt-get",
         "git clone",
-        "snapshot_download",
         "huggingface-cli",
         "expose ",
     ):
