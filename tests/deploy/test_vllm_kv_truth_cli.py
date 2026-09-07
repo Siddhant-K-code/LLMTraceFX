@@ -9,7 +9,7 @@ environment. Instead they exercise the argument parser directly, and
 from __future__ import annotations
 
 import json
-import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -159,7 +159,9 @@ class TestRunCommandRejectsBadInputs:
     ) -> None:
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps({"host": "x"}), encoding="utf-8")
-        os.chmod(config_path, 0o644)
+        config_path.chmod(  # codeql[py/overly-permissive-file]
+            config_path.stat().st_mode | stat.S_IRGRP
+        )
         auth_path = tmp_path / "auth.json"
         auth_path.write_text("{}", encoding="utf-8")
         exit_code = main(

@@ -15,6 +15,7 @@ import hashlib
 import io
 import json
 import os
+import stat
 import tarfile
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -654,13 +655,18 @@ class TestProtectedExecutionConfig:
         payload = self._payload(tmp_path)
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps(payload), encoding="utf-8")
-        os.chmod(config_path, 0o644)
+        config_path.chmod(  # codeql[py/overly-permissive-file]
+            config_path.stat().st_mode | stat.S_IRGRP
+        )
         with pytest.raises(lifecycle.HostOrchestrationError, match="group- or world"):
             lifecycle.ProtectedExecutionConfig.load(config_path)
 
     def test_rejects_insecure_private_key_permissions(self, tmp_path: Path) -> None:
         payload = self._payload(tmp_path)
-        os.chmod(Path(payload["private_key_path"]), 0o644)
+        private_key_path = Path(payload["private_key_path"])
+        private_key_path.chmod(  # codeql[py/overly-permissive-file]
+            private_key_path.stat().st_mode | stat.S_IRGRP
+        )
         with pytest.raises(lifecycle.HostOrchestrationError, match="0600"):
             lifecycle.ProtectedExecutionConfig.from_dict(payload)
 
@@ -676,7 +682,10 @@ class TestProtectedExecutionConfig:
 
     def test_rejects_world_readable_known_hosts(self, tmp_path: Path) -> None:
         payload = self._payload(tmp_path)
-        os.chmod(Path(payload["known_hosts_path"]), 0o644)
+        known_hosts_path = Path(payload["known_hosts_path"])
+        known_hosts_path.chmod(  # codeql[py/overly-permissive-file]
+            known_hosts_path.stat().st_mode | stat.S_IRGRP
+        )
         with pytest.raises(lifecycle.HostOrchestrationError, match="group- or world"):
             lifecycle.ProtectedExecutionConfig.from_dict(payload)
 
