@@ -244,7 +244,8 @@ from OS state or from the application list-rate ledger.
 
 The authorized attempt at repository head
 `2720134ca6f285d06ae2b42f4fc3d260bda3c45d` stopped in preflight because the
-old probe treated a host `huggingface-cli` executable as mandatory under
-`set -e`. Teardown succeeded. No model download, image pull/build, canary,
-pair, eviction, or GPU workload occurred, so that attempt created no
-scientific evidence claim.
+old probe emitted no absolute `HF_CLI` path and the local verifier required
+one. The vanilla CloudRift Ubuntu 24.04 host did not provide that executable,
+so the marker set was rejected. Teardown succeeded. No model download, image
+pull/build, canary, pair, eviction, or GPU workload occurred, so that attempt
+created no scientific evidence claim.
