@@ -131,6 +131,9 @@ where = ["."]
 include = ["llmtracefx*", "vllm_kv_truth*"]
 exclude = ["tests*"]
 
+[tool.setuptools]
+script-files = ["scripts/run-vllm-kv-truth-clean-env.sh"]
+
 [tool.setuptools.package-data]
 llmtracefx = [
     "test_traces/*.json",

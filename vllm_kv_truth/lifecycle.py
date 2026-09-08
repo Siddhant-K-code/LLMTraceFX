@@ -990,7 +990,9 @@ def reject_credential_environment(env: Mapping[str, str]) -> None:
     if offending:
         raise HostOrchestrationError(
             "refusing to run with credential-shaped or command-routing "
-            f"environment variables set: {sorted(set(offending))}"
+            f"environment variables set: {sorted(set(offending))}; use "
+            "run-vllm-kv-truth-clean-env.sh from the verified installation "
+            "instead of unsetting individual variables"
         )
 
 

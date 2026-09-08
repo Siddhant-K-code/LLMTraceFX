@@ -36,10 +36,13 @@ class TestArgumentParser:
                 "config.json",
                 "--authorization",
                 "auth.json",
+                "--output-dir",
+                "output",
             ]
         )
         assert args.execution_config == Path("config.json")
         assert args.authorization == Path("auth.json")
+        assert args.output_dir == Path("output")
 
     def test_no_host_user_key_or_remote_path_flags_exist(self) -> None:
         parser = _build_parser()
@@ -153,6 +156,8 @@ class TestRunCommandRejectsBadInputs:
                 str(tmp_path / "missing-config.json"),
                 "--authorization",
                 str(tmp_path / "missing-auth.json"),
+                "--output-dir",
+                str(tmp_path / "output"),
             ]
         )
         assert exit_code == 1
@@ -174,20 +179,50 @@ class TestRunCommandRejectsBadInputs:
                 str(config_path),
                 "--authorization",
                 str(auth_path),
+                "--output-dir",
+                str(tmp_path / "output"),
             ]
         )
         assert exit_code == 1
         captured = capsys.readouterr()
         assert "x" not in captured.out
 
+    def test_output_directory_must_match_protected_config(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        configured_output = tmp_path / "configured-output"
+        monkeypatch.setattr(
+            cli_module.ProtectedExecutionConfig,
+            "load",
+            lambda _path: SimpleNamespace(local_evidence_dir=configured_output),
+        )
+        monkeypatch.setattr(
+            cli_module.RunAuthorization,
+            "read",
+            lambda _path: SimpleNamespace(signature_path=None),
+        )
+        exit_code = main(
+            [
+                "run",
+                "--execution-config",
+                str(tmp_path / "config.json"),
+                "--authorization",
+                str(tmp_path / "authorization.json"),
+                "--output-dir",
+                str(tmp_path / "different-output"),
+            ]
+        )
+        assert exit_code == 1
+
     def test_run_reports_safe_failed_substage_and_reason(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         authorization = SimpleNamespace(signature_path=None)
+        output_dir = Path.cwd() / "unused"
         monkeypatch.setattr(
             cli_module.ProtectedExecutionConfig,
             "load",
-            lambda _path: SimpleNamespace(local_evidence_dir=Path("unused")),
+            lambda _path: SimpleNamespace(local_evidence_dir=output_dir),
         )
         monkeypatch.setattr(
             cli_module.RunAuthorization,
@@ -216,6 +251,8 @@ class TestRunCommandRejectsBadInputs:
                 "protected.json",
                 "--authorization",
                 "authorization.json",
+                "--output-dir",
+                str(output_dir),
             ]
         )
         assert exit_code == 1

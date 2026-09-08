@@ -136,15 +136,61 @@ authorization object without `authorization_sha256`. Optional detached
 OpenSSH signing uses both `signature_path` and `authorized_signers_path`;
 supplying only one is invalid.
 
-## 5. Coordinator GO and one command
+## 5. Install and preflight the clean-environment launcher
+
+Install the wheel into a dedicated virtual environment whose absolute path
+contains no spaces. Record the SHA-256 of the installed
+`llmtracefx-vllm-kv-truth` console script during that verified installation;
+the launcher requires that trusted value on every invocation. Do not recompute
+the expected digest from an executable whose integrity is in doubt.
+
+Use the installed `run-vllm-kv-truth-clean-env.sh`, not the CLI directly. The
+launcher validates itself and the console script as current-user-owned,
+non-symlink regular files, binds the console script to its recorded SHA-256 and
+same-installation Python interpreter, and accepts only the `preflight` and
+`run` command shapes. The execution config and authorization must be
+current-user-owned, non-symlink, mode-`0600` regular files. The output
+directory must already exist, be empty, current-user-owned, non-symlink, and
+mode `0700`. Every path must be absolute and lexically unambiguous.
+
+The authorization continues to carry `signature_path` and
+`authorized_signers_path` together when detached signing is enabled. The
+launcher deliberately does not accept signature, signer, target, user, SSH
+key, known-hosts, or remote-workspace arguments.
+
+Run the offline environment preflight first:
+
+```bash
+/absolute/path/to/venv/bin/run-vllm-kv-truth-clean-env.sh preflight \
+  --cli /absolute/path/to/venv/bin/llmtracefx-vllm-kv-truth \
+  --cli-sha256 <RECORDED_64_HEX_CLI_SHA256>
+```
+
+`clean environment preflight: ok` proves that the Python process received the
+fixed `PATH=/usr/bin:/bin:/usr/local/bin`, `LANG=C`, and `LC_ALL=C`, with no
+caller-provided credential, routing, proxy, import, virtualenv, Docker, SSH
+agent, or arbitrary variables. macOS may synthesize
+`__CF_USER_TEXT_ENCODING` after `env -i`; the launcher neither reads nor
+forwards it. This preflight performs no SSH, provider, model, image, GPU, or
+paid action.
+
+If the direct CLI reports a credential-shaped or command-routing environment,
+do not unset individual variables and retry. That can miss a credential,
+routing override, import override, or shell-injected value. Use the verified
+clean launcher and pass its offline preflight instead.
+
+## 6. Coordinator GO and one command
 
 Only after the coordinator confirms the exact tested merged head,
 authorization, remaining reserve, and fresh temporary key, execute:
 
 ```bash
-llmtracefx-vllm-kv-truth run \
+/absolute/path/to/venv/bin/run-vllm-kv-truth-clean-env.sh run \
+  --cli /absolute/path/to/venv/bin/llmtracefx-vllm-kv-truth \
+  --cli-sha256 <RECORDED_64_HEX_CLI_SHA256> \
   --execution-config /protected/path/execution-config.json \
-  --authorization /protected/path/run-authorization.json
+  --authorization /protected/path/run-authorization.json \
+  --output-dir /protected/path/to/empty-evidence-output
 ```
 
 There are zero retries and zero replacement runs. The command performs its
@@ -171,10 +217,12 @@ Before the one command above, confirm only this checklist:
 2. Authorization schema 2 seals that head, archive digest, runtime/model/image
    pins, downloader identity, budget, nonce, and zero-retry policy.
 3. The protected config names a fresh key, dedicated known-hosts file, and
-   empty local evidence destination.
-4. The coordinator has issued GO and the full 210-minute reserve gate passes.
+   the same empty output directory passed to the launcher.
+4. The recorded installed-CLI SHA-256 still matches and the clean environment
+   preflight succeeds.
+5. The coordinator has issued GO and the full 210-minute reserve gate passes.
 
-## 6. Private failure diagnostics
+## 7. Private failure diagnostics
 
 Each command operation appends a mode-`0600`
 `private-operation-receipts.jsonl` record under the protected local evidence
@@ -219,7 +267,7 @@ Shutdown is scheduled from the same authenticated SSH session that removes
 the temporary key, so key removal cannot prevent the shutdown command from
 being issued.
 
-## 7. Evidence and termination
+## 8. Evidence and termination
 
 Keep the transferred private bundle private. Verify the public-redacted
 bundle offline:
@@ -240,7 +288,7 @@ coordinator must separately terminate the reservation in the provider
 console and preserve provider confirmation. Never claim provider deletion
 from OS state or from the application list-rate ledger.
 
-## 8. Failed-attempt provenance
+## 9. Failed-attempt provenance
 
 The authorized attempt at repository head
 `2720134ca6f285d06ae2b42f4fc3d260bda3c45d` stopped in preflight because the
@@ -249,3 +297,19 @@ one. The vanilla CloudRift Ubuntu 24.04 host did not provide that executable,
 so the marker set was rejected. Teardown succeeded. No model download, image
 pull/build, canary, pair, eviction, or GPU workload occurred, so that attempt
 created no scientific evidence claim.
+
+The authorized CloudRift attempt from merged repository head
+`4901739adeb7f6ff6aee86c2d44dff0336b486c7` then refused locally before SSH
+because its Copilot/CI parent shell contained
+`COPILOT_TRAMPOLINE_TOKEN`, `GH_TOKEN`, and `SSH_AUTH_SOCK`.
+`SubprocessCommandRunner` correctly preserved the strict ambient-environment
+guard. No SSH, model, image, GPU, or scientific stage ran. External teardown
+verification found zero resources, removed the temporary key, shut down the
+OS, and the operator confirmed provider-console termination. The inferred
+cost was approximately `$0.058434`; it is operational provenance, not
+scientific evidence.
+
+Do not provision a new VM for the next attempt until the clean-launcher PR is
+merged, its exact merged head passes CI and CodeQL, the wheel-installed
+launcher preflight passes from the contaminated operator shell, and a new
+authorization binds the resulting exact source archive.
