@@ -1,11 +1,22 @@
 #!/bin/sh
 
+SAFE_PATH=/usr/bin:/bin:/usr/local/bin
+
+# Sanitize before invoking stat, shasum, sed, or any other external utility.
+# The marker is consumed immediately and is never passed to Python.
+if [ "${LLMTRACEFX_CLEAN_ENV_BOOTSTRAPPED-}" != "1" ]; then
+    exec /usr/bin/env -i \
+        PATH="$SAFE_PATH" LANG=C LC_ALL=C \
+        LLMTRACEFX_CLEAN_ENV_BOOTSTRAPPED=1 \
+        /bin/sh "$0" "$@"
+fi
+unset LLMTRACEFX_CLEAN_ENV_BOOTSTRAPPED
+
 set -eu
 set -f
 umask 077
 
 PROGRAM=${0##*/}
-SAFE_PATH=/usr/bin:/bin:/usr/local/bin
 
 fail() {
     printf '%s\n' "$PROGRAM: error: $1" >&2
@@ -60,6 +71,32 @@ file_mode() {
     fi
 }
 
+require_trusted_directory_chain() {
+    label=$1
+    directory=$2
+    current_uid=$(/usr/bin/id -u) ||
+        fail "current user could not be identified"
+    cursor=$directory
+    while :; do
+        [ -d "$cursor" ] && [ ! -L "$cursor" ] ||
+            fail "$label has an unsafe directory component"
+        owner=$(file_uid "$cursor") ||
+            fail "$label directory owner could not be inspected"
+        [ "$owner" = "$current_uid" ] || [ "$owner" = "0" ] ||
+            fail "$label directory must be owned by the current user or root"
+        mode=$(file_mode "$cursor") ||
+            fail "$label directory mode could not be inspected"
+        if [ "$((0$mode & 022))" -ne 0 ]; then
+            [ "$owner" = "0" ] && [ "$((0$mode & 01000))" -ne 0 ] ||
+                fail "$label directory must not be group- or world-writable"
+        fi
+        [ "$cursor" = "/" ] && break
+        parent=${cursor%/*}
+        [ -n "$parent" ] || parent=/
+        cursor=$parent
+    done
+}
+
 require_current_owner() {
     label=$1
     path=$2
@@ -75,6 +112,7 @@ require_regular_nonsymlink_file() {
     require_no_symlink_components "$label" "$path"
     [ -f "$path" ] || fail "$label must be a regular file"
     [ ! -L "$path" ] || fail "$label must not be a symlink"
+    require_trusted_directory_chain "$label" "${path%/*}"
     require_current_owner "$label" "$path"
 }
 
@@ -92,6 +130,7 @@ require_output_directory() {
     require_no_symlink_components "output directory" "$path"
     [ -d "$path" ] || fail "output directory must already exist"
     [ ! -L "$path" ] || fail "output directory must not be a symlink"
+    require_trusted_directory_chain "output directory" "$path"
     require_current_owner "output directory" "$path"
     mode=$(file_mode "$path") || fail "output directory mode could not be inspected"
     [ "$mode" = "700" ] || fail "output directory must have mode 0700"
@@ -115,6 +154,93 @@ sha256_file() {
     printf '%s\n' "${digest%% *}"
 }
 
+extract_cli_interpreter() {
+    cli=$1
+    first_line=$(/usr/bin/sed -n '1p' "$cli") ||
+        fail "CLI executable shebang could not be inspected"
+    case "$first_line" in
+        '#!/bin/sh')
+            second_line=$(/usr/bin/sed -n '2p' "$cli") ||
+                fail "CLI executable trampoline could not be inspected"
+            prefix="'''exec' "
+            suffix=' "$0" "$@"'
+            case "$second_line" in
+                "$prefix"*"$suffix")
+                    candidate=${second_line#"$prefix"}
+                    candidate=${candidate%"$suffix"}
+                    case "$candidate" in
+                        \'*\')
+                            candidate=${candidate#\'}
+                            candidate=${candidate%\'}
+                            case "$candidate" in
+                                *\'*) fail "CLI executable trampoline is malformed" ;;
+                            esac
+                            ;;
+                    esac
+                    ;;
+                *) fail "CLI executable trampoline is malformed" ;;
+            esac
+            ;;
+        '#!'/*)
+            candidate=${first_line#\#!}
+            case "$candidate" in
+                *' '* | *'	'*)
+                    fail "CLI executable shebang must not contain arguments"
+                    ;;
+            esac
+            ;;
+        *)
+            fail "CLI executable must use an absolute Python shebang or wheel trampoline"
+            ;;
+    esac
+    case "$candidate" in
+        *'	'*) fail "CLI interpreter path must not contain tabs" ;;
+    esac
+    require_unambiguous_absolute_path "CLI interpreter" "$candidate"
+    printf '%s\n' "$candidate"
+}
+
+resolve_cli_interpreter() {
+    interpreter=$1
+    links=0
+    while :; do
+        interpreter_directory=$(
+            CDPATH= cd -P "${interpreter%/*}" 2>/dev/null && /bin/pwd -P
+        ) || fail "CLI interpreter directory could not be resolved"
+        require_unambiguous_absolute_path \
+            "CLI interpreter directory" "$interpreter_directory"
+        require_no_symlink_components \
+            "CLI interpreter directory" "$interpreter_directory"
+        interpreter="$interpreter_directory/${interpreter##*/}"
+        [ -L "$interpreter" ] || break
+        require_current_owner "CLI interpreter link" "$interpreter"
+        target=$(/usr/bin/readlink "$interpreter") ||
+            fail "CLI interpreter link could not be inspected"
+        case "$target" in
+            /*) interpreter=$target ;;
+            */*) fail "CLI interpreter relative link must be a simple file name" ;;
+            *) interpreter=${interpreter%/*}/$target ;;
+        esac
+        require_unambiguous_absolute_path "CLI interpreter" "$interpreter"
+        links=$((links + 1))
+        [ "$links" -le 16 ] || fail "CLI interpreter has too many symlink levels"
+    done
+    require_no_symlink_components "CLI interpreter" "$interpreter"
+    [ -f "$interpreter" ] && [ -x "$interpreter" ] ||
+        fail "CLI interpreter is not an executable regular file"
+    require_trusted_directory_chain "CLI interpreter" "${interpreter%/*}"
+    owner=$(file_uid "$interpreter") ||
+        fail "CLI interpreter owner could not be inspected"
+    current=$(/usr/bin/id -u) || fail "current user could not be identified"
+    [ "$owner" = "$current" ] || [ "$owner" = "0" ] ||
+        fail "CLI interpreter must be owned by the current user or root"
+    mode=$(file_mode "$interpreter") ||
+        fail "CLI interpreter mode could not be inspected"
+    [ "$((0$mode & 022))" -eq 0 ] ||
+        fail "CLI interpreter must not be group- or world-writable"
+    printf '%s\n' "$interpreter"
+}
+
 require_cli() {
     cli=$1
     expected_sha256=$2
@@ -136,15 +262,7 @@ require_cli() {
     [ "$actual_sha256" = "$expected_sha256" ] ||
         fail "CLI executable does not match the expected SHA-256"
 
-    shebang=$(/usr/bin/sed -n '1p' "$cli") ||
-        fail "CLI executable shebang could not be inspected"
-    case "$shebang" in
-        '#!'/*) interpreter=${shebang#\#!} ;;
-        *) fail "CLI executable must use an absolute Python shebang" ;;
-    esac
-    case "$interpreter" in
-        *' '* | *'	'*) fail "CLI executable shebang must not contain arguments" ;;
-    esac
+    interpreter=$(extract_cli_interpreter "$cli")
     case "${interpreter##*/}" in
         python | python3 | python3.[0-9] | python3.[0-9][0-9]) ;;
         *) fail "CLI executable shebang must name a supported Python interpreter" ;;
@@ -153,10 +271,9 @@ require_cli() {
     interpreter_dir=${interpreter%/*}
     [ "$interpreter_dir" = "$cli_dir" ] ||
         fail "CLI executable must use the interpreter from its installation directory"
-    require_unambiguous_absolute_path "CLI interpreter" "$interpreter"
-    require_no_symlink_components "CLI interpreter directory" "$interpreter_dir"
-    [ -f "$interpreter" ] && [ -x "$interpreter" ] ||
-        fail "CLI interpreter is not an executable regular file"
+    original_interpreter=$interpreter
+    resolve_cli_interpreter "$interpreter" >/dev/null
+    interpreter=$original_interpreter
 }
 
 require_unambiguous_absolute_path "launcher" "$0"
@@ -179,7 +296,7 @@ case "$command" in
         require_cli "$cli" "$cli_sha256"
         exec /usr/bin/env -i \
             PATH="$SAFE_PATH" LANG=C LC_ALL=C \
-            "$cli" preflight-clean-environment
+            "$interpreter" -I "$cli" preflight-clean-environment
         ;;
     run)
         [ "$#" -eq 11 ] || usage
@@ -199,7 +316,7 @@ case "$command" in
         require_output_directory "$output_dir"
         exec /usr/bin/env -i \
             PATH="$SAFE_PATH" LANG=C LC_ALL=C \
-            "$cli" run \
+            "$interpreter" -I "$cli" run \
             --execution-config "$execution_config" \
             --authorization "$authorization" \
             --output-dir "$output_dir"

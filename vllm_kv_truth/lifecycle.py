@@ -236,6 +236,12 @@ def _require_safe_regular_file(path: Path, *, label: str) -> Path:
     return path
 
 
+def _require_unambiguous_absolute_local_path(path: Path, *, label: str) -> Path:
+    if not path.is_absolute() or ".." in path.parts:
+        raise HostOrchestrationError(f"{label} must be an unambiguous absolute path")
+    return path
+
+
 def _require_private_key_permissions(path: Path, *, label: str) -> Path:
     """Require exactly ``0600`` (owner read/write only, no group/other bits)."""
 
@@ -382,6 +388,12 @@ class ProtectedExecutionConfig:
         known_hosts_path = Path(
             _require_nonempty_str(payload["known_hosts_path"], "known_hosts_path")
         )
+        _require_unambiguous_absolute_local_path(
+            private_key_path, label="private_key_path"
+        )
+        _require_unambiguous_absolute_local_path(
+            known_hosts_path, label="known_hosts_path"
+        )
         _require_private_key_permissions(private_key_path, label="private_key_path")
         _require_not_group_or_world_readable(known_hosts_path, label="known_hosts_path")
         remote_workspace = _require_safe_remote_path(
@@ -397,6 +409,12 @@ class ProtectedExecutionConfig:
             _require_nonempty_str(
                 payload["local_runner_archive"], "local_runner_archive"
             )
+        )
+        _require_unambiguous_absolute_local_path(
+            local_evidence_dir, label="local_evidence_dir"
+        )
+        _require_unambiguous_absolute_local_path(
+            local_runner_archive, label="local_runner_archive"
         )
         if local_runner_archive.exists():
             _require_safe_regular_file(
@@ -1241,6 +1259,8 @@ class StrictSSHOptions:
 
     def shared_options(self) -> tuple[str, ...]:
         return (
+            "-F",
+            "/dev/null",
             "-o",
             "BatchMode=yes",
             "-o",
@@ -1259,6 +1279,18 @@ class StrictSSHOptions:
             "ForwardX11=no",
             "-o",
             "ClearAllForwardings=yes",
+            "-o",
+            "ProxyCommand=none",
+            "-o",
+            "ProxyJump=none",
+            "-o",
+            "PermitLocalCommand=no",
+            "-o",
+            "KnownHostsCommand=none",
+            "-o",
+            "IdentityAgent=none",
+            "-o",
+            "PKCS11Provider=none",
             "-o",
             "ControlMaster=no",
             "-o",

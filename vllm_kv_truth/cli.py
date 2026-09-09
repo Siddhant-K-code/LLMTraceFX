@@ -91,6 +91,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _run(args: argparse.Namespace) -> int:
+    _require_clean_parent_environment()
     config = ProtectedExecutionConfig.load(args.execution_config)
     authorization = RunAuthorization.read(args.authorization)
     if not args.output_dir.is_absolute() or ".." in args.output_dir.parts:
@@ -122,7 +123,7 @@ def _run(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
-def _preflight_clean_environment() -> int:
+def _require_clean_parent_environment() -> None:
     reject_credential_environment(os.environ)
     names = set(os.environ)
     expected_names = set(_CLEAN_PARENT_ENVIRONMENT)
@@ -140,6 +141,10 @@ def _preflight_clean_environment() -> int:
             f"(changed_or_missing={changed}, unexpected={unexpected}); "
             f"use {CLEAN_ENV_LAUNCHER}, not manual variable unsets"
         )
+
+
+def _preflight_clean_environment() -> int:
+    _require_clean_parent_environment()
     print("clean environment preflight: ok")
     return 0
 

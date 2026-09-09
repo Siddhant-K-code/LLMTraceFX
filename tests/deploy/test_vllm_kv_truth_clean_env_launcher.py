@@ -28,6 +28,8 @@ CONTAMINATED_ENVIRONMENT = {
     "HTTP_PROXY": "http://127.0.0.1:8080",
     "HTTPS_PROXY": "http://127.0.0.1:8080",
     "PIP_CONFIG_FILE": "/tmp/host-pip-config",
+    "PERL5LIB": "/tmp/host-perl-modules",
+    "PERL5OPT": "-MHostileModule",
     "VIRTUAL_ENV": "/tmp/host-venv",
     "ARBITRARY_SECRET": "not-for-the-child",
 }
@@ -109,21 +111,12 @@ if authorization.get("wait_for_signal"):
     while True:
         time.sleep(0.05)
 
-(output_dir / "lifecycle.json").write_text(
+(output_dir / "fake-child-observation.json").write_text(
     json.dumps(
         {
             "environment": dict(os.environ),
-            "stages": [
-                "preflight",
-                "identity",
-                "image",
-                "model",
-                "canary",
-                "pairs",
-                "eviction",
-                "evidence",
-                "teardown",
-            ],
+            "fake_remote_lifecycle": "complete",
+            "synthetic": True,
         },
         sort_keys=True,
     ),
@@ -202,8 +195,10 @@ def test_clean_launcher_strips_ambient_state_and_completes_fake_lifecycle(
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
-    lifecycle = json.loads((output / "lifecycle.json").read_text(encoding="utf-8"))
-    child_environment = lifecycle["environment"]
+    observation = json.loads(
+        (output / "fake-child-observation.json").read_text(encoding="utf-8")
+    )
+    child_environment = observation["environment"]
     assert {
         name: child_environment[name] for name in EXPECTED_CHILD_ENVIRONMENT
     } == EXPECTED_CHILD_ENVIRONMENT
@@ -212,7 +207,8 @@ def test_clean_launcher_strips_ambient_state_and_completes_fake_lifecycle(
         <= set(EXPECTED_CHILD_ENVIRONMENT) | PLATFORM_SYNTHESIZED_ENVIRONMENT_NAMES
     )
     assert set(child_environment).isdisjoint(CONTAMINATED_ENVIRONMENT)
-    assert lifecycle["stages"][-1] == "teardown"
+    assert observation["synthetic"] is True
+    assert observation["fake_remote_lifecycle"] == "complete"
     assert (output / "cleanup").read_text(encoding="utf-8") == "complete"
     assert not (tmp_path / "path-command-ran").exists()
 
@@ -378,6 +374,40 @@ def test_launcher_rejects_malicious_shebang_even_with_matching_hash(
     assert completed.returncode == 2
     assert "shebang must not contain arguments" in completed.stderr
     assert not (tmp_path / "path-command-ran").exists()
+
+
+def test_launcher_accepts_wheel_long_path_trampoline(tmp_path: Path) -> None:
+    cli = _write_fake_cli(tmp_path)
+    lines = cli.read_text(encoding="utf-8").splitlines()
+    interpreter = cli.parent / "python3"
+    cli.write_text(
+        "\n".join(
+            [
+                "#!/bin/sh",
+                f"'''exec' '{interpreter}' \"$0\" \"$@\"",
+                "' '''",
+                *lines[1:],
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    cli.chmod(0o755)
+    completed = subprocess.run(
+        [
+            str(LAUNCHER),
+            "preflight",
+            "--cli",
+            str(cli),
+            "--cli-sha256",
+            _sha256(cli),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout == "clean environment preflight: ok\n"
 
 
 def test_launcher_rejects_symlinked_launcher_path(tmp_path: Path) -> None:

@@ -742,6 +742,7 @@ class TestStrictSSHOptions:
         options = lifecycle.StrictSSHOptions(self._config(tmp_path))
         opts = options.shared_options()
         joined = " ".join(opts)
+        assert opts[:2] == ("-F", "/dev/null")
         assert "BatchMode=yes" in joined
         assert "IdentitiesOnly=yes" in joined
         assert "PasswordAuthentication=no" in joined
@@ -749,6 +750,12 @@ class TestStrictSSHOptions:
         assert "StrictHostKeyChecking=yes" in joined
         assert "ForwardAgent=no" in joined
         assert "ForwardX11=no" in joined
+        assert "ProxyCommand=none" in joined
+        assert "ProxyJump=none" in joined
+        assert "PermitLocalCommand=no" in joined
+        assert "KnownHostsCommand=none" in joined
+        assert "IdentityAgent=none" in joined
+        assert "PKCS11Provider=none" in joined
         assert "ControlMaster=no" in joined
         assert "ControlPath=none" in joined
 

@@ -146,6 +146,30 @@ class TestVerifyPublicBundleCommand:
 
 
 class TestRunCommandRejectsBadInputs:
+    def test_run_rejects_contaminated_parent_before_reading_private_inputs(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8080")
+
+        def fail_if_loaded(_path: Path) -> object:
+            raise AssertionError("private inputs must not be read")
+
+        monkeypatch.setattr(cli_module.ProtectedExecutionConfig, "load", fail_if_loaded)
+        exit_code = main(
+            [
+                "run",
+                "--execution-config",
+                "/protected/config.json",
+                "--authorization",
+                "/protected/authorization.json",
+                "--output-dir",
+                "/protected/output",
+            ]
+        )
+        assert exit_code == 1
+        captured = capsys.readouterr()
+        assert "run-vllm-kv-truth-clean-env.sh" in captured.err
+
     def test_missing_execution_config_fails_cleanly(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -190,6 +214,9 @@ class TestRunCommandRejectsBadInputs:
     def test_output_directory_must_match_protected_config(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        monkeypatch.setattr(
+            cli_module, "_require_clean_parent_environment", lambda: None
+        )
         configured_output = tmp_path / "configured-output"
         monkeypatch.setattr(
             cli_module.ProtectedExecutionConfig,
@@ -217,6 +244,9 @@ class TestRunCommandRejectsBadInputs:
     def test_run_reports_safe_failed_substage_and_reason(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        monkeypatch.setattr(
+            cli_module, "_require_clean_parent_environment", lambda: None
+        )
         authorization = SimpleNamespace(signature_path=None)
         output_dir = Path.cwd() / "unused"
         monkeypatch.setattr(
