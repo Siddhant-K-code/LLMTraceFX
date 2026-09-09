@@ -339,13 +339,15 @@ def _runtime_paths() -> tuple[Path, tuple[Path, ...], tuple[Path, ...]]:
         base / "Python",
         base / "pyvenv.cfg",
         runtime_lib / f"python{sys.version_info.major}{sys.version_info.minor}.zip",
-        *sorted(
+    ]
+    companion_candidates.extend(
+        sorted(
             runtime_lib.glob(
                 f"libpython{sys.version_info.major}.{sys.version_info.minor}*"
             )
-        ),
-    ]
-    companions = tuple(path for path in companion_candidates if path.exists())
+        )
+    )
+    companions = tuple(companion_candidates)
     return base, roots, companions
 
 
@@ -450,11 +452,23 @@ def _runtime_inventory() -> tuple[str, tuple[str, ...], str, int]:
         add_tree(root, logical_root, frozenset())
 
     for path in companions:
+        _require_nonsymlink_parents(path, "Python runtime companion")
+        _check_trusted_directory(path.parent, "Python runtime companion")
+        relative_path = path.relative_to(base).as_posix()
+        if not path.exists() and not path.is_symlink():
+            entries.append(
+                {
+                    "kind": "absent",
+                    "path": f"companion/{relative_path}",
+                }
+            )
+            continue
         resolved = path.resolve(strict=True)
         try:
             resolved.relative_to(base)
         except ValueError:
             _fail("Python runtime companion is outside the base runtime")
+        _require_nonsymlink_parents(resolved, "Python runtime companion target")
         info = path.lstat()
         resolved_info = resolved.lstat()
         if (
@@ -468,7 +482,7 @@ def _runtime_inventory() -> tuple[str, tuple[str, ...], str, int]:
             {
                 "kind": "symlink" if stat.S_ISLNK(info.st_mode) else "file",
                 "mode": stat.S_IMODE(info.st_mode),
-                "path": f"companion/{path.relative_to(base).as_posix()}",
+                "path": f"companion/{relative_path}",
                 "sha256": _sha256_bytes(resolved.read_bytes()),
                 "size": resolved_info.st_size,
                 **({"target": os.readlink(path)} if stat.S_ISLNK(info.st_mode) else {}),

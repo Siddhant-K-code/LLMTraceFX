@@ -401,7 +401,7 @@ class ProtectedExecutionConfig:
             raise HostOrchestrationError("port must be an integer from 1 through 65535")
         if not isinstance(user, str) or _SAFE_USER.fullmatch(user) is None:
             raise HostOrchestrationError("user must be a safe POSIX user name")
-        private_key_path = _require_unambiguous_absolute_local_path(
+        private_key_path = _require_literal_openssh_path(
             _require_nonempty_str(payload["private_key_path"], "private_key_path"),
             label="private_key_path",
         )

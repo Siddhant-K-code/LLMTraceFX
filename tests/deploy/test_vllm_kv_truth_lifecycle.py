@@ -719,12 +719,22 @@ class TestProtectedExecutionConfig:
         with pytest.raises(lifecycle.HostOrchestrationError, match="group- or world"):
             lifecycle.ProtectedExecutionConfig.from_dict(payload)
 
-    @pytest.mark.parametrize("token", ["%h", "$HOME", "second file"])
-    def test_rejects_known_hosts_paths_reinterpreted_by_openssh(
-        self, tmp_path: Path, token: str
+    @pytest.mark.parametrize(
+        ("field", "token"),
+        [
+            ("private_key_path", "%h"),
+            ("private_key_path", "$HOME"),
+            ("private_key_path", "second file"),
+            ("known_hosts_path", "%h"),
+            ("known_hosts_path", "$HOME"),
+            ("known_hosts_path", "second file"),
+        ],
+    )
+    def test_rejects_paths_reinterpreted_by_openssh(
+        self, tmp_path: Path, field: str, token: str
     ) -> None:
         payload = self._payload(tmp_path)
-        payload["known_hosts_path"] = f"{tmp_path}/{token}"
+        payload[field] = f"{tmp_path}/{token}"
         with pytest.raises(
             lifecycle.HostOrchestrationError, match="interpreted by OpenSSH"
         ):

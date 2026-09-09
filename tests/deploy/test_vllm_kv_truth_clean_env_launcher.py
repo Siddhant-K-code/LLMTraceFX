@@ -404,11 +404,14 @@ def test_runtime_inventory_detects_executable_runtime_tamper(
         / (f"libpython{sys.version_info.major}.{sys.version_info.minor}.test")
     )
     companion.write_bytes(b"trusted-runtime-library")
+    stdlib_zip = (
+        base / "lib" / f"python{sys.version_info.major}{sys.version_info.minor}.zip"
+    )
 
     monkeypatch.setattr(
         bootstrap_module,
         "_runtime_paths",
-        lambda: (base, (stdlib,), (companion,)),
+        lambda: (base, (stdlib,), (companion, stdlib_zip)),
     )
     first = bootstrap_module._runtime_inventory()
 
@@ -425,6 +428,12 @@ def test_runtime_inventory_detects_executable_runtime_tamper(
     bytecode_tamper = bootstrap_module._runtime_inventory()
     assert bytecode_tamper[2] != first[2]
     assert bytecode_tamper[3] == first[3]
+
+    bytecode.write_bytes(b"trusted-bytecode")
+    stdlib_zip.write_bytes(b"newly-created-importable-zip")
+    zip_creation = bootstrap_module._runtime_inventory()
+    assert zip_creation[2] != first[2]
+    assert zip_creation[3] == first[3]
 
 
 def test_native_env_strips_shell_hooks_and_ambient_state(tmp_path: Path) -> None:
