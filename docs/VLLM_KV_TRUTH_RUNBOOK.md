@@ -146,8 +146,12 @@ running it):
 
 ```bash
 cd /absolute/path/to/exact-clean-checkout
-uv sync --locked --extra build
+uv venv --python 3.12 /absolute/protected/kv-truth-build-venv
+uv pip install \
+  --python /absolute/protected/kv-truth-build-venv/bin/python \
+  setuptools==84.0.0 wheel==0.48.0 packaging==26.3
 uv build --no-build-isolation --wheel \
+  --python /absolute/protected/kv-truth-build-venv/bin/python \
   --out-dir /absolute/protected/build-output
 uv venv --python 3.12 /absolute/protected/kv-truth-venv
 uv pip install \
@@ -171,8 +175,10 @@ shasum -a 256 /absolute/protected/kv-truth-launch-manifest.json
 
 The locked `build` extra and `[build-system]` both fix
 `setuptools==84.0.0`, `wheel==0.48.0`, and `packaging==26.3`.
-`--no-build-isolation` prevents the build frontend from resolving or
-downloading a different isolated toolchain.
+The command creates a new dedicated build environment containing only that
+exact toolchain; do not reuse the checkout's `.venv`. `--no-build-isolation`
+then prevents the build frontend from resolving or downloading a different
+isolated toolchain.
 
 Record the final 64-character manifest digest outside the installation. Never
 replace it with a digest recomputed from a manifest whose integrity is in

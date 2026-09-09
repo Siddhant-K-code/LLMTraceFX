@@ -544,6 +544,8 @@ class TestRunAuthorization:
             ("authorized_signers_path", "relative-signers"),
             ("signature_path", "/protected/../authorization.sig"),
             ("authorized_signers_path", "/protected/../authorized_signers"),
+            ("signature_path", "/protected//authorization.sig"),
+            ("authorized_signers_path", "/protected/authorized_signers/"),
         ],
     )
     def test_signature_paths_must_be_unambiguous_absolute_paths(
@@ -715,6 +717,37 @@ class TestProtectedExecutionConfig:
             known_hosts_path.stat().st_mode | stat.S_IRGRP
         )
         with pytest.raises(lifecycle.HostOrchestrationError, match="group- or world"):
+            lifecycle.ProtectedExecutionConfig.from_dict(payload)
+
+    @pytest.mark.parametrize("token", ["%h", "$HOME", "second file"])
+    def test_rejects_known_hosts_paths_reinterpreted_by_openssh(
+        self, tmp_path: Path, token: str
+    ) -> None:
+        payload = self._payload(tmp_path)
+        payload["known_hosts_path"] = f"{tmp_path}/{token}"
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="interpreted by OpenSSH"
+        ):
+            lifecycle.ProtectedExecutionConfig.from_dict(payload)
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "private_key_path",
+            "known_hosts_path",
+            "local_evidence_dir",
+            "local_runner_archive",
+        ],
+    )
+    def test_rejects_normalized_local_path_spellings(
+        self, tmp_path: Path, field: str
+    ) -> None:
+        payload = self._payload(tmp_path)
+        payload[field] = str(payload[field]).replace("/", "//", 1)
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match=f"{field} must be an unambiguous absolute path",
+        ):
             lifecycle.ProtectedExecutionConfig.from_dict(payload)
 
     def test_rejects_missing_key(self, tmp_path: Path) -> None:

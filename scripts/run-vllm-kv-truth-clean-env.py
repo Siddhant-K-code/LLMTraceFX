@@ -309,6 +309,12 @@ def _runtime_paths() -> tuple[Path, tuple[Path, ...], tuple[Path, ...]]:
     base = Path(sys.base_prefix).resolve(strict=True)
     if not base.is_absolute():
         _fail("Python base runtime path is not absolute")
+    runtime_lib = base / "lib"
+    _require_nonsymlink_parents(
+        runtime_lib / ".bootstrap-parent-check", "Python runtime"
+    )
+    _check_trusted_directory(base, "Python runtime")
+    _check_trusted_directory(runtime_lib, "Python runtime")
     configured = sysconfig.get_paths(vars={"base": str(base), "platbase": str(base)})
     roots = tuple(
         sorted(
@@ -332,8 +338,9 @@ def _runtime_paths() -> tuple[Path, tuple[Path, ...], tuple[Path, ...]]:
     companion_candidates = [
         base / "Python",
         base / "pyvenv.cfg",
+        runtime_lib / f"python{sys.version_info.major}{sys.version_info.minor}.zip",
         *sorted(
-            (base / "lib").glob(
+            runtime_lib.glob(
                 f"libpython{sys.version_info.major}.{sys.version_info.minor}*"
             )
         ),
@@ -381,8 +388,13 @@ def _runtime_inventory() -> tuple[str, tuple[str, ...], str, int]:
                 except ValueError:
                     _fail("Python runtime contains an external symbolic link")
                 target_info = resolved.lstat()
+                if not _trusted_owner(target_info.st_uid):
+                    _fail("Python runtime symbolic-link target has an untrusted owner")
                 if _mode_writable(target_info.st_mode):
                     _fail("Python runtime symbolic-link target is writable")
+                _require_nonsymlink_parents(
+                    resolved, "Python runtime symbolic-link target"
+                )
                 entry: dict[str, Any] = {
                     "kind": "symlink",
                     "mode": mode,

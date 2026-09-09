@@ -238,9 +238,26 @@ def _require_safe_regular_file(path: Path, *, label: str) -> Path:
     return path
 
 
-def _require_unambiguous_absolute_local_path(path: Path, *, label: str) -> Path:
-    if not path.is_absolute() or ".." in path.parts:
+def _require_unambiguous_absolute_local_path(value: str | Path, *, label: str) -> Path:
+    raw = os.fspath(value)
+    path = Path(raw)
+    if (
+        not path.is_absolute()
+        or ".." in path.parts
+        or "//" in raw
+        or str(path) != raw
+        or any(ord(character) < 32 for character in raw)
+    ):
         raise HostOrchestrationError(f"{label} must be an unambiguous absolute path")
+    return path
+
+
+def _require_literal_openssh_path(value: str, *, label: str) -> Path:
+    path = _require_unambiguous_absolute_local_path(value, label=label)
+    if any(character.isspace() or character in {"%", "$"} for character in value):
+        raise HostOrchestrationError(
+            f"{label} contains characters interpreted by OpenSSH"
+        )
     return path
 
 
@@ -384,17 +401,13 @@ class ProtectedExecutionConfig:
             raise HostOrchestrationError("port must be an integer from 1 through 65535")
         if not isinstance(user, str) or _SAFE_USER.fullmatch(user) is None:
             raise HostOrchestrationError("user must be a safe POSIX user name")
-        private_key_path = Path(
-            _require_nonempty_str(payload["private_key_path"], "private_key_path")
+        private_key_path = _require_unambiguous_absolute_local_path(
+            _require_nonempty_str(payload["private_key_path"], "private_key_path"),
+            label="private_key_path",
         )
-        known_hosts_path = Path(
-            _require_nonempty_str(payload["known_hosts_path"], "known_hosts_path")
-        )
-        _require_unambiguous_absolute_local_path(
-            private_key_path, label="private_key_path"
-        )
-        _require_unambiguous_absolute_local_path(
-            known_hosts_path, label="known_hosts_path"
+        known_hosts_path = _require_literal_openssh_path(
+            _require_nonempty_str(payload["known_hosts_path"], "known_hosts_path"),
+            label="known_hosts_path",
         )
         _require_private_key_permissions(private_key_path, label="private_key_path")
         _require_not_group_or_world_readable(known_hosts_path, label="known_hosts_path")
@@ -404,19 +417,15 @@ class ProtectedExecutionConfig:
         authorized_key_marker = _require_label(
             payload["authorized_key_marker"], field_name="authorized_key_marker"
         )
-        local_evidence_dir = Path(
-            _require_nonempty_str(payload["local_evidence_dir"], "local_evidence_dir")
+        local_evidence_dir = _require_unambiguous_absolute_local_path(
+            _require_nonempty_str(payload["local_evidence_dir"], "local_evidence_dir"),
+            label="local_evidence_dir",
         )
-        local_runner_archive = Path(
+        local_runner_archive = _require_unambiguous_absolute_local_path(
             _require_nonempty_str(
                 payload["local_runner_archive"], "local_runner_archive"
-            )
-        )
-        _require_unambiguous_absolute_local_path(
-            local_evidence_dir, label="local_evidence_dir"
-        )
-        _require_unambiguous_absolute_local_path(
-            local_runner_archive, label="local_runner_archive"
+            ),
+            label="local_runner_archive",
         )
         if local_runner_archive.exists():
             _require_safe_regular_file(
@@ -864,19 +873,15 @@ class RunAuthorization:
         signature_path: Path | None = None
         authorized_signers_path: Path | None = None
         if _AUTHORIZATION_OPTIONAL_SIGNATURE_KEYS <= observed_keys:
-            signature_path = Path(
-                _require_nonempty_str(data["signature_path"], "signature_path")
+            signature_path = _require_unambiguous_absolute_local_path(
+                _require_nonempty_str(data["signature_path"], "signature_path"),
+                label="signature_path",
             )
-            authorized_signers_path = Path(
+            authorized_signers_path = _require_unambiguous_absolute_local_path(
                 _require_nonempty_str(
                     data["authorized_signers_path"], "authorized_signers_path"
-                )
-            )
-            _require_unambiguous_absolute_local_path(
-                signature_path, label="signature_path"
-            )
-            _require_unambiguous_absolute_local_path(
-                authorized_signers_path, label="authorized_signers_path"
+                ),
+                label="authorized_signers_path",
             )
 
         return cls(
@@ -3148,14 +3153,17 @@ class RemoteOrchestrator:
             self.stage_four_ab_pairs()
             self.stage_eviction_lane()
             self.stage_transfer_evidence(local_evidence_bundle_dir)
+            # This assignment remains inside the protected try suite. A signal
+            # before it is caught below; a signal after it is deferred.
+            teardown_started = True
         except BaseException as exc:  # noqa: BLE001 - deliberate: teardown
             # must run on every possible exit path, including
             # KeyboardInterrupt, before the exception propagates.
+            teardown_started = True
             self.state = OrchestratorState.FAILED
             self._record("run", False, detail=type(exc).__name__)
             failure = exc
         finally:
-            teardown_started = True
             try:
                 self.stage_teardown(local_evidence_bundle_dir)
             except BaseException as exc:  # noqa: BLE001 - preserved below
