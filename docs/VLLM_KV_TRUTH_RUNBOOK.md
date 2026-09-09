@@ -60,15 +60,44 @@ The vanilla host does **not** need `huggingface-cli`, `hf`, `pip`, or `uv`.
 Model acquisition is deliberately unavailable until the derived image has
 passed its downloader attestation.
 
+Select exactly one Docker execution mode before writing the protected config
+or authorization. Do not configure fallback behavior and do not change group
+membership, socket permissions, aliases, wrappers, or `PATH`.
+
+For `direct`, run this read-only provider-console probe as the eventual SSH
+user:
+
+```bash
+docker ps -q >/dev/null &&
+docker info >/dev/null &&
+docker version --format '{{.Server.Version}}'
+```
+
+For `sudo_noninteractive`, run this exact read-only provider-console probe as
+the eventual SSH user:
+
+```bash
+sudo -n -- docker ps -q >/dev/null &&
+sudo -n -- docker info >/dev/null &&
+sudo -n -- docker version --format '{{.Server.Version}}'
+```
+
+Record only the mode whose complete three-command probe succeeds. A password
+prompt, permission denial, missing executable, empty version, or partial pass
+is a refusal. The orchestrator never falls back between modes: every Docker
+operation, including teardown, uses the preregistered prefix.
+
 ## 3. Write protected execution config
 
 Write a `0600` JSON file with exactly these keys:
 
 ```json
 {
+  "schema_version": "2",
   "host": "provider-supplied-host-or-ip",
   "port": 22,
   "user": "provider-supplied-user",
+  "docker_execution_mode": "direct",
   "private_key_path": "/protected/path/to/new-key",
   "known_hosts_path": "/protected/path/to/dedicated-known-hosts",
   "remote_workspace": "/home/provider-user/llmtracefx-kv-truth",
@@ -77,6 +106,10 @@ Write a `0600` JSON file with exactly these keys:
   "local_runner_archive": "/absolute/path/to/the-checked-source.tar"
 }
 ```
+
+`docker_execution_mode` must be exactly `direct` or `sudo_noninteractive`.
+There is no default and schema-1 configs are rejected, so an old protected
+config cannot silently acquire elevated Docker behavior.
 
 The SSH port belongs only in this protected file. Never place the target,
 user, port, key path, or known-hosts path in shell arguments, logs, evidence,
@@ -89,7 +122,8 @@ The authorization must bind:
 - the exact merged repository head and `sha256:<archive digest>`;
 - protocol, digest-pinned base image, vLLM commit/version, immutable model
   revision and committed inventory digest;
-- authorization schema `2` and the exact downloader package
+- authorization schema `3`, the exact preregistered Docker execution mode,
+  its schema-2 Docker execution-policy SHA-256, and the exact downloader package
   `huggingface-hub==1.13.0`, interface
   `huggingface_hub.snapshot_download`, and digest-pinned base-image source;
 - one RTX 4090 and exact driver/memory expectations;
@@ -339,10 +373,12 @@ Before the one command above, confirm only this checklist:
 0. The clean-bootstrap change is merged and that exact merged head has passed
    CI and CodeQL. No new VM exists before this gate passes.
 1. The source archive is from the exact clean, tested, merged `origin/main`.
-2. Authorization schema 2 seals that head, archive digest, runtime/model/image
-   pins, downloader identity, budget, nonce, and zero-retry policy.
-3. The protected config names a fresh key, dedicated known-hosts file, and
-   the same empty output directory passed to the bootstrap.
+2. Authorization schema 3 seals that head, archive digest, Docker execution
+   mode and execution-policy digest, runtime/model/image pins, downloader
+   identity, budget, nonce, and zero-retry policy.
+3. Protected-config schema 2 names the same Docker execution mode, a fresh
+   key, dedicated known-hosts file, and the same empty output directory passed
+   to the bootstrap.
 4. The externally recorded trusted-manifest SHA-256 still matches and the
    wheel/environment clean preflight succeeds.
 5. The coordinator has issued GO and the full 210-minute reserve gate passes.
@@ -352,11 +388,12 @@ Before the one command above, confirm only this checklist:
 Each command operation appends a mode-`0600`
 `private-operation-receipts.jsonl` record under the protected local evidence
 directory. This file is private and is not part of the public evidence schema.
-Each schema-1 record contains only:
+Each schema-2 record contains only:
 
 ```text
 stage, substage, command_description, return_code, timed_out,
-stderr_category, stderr_message, reason_code, reserved_minutes
+stderr_category, stderr_message, reason_code, reserved_minutes,
+docker_execution_mode
 ```
 
 No argv, host, user, IP, key/known-hosts path, credential, remote/model path,
@@ -366,7 +403,8 @@ a bounded allowlist. Current reason codes are:
 ```text
 operation_timeout, operation_start_failed,
 preflight_missing_linux, preflight_missing_nvidia_smi,
-preflight_missing_docker, preflight_missing_sudo,
+preflight_missing_docker, preflight_docker_execution_denied,
+preflight_missing_sudo,
 preflight_missing_python3, preflight_probe_failed,
 identity_gate_failed, source_transfer_failed, image_preparation_failed,
 model_download_interface_missing, model_download_version_mismatch,
@@ -378,8 +416,9 @@ run_interrupted, teardown_cleanup_failed, teardown_shutdown_failed
 
 Successful acquisition also writes a private schema-1
 `private-model-acquisition-receipt.json` binding the authorization, inspected
-image ID, explicit network mode, run label, downloader package/version/
-interface/source, exact model revision, and verified inventory totals.
+image ID, explicit Docker execution mode and network mode, run label,
+downloader package/version/interface/source, exact model revision, and
+verified inventory totals.
 
 The terminal reports `stage/substage`, reason code, and the corresponding safe
 message. Once trusted configuration and authorization have been loaded and
@@ -462,7 +501,22 @@ OS, and the operator confirmed provider-console termination. The inferred
 cost was approximately `$0.058434`; it is operational provenance, not
 scientific evidence.
 
+The next CloudRift reservation at merged repository head
+`74c9856aaaafb9deb8a2553ea99ad1c559ba6e3d` passed the offline clean-bootstrap
+preflight and independently matched the preregistered RTX 4090, driver,
+memory, compute-capability, boot-time, and zero-GPU-process facts. Its
+read-only provider-console probe then found that the standard `riftuser`
+account could not access `/var/run/docker.sock`: direct `docker ps -q` and
+`docker info` failed with permission denied. The runner never started and no
+SSH lifecycle, image/model action, GPU workload, or scientific stage
+occurred. The temporary key was removed, the provider reservation was
+terminated and confirmed, and all one-attempt local credentials were
+destroyed. This `preflight_probe_failed` event is operational provenance only,
+not scientific evidence.
+
 Do not provision a new VM for the next attempt until the clean-bootstrap
 change is merged, its exact merged head passes CI and CodeQL, the wheel-installed
-bootstrap preflight passes from the contaminated operator shell, and a new
-authorization binds the resulting exact source archive.
+bootstrap preflight passes from the contaminated operator shell, the selected
+Docker execution mode passes its exact read-only provider-console probe, and a
+new schema-3 authorization binds both that mode and the resulting exact source
+archive.

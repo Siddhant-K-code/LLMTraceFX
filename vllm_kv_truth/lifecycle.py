@@ -319,9 +319,11 @@ def _require_pattern(value: Any, pattern: re.Pattern[str], *, field_name: str) -
 
 _CONFIG_REQUIRED_KEYS = frozenset(
     {
+        "schema_version",
         "host",
         "port",
         "user",
+        "docker_execution_mode",
         "private_key_path",
         "known_hosts_path",
         "remote_workspace",
@@ -330,6 +332,37 @@ _CONFIG_REQUIRED_KEYS = frozenset(
         "local_runner_archive",
     }
 )
+
+PROTECTED_CONFIG_SCHEMA_VERSION = "2"
+
+
+class DockerExecutionMode(str, Enum):
+    """One preregistered, immutable way to invoke Docker on the remote host."""
+
+    DIRECT = "direct"
+    SUDO_NONINTERACTIVE = "sudo_noninteractive"
+
+    @classmethod
+    def parse(cls, value: Any) -> DockerExecutionMode:
+        if not isinstance(value, str):
+            raise HostOrchestrationError("docker_execution_mode must be a string")
+        try:
+            return cls(value)
+        except ValueError as exc:
+            raise HostOrchestrationError(
+                "docker_execution_mode must be 'direct' or 'sudo_noninteractive'"
+            ) from exc
+
+
+def docker_execution_config_sha256(mode: DockerExecutionMode) -> str:
+    """Hash the complete non-secret Docker execution policy in config schema 2."""
+
+    return sha256_json(
+        {
+            "schema_version": PROTECTED_CONFIG_SCHEMA_VERSION,
+            "docker_execution_mode": mode.value,
+        }
+    )
 
 
 @dataclass(frozen=True)
@@ -345,6 +378,7 @@ class ProtectedExecutionConfig:
     host: str = field(repr=False)
     port: int = field(repr=False)
     user: str = field(repr=False)
+    docker_execution_mode: DockerExecutionMode
     private_key_path: Path = field(repr=False)
     known_hosts_path: Path = field(repr=False)
     remote_workspace: str = field(repr=False)
@@ -389,9 +423,16 @@ class ProtectedExecutionConfig:
             raise HostOrchestrationError(
                 "protected execution config keys differ from the required set"
             )
+        if payload["schema_version"] != PROTECTED_CONFIG_SCHEMA_VERSION:
+            raise HostOrchestrationError(
+                "protected execution config schema_version is unsupported"
+            )
         host = payload["host"]
         user = payload["user"]
         port = payload["port"]
+        docker_execution_mode = DockerExecutionMode.parse(
+            payload["docker_execution_mode"]
+        )
         if not isinstance(host, str) or _SAFE_HOSTNAME_OR_IP.fullmatch(host) is None:
             raise HostOrchestrationError("host must be a safe hostname or IP literal")
         if (
@@ -438,6 +479,7 @@ class ProtectedExecutionConfig:
             host=host,
             port=port,
             user=user,
+            docker_execution_mode=docker_execution_mode,
             private_key_path=private_key_path,
             known_hosts_path=known_hosts_path,
             remote_workspace=remote_workspace,
@@ -449,7 +491,14 @@ class ProtectedExecutionConfig:
     def public_record(self) -> dict[str, Any]:
         """Publication/evidence-safe view: no host/user/key/known-hosts/paths."""
 
-        return {"schema_version": "1", "source": "protected_execution_config"}
+        return {
+            "schema_version": PROTECTED_CONFIG_SCHEMA_VERSION,
+            "source": "protected_execution_config",
+            "docker_execution_mode": self.docker_execution_mode.value,
+            "docker_execution_config_sha256": docker_execution_config_sha256(
+                self.docker_execution_mode
+            ),
+        }
 
 
 def _require_nonempty_str(value: Any, field_name: str) -> str:
@@ -591,9 +640,9 @@ def list_rate_cost_usd(elapsed_minutes: Decimal, rate_usd_per_hour: Decimal) -> 
 # Explicit, self-sealed run authorization.
 # ---------------------------------------------------------------------------
 
-AUTHORIZATION_SCHEMA_VERSION = "2"
+AUTHORIZATION_SCHEMA_VERSION = "3"
 AUTHORIZATION_SIGNER_IDENTITY = "vllm-kv-truth-coordinator"
-AUTHORIZATION_SIGNATURE_NAMESPACE = "llmtracefx-vllm-kv-truth-authorization-v2"
+AUTHORIZATION_SIGNATURE_NAMESPACE = "llmtracefx-vllm-kv-truth-authorization-v3"
 
 _AUTHORIZATION_REQUIRED_KEYS = frozenset(
     {
@@ -615,6 +664,8 @@ _AUTHORIZATION_REQUIRED_KEYS = frozenset(
         "gpu_expected_name",
         "gpu_expected_driver",
         "gpu_expected_memory_mib",
+        "docker_execution_mode",
+        "docker_execution_config_sha256",
         "rate_usd_per_hour",
         "total_cap_usd",
         "billing_started_at",
@@ -663,6 +714,8 @@ class RunAuthorization:
     derived_image_source_digest: str
     model_inventory_sha256: str
     gpu_expected_count: int
+    docker_execution_mode: DockerExecutionMode
+    docker_execution_config_sha256: str
     rate_usd_per_hour: Decimal
     total_cap_usd: Decimal
     billing_started_at: datetime
@@ -708,6 +761,8 @@ class RunAuthorization:
             "gpu_expected_name": EXPECTED_GPU_NAME,
             "gpu_expected_driver": EXPECTED_DRIVER,
             "gpu_expected_memory_mib": EXPECTED_MEMORY_MIB,
+            "docker_execution_mode": self.docker_execution_mode.value,
+            "docker_execution_config_sha256": self.docker_execution_config_sha256,
             "rate_usd_per_hour": _money_str(self.rate_usd_per_hour),
             "total_cap_usd": _money_str(self.total_cap_usd),
             "billing_started_at": _canonical_timestamp(self.billing_started_at),
@@ -797,6 +852,19 @@ class RunAuthorization:
             raise HostOrchestrationError(
                 "gpu_expected_count must be exactly 1 for this fixed protocol "
                 "(tensor_parallel_size=1, data_parallel_size=1)"
+            )
+        docker_execution_mode = DockerExecutionMode.parse(data["docker_execution_mode"])
+        docker_execution_config_digest = _require_pattern(
+            data["docker_execution_config_sha256"],
+            _SHA256_HEX,
+            field_name="docker_execution_config_sha256",
+        )
+        expected_docker_execution_config_digest = docker_execution_config_sha256(
+            docker_execution_mode
+        )
+        if docker_execution_config_digest != expected_docker_execution_config_digest:
+            raise HostOrchestrationError(
+                "docker_execution_config_sha256 does not match " "docker_execution_mode"
             )
         rate_usd_per_hour = _canonical_decimal(
             data["rate_usd_per_hour"], field_name="rate_usd_per_hour"
@@ -890,6 +958,8 @@ class RunAuthorization:
             derived_image_source_digest=derived_image_source_digest,
             model_inventory_sha256=model_inventory_sha256,
             gpu_expected_count=gpu_expected_count,
+            docker_execution_mode=docker_execution_mode,
+            docker_execution_config_sha256=docker_execution_config_digest,
             rate_usd_per_hour=rate_usd_per_hour,
             total_cap_usd=total_cap_usd,
             billing_started_at=billing_started_at,
@@ -1158,6 +1228,10 @@ _SAFE_REASON_MESSAGES: dict[str, tuple[str, str]] = {
         "host_prerequisite",
         "the remote host does not provide Docker",
     ),
+    "preflight_docker_execution_denied": (
+        "host_prerequisite",
+        "the preregistered Docker execution mode cannot access the daemon",
+    ),
     "preflight_missing_sudo": (
         "host_prerequisite",
         "the remote host does not provide noninteractive sudo",
@@ -1243,10 +1317,12 @@ class OperationReceipt:
     stderr_message: str
     reason_code: str | None
     reserved_minutes: int
+    docker_execution_mode: DockerExecutionMode
+    docker_execution_config_sha256: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": "1",
+            "schema_version": "2",
             "stage": self.stage,
             "substage": self.substage,
             "command_description": self.command_description,
@@ -1256,6 +1332,8 @@ class OperationReceipt:
             "stderr_message": self.stderr_message,
             "reason_code": self.reason_code,
             "reserved_minutes": self.reserved_minutes,
+            "docker_execution_mode": self.docker_execution_mode.value,
+            "docker_execution_config_sha256": self.docker_execution_config_sha256,
         }
 
 
@@ -1427,6 +1505,32 @@ def _quote(value: str) -> str:
     values so a future refactor cannot silently reintroduce injection."""
 
     return shlex.quote(value)
+
+
+@dataclass(frozen=True)
+class DockerCommand:
+    """Render every Docker invocation from one preregistered execution mode."""
+
+    mode: DockerExecutionMode
+
+    @property
+    def prefix(self) -> tuple[str, ...]:
+        if self.mode is DockerExecutionMode.DIRECT:
+            return ("docker",)
+        if self.mode is DockerExecutionMode.SUDO_NONINTERACTIVE:
+            return ("sudo", "-n", "--", "docker")
+        raise HostOrchestrationError("unsupported Docker execution mode")
+
+    def argv(self, *arguments: str) -> tuple[str, ...]:
+        return (*self.prefix, *arguments)
+
+    def shell(self, *arguments: str) -> str:
+        return " ".join(_quote(part) for part in self.argv(*arguments))
+
+    def xargs_shell(self, *arguments: str) -> str:
+        return " ".join(
+            ("xargs", "-r", *(_quote(part) for part in self.argv(*arguments)))
+        )
 
 
 @dataclass(frozen=True)
@@ -1670,6 +1774,7 @@ class LaneInvocation:
 
 def build_docker_run_argv(
     *,
+    docker: DockerCommand,
     authorization: RunAuthorization,
     paths: RunPaths,
     invocation: LaneInvocation,
@@ -1700,8 +1805,7 @@ def build_docker_run_argv(
     for key, value in sorted(expected_identity_env.items()):
         env_pairs.extend(("-e", f"{key}={value}"))
 
-    return (
-        "docker",
+    return docker.argv(
         "run",
         "--rm",
         "--network",
@@ -1734,14 +1838,14 @@ def build_docker_run_argv(
 
 def build_model_download_argv(
     *,
+    docker: DockerCommand,
     authorization: RunAuthorization,
     paths: RunPaths,
     derived_image_id: str,
 ) -> tuple[str, ...]:
     """Build the only network-enabled container command in the protocol."""
 
-    return (
-        "docker",
+    return docker.argv(
         "run",
         "--rm",
         "--network",
@@ -1824,7 +1928,22 @@ class RemoteOrchestrator:
         self.authorization = authorization
         self.runner = runner
         self.now_fn = now_fn
+        if config.docker_execution_mode is not authorization.docker_execution_mode:
+            raise HostOrchestrationError(
+                "protected config Docker execution mode does not match authorization"
+            )
+        config_docker_execution_digest = docker_execution_config_sha256(
+            config.docker_execution_mode
+        )
+        if (
+            config_docker_execution_digest
+            != authorization.docker_execution_config_sha256
+        ):
+            raise HostOrchestrationError(
+                "protected config Docker execution hash does not match authorization"
+            )
         self.ssh_options = StrictSSHOptions(config)
+        self.docker = DockerCommand(config.docker_execution_mode)
         self.paths = RunPaths(config.remote_workspace)
         self.state = OrchestratorState.PENDING
         self.outcomes: list[StageOutcome] = []
@@ -1909,6 +2028,10 @@ class RemoteOrchestrator:
                 stderr_message="",
                 reason_code=None,
                 reserved_minutes=reserved_minutes,
+                docker_execution_mode=self.config.docker_execution_mode,
+                docker_execution_config_sha256=(
+                    self.authorization.docker_execution_config_sha256
+                ),
             )
         else:
             reason, category, message = _safe_failure(result, default_reason)
@@ -1922,6 +2045,10 @@ class RemoteOrchestrator:
                 stderr_message=message,
                 reason_code=reason,
                 reserved_minutes=reserved_minutes,
+                docker_execution_mode=self.config.docker_execution_mode,
+                docker_execution_config_sha256=(
+                    self.authorization.docker_execution_config_sha256
+                ),
             )
         self.operation_receipts.append(receipt)
         self._persist_operation_receipts()
@@ -1960,6 +2087,10 @@ class RemoteOrchestrator:
                 stderr_message=message,
                 reason_code=reason_code,
                 reserved_minutes=reserved_minutes,
+                docker_execution_mode=self.config.docker_execution_mode,
+                docker_execution_config_sha256=(
+                    self.authorization.docker_execution_config_sha256
+                ),
             )
         )
         self._persist_operation_receipts()
@@ -2022,6 +2153,13 @@ class RemoteOrchestrator:
     def stage_preflight(self) -> StageOutcome:
         self._require_budget("existing_preflight_planning_reserve")
         self.state = OrchestratorState.PREFLIGHT
+        docker_ps = self.docker.shell("ps", "-q")
+        docker_info = self.docker.shell("info")
+        docker_version = self.docker.shell("version", "--format", "{{.Server.Version}}")
+        docker_failure = (
+            "{ echo LLMTRACEFX_REASON=preflight_docker_execution_denied >&2; "
+            "exit 1; }"
+        )
         script = "\n".join(
             [
                 "set -eu",
@@ -2051,8 +2189,13 @@ class RemoteOrchestrator:
                 'echo "GPU_PROCESS_COUNT=$(nvidia-smi '
                 "--query-compute-apps=pid --format=csv,noheader 2>/dev/null | "
                 'sed "/^[[:space:]]*$/d" | wc -l)"',
-                'echo "CONTAINER_COUNT=$(docker ps -q | wc -l)"',
-                "docker info >/dev/null",
+                f'echo "DOCKER_EXECUTION_MODE={self.docker.mode.value}"',
+                "echo DOCKER_EXECUTION_CONFIG_SHA256="
+                + self.authorization.docker_execution_config_sha256,
+                f"CONTAINER_IDS=$({docker_ps}) || {docker_failure}",
+                'echo "CONTAINER_COUNT=$(printf %s "$CONTAINER_IDS" | '
+                'sed "/^[[:space:]]*$/d" | wc -l)"',
+                f"{docker_info} >/dev/null || {docker_failure}",
                 "sudo -n true",
                 'echo "SUDO_NONINTERACTIVE=1"',
                 'echo "DISK_FREE_BYTES=$(df -PB1 "$HOME" | awk \'NR==2 {print $4}\')"',
@@ -2061,8 +2204,8 @@ class RemoteOrchestrator:
                 'echo "PYTHON_VERSION=$(python3 -c '
                 "'import platform; print(platform.python_version())'"
                 ')"',
-                'echo "DOCKER_VERSION=$(docker version '
-                "--format '{{.Server.Version}}')\"",
+                f"DOCKER_VERSION=$({docker_version}) || {docker_failure}",
+                'echo "DOCKER_VERSION=$DOCKER_VERSION"',
             ]
         )
         result = self._checked(
@@ -2101,6 +2244,8 @@ class RemoteOrchestrator:
             "GPU_COUNT",
             "GPU",
             "GPU_PROCESS_COUNT",
+            "DOCKER_EXECUTION_MODE",
+            "DOCKER_EXECUTION_CONFIG_SHA256",
             "CONTAINER_COUNT",
             "SUDO_NONINTERACTIVE",
             "DISK_FREE_BYTES",
@@ -2115,6 +2260,17 @@ class RemoteOrchestrator:
             )
         if markers["OS_NAME"] != "Linux":
             raise HostOrchestrationError("preflight host operating system is not Linux")
+        if markers["DOCKER_EXECUTION_MODE"] != self.docker.mode.value:
+            raise HostOrchestrationError(
+                "preflight Docker execution mode does not match authorization"
+            )
+        if (
+            markers["DOCKER_EXECUTION_CONFIG_SHA256"]
+            != self.authorization.docker_execution_config_sha256
+        ):
+            raise HostOrchestrationError(
+                "preflight Docker execution hash does not match authorization"
+            )
         parts = [part.strip() for part in markers["GPU"].split(",")]
         if len(parts) != 4:
             raise HostOrchestrationError("preflight GPU inventory line is malformed")
@@ -2269,6 +2425,7 @@ class RemoteOrchestrator:
         authorized_archive_digest = self.authorization.derived_image_source_digest[
             len("sha256:") :
         ]
+        image_tag = f"kv-truth-derived-{self.authorization.nonce}"
 
         script = "\n".join(
             [
@@ -2276,13 +2433,21 @@ class RemoteOrchestrator:
                 "reason=image_preparation_failed",
                 'trap \'status=$?; if [ "$status" -ne 0 ]; then '
                 'echo "LLMTRACEFX_REASON=$reason" >&2; fi\' EXIT',
-                f"docker pull {_quote(BASE_IMAGE_REFERENCE)}",
-                f"echo BASE_REPODIGESTS=$(docker image inspect "
-                f"{_quote(BASE_IMAGE_REFERENCE)} "
-                '--format "{{json .RepoDigests}}")',
-                f"echo BASE_IMAGE_ID=$(docker image inspect "
-                f"{_quote(BASE_IMAGE_REFERENCE)} "
-                '--format "{{.Id}}")',
+                self.docker.shell("pull", BASE_IMAGE_REFERENCE),
+                "echo BASE_REPODIGESTS=$("
+                + self.docker.shell(
+                    "image",
+                    "inspect",
+                    BASE_IMAGE_REFERENCE,
+                    "--format",
+                    "{{json .RepoDigests}}",
+                )
+                + ")",
+                "echo BASE_IMAGE_ID=$("
+                + self.docker.shell(
+                    "image", "inspect", BASE_IMAGE_REFERENCE, "--format", "{{.Id}}"
+                )
+                + ")",
                 f"echo {_quote(authorized_archive_digest)}  "
                 f"{_quote(self.paths.source_archive_remote_path)} | sha256sum -c -",
                 f"rm -rf {_quote(self.paths.repo_dir)}",
@@ -2295,35 +2460,75 @@ class RemoteOrchestrator:
                 f"cd {_quote(self.paths.repo_dir)}",
                 f"test \"$(sed -n '1p' containers/vllm-kv-truth/Containerfile)\" "
                 f"= {_quote('FROM ' + BASE_IMAGE_REFERENCE)}",
-                "docker build -q "
-                "--network none "
-                f"--label {_quote(docker_run_label(self.authorization.nonce))} "
-                f"--build-arg RUNNER_COMMIT={_quote(self.authorization.repository_head)} "
-                "-f containers/vllm-kv-truth/Containerfile "
-                f"-t kv-truth-derived-{_quote(self.authorization.nonce)} .",
-                "echo DERIVED_IMAGE_ID=$(docker image inspect "
-                f"kv-truth-derived-{_quote(self.authorization.nonce)} "
-                '--format "{{.Id}}")',
-                "echo DOWNLOADER_PACKAGE=$(docker image inspect "
-                f"kv-truth-derived-{_quote(self.authorization.nonce)} "
-                "--format '{{ index .Config.Labels "
-                '"org.llmtracefx.downloader.package" }}\')',
-                "echo DOWNLOADER_VERSION=$(docker image inspect "
-                f"kv-truth-derived-{_quote(self.authorization.nonce)} "
-                "--format '{{ index .Config.Labels "
-                '"org.llmtracefx.downloader.version" }}\')',
-                "echo DOWNLOADER_INTERFACE=$(docker image inspect "
-                f"kv-truth-derived-{_quote(self.authorization.nonce)} "
-                "--format '{{ index .Config.Labels "
-                '"org.llmtracefx.downloader.interface" }}\')',
-                "echo DOWNLOADER_SOURCE=$(docker image inspect "
-                f"kv-truth-derived-{_quote(self.authorization.nonce)} "
-                "--format '{{ index .Config.Labels "
-                '"org.llmtracefx.downloader.source" }}\')',
-                f"docker run --rm --network none --label "
-                f"{_quote(docker_run_label(self.authorization.nonce))} "
-                f"kv-truth-derived-{_quote(self.authorization.nonce)} "
-                "python3 -m vllm_kv_truth.model_download attest",
+                self.docker.shell(
+                    "build",
+                    "-q",
+                    "--network",
+                    "none",
+                    "--label",
+                    docker_run_label(self.authorization.nonce),
+                    "--build-arg",
+                    f"RUNNER_COMMIT={self.authorization.repository_head}",
+                    "-f",
+                    "containers/vllm-kv-truth/Containerfile",
+                    "-t",
+                    image_tag,
+                    ".",
+                ),
+                "echo DERIVED_IMAGE_ID=$("
+                + self.docker.shell(
+                    "image", "inspect", image_tag, "--format", "{{.Id}}"
+                )
+                + ")",
+                "echo DOWNLOADER_PACKAGE=$("
+                + self.docker.shell(
+                    "image",
+                    "inspect",
+                    image_tag,
+                    "--format",
+                    '{{ index .Config.Labels "org.llmtracefx.downloader.package" }}',
+                )
+                + ")",
+                "echo DOWNLOADER_VERSION=$("
+                + self.docker.shell(
+                    "image",
+                    "inspect",
+                    image_tag,
+                    "--format",
+                    '{{ index .Config.Labels "org.llmtracefx.downloader.version" }}',
+                )
+                + ")",
+                "echo DOWNLOADER_INTERFACE=$("
+                + self.docker.shell(
+                    "image",
+                    "inspect",
+                    image_tag,
+                    "--format",
+                    '{{ index .Config.Labels "org.llmtracefx.downloader.interface" }}',
+                )
+                + ")",
+                "echo DOWNLOADER_SOURCE=$("
+                + self.docker.shell(
+                    "image",
+                    "inspect",
+                    image_tag,
+                    "--format",
+                    '{{ index .Config.Labels "org.llmtracefx.downloader.source" }}',
+                )
+                + ")",
+                self.docker.shell(
+                    "run",
+                    "--rm",
+                    "--network",
+                    "none",
+                    "--label",
+                    docker_run_label(self.authorization.nonce),
+                    image_tag,
+                    "python3",
+                    "-m",
+                    "vllm_kv_truth.model_download",
+                    "attest",
+                ),
                 "trap - EXIT",
             ]
         )
@@ -2485,6 +2690,10 @@ class RemoteOrchestrator:
             "schema_version": "1",
             "protocol_id": PROTOCOL_ID,
             "authorization_sha256": self.authorization.authorization_sha256,
+            "docker_execution_mode": self.docker.mode.value,
+            "docker_execution_config_sha256": (
+                self.authorization.docker_execution_config_sha256
+            ),
             "derived_image_id": self._require_derived_image_id(),
             "base_image_reference": BASE_IMAGE_REFERENCE,
             "network_mode": "bridge",
@@ -2529,6 +2738,7 @@ class RemoteOrchestrator:
                 reserve_stage=reserve_stage,
             )
         download_argv = build_model_download_argv(
+            docker=self.docker,
             authorization=self.authorization,
             paths=self.paths,
             derived_image_id=derived_image_id,
@@ -2617,6 +2827,7 @@ class RemoteOrchestrator:
             container_name=container_name(self.authorization.nonce, "canary"),
         )
         argv = build_docker_run_argv(
+            docker=self.docker,
             authorization=self.authorization,
             paths=self.paths,
             invocation=invocation,
@@ -2650,6 +2861,7 @@ class RemoteOrchestrator:
                     container_name=container_name(self.authorization.nonce, tag),
                 )
                 argv = build_docker_run_argv(
+                    docker=self.docker,
                     authorization=self.authorization,
                     paths=self.paths,
                     invocation=invocation,
@@ -2682,6 +2894,7 @@ class RemoteOrchestrator:
             container_name=container_name(self.authorization.nonce, "eviction"),
         )
         argv = build_docker_run_argv(
+            docker=self.docker,
             authorization=self.authorization,
             paths=self.paths,
             invocation=invocation,
@@ -2980,6 +3193,14 @@ class RemoteOrchestrator:
         self.state = OrchestratorState.TEARDOWN
         nonce = self.authorization.nonce
         label_filter = f"label={docker_run_label(nonce)}"
+        running_containers = self.docker.shell("ps", "-q", "--filter", label_filter)
+        all_containers = self.docker.shell("ps", "-aq", "--filter", label_filter)
+        labeled_images = self.docker.shell("images", "-q", "--filter", label_filter)
+        stop_containers = self.docker.xargs_shell("stop")
+        remove_containers = self.docker.xargs_shell("rm", "-f")
+        remove_images = self.docker.xargs_shell("rmi", "-f")
+        remove_base_image = self.docker.shell("rmi", "-f", BASE_IMAGE_REFERENCE)
+        residual_containers = self.docker.shell("ps", "-q")
         script = "\n".join(
             [
                 "set -eu",
@@ -3003,13 +3224,10 @@ class RemoteOrchestrator:
                 '  exit "$status"',
                 "}",
                 "trap finish_teardown EXIT",
-                f"docker ps -q --filter {_quote(label_filter)} | "
-                "xargs -r docker stop",
-                f"docker ps -aq --filter {_quote(label_filter)} | "
-                "xargs -r docker rm -f",
-                f"docker images -q --filter {_quote(label_filter)} | "
-                "xargs -r docker rmi -f || true",
-                f"docker rmi -f {_quote(BASE_IMAGE_REFERENCE)} || true",
+                f"{running_containers} | {stop_containers}",
+                f"{all_containers} | {remove_containers}",
+                f"{labeled_images} | {remove_images} || true",
+                f"{remove_base_image} || true",
                 f"rm -rf {_quote(self.paths.model_dir)}",
                 f"rm -rf {_quote(self.paths.repo_dir)}",
                 f"rm -rf {_quote(self.paths.evidence_dir)}",
@@ -3028,7 +3246,7 @@ class RemoteOrchestrator:
                 'test "$(awk -v marker="$KEY_MARKER" '
                 "'$NF == marker { count++ } END { print count + 0 }' "
                 '"$AUTHORIZED_KEYS")" = "0"',
-                'echo "RESIDUAL_CONTAINERS=$(' 'docker ps -q | wc -l)"',
+                f'echo "RESIDUAL_CONTAINERS=$({residual_containers} | wc -l)"',
                 'echo "RESIDUAL_GPU_PROCESSES=$('
                 "nvidia-smi --query-compute-apps=pid --format=csv,noheader "
                 '2>/dev/null | sed "/^[[:space:]]*$/d" | wc -l)"',

@@ -380,6 +380,7 @@ def _authorization_payload(**overrides: Any) -> dict[str, Any]:
         "gpu_expected_name": lifecycle.EXPECTED_GPU_NAME,
         "gpu_expected_driver": lifecycle.EXPECTED_DRIVER,
         "gpu_expected_memory_mib": lifecycle.EXPECTED_MEMORY_MIB,
+        "docker_execution_mode": lifecycle.DockerExecutionMode.DIRECT.value,
         "rate_usd_per_hour": "0.500000",
         "total_cap_usd": "10.000000",
         "billing_started_at": lifecycle._canonical_timestamp(BILLING_STARTED_AT),
@@ -399,6 +400,15 @@ def _authorization_payload(**overrides: Any) -> dict[str, Any]:
         "nonce": VALID_NONCE,
     }
     payload.update(overrides)
+    if "docker_execution_config_sha256" not in payload:
+        try:
+            mode = lifecycle.DockerExecutionMode.parse(payload["docker_execution_mode"])
+        except lifecycle.HostOrchestrationError:
+            payload["docker_execution_config_sha256"] = "0" * 64
+        else:
+            payload["docker_execution_config_sha256"] = (
+                lifecycle.docker_execution_config_sha256(mode)
+            )
     seal_input = {k: v for k, v in payload.items() if k != "authorization_sha256"}
     payload["authorization_sha256"] = lifecycle.build_authorization_seal(seal_input)
     return payload
@@ -424,6 +434,32 @@ class TestRunAuthorization:
             {k: v for k, v in payload.items() if k != "authorization_sha256"}
         )
         with pytest.raises(lifecycle.HostOrchestrationError, match="protocol_id"):
+            lifecycle.RunAuthorization.from_dict(payload)
+
+    def test_rejects_tampered_docker_execution_mode(self) -> None:
+        payload = _authorization_payload()
+        payload["docker_execution_mode"] = (
+            lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE.value
+        )
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="docker_execution_config_sha256",
+        ):
+            lifecycle.RunAuthorization.from_dict(payload)
+
+    def test_rejects_unknown_docker_execution_mode_with_valid_seal(self) -> None:
+        payload = _authorization_payload(docker_execution_mode="auto")
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="docker_execution_mode"
+        ):
+            lifecycle.RunAuthorization.from_dict(payload)
+
+    def test_rejects_tampered_docker_execution_config_hash(self) -> None:
+        payload = _authorization_payload(docker_execution_config_sha256="0" * 64)
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="docker_execution_config_sha256",
+        ):
             lifecycle.RunAuthorization.from_dict(payload)
 
     def test_rejects_wrong_model_inventory_digest(self) -> None:
@@ -637,7 +673,12 @@ class TestProtectedExecutionConfig:
         path.write_text("example.com ssh-ed25519 AAAA", encoding="utf-8")
         os.chmod(path, mode)
 
-    def _payload(self, tmp_path: Path) -> dict[str, Any]:
+    def _payload(
+        self,
+        tmp_path: Path,
+        *,
+        docker_execution_mode: str = lifecycle.DockerExecutionMode.DIRECT.value,
+    ) -> dict[str, Any]:
         key_path = tmp_path / "id_ed25519"
         known_hosts = tmp_path / "known_hosts"
         self._write_key(key_path)
@@ -645,9 +686,11 @@ class TestProtectedExecutionConfig:
         archive = tmp_path / "runner.tar.gz"
         archive.write_bytes(b"fake archive")
         return {
+            "schema_version": lifecycle.PROTECTED_CONFIG_SCHEMA_VERSION,
             "host": "198.51.100.10",
             "port": 57003,
             "user": "deploy",
+            "docker_execution_mode": docker_execution_mode,
             "private_key_path": str(key_path),
             "known_hosts_path": str(known_hosts),
             "remote_workspace": "/home/deploy/kv-truth-run",
@@ -664,8 +707,14 @@ class TestProtectedExecutionConfig:
         config = lifecycle.ProtectedExecutionConfig.load(config_path)
         assert config.host == "198.51.100.10"
         assert config.public_record() == {
-            "schema_version": "1",
+            "schema_version": lifecycle.PROTECTED_CONFIG_SCHEMA_VERSION,
             "source": "protected_execution_config",
+            "docker_execution_mode": lifecycle.DockerExecutionMode.DIRECT.value,
+            "docker_execution_config_sha256": (
+                lifecycle.docker_execution_config_sha256(
+                    lifecycle.DockerExecutionMode.DIRECT
+                )
+            ),
         }
 
     def test_public_record_never_leaks_sensitive_fields(self, tmp_path: Path) -> None:
@@ -772,6 +821,29 @@ class TestProtectedExecutionConfig:
         with pytest.raises(lifecycle.HostOrchestrationError, match="required set"):
             lifecycle.ProtectedExecutionConfig.from_dict(payload)
 
+    @pytest.mark.parametrize("mode", ["", "sudo", "auto", 1, None])
+    def test_rejects_unexpected_docker_execution_mode(
+        self, tmp_path: Path, mode: Any
+    ) -> None:
+        payload = self._payload(tmp_path)
+        payload["docker_execution_mode"] = mode
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="docker_execution_mode"
+        ):
+            lifecycle.ProtectedExecutionConfig.from_dict(payload)
+
+    def test_rejects_legacy_config_without_explicit_mode(self, tmp_path: Path) -> None:
+        payload = self._payload(tmp_path)
+        del payload["docker_execution_mode"]
+        with pytest.raises(lifecycle.HostOrchestrationError, match="required set"):
+            lifecycle.ProtectedExecutionConfig.from_dict(payload)
+
+    def test_rejects_legacy_config_schema(self, tmp_path: Path) -> None:
+        payload = self._payload(tmp_path)
+        payload["schema_version"] = "1"
+        with pytest.raises(lifecycle.HostOrchestrationError, match="schema_version"):
+            lifecycle.ProtectedExecutionConfig.from_dict(payload)
+
     def test_rejects_unsafe_remote_workspace(self, tmp_path: Path) -> None:
         payload = self._payload(tmp_path)
         payload["remote_workspace"] = "/home/deploy/../etc"
@@ -797,9 +869,11 @@ class TestStrictSSHOptions:
         os.chmod(known_hosts, 0o600)
         return lifecycle.ProtectedExecutionConfig.from_dict(
             {
+                "schema_version": lifecycle.PROTECTED_CONFIG_SCHEMA_VERSION,
                 "host": "203.0.113.5",
                 "port": 57003,
                 "user": "runner",
+                "docker_execution_mode": lifecycle.DockerExecutionMode.DIRECT.value,
                 "private_key_path": str(key),
                 "known_hosts_path": str(known_hosts),
                 "remote_workspace": "/srv/kv-truth",
@@ -879,6 +953,28 @@ class TestStrictSSHOptions:
         assert str(config.known_hosts_path) not in record_text
 
 
+class TestDockerCommand:
+    def test_direct_mode_builds_exact_argv(self) -> None:
+        docker = lifecycle.DockerCommand(lifecycle.DockerExecutionMode.DIRECT)
+        assert docker.argv("ps", "-q") == ("docker", "ps", "-q")
+        assert docker.shell("ps", "-q") == "docker ps -q"
+
+    def test_sudo_mode_builds_exact_noninteractive_argv(self) -> None:
+        docker = lifecycle.DockerCommand(
+            lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE
+        )
+        assert docker.argv("ps", "-q") == (
+            "sudo",
+            "-n",
+            "--",
+            "docker",
+            "ps",
+            "-q",
+        )
+        assert docker.shell("ps", "-q") == "sudo -n -- docker ps -q"
+        assert docker.xargs_shell("rm", "-f") == ("xargs -r sudo -n -- docker rm -f")
+
+
 @dataclass
 class RecordedCall:
     argv: tuple[str, ...]
@@ -899,6 +995,12 @@ def _preflight_stdout(**overrides: str) -> str:
             f"{lifecycle.EXPECTED_GPU_COMPUTE_CAPABILITY}"
         ),
         "GPU_PROCESS_COUNT": "0",
+        "DOCKER_EXECUTION_MODE": lifecycle.DockerExecutionMode.DIRECT.value,
+        "DOCKER_EXECUTION_CONFIG_SHA256": (
+            lifecycle.docker_execution_config_sha256(
+                lifecycle.DockerExecutionMode.DIRECT
+            )
+        ),
         "CONTAINER_COUNT": "0",
         "SUDO_NONINTERACTIVE": "1",
         "DISK_FREE_BYTES": str(lifecycle.MINIMUM_DISK_FREE_BYTES),
@@ -1022,7 +1124,13 @@ class FakeCommandRunner:
         return lifecycle.CommandResult(returncode=0, stdout="", stderr="")
 
 
-def _config(tmp_path: Path) -> lifecycle.ProtectedExecutionConfig:
+def _config(
+    tmp_path: Path,
+    *,
+    docker_execution_mode: lifecycle.DockerExecutionMode = (
+        lifecycle.DockerExecutionMode.DIRECT
+    ),
+) -> lifecycle.ProtectedExecutionConfig:
     key = tmp_path / "key"
     key.write_text("x", encoding="utf-8")
     os.chmod(key, 0o600)
@@ -1034,9 +1142,11 @@ def _config(tmp_path: Path) -> lifecycle.ProtectedExecutionConfig:
         _write_source_archive(archive)
     return lifecycle.ProtectedExecutionConfig.from_dict(
         {
+            "schema_version": lifecycle.PROTECTED_CONFIG_SCHEMA_VERSION,
             "host": "203.0.113.5",
             "port": 57003,
             "user": "runner",
+            "docker_execution_mode": docker_execution_mode.value,
             "private_key_path": str(key),
             "known_hosts_path": str(known_hosts),
             "remote_workspace": "/srv/kv-truth",
@@ -1048,6 +1158,21 @@ def _config(tmp_path: Path) -> lifecycle.ProtectedExecutionConfig:
 
 
 class TestRemoteOrchestratorFullRun:
+    @staticmethod
+    def _remote_docker_lines(runner: FakeCommandRunner) -> list[str]:
+        lines: list[str] = []
+        for call in runner.calls:
+            texts = [call.input_text or ""]
+            if call.argv and call.argv[0] == "ssh":
+                texts.append(call.argv[-1])
+            for text in texts:
+                lines.extend(
+                    line.strip()
+                    for line in text.splitlines()
+                    if "docker" in line and "command -v docker" not in line
+                )
+        return lines
+
     def test_full_run_never_touches_network_or_gpu_and_succeeds(
         self, tmp_path: Path
     ) -> None:
@@ -1159,6 +1284,138 @@ class TestRemoteOrchestratorFullRun:
         assert outcome.ok
         assert "HF_CLI" not in script
         assert "command -v huggingface-cli" not in script
+        assert "DOCKER_EXECUTION_MODE=direct" in script
+        assert "sudo -n -- docker" not in script
+
+    def test_sudo_noninteractive_mode_prefixes_every_docker_call(
+        self, tmp_path: Path
+    ) -> None:
+        mode = lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE
+        config = _config(tmp_path, docker_execution_mode=mode)
+        authorization = _authorization(docker_execution_mode=mode.value)
+        runner = FakeCommandRunner(
+            responses={
+                "stage_preflight": lifecycle.CommandResult(
+                    returncode=0,
+                    stdout=_preflight_stdout(
+                        DOCKER_EXECUTION_MODE=mode.value,
+                        DOCKER_EXECUTION_CONFIG_SHA256=(
+                            lifecycle.docker_execution_config_sha256(mode)
+                        ),
+                    ),
+                    stderr="",
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=config,
+            authorization=authorization,
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        outcomes = orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        assert all(outcome.ok for outcome in outcomes)
+        docker_lines = self._remote_docker_lines(runner)
+        assert docker_lines
+        assert all("sudo -n -- docker" in line for line in docker_lines)
+        assert all(
+            line.replace("preflight_docker_execution_denied", "").count("docker")
+            == line.count("sudo -n -- docker")
+            for line in docker_lines
+        )
+        receipts = [
+            json.loads(line)
+            for line in orchestrator.operation_receipt_path.read_text(
+                encoding="utf-8"
+            ).splitlines()
+        ]
+        assert receipts
+        assert {receipt["docker_execution_mode"] for receipt in receipts} == {
+            mode.value
+        }
+        assert {receipt["docker_execution_config_sha256"] for receipt in receipts} == {
+            lifecycle.docker_execution_config_sha256(mode)
+        }
+
+    def test_direct_mode_never_mixes_in_sudo_docker_calls(self, tmp_path: Path) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        outcomes = orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        assert all(outcome.ok for outcome in outcomes)
+        docker_lines = self._remote_docker_lines(runner)
+        assert docker_lines
+        assert all("sudo -n -- docker" not in line for line in docker_lines)
+        assert all("docker" in line for line in docker_lines)
+
+    def test_config_authorization_mode_mismatch_refuses_before_ssh(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="does not match authorization",
+        ):
+            lifecycle.RemoteOrchestrator(
+                config=_config(
+                    tmp_path,
+                    docker_execution_mode=(
+                        lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE
+                    ),
+                ),
+                authorization=_authorization(),
+                runner=runner,
+                now_fn=lambda: BILLING_STARTED_AT,
+            )
+        assert runner.calls == []
+
+    def test_denied_sudo_docker_refuses_before_image_or_gpu_work(
+        self, tmp_path: Path
+    ) -> None:
+        mode = lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE
+        runner = FakeCommandRunner(
+            responses={
+                "stage_preflight": lifecycle.CommandResult(
+                    returncode=1,
+                    stdout="",
+                    stderr=(
+                        "sudo: a password is required\n"
+                        "LLMTRACEFX_REASON=preflight_docker_execution_denied\n"
+                    ),
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path, docker_execution_mode=mode),
+            authorization=_authorization(docker_execution_mode=mode.value),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="preflight_docker_execution_denied",
+        ):
+            orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        descriptions = [call.description for call in runner.calls]
+        assert descriptions == ["stage_preflight", "stage_teardown_cleanup"]
+        assert not any(
+            description
+            in {
+                "stage_image_preparation",
+                "stage_model_acquisition_download",
+                "stage_canary",
+                "stage_eviction_lane",
+            }
+            or description.startswith("stage_four_ab_pairs")
+            for description in descriptions
+        )
+        teardown = runner.calls[-1].input_text or ""
+        assert "sudo -n -- docker" in teardown
+        assert "xargs -r sudo -n -- docker" in teardown
 
     def test_model_acquisition_uses_only_labeled_digest_bound_container_mounts(
         self, tmp_path: Path
@@ -1196,6 +1453,12 @@ class TestRemoteOrchestratorFullRun:
         )
         assert receipt["downloader"]["version"] == lifecycle.DOWNLOADER_VERSION
         assert receipt["downloader"]["source"] == lifecycle.DOWNLOADER_SOURCE
+        assert receipt["docker_execution_mode"] == "direct"
+        assert receipt["docker_execution_config_sha256"] == (
+            lifecycle.docker_execution_config_sha256(
+                lifecycle.DockerExecutionMode.DIRECT
+            )
+        )
         assert receipt["verified_file_count"] == 15
         assert receipt["verified_total_bytes"] == 16_397_461_266
 
@@ -1426,6 +1689,25 @@ class TestRemoteOrchestratorFullRun:
             ):
                 assert "--filter" in line
                 assert lifecycle.docker_run_label(auth.nonce) in line
+
+    def test_sudo_mode_teardown_uses_only_selected_docker_prefix(
+        self, tmp_path: Path
+    ) -> None:
+        mode = lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path, docker_execution_mode=mode),
+            authorization=_authorization(docker_execution_mode=mode.value),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_teardown(tmp_path / "bundle")
+        script = runner.calls[-1].input_text or ""
+        docker_lines = [
+            line.strip() for line in script.splitlines() if "docker" in line
+        ]
+        assert docker_lines
+        assert all("sudo -n -- docker" in line for line in docker_lines)
 
     def test_teardown_emits_safe_to_terminate_message(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
