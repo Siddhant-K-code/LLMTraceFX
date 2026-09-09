@@ -361,10 +361,10 @@ def _runtime_inventory() -> tuple[str, tuple[str, ...], str, int]:
         resolved_directory = directory.resolve(strict=True)
         if resolved_directory in ancestors:
             _fail("Python runtime contains a symbolic-link directory cycle")
-        try:
-            resolved_directory.relative_to(base)
-        except ValueError:
-            _fail("Python runtime contains an external symbolic-link target")
+        _require_nonsymlink_parents(
+            resolved_directory / ".bootstrap-parent-check",
+            "Python runtime symbolic-link target",
+        )
         directory_info = resolved_directory.lstat()
         if (
             not stat.S_ISDIR(directory_info.st_mode)
@@ -385,10 +385,9 @@ def _runtime_inventory() -> tuple[str, tuple[str, ...], str, int]:
                 _fail("Python runtime contains an entry with an untrusted owner")
             if stat.S_ISLNK(info.st_mode):
                 resolved = path.resolve(strict=True)
-                try:
-                    resolved.relative_to(base)
-                except ValueError:
-                    _fail("Python runtime contains an external symbolic link")
+                _require_nonsymlink_parents(
+                    resolved, "Python runtime symbolic-link target"
+                )
                 target_info = resolved.lstat()
                 if not _trusted_owner(target_info.st_uid):
                     _fail("Python runtime symbolic-link target has an untrusted owner")
@@ -464,10 +463,6 @@ def _runtime_inventory() -> tuple[str, tuple[str, ...], str, int]:
             )
             continue
         resolved = path.resolve(strict=True)
-        try:
-            resolved.relative_to(base)
-        except ValueError:
-            _fail("Python runtime companion is outside the base runtime")
         _require_nonsymlink_parents(resolved, "Python runtime companion target")
         info = path.lstat()
         resolved_info = resolved.lstat()

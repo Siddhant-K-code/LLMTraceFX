@@ -248,9 +248,13 @@ def _protected_inputs(
 
 
 def test_real_setuptools_wheel_install_and_public_cli_split(tmp_path: Path) -> None:
+    trusted_python = os.environ.get("LLMTRACEFX_TEST_PYTHON")
+    if trusted_python is None and sys.platform == "darwin" and os.environ.get("CI"):
+        pytest.skip("covered by the dedicated macOS trusted-Python bootstrap job")
+    venv_python = trusted_python or sys.executable
     build_venv = tmp_path / "exact-build-venv"
     created_build_venv = subprocess.run(
-        ["uv", "venv", "--python", sys.executable, str(build_venv)],
+        ["uv", "venv", "--python", venv_python, str(build_venv)],
         capture_output=True,
         text=True,
         check=False,
@@ -313,7 +317,7 @@ def test_real_setuptools_wheel_install_and_public_cli_split(tmp_path: Path) -> N
 
     venv = tmp_path / "real-wheel-venv"
     created = subprocess.run(
-        ["uv", "venv", "--python", sys.executable, str(venv)],
+        ["uv", "venv", "--python", venv_python, str(venv)],
         capture_output=True,
         text=True,
         check=False,
@@ -407,6 +411,11 @@ def test_runtime_inventory_detects_executable_runtime_tamper(
     stdlib_zip = (
         base / "lib" / f"python{sys.version_info.major}{sys.version_info.minor}.zip"
     )
+    external_runtime = tmp_path / "trusted-system-runtime"
+    external_runtime.mkdir()
+    external_module = external_runtime / "platform-extension.py"
+    external_module.write_bytes(b"trusted-external-runtime")
+    (stdlib / "platform-extension.py").symlink_to(external_module)
 
     monkeypatch.setattr(
         bootstrap_module,
@@ -434,6 +443,12 @@ def test_runtime_inventory_detects_executable_runtime_tamper(
     zip_creation = bootstrap_module._runtime_inventory()
     assert zip_creation[2] != first[2]
     assert zip_creation[3] == first[3]
+
+    stdlib_zip.unlink()
+    external_module.write_bytes(b"tampered-external-runtime")
+    external_tamper = bootstrap_module._runtime_inventory()
+    assert external_tamper[2] != first[2]
+    assert external_tamper[3] == first[3]
 
 
 def test_native_env_strips_shell_hooks_and_ambient_state(tmp_path: Path) -> None:
