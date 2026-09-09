@@ -213,7 +213,11 @@ jobs:
           UV_PYTHON_INSTALL_DIR="$GITHUB_WORKSPACE/.wheel-python" uv python install 3.12
           trusted_python="$(
             UV_PYTHON_INSTALL_DIR="$GITHUB_WORKSPACE/.wheel-python" \
-              uv python find --no-project --managed-python 3.12
+              uv python find \
+                --directory "$GITHUB_WORKSPACE/.wheel-python" \
+                --no-project \
+                --managed-python \
+                3.12
           )"
           case "$trusted_python" in
             "$GITHUB_WORKSPACE/.wheel-python/"*) ;;
@@ -357,7 +361,11 @@ jobs:
             uv python install 3.12
           trusted_python="$(
             UV_PYTHON_INSTALL_DIR="$GITHUB_WORKSPACE/.bootstrap-python" \
-                uv python find --no-project --managed-python 3.12
+                uv python find \
+                  --directory "$GITHUB_WORKSPACE/.bootstrap-python" \
+                  --no-project \
+                  --managed-python \
+                  3.12
           )"
             case "$trusted_python" in
               "$GITHUB_WORKSPACE/.bootstrap-python/"*) ;;
