@@ -145,7 +145,12 @@ The following is the complete setup sequence (replace every placeholder before
 running it):
 
 ```bash
-cd /absolute/path/to/exact-clean-checkout
+mkdir /absolute/protected/kv-truth-build-source
+tar --extract \
+  --file /absolute/path/to/vllm-kv-truth-<MERGED_HEAD>.tar \
+  --directory /absolute/protected/kv-truth-build-source
+test "$(< /absolute/protected/kv-truth-build-source/COMMIT_HEAD)" = "<MERGED_HEAD>"
+cd /absolute/protected/kv-truth-build-source
 uv venv --python 3.12 /absolute/protected/kv-truth-build-venv
 uv pip install \
   --python /absolute/protected/kv-truth-build-venv/bin/python \
@@ -175,10 +180,11 @@ shasum -a 256 /absolute/protected/kv-truth-launch-manifest.json
 
 The locked `build` extra and `[build-system]` both fix
 `setuptools==84.0.0`, `wheel==0.48.0`, and `packaging==26.3`.
-The command creates a new dedicated build environment containing only that
-exact toolchain; do not reuse the checkout's `.venv`. `--no-build-isolation`
-then prevents the build frontend from resolving or downloading a different
-isolated toolchain.
+The build uses the already verified commit archive rather than the checkout,
+so unrelated untracked files cannot enter the wheel. It also creates a new
+dedicated build environment containing only that exact toolchain; do not reuse
+the checkout's `.venv`. `--no-build-isolation` then prevents the build frontend
+from resolving or downloading a different isolated toolchain.
 
 Record the final 64-character manifest digest outside the installation. Never
 replace it with a digest recomputed from a manifest whose integrity is in
