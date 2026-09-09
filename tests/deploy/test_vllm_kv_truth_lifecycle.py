@@ -725,9 +725,15 @@ class TestProtectedExecutionConfig:
             ("private_key_path", "%h"),
             ("private_key_path", "$HOME"),
             ("private_key_path", "second file"),
+            ("private_key_path", '"quoted"'),
+            ("private_key_path", r"back\slash"),
+            ("private_key_path", "~user"),
             ("known_hosts_path", "%h"),
             ("known_hosts_path", "$HOME"),
             ("known_hosts_path", "second file"),
+            ("known_hosts_path", '"quoted"'),
+            ("known_hosts_path", r"back\slash"),
+            ("known_hosts_path", "~user"),
         ],
     )
     def test_rejects_paths_reinterpreted_by_openssh(

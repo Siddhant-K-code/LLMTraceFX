@@ -119,6 +119,7 @@ _SHA256_REF = re.compile(r"^sha256:[0-9a-f]{64}$")
 _COMMIT_HEX = re.compile(r"^[0-9a-f]{40}$")
 _NONCE_HEX = re.compile(r"^[0-9a-f]{32,64}$")
 _SAFE_REMOTE_PATH = re.compile(r"^/[A-Za-z0-9._/-]{0,4096}$")
+_SAFE_OPENSSH_LOCAL_PATH = re.compile(r"^/[A-Za-z0-9._/-]{1,4095}$")
 _SAFE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SAFE_HOSTNAME_OR_IP = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.:-]{0,253}[A-Za-z0-9])?$")
 _SAFE_USER = re.compile(r"^[A-Za-z_][A-Za-z0-9._-]{0,31}$")
@@ -254,7 +255,7 @@ def _require_unambiguous_absolute_local_path(value: str | Path, *, label: str) -
 
 def _require_literal_openssh_path(value: str, *, label: str) -> Path:
     path = _require_unambiguous_absolute_local_path(value, label=label)
-    if any(character.isspace() or character in {"%", "$"} for character in value):
+    if _SAFE_OPENSSH_LOCAL_PATH.fullmatch(value) is None:
         raise HostOrchestrationError(
             f"{label} contains characters interpreted by OpenSSH"
         )
