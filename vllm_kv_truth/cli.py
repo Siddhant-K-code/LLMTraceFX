@@ -1,10 +1,8 @@
-"""Command-line entry point for the vLLM KV-truth host orchestrator.
+"""Public command-line entry point for offline KV-truth bundle verification.
 
-Deliberately accepts only protected local file/directory paths -- never
-host/user/key/known-hosts paths as individual flags, and never anything
-host-identifying is printed.
-``main()`` returns a process exit code and never raises past its own frame;
-every error is reduced to a single, non-leaking line on stderr.
+Remote execution is intentionally absent from this console-script surface.
+The separately installed clean bootstrap verifies its trust manifest before
+calling :func:`bootstrap_dispatch` for preflight or execution.
 """
 
 from __future__ import annotations
@@ -38,44 +36,6 @@ _PLATFORM_SYNTHESIZED_ENVIRONMENT_NAMES = {"__CF_USER_TEXT_ENCODING"}
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=PROG, description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-
-    run_parser = subparsers.add_parser(
-        "run",
-        help=(
-            "execute the complete one-attempt remote protocol for one " "authorized run"
-        ),
-    )
-    run_parser.add_argument(
-        "--execution-config",
-        required=True,
-        type=Path,
-        help=(
-            "path to a protected JSON file containing host/user/key/"
-            "known-hosts/remote-path facts; never passed as individual flags"
-        ),
-    )
-    run_parser.add_argument(
-        "--authorization",
-        required=True,
-        type=Path,
-        help="path to the explicit, self-sealed run authorization JSON",
-    )
-    run_parser.add_argument(
-        "--output-dir",
-        required=True,
-        type=Path,
-        help=(
-            "pre-created protected output directory; must exactly match "
-            "local_evidence_dir in the execution config"
-        ),
-    )
-    subparsers.add_parser(
-        "preflight-clean-environment",
-        help=(
-            "verify the clean-launcher environment and exit without provider, "
-            "SSH, model, image, or GPU activity"
-        ),
-    )
     verify_parser = subparsers.add_parser(
         "verify-public-bundle",
         help="portably verify a previously exported public-redacted evidence bundle",
@@ -87,6 +47,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="directory containing bundle.json, report.txt, report.svg, SHA256SUMS",
     )
 
+    return parser
+
+
+def _build_bootstrap_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog=f"{PROG} (trusted bootstrap)")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    run_parser = subparsers.add_parser("run")
+    run_parser.add_argument("--execution-config", required=True, type=Path)
+    run_parser.add_argument("--authorization", required=True, type=Path)
+    run_parser.add_argument("--output-dir", required=True, type=Path)
+    subparsers.add_parser("preflight")
     return parser
 
 
@@ -163,15 +134,32 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
-        if args.command == "run":
-            return _run(args)
-        if args.command == "preflight-clean-environment":
-            return _preflight_clean_environment()
         return _verify_public_bundle(args)
+    except evidence.EvidenceError as exc:
+        print(f"{PROG}: error: {exc}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"{PROG}: error: {exc.strerror or exc}", file=sys.stderr)
+        return 1
+
+
+def bootstrap_dispatch(argv: list[str]) -> int:
+    """Dispatch verified bootstrap-only operations.
+
+    This is an internal separation of command surfaces, not an unforgeable
+    Python capability. Same-user arbitrary Python import is outside the launch
+    threat model.
+    """
+
+    parser = _build_bootstrap_parser()
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "preflight":
+            return _preflight_clean_environment()
+        return _run(args)
     except HostOrchestrationError as exc:
         print(f"{PROG}: error: {exc}", file=sys.stderr)
-        signum = getattr(exc, "signal_number", None)
-        return 128 + signum if isinstance(signum, int) else 1
+        return 128 + exc.signal_number if exc.signal_number is not None else 1
     except evidence.EvidenceError as exc:
         print(f"{PROG}: error: {exc}", file=sys.stderr)
         return 1

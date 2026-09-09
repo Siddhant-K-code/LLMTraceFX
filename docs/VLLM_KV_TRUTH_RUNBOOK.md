@@ -140,12 +140,15 @@ supplying only one is invalid.
 
 Start from the exact clean, tested commit. Build one wheel and install that
 same wheel into a new dedicated virtual environment. Use absolute paths with
-no spaces. The following is the complete setup sequence (replace every
-placeholder before running it):
+no spaces or symbolic-link components; obtain each directory with `pwd -P`.
+The following is the complete setup sequence (replace every placeholder before
+running it):
 
 ```bash
 cd /absolute/path/to/exact-clean-checkout
-uv build --wheel --out-dir /absolute/protected/build-output
+uv sync --locked --extra build
+uv build --no-build-isolation --wheel \
+  --out-dir /absolute/protected/build-output
 uv venv --python 3.12 /absolute/protected/kv-truth-venv
 uv pip install \
   --python /absolute/protected/kv-truth-venv/bin/python \
@@ -166,12 +169,22 @@ sha256sum /absolute/protected/kv-truth-launch-manifest.json
 shasum -a 256 /absolute/protected/kv-truth-launch-manifest.json
 ```
 
+The locked `build` extra and `[build-system]` both fix
+`setuptools==84.0.0`, `wheel==0.48.0`, and `packaging==26.3`.
+`--no-build-isolation` prevents the build frontend from resolving or
+downloading a different isolated toolchain.
+
 Record the final 64-character manifest digest outside the installation. Never
 replace it with a digest recomputed from a manifest whose integrity is in
 doubt. `record-trust` writes a mode-`0600` external manifest binding the exact
 wheel digest, bootstrap digest, invoked and canonical interpreter identity,
-and a digest/count of every stable file, directory, and symlink in the
-dedicated environment. It also proves that installed `llmtracefx` and
+an inventory digest/count for the selected versioned Python standard library,
+native `lib-dynload` modules and base-runtime companions, and a digest/count of
+every file, directory, and symlink in the dedicated environment. User and
+system site-packages are excluded from the base-runtime inventory because
+`-S` does not load them; executable bytecode caches are not excluded. OS
+system libraries loaded below Python remain part of the explicitly trusted OS
+boundary. The manifest also proves that installed `llmtracefx` and
 `vllm_kv_truth` package files and package data match the wheel. This complete
 installed-environment manifest is used instead of direct zip execution because
 the runner intentionally reads packaged resources through filesystem paths.
@@ -181,23 +194,27 @@ resolution cannot silently add executable code. The external wheel hash binds
 the project artifact, and the external manifest binds the complete installed
 environment after this no-dependency install.
 
-This contract assumes the local OS, native `/usr/bin/env`, selected Python
-runtime and exact clean checkout are trusted when the manifest is enrolled.
-It prevents ambient shell variables and later installation drift from
-influencing the run; it is not a substitute for rebuilding a compromised
-operator host. The same bootstrap is compatible with the project's current
-`.venv` after reinstalling the exact wheel with `--no-deps` and enrolling that
-environment, but the dedicated minimal environment above is required for the
-paid operator run.
+Initial enrollment trusts the operator OS and account, native `/usr/bin/env`,
+the selected Python runtime, and the exact clean checkout. The bootstrap and
+external manifest detect accidental, stale, or tampered drift after that
+enrollment. They do not cryptographically authenticate the bootstrap against a
+malicious same-user process and cannot defend a host or same-user account that
+was already compromised before execution. Such an account can already read
+the SSH key, config, and authorization; treat that as a hard stop, terminate
+any reservation, revoke/remove the temporary material, and rebuild from a
+separately trusted host. Arbitrary same-user Python imports are outside this
+threat model. The dedicated minimal environment above is required for the paid
+operator run.
 
 The bootstrap must be started by native `/usr/bin/env -i`, the exact absolute
 venv Python, and `-I -S -B`. `-S` prevents executable site-package `.pth`
 hooks from running before verification; `-B` prevents imports from changing
 the byte-for-byte environment inventory. The old shell launcher and its
-spoofable re-exec marker no longer exist. The Python bootstrap validates
-itself, the wheel, the manifest, interpreter chain, complete environment,
-arguments, and protected paths before adding site-packages or importing
-LLMTraceFX.
+spoofable re-exec marker no longer exist. Against the enrollment assumptions
+above, the Python bootstrap compares its installed bytes, the wheel,
+interpreter/runtime chain, complete environment, arguments, and protected
+paths with the externally recorded manifest before adding site-packages or
+importing LLMTraceFX.
 
 The execution config and authorization must be current-user-owned,
 non-symlink, mode-`0600` regular files. The output directory must already
@@ -208,8 +225,12 @@ standard Linux venvs and uv's macOS version-alias directory.
 
 The authorization continues to carry `signature_path` and
 `authorized_signers_path` together when detached signing is enabled. The
+paths must both be unambiguous absolute local paths. The
 bootstrap deliberately does not accept signature, signer, target, user, SSH
 key, known-hosts, or remote-workspace arguments.
+The public `llmtracefx-vllm-kv-truth` console script exposes only
+`verify-public-bundle`; `run` and `preflight` exist only in the internal
+dispatcher called by the bootstrap after trust verification.
 
 Run the offline environment preflight first:
 
@@ -279,6 +300,8 @@ use `--network none` plus the fixed offline environment.
 
 Before the one command above, confirm only this checklist:
 
+0. The clean-bootstrap change is merged and that exact merged head has passed
+   CI and CodeQL. No new VM exists before this gate passes.
 1. The source archive is from the exact clean, tested, merged `origin/main`.
 2. Authorization schema 2 seals that head, archive digest, runtime/model/image
    pins, downloader identity, budget, nonce, and zero-retry policy.
@@ -339,7 +362,8 @@ Keep the transferred private bundle private. Verify the public-redacted
 bundle offline:
 
 ```bash
-llmtracefx-vllm-kv-truth verify-public-bundle \
+/absolute/protected/kv-truth-venv/bin/llmtracefx-vllm-kv-truth \
+  verify-public-bundle \
   --bundle-dir /protected/path/to/evidence-output/public
 ```
 
@@ -354,10 +378,24 @@ coordinator must separately terminate the reservation in the provider
 console and preserve provider confirmation. Never claim provider deletion
 from OS state or from the application list-rate ledger.
 
-If bootstrap/manifest validation fails, no SSH was attempted: repair or
-rebuild the local dedicated environment, create a new external trust manifest,
-and repeat the offline preflight. Never weaken a check or recompute a digest
-from the suspect artifact merely to make it pass.
+If bootstrap, manifest, or offline preflight validation fails after a VM was
+provisioned, no SSH lifecycle began. Terminate the provider reservation
+immediately in the provider console and preserve its termination confirmation;
+do not leave it billing while rebuilding locally. Then remove the one-attempt
+local material:
+
+```bash
+/bin/rm -- \
+  /protected/path/to/fresh-temporary-key \
+  /protected/path/execution-config.json \
+  /protected/path/run-authorization.json
+```
+
+Repair or rebuild the dedicated environment, create a trust manifest at a new
+path (manifest creation deliberately refuses to overwrite), and repeat the
+offline preflight only with a fresh key and fresh authorization. Never weaken
+a check or recompute a digest from the suspect artifact merely to make it
+pass.
 
 If a run fails and `SAFE TO TERMINATE INSTANCE NOW` is absent, teardown is not
 proven. Do not infer provider termination and do not start another attempt.
@@ -388,7 +426,7 @@ OS, and the operator confirmed provider-console termination. The inferred
 cost was approximately `$0.058434`; it is operational provenance, not
 scientific evidence.
 
-Do not provision a new VM for the next attempt until the clean-bootstrap change is
-merged, its exact merged head passes CI and CodeQL, the wheel-installed
+Do not provision a new VM for the next attempt until the clean-bootstrap
+change is merged, its exact merged head passes CI and CodeQL, the wheel-installed
 bootstrap preflight passes from the contaminated operator shell, and a new
 authorization binds the resulting exact source archive.

@@ -1,9 +1,7 @@
 """CLI-surface tests: what flags exist, what never gets printed, exit codes.
 
-These tests never invoke ``main()``'s ``run`` subcommand against a real
-``SubprocessCommandRunner`` -- that would need a real SSH/Docker
-environment. Instead they exercise the argument parser directly, and
-``verify-public-bundle`` (which is fully offline) end to end.
+The public ``main`` exposes only offline verification. Bootstrap-only run and
+preflight behavior is tested through the separate internal dispatcher.
 """
 
 from __future__ import annotations
@@ -17,52 +15,15 @@ import pytest
 
 from vllm_kv_truth import cli as cli_module
 from vllm_kv_truth import evidence
-from vllm_kv_truth.cli import _build_parser, main
+from vllm_kv_truth.cli import _build_parser, bootstrap_dispatch, main
 from vllm_kv_truth.lifecycle import HostOrchestrationError
 
 
 class TestArgumentParser:
-    def test_run_requires_both_protected_paths(self) -> None:
+    def test_public_parser_exposes_only_offline_verification(self) -> None:
         parser = _build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(["run"])
-
-    def test_run_accepts_only_path_flags(self) -> None:
-        parser = _build_parser()
-        args = parser.parse_args(
-            [
-                "run",
-                "--execution-config",
-                "config.json",
-                "--authorization",
-                "auth.json",
-                "--output-dir",
-                "output",
-            ]
-        )
-        assert args.execution_config == Path("config.json")
-        assert args.authorization == Path("auth.json")
-        assert args.output_dir == Path("output")
-
-    def test_no_host_user_key_or_remote_path_flags_exist(self) -> None:
-        parser = _build_parser()
-        # Directly inspect the run subparser's own option strings instead of
-        # scraping help text, which is more robust to wrapping/formatting.
-        run_subparser = parser._subparsers._group_actions[0].choices["run"]  # type: ignore[union-attr,index]
-        option_strings = {
-            option
-            for action in run_subparser._actions
-            for option in action.option_strings
-        }
-        forbidden = {
-            "--host",
-            "--user",
-            "--private-key-path",
-            "--known-hosts-path",
-            "--remote-workspace",
-            "--authorized-key-marker",
-        }
-        assert option_strings.isdisjoint(forbidden)
+        choices = parser._subparsers._group_actions[0].choices  # type: ignore[union-attr]
+        assert set(choices) == {"verify-public-bundle"}
 
     def test_verify_public_bundle_requires_bundle_dir(self) -> None:
         parser = _build_parser()
@@ -146,34 +107,40 @@ class TestVerifyPublicBundleCommand:
 
 
 class TestRunCommandRejectsBadInputs:
-    def test_run_rejects_contaminated_parent_before_reading_private_inputs(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    @pytest.mark.parametrize(
+        "command", ["run", "preflight", "preflight-clean-environment"]
+    )
+    def test_public_cli_rejects_bootstrap_only_commands_before_private_reads(
+        self, monkeypatch: pytest.MonkeyPatch, command: str
     ) -> None:
-        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8080")
-
         def fail_if_loaded(_path: Path) -> object:
             raise AssertionError("private inputs must not be read")
 
         monkeypatch.setattr(cli_module.ProtectedExecutionConfig, "load", fail_if_loaded)
-        exit_code = main(
-            [
-                "run",
-                "--execution-config",
-                "/protected/config.json",
-                "--authorization",
-                "/protected/authorization.json",
-                "--output-dir",
-                "/protected/output",
-            ]
-        )
-        assert exit_code == 1
-        captured = capsys.readouterr()
-        assert "run-vllm-kv-truth-clean-env.py" in captured.err
+        with pytest.raises(SystemExit) as caught:
+            main(
+                [
+                    command,
+                    "--execution-config",
+                    "/protected/config.json",
+                    "--authorization",
+                    "/protected/authorization.json",
+                    "--output-dir",
+                    "/protected/output",
+                ]
+            )
+        assert caught.value.code == 2
 
     def test_missing_execution_config_fails_cleanly(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
-        exit_code = main(
+        monkeypatch.setattr(
+            cli_module, "_require_clean_parent_environment", lambda: None
+        )
+        exit_code = bootstrap_dispatch(
             [
                 "run",
                 "--execution-config",
@@ -187,7 +154,10 @@ class TestRunCommandRejectsBadInputs:
         assert exit_code == 1
 
     def test_world_readable_config_is_rejected_before_any_network_activity(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps({"host": "x"}), encoding="utf-8")
@@ -196,7 +166,10 @@ class TestRunCommandRejectsBadInputs:
         )
         auth_path = tmp_path / "auth.json"
         auth_path.write_text("{}", encoding="utf-8")
-        exit_code = main(
+        monkeypatch.setattr(
+            cli_module, "_require_clean_parent_environment", lambda: None
+        )
+        exit_code = bootstrap_dispatch(
             [
                 "run",
                 "--execution-config",
@@ -228,7 +201,7 @@ class TestRunCommandRejectsBadInputs:
             "read",
             lambda _path: SimpleNamespace(signature_path=None),
         )
-        exit_code = main(
+        exit_code = bootstrap_dispatch(
             [
                 "run",
                 "--execution-config",
@@ -274,7 +247,7 @@ class TestRunCommandRejectsBadInputs:
 
         monkeypatch.setattr(cli_module, "SubprocessCommandRunner", lambda: object())
         monkeypatch.setattr(cli_module, "RemoteOrchestrator", RefusingOrchestrator)
-        exit_code = main(
+        exit_code = bootstrap_dispatch(
             [
                 "run",
                 "--execution-config",

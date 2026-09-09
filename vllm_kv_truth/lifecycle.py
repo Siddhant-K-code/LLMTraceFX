@@ -872,6 +872,12 @@ class RunAuthorization:
                     data["authorized_signers_path"], "authorized_signers_path"
                 )
             )
+            _require_unambiguous_absolute_local_path(
+                signature_path, label="signature_path"
+            )
+            _require_unambiguous_absolute_local_path(
+                authorized_signers_path, label="authorized_signers_path"
+            )
 
         return cls(
             repository_head=repository_head,
@@ -3108,8 +3114,12 @@ class RemoteOrchestrator:
         failure: BaseException | None = None
         teardown_failure: BaseException | None = None
         pending_teardown_signals: list[int] = []
+        teardown_started = False
 
-        def handle_termination(signum: int, _frame: Any) -> NoReturn:
+        def handle_termination(signum: int, _frame: Any) -> None:
+            if teardown_started:
+                pending_teardown_signals.append(signum)
+                return
             error = HostOrchestrationError(
                 "the coordinator received a termination signal",
                 stage="run",
@@ -3118,9 +3128,6 @@ class RemoteOrchestrator:
                 signal_number=signum,
             )
             raise error
-
-        def defer_termination(signum: int, _frame: Any) -> None:
-            pending_teardown_signals.append(signum)
 
         for signal_name in ("SIGTERM", "SIGHUP"):
             signum = getattr(signal, signal_name, None)
@@ -3148,8 +3155,7 @@ class RemoteOrchestrator:
             self._record("run", False, detail=type(exc).__name__)
             failure = exc
         finally:
-            for signum in installed_handlers:
-                signal.signal(signum, defer_termination)
+            teardown_started = True
             try:
                 self.stage_teardown(local_evidence_bundle_dir)
             except BaseException as exc:  # noqa: BLE001 - preserved below
@@ -3179,6 +3185,8 @@ class RemoteOrchestrator:
                 raise interrupted from teardown_failure
             raise interrupted
         if teardown_failure is not None:
+            if failure is not None:
+                raise teardown_failure from failure
             raise teardown_failure
         if failure is not None:
             raise failure

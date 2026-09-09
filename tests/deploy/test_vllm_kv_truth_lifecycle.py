@@ -537,6 +537,28 @@ class TestRunAuthorization:
         assert "signature_path" not in auth.to_dict()
         assert "authorized_signers_path" not in auth.to_dict()
 
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("signature_path", "relative.sig"),
+            ("authorized_signers_path", "relative-signers"),
+            ("signature_path", "/protected/../authorization.sig"),
+            ("authorized_signers_path", "/protected/../authorized_signers"),
+        ],
+    )
+    def test_signature_paths_must_be_unambiguous_absolute_paths(
+        self, field: str, value: str
+    ) -> None:
+        payload = _authorization_payload()
+        payload["signature_path"] = "/protected/authorization.sig"
+        payload["authorized_signers_path"] = "/protected/authorized_signers"
+        payload[field] = value
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match=f"{field} must be an unambiguous absolute path",
+        ):
+            lifecycle.RunAuthorization.from_dict(payload)
+
     def test_read_from_file(self, tmp_path: Path) -> None:
         payload = _authorization_payload()
         path = tmp_path / "authorization.json"

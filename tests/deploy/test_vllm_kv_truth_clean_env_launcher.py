@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -61,12 +62,12 @@ EXPECTED = {
     "PATH": "/usr/bin:/bin:/usr/local/bin",
 }
 
-def main(argv=None):
+def bootstrap_dispatch(argv):
     args = list(sys.argv[1:] if argv is None else argv)
     unexpected = set(os.environ) - set(EXPECTED) - {"__CF_USER_TEXT_ENCODING"}
     if unexpected or any(os.environ.get(k) != v for k, v in EXPECTED.items()):
         return 91
-    if args == ["preflight-clean-environment"]:
+    if args == ["preflight"]:
         print("clean environment preflight: ok")
         return 0
     output = Path(args[args.index("--output-dir") + 1])
@@ -156,7 +157,9 @@ def _install_fake_environment(
     interpreter = bin_dir / "python"
     interpreter.symlink_to(interpreter_target or Path(sys.executable).resolve())
     bootstrap = bin_dir / "run-vllm-kv-truth-clean-env.py"
-    shutil.copyfile(BOOTSTRAP_SOURCE, bootstrap)
+    source = BOOTSTRAP_SOURCE.read_bytes()
+    bootstrap_body = source.split(b"\n", 1)[1]
+    bootstrap.write_bytes(f"#!{interpreter}\n".encode() + bootstrap_body)
     bootstrap.chmod(0o755)
     console_script = bin_dir / "llmtracefx-vllm-kv-truth"
     console_script.write_text("#!/bin/sh\nexit 99\n")
@@ -176,7 +179,7 @@ def _install_fake_environment(
         b"Tag: py3-none-any\n"
     )
     wheel = tmp_path / "llmtracefx-1.0.0-py3-none-any.whl"
-    _write_wheel(wheel, bootstrap.read_bytes())
+    _write_wheel(wheel, b"#!python\n" + bootstrap_body)
     return interpreter, bootstrap, wheel
 
 
@@ -242,6 +245,186 @@ def _protected_inputs(
     auth.write_text(json.dumps(authorization or {}))
     auth.chmod(0o600)
     return config, auth, output
+
+
+def test_real_setuptools_wheel_install_and_public_cli_split(tmp_path: Path) -> None:
+    build_venv = tmp_path / "exact-build-venv"
+    created_build_venv = subprocess.run(
+        ["uv", "venv", "--python", sys.executable, str(build_venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert created_build_venv.returncode == 0, created_build_venv.stderr
+    build_python = build_venv / "bin" / "python"
+    installed_build_tools = subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(build_python),
+            "setuptools==84.0.0",
+            "wheel==0.48.0",
+            "packaging==26.3",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert installed_build_tools.returncode == 0, installed_build_tools.stderr
+    versions = subprocess.run(
+        [
+            str(build_python),
+            "-c",
+            (
+                "import packaging,setuptools,wheel;"
+                "print(setuptools.__version__,wheel.__version__,packaging.__version__)"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert versions.returncode == 0, versions.stderr
+    assert versions.stdout.strip() == "84.0.0 0.48.0 26.3"
+
+    dist = tmp_path / "dist"
+    built = subprocess.run(
+        [
+            "uv",
+            "build",
+            "--wheel",
+            "--no-build-isolation",
+            "--python",
+            str(build_python),
+            "--out-dir",
+            str(dist),
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert built.returncode == 0, built.stderr
+    wheels = list(dist.glob("*.whl"))
+    assert len(wheels) == 1
+    wheel = wheels[0]
+
+    venv = tmp_path / "real-wheel-venv"
+    created = subprocess.run(
+        ["uv", "venv", "--python", sys.executable, str(venv)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert created.returncode == 0, created.stderr
+    installed = subprocess.run(
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            str(venv / "bin" / "python"),
+            "--no-deps",
+            str(wheel),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert installed.returncode == 0, installed.stderr
+
+    interpreter = venv / "bin" / "python"
+    bootstrap = venv / "bin" / "run-vllm-kv-truth-clean-env.py"
+    manifest, digest = _record_trust(tmp_path, interpreter, bootstrap, wheel)
+    preflight = subprocess.run(
+        _native_command(
+            interpreter,
+            bootstrap,
+            "preflight",
+            *_trusted_args(wheel, manifest, digest),
+        ),
+        env={**os.environ, **CONTAMINATED_ENVIRONMENT},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert preflight.returncode == 0, preflight.stderr
+    assert preflight.stdout == "clean environment preflight: ok\n"
+
+    public_cli = venv / "bin" / "llmtracefx-vllm-kv-truth"
+    private_read_marker = tmp_path / "private-input-was-read"
+    for command in ("run", "preflight", "preflight-clean-environment"):
+        refused = subprocess.run(
+            [
+                "/usr/bin/env",
+                "-i",
+                *[f"{name}={value}" for name, value in SAFE_ENVIRONMENT.items()],
+                str(public_cli),
+                command,
+                "--execution-config",
+                str(private_read_marker),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert refused.returncode == 2
+    assert not private_read_marker.exists()
+
+
+def test_runtime_inventory_detects_executable_runtime_tamper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "clean_bootstrap_runtime_test", BOOTSTRAP_SOURCE
+    )
+    assert spec is not None and spec.loader is not None
+    bootstrap_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bootstrap_module)
+
+    base = tmp_path / "python-runtime"
+    stdlib = base / "lib" / f"python{sys.version_info.major}.{sys.version_info.minor}"
+    dynload = stdlib / "lib-dynload"
+    cache = stdlib / "__pycache__"
+    site_packages = stdlib / "site-packages"
+    for directory in (dynload, cache, site_packages):
+        directory.mkdir(parents=True, exist_ok=True)
+    (stdlib / "os.py").write_text("RUNTIME = 'trusted'\n")
+    extension = dynload / "_hashlib.test-extension"
+    extension.write_bytes(b"trusted-native-extension")
+    bytecode = cache / "os.test.pyc"
+    bytecode.write_bytes(b"trusted-bytecode")
+    ignored_site_package = site_packages / "ambient.py"
+    ignored_site_package.write_text("AMBIENT = 'one'\n")
+    companion = (
+        base
+        / "lib"
+        / (f"libpython{sys.version_info.major}.{sys.version_info.minor}.test")
+    )
+    companion.write_bytes(b"trusted-runtime-library")
+
+    monkeypatch.setattr(
+        bootstrap_module,
+        "_runtime_paths",
+        lambda: (base, (stdlib,), (companion,)),
+    )
+    first = bootstrap_module._runtime_inventory()
+
+    ignored_site_package.write_text("AMBIENT = 'two'\n")
+    assert bootstrap_module._runtime_inventory() == first
+
+    extension.write_bytes(b"tampered-native-extension")
+    native_tamper = bootstrap_module._runtime_inventory()
+    assert native_tamper[2] != first[2]
+    assert native_tamper[3] == first[3]
+
+    extension.write_bytes(b"trusted-native-extension")
+    bytecode.write_bytes(b"tampered-bytecode")
+    bytecode_tamper = bootstrap_module._runtime_inventory()
+    assert bytecode_tamper[2] != first[2]
+    assert bytecode_tamper[3] == first[3]
 
 
 def test_native_env_strips_shell_hooks_and_ambient_state(tmp_path: Path) -> None:
@@ -317,6 +500,56 @@ def test_preflight_requires_native_clean_environment(tmp_path: Path) -> None:
     assert clean.stdout == "clean environment preflight: ok\n"
 
 
+def test_trust_accepts_long_path_installer_trampoline(tmp_path: Path) -> None:
+    interpreter, bootstrap, wheel = _install_fake_environment(tmp_path)
+    body = bootstrap.read_bytes().split(b"\n", 1)[1]
+    bootstrap.write_bytes(
+        b"#!/bin/sh\n"
+        + f"'''exec' '{interpreter}' \"$0\" \"$@\"\n".encode()
+        + b"' '''\n"
+        + body
+    )
+    bootstrap.chmod(0o755)
+    manifest, digest = _record_trust(tmp_path, interpreter, bootstrap, wheel)
+    completed = subprocess.run(
+        _native_command(
+            interpreter,
+            bootstrap,
+            "preflight",
+            *_trusted_args(wheel, manifest, digest),
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_trust_rejects_installer_shebang_for_another_interpreter(
+    tmp_path: Path,
+) -> None:
+    interpreter, bootstrap, wheel = _install_fake_environment(tmp_path)
+    body = bootstrap.read_bytes().split(b"\n", 1)[1]
+    bootstrap.write_bytes(b"#!/usr/bin/python3\n" + body)
+    bootstrap.chmod(0o755)
+    completed = subprocess.run(
+        _native_command(
+            interpreter,
+            bootstrap,
+            "record-trust",
+            "--wheel",
+            str(wheel),
+            "--output",
+            str(tmp_path / "manifest.json"),
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 2
+    assert "invalid PEP 427 shebang rewrite" in completed.stderr
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected"),
     [
@@ -324,6 +557,7 @@ def test_preflight_requires_native_clean_environment(tmp_path: Path) -> None:
         ("bootstrap", "bootstrap does not match"),
         ("package", "installed package contents do not match"),
         ("dependency", "installed environment does not match"),
+        ("runtime-manifest", "Python base runtime does not match"),
         ("manifest", "externally recorded SHA-256"),
         ("stale-wheel", "launch paths do not match"),
     ],
@@ -362,6 +596,12 @@ def test_trust_root_rejects_tampering(
             / "dependency.py"
         )
         dependency.write_text("# dependency added after trust recording\n")
+    elif mutation == "runtime-manifest":
+        payload = json.loads(manifest.read_text())
+        payload["python_runtime_sha256"] = "0" * 64
+        manifest.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        manifest.chmod(0o600)
+        digest = _sha256(manifest)
     elif mutation == "manifest":
         with manifest.open("a") as handle:
             handle.write(" ")
@@ -425,6 +665,41 @@ def test_record_trust_rejects_incomplete_wheel_record(
     )
     assert completed.returncode == 2
     assert expected in completed.stderr
+
+
+def test_record_trust_rejects_validly_recorded_unexpected_module(
+    tmp_path: Path,
+) -> None:
+    interpreter, bootstrap, wheel = _install_fake_environment(tmp_path)
+
+    def mutate(files: dict[str, bytes]) -> None:
+        record_name = next(name for name in files if name.endswith(".dist-info/RECORD"))
+        payload = b"raise RuntimeError('unexpected')\n"
+        rows = list(csv.reader(io.StringIO(files[record_name].decode("utf-8"))))
+        rows.insert(-1, ["subprocess.py", _record_hash(payload), str(len(payload))])
+        output = io.StringIO()
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerows(rows)
+        files[record_name] = output.getvalue().encode()
+        files["subprocess.py"] = payload
+
+    _rewrite_wheel(wheel, mutate)
+    completed = subprocess.run(
+        _native_command(
+            interpreter,
+            bootstrap,
+            "record-trust",
+            "--wheel",
+            str(wheel),
+            "--output",
+            str(tmp_path / "manifest.json"),
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 2
+    assert "unexpected top-level path" in completed.stderr
 
 
 @pytest.mark.parametrize(
@@ -581,7 +856,7 @@ def orchestrator_factory(*, config, authorization, runner):
 
 cli.RemoteOrchestrator = orchestrator_factory
 raise SystemExit(
-    cli.main(
+    cli.bootstrap_dispatch(
         [
             "run",
             "--execution-config",

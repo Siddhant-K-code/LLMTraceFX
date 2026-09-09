@@ -1,5 +1,9 @@
 [build-system]
-requires = ["setuptools>=77.0", "wheel"]
+requires = [
+    "setuptools==84.0.0",
+    "wheel==0.48.0",
+    "packaging==26.3",
+]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -38,6 +42,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+build = [
+    "setuptools==84.0.0",
+    "wheel==0.48.0",
+    "packaging==26.3",
+]
+
 # Modal is an optional extra, not a runtime dependency. Nothing in the
 # library imports it at module scope: `llmtracefx.api.serve` guards its
 # import, and the deployment planner (`llmtracefx.deploy`) is pure Python

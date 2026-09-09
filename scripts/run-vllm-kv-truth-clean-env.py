@@ -16,6 +16,7 @@ import json
 import os
 import stat
 import sys
+import sysconfig
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
@@ -26,7 +27,7 @@ SAFE_ENVIRONMENT = {
     "LC_ALL": "C",
 }
 PLATFORM_ENVIRONMENT_NAMES = {"__CF_USER_TEXT_ENCODING"}
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_SYMLINKS = 32
 
 
@@ -304,6 +305,175 @@ def _inventory_environment(root: Path) -> tuple[str, int]:
     return _sha256_bytes(encoded), len(entries)
 
 
+def _runtime_paths() -> tuple[Path, tuple[Path, ...], tuple[Path, ...]]:
+    base = Path(sys.base_prefix).resolve(strict=True)
+    if not base.is_absolute():
+        _fail("Python base runtime path is not absolute")
+    configured = sysconfig.get_paths(vars={"base": str(base), "platbase": str(base)})
+    roots = tuple(
+        sorted(
+            {
+                Path(configured[name]).resolve(strict=True)
+                for name in ("stdlib", "platstdlib")
+            },
+            key=str,
+        )
+    )
+    if not roots:
+        _fail("Python base runtime has no versioned standard-library root")
+    for root in roots:
+        try:
+            root.relative_to(base)
+        except ValueError:
+            _fail("Python standard-library root is outside the base runtime")
+        if root.name != f"python{sys.version_info.major}.{sys.version_info.minor}":
+            _fail("Python standard-library root is not version-specific")
+
+    companion_candidates = [
+        base / "Python",
+        base / "pyvenv.cfg",
+        *sorted(
+            (base / "lib").glob(
+                f"libpython{sys.version_info.major}.{sys.version_info.minor}*"
+            )
+        ),
+    ]
+    companions = tuple(path for path in companion_candidates if path.exists())
+    return base, roots, companions
+
+
+def _runtime_inventory() -> tuple[str, tuple[str, ...], str, int]:
+    base, roots, companions = _runtime_paths()
+    entries: list[dict[str, Any]] = []
+
+    def add_tree(
+        directory: Path, logical_directory: str, ancestors: frozenset[Path]
+    ) -> None:
+        resolved_directory = directory.resolve(strict=True)
+        if resolved_directory in ancestors:
+            _fail("Python runtime contains a symbolic-link directory cycle")
+        try:
+            resolved_directory.relative_to(base)
+        except ValueError:
+            _fail("Python runtime contains an external symbolic-link target")
+        directory_info = resolved_directory.lstat()
+        if (
+            not stat.S_ISDIR(directory_info.st_mode)
+            or not _trusted_owner(directory_info.st_uid)
+            or _mode_writable(directory_info.st_mode)
+        ):
+            _fail("Python runtime contains an unsafe directory")
+        next_ancestors = ancestors | {resolved_directory}
+        for path in sorted(resolved_directory.iterdir(), key=lambda item: item.name):
+            info = path.lstat()
+            logical_path = f"{logical_directory}/{path.name}"
+            mode = stat.S_IMODE(info.st_mode)
+            if path.name in {"site-packages", "dist-packages"} and (
+                stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            ):
+                continue
+            if not _trusted_owner(info.st_uid):
+                _fail("Python runtime contains an entry with an untrusted owner")
+            if stat.S_ISLNK(info.st_mode):
+                resolved = path.resolve(strict=True)
+                try:
+                    resolved.relative_to(base)
+                except ValueError:
+                    _fail("Python runtime contains an external symbolic link")
+                target_info = resolved.lstat()
+                if _mode_writable(target_info.st_mode):
+                    _fail("Python runtime symbolic-link target is writable")
+                entry: dict[str, Any] = {
+                    "kind": "symlink",
+                    "mode": mode,
+                    "path": logical_path,
+                    "target": os.readlink(path),
+                }
+                if stat.S_ISREG(target_info.st_mode):
+                    entry["target_sha256"] = _sha256_bytes(resolved.read_bytes())
+                    entry["target_size"] = target_info.st_size
+                elif stat.S_ISDIR(target_info.st_mode):
+                    entry["target_kind"] = "directory"
+                else:
+                    _fail("Python runtime symbolic link has an unsafe target")
+                entries.append(entry)
+                if stat.S_ISDIR(target_info.st_mode):
+                    add_tree(
+                        resolved,
+                        f"{logical_path}/@target",
+                        next_ancestors,
+                    )
+            elif stat.S_ISDIR(info.st_mode):
+                if _mode_writable(info.st_mode):
+                    _fail("Python runtime contains a writable directory")
+                entries.append(
+                    {"kind": "directory", "mode": mode, "path": logical_path}
+                )
+                add_tree(path, logical_path, next_ancestors)
+            elif stat.S_ISREG(info.st_mode):
+                if _mode_writable(info.st_mode):
+                    _fail("Python runtime contains a writable file")
+                entries.append(
+                    {
+                        "kind": "file",
+                        "mode": mode,
+                        "path": logical_path,
+                        "sha256": _sha256_bytes(path.read_bytes()),
+                        "size": info.st_size,
+                    }
+                )
+            else:
+                _fail("Python runtime contains an unsupported file type")
+
+    for index, root in enumerate(roots):
+        logical_root = f"stdlib-{index}"
+        root_info = root.lstat()
+        entries.append(
+            {
+                "kind": "directory",
+                "mode": stat.S_IMODE(root_info.st_mode),
+                "path": logical_root,
+            }
+        )
+        add_tree(root, logical_root, frozenset())
+
+    for path in companions:
+        resolved = path.resolve(strict=True)
+        try:
+            resolved.relative_to(base)
+        except ValueError:
+            _fail("Python runtime companion is outside the base runtime")
+        info = path.lstat()
+        resolved_info = resolved.lstat()
+        if (
+            not _trusted_owner(info.st_uid)
+            or not _trusted_owner(resolved_info.st_uid)
+            or _mode_writable(resolved_info.st_mode)
+            or not stat.S_ISREG(resolved_info.st_mode)
+        ):
+            _fail("Python runtime companion is unsafe")
+        entries.append(
+            {
+                "kind": "symlink" if stat.S_ISLNK(info.st_mode) else "file",
+                "mode": stat.S_IMODE(info.st_mode),
+                "path": f"companion/{path.relative_to(base).as_posix()}",
+                "sha256": _sha256_bytes(resolved.read_bytes()),
+                "size": resolved_info.st_size,
+                **({"target": os.readlink(path)} if stat.S_ISLNK(info.st_mode) else {}),
+            }
+        )
+
+    encoded = json.dumps(
+        entries, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("ascii")
+    return (
+        str(base),
+        tuple(str(root) for root in roots),
+        _sha256_bytes(encoded),
+        len(entries),
+    )
+
+
 def _site_packages(root: Path) -> Path:
     path = (
         root
@@ -323,7 +493,7 @@ def _record_digest(value: str) -> bytes:
         _fail("wheel RECORD contains an invalid digest")
 
 
-def _verify_wheel_install(wheel_bytes: bytes, root: Path) -> None:
+def _verify_wheel_install(wheel_bytes: bytes, root: Path, interpreter: Path) -> None:
     site_packages = _site_packages(root)
     try:
         with zipfile.ZipFile(io.BytesIO(wheel_bytes)) as archive:
@@ -357,6 +527,16 @@ def _verify_wheel_install(wheel_bytes: bytes, root: Path) -> None:
                 pure = PurePosixPath(name)
                 if pure.is_absolute() or ".." in pure.parts:
                     _fail("wheel RECORD contains an unsafe path")
+                top_level = pure.parts[0]
+                expected_dist_info = PurePosixPath(record_names[0]).parts[0]
+                expected_data = expected_dist_info.removesuffix(".dist-info") + ".data"
+                if top_level not in {
+                    "llmtracefx",
+                    "vllm_kv_truth",
+                    expected_dist_info,
+                    expected_data,
+                }:
+                    _fail("wheel contains an unexpected top-level path")
                 if name == record_names[0]:
                     if digest or size_text:
                         _fail("wheel RECORD self-entry must be unhashed")
@@ -416,21 +596,23 @@ def _verify_wheel_install(wheel_bytes: bytes, root: Path) -> None:
         executable=True,
     )
     wheel_bootstrap = bootstrap_payloads[0]
-    if wheel_bootstrap.startswith(b"#!python\n"):
-        wheel_body = wheel_bootstrap.split(b"\n", 1)[1]
-        installed_lines = installed_bootstrap.splitlines(keepends=True)
-        if (
-            len(installed_lines) < 4
-            or installed_lines[0] != b"#!/bin/sh\n"
-            or not installed_lines[1].startswith(b"'''exec' ")
-            or not installed_lines[1].endswith(b' "$0" "$@"\n')
-            or installed_lines[2] != b"' '''\n"
-        ):
-            _fail("installed bootstrap trampoline is malformed")
+    if not wheel_bootstrap.startswith(b"#!python\n"):
+        _fail("wheel bootstrap does not use the PEP 427 Python placeholder")
+    wheel_body = wheel_bootstrap.split(b"\n", 1)[1]
+    installed_lines = installed_bootstrap.splitlines(keepends=True)
+    direct_shebang = f"#!{interpreter}\n".encode()
+    trampoline_exec = f"'''exec' '{interpreter}' \"$0\" \"$@\"\n".encode()
+    if installed_lines and installed_lines[0] == direct_shebang:
+        installed_body = b"".join(installed_lines[1:])
+    elif (
+        len(installed_lines) >= 4
+        and installed_lines[0] == b"#!/bin/sh\n"
+        and installed_lines[1] == trampoline_exec
+        and installed_lines[2] == b"' '''\n"
+    ):
         installed_body = b"".join(installed_lines[3:])
     else:
-        wheel_body = wheel_bootstrap
-        installed_body = installed_bootstrap
+        _fail("installed bootstrap has an invalid PEP 427 shebang rewrite")
     if installed_body != wheel_body:
         _fail("installed bootstrap source does not match the trusted wheel")
 
@@ -498,8 +680,14 @@ def _record_trust(values: dict[str, str], bootstrap: Path, interpreter: Path) ->
         _fail("wheel must be external to the environment")
     if output == wheel or output.is_relative_to(root):
         _fail("trusted manifest output must be outside the wheel and environment")
-    _verify_wheel_install(wheel_bytes, root)
+    _verify_wheel_install(wheel_bytes, root, interpreter)
     environment_sha256, entry_count = _inventory_environment(root)
+    (
+        runtime_base_prefix,
+        runtime_roots,
+        runtime_sha256,
+        runtime_entry_count,
+    ) = _runtime_inventory()
     target = _resolve_trusted_interpreter(interpreter)
     target_bytes = _read_trusted_bytes(
         target, "Python interpreter target", executable=True, allow_root=True
@@ -510,6 +698,10 @@ def _record_trust(values: dict[str, str], bootstrap: Path, interpreter: Path) ->
         "environment_entry_count": entry_count,
         "environment_sha256": environment_sha256,
         "python_path": str(interpreter),
+        "python_runtime_base_prefix": runtime_base_prefix,
+        "python_runtime_entry_count": runtime_entry_count,
+        "python_runtime_roots": list(runtime_roots),
+        "python_runtime_sha256": runtime_sha256,
         "python_target_sha256": _sha256_bytes(target_bytes),
         "wheel_path": str(wheel),
         "wheel_sha256": _sha256_bytes(wheel_bytes),
@@ -543,6 +735,10 @@ def _load_and_verify_trust(
         "environment_entry_count",
         "environment_sha256",
         "python_path",
+        "python_runtime_base_prefix",
+        "python_runtime_entry_count",
+        "python_runtime_roots",
+        "python_runtime_sha256",
         "python_target_sha256",
         "wheel_path",
         "wheel_sha256",
@@ -553,8 +749,21 @@ def _load_and_verify_trust(
         _fail("trusted manifest schema version is unsupported")
     if not all(
         isinstance(manifest[name], str)
-        for name in expected_keys - {"schema_version", "environment_entry_count"}
-    ) or not isinstance(manifest["environment_entry_count"], int):
+        for name in expected_keys
+        - {
+            "schema_version",
+            "environment_entry_count",
+            "python_runtime_entry_count",
+            "python_runtime_roots",
+        }
+    ) or not all(
+        isinstance(manifest[name], int)
+        for name in {"environment_entry_count", "python_runtime_entry_count"}
+    ):
+        _fail("trusted manifest has invalid field types")
+    if not isinstance(manifest["python_runtime_roots"], list) or not all(
+        isinstance(root_name, str) for root_name in manifest["python_runtime_roots"]
+    ):
         _fail("trusted manifest has invalid field types")
 
     wheel = _absolute_path(values["--wheel"], "wheel")
@@ -581,7 +790,20 @@ def _load_and_verify_trust(
     )
     if _sha256_bytes(target_bytes) != manifest["python_target_sha256"]:
         _fail("Python interpreter target does not match the trusted manifest")
-    _verify_wheel_install(wheel_bytes, root)
+    (
+        runtime_base_prefix,
+        runtime_roots,
+        runtime_sha256,
+        runtime_entry_count,
+    ) = _runtime_inventory()
+    if (
+        runtime_base_prefix != manifest["python_runtime_base_prefix"]
+        or list(runtime_roots) != manifest["python_runtime_roots"]
+        or runtime_sha256 != manifest["python_runtime_sha256"]
+        or runtime_entry_count != manifest["python_runtime_entry_count"]
+    ):
+        _fail("Python base runtime does not match the trusted manifest")
+    _verify_wheel_install(wheel_bytes, root, interpreter)
     environment_sha256, entry_count = _inventory_environment(root)
     if (
         environment_sha256 != manifest["environment_sha256"]
@@ -626,7 +848,7 @@ def main(argv: list[str] | None = None) -> int:
     root, _wheel = _load_and_verify_trust(values, bootstrap, interpreter)
     cli_args: list[str]
     if command == "preflight":
-        cli_args = ["preflight-clean-environment"]
+        cli_args = ["preflight"]
     else:
         config = _require_private_input(
             values["--execution-config"], "execution config"
@@ -647,9 +869,9 @@ def main(argv: list[str] | None = None) -> int:
 
     site_packages = _site_packages(root)
     sys.path.insert(0, str(site_packages))
-    from vllm_kv_truth.cli import main as cli_main
+    from vllm_kv_truth.cli import bootstrap_dispatch
 
-    return int(cli_main(cli_args))
+    return int(bootstrap_dispatch(cli_args))
 
 
 if __name__ == "__main__":
