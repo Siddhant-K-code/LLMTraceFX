@@ -136,15 +136,184 @@ authorization object without `authorization_sha256`. Optional detached
 OpenSSH signing uses both `signature_path` and `authorized_signers_path`;
 supplying only one is invalid.
 
-## 5. Coordinator GO and one command
+## 5. Build, install, authorize, and preflight the clean bootstrap
+
+Start from the exact clean, tested commit. Build one wheel and install that
+same wheel into a new dedicated virtual environment. Use absolute paths with
+no spaces or symbolic-link components; obtain each directory with `pwd -P`.
+The following is the complete setup sequence (replace every placeholder before
+running it):
+
+```bash
+/bin/bash <<'BASH'
+set -euo pipefail
+
+archive=/absolute/path/to/vllm-kv-truth-<MERGED_HEAD>.tar
+protected=/absolute/protected
+source_dir=$protected/kv-truth-build-source
+build_dir=$protected/build-output
+build_venv=$protected/kv-truth-build-venv
+run_venv=$protected/kv-truth-venv
+manifest=$protected/kv-truth-launch-manifest.json
+
+mkdir -p "$protected"
+chmod 0700 "$protected"
+for path in "$source_dir" "$build_dir" "$build_venv" "$run_venv" "$manifest"; do
+  test ! -e "$path"
+done
+
+case "$(uname -s)" in
+  Linux) archive_sha256=$(sha256sum "$archive" | awk '{print $1}') ;;
+  Darwin) archive_sha256=$(shasum -a 256 "$archive" | awk '{print $1}') ;;
+  *) echo "unsupported operator platform" >&2; exit 1 ;;
+esac
+test "$archive_sha256" = "<RECORDED_SOURCE_ARCHIVE_SHA256>"
+
+mkdir -m 0700 "$source_dir" "$build_dir"
+tar --extract --file "$archive" --directory "$source_dir"
+test "$(< "$source_dir/COMMIT_HEAD")" = "<MERGED_HEAD>"
+cd "$source_dir"
+
+uv venv --python 3.12 "$build_venv"
+uv pip install \
+  --python "$build_venv/bin/python" \
+  setuptools==84.0.0 wheel==0.48.0 packaging==26.3
+uv build --no-build-isolation --wheel \
+  --python "$build_venv/bin/python" \
+  --out-dir "$build_dir"
+uv venv --python 3.12 "$run_venv"
+uv pip install \
+  --python "$run_venv/bin/python" \
+  --no-deps \
+  "$build_dir/llmtracefx-1.0.0-py3-none-any.whl"
+
+/usr/bin/env -i PATH=/usr/bin:/bin:/usr/local/bin LANG=C LC_ALL=C \
+  "$run_venv/bin/python" -I -S -B \
+  "$run_venv/bin/run-vllm-kv-truth-clean-env.py" \
+  record-trust \
+  --wheel "$build_dir/llmtracefx-1.0.0-py3-none-any.whl" \
+  --output "$manifest"
+
+case "$(uname -s)" in
+  Linux) manifest_sha256=$(sha256sum "$manifest" | awk '{print $1}') ;;
+  Darwin) manifest_sha256=$(shasum -a 256 "$manifest" | awk '{print $1}') ;;
+esac
+printf 'TRUSTED_MANIFEST_SHA256=%s\n' "$manifest_sha256"
+BASH
+```
+
+The locked `build` extra and `[build-system]` both fix
+`setuptools==84.0.0`, `wheel==0.48.0`, and `packaging==26.3`.
+The build uses the already verified commit archive rather than the checkout,
+so unrelated untracked files cannot enter the wheel. It also creates a new
+dedicated build environment containing only that exact toolchain; do not reuse
+the checkout's `.venv`. `--no-build-isolation` then prevents the build frontend
+from resolving or downloading a different isolated toolchain.
+
+Record the final 64-character manifest digest outside the installation. Never
+replace it with a digest recomputed from a manifest whose integrity is in
+doubt. `record-trust` writes a mode-`0600` external manifest binding the exact
+wheel digest, bootstrap digest, invoked and canonical interpreter identity,
+an inventory digest/count for the selected versioned Python standard library,
+native `lib-dynload` modules and base-runtime companions, and a digest/count of
+every file, directory, and symlink in the dedicated environment. User and
+system site-packages are excluded from the base-runtime inventory because
+`-S` does not load them; executable bytecode caches are not excluded. OS
+system libraries loaded below Python remain part of the explicitly trusted OS
+boundary. The manifest also proves that installed `llmtracefx` and
+`vllm_kv_truth` package files and package data match the wheel. This complete
+installed-environment manifest is used instead of direct zip execution because
+the runner intentionally reads packaged resources through filesystem paths.
+The dedicated install uses `--no-deps`: this runner path needs only the Python
+standard library and the two packages in the project wheel, so dependency
+resolution cannot silently add executable code. The external wheel hash binds
+the project artifact, and the external manifest binds the complete installed
+environment after this no-dependency install.
+
+Initial enrollment trusts the operator OS and account, native `/usr/bin/env`,
+the selected Python runtime, and the exact clean checkout. The bootstrap and
+external manifest detect accidental, stale, or tampered drift after that
+enrollment. They do not cryptographically authenticate the bootstrap against a
+malicious same-user process and cannot defend a host or same-user account that
+was already compromised before execution. Such an account can already read
+the SSH key, config, and authorization; treat that as a hard stop, terminate
+any reservation, revoke/remove the temporary material, and rebuild from a
+separately trusted host. Arbitrary same-user Python imports are outside this
+threat model. The dedicated minimal environment above is required for the paid
+operator run.
+
+The bootstrap must be started by native `/usr/bin/env -i`, the exact absolute
+venv Python, and `-I -S -B`. `-S` prevents executable site-package `.pth`
+hooks from running before verification; `-B` prevents imports from changing
+the byte-for-byte environment inventory. The old shell launcher and its
+spoofable re-exec marker no longer exist. Against the enrollment assumptions
+above, the Python bootstrap compares its installed bytes, the wheel,
+interpreter/runtime chain, complete environment, arguments, and protected
+paths with the externally recorded manifest before adding site-packages or
+importing LLMTraceFX.
+
+The execution config and authorization must be current-user-owned,
+non-symlink, mode-`0600` regular files. The output directory must already
+exist, be empty, current-user-owned, non-symlink, and mode `0700`. Every input
+path must be absolute and lexically unambiguous. Interpreter symlink chains may
+contain current-user- or root-owned trusted links and targets; this supports
+standard Linux venvs and uv's macOS version-alias directory.
+
+The authorization continues to carry `signature_path` and
+`authorized_signers_path` together when detached signing is enabled. The
+paths must both be unambiguous absolute local paths. The
+bootstrap deliberately does not accept signature, signer, target, user, SSH
+key, known-hosts, or remote-workspace arguments.
+The public `llmtracefx-vllm-kv-truth` console script exposes only
+`verify-public-bundle`; `run` and `preflight` exist only in the internal
+dispatcher called by the bootstrap after trust verification.
+
+Run the offline environment preflight first:
+
+```bash
+/usr/bin/env -i PATH=/usr/bin:/bin:/usr/local/bin LANG=C LC_ALL=C \
+  /absolute/protected/kv-truth-venv/bin/python -I -S -B \
+  /absolute/protected/kv-truth-venv/bin/run-vllm-kv-truth-clean-env.py \
+  preflight \
+  --wheel /absolute/protected/build-output/llmtracefx-1.0.0-py3-none-any.whl \
+  --trusted-manifest /absolute/protected/kv-truth-launch-manifest.json \
+  --trusted-manifest-sha256 <RECORDED_64_HEX_MANIFEST_SHA256>
+```
+
+`clean environment preflight: ok` proves that the Python process received the
+fixed `PATH=/usr/bin:/bin:/usr/local/bin`, `LANG=C`, and `LC_ALL=C`, with no
+caller-provided credential, routing, proxy, import, virtualenv, Docker, SSH
+agent, or arbitrary variables. macOS may synthesize
+`__CF_USER_TEXT_ENCODING` after `env -i`; the bootstrap neither reads nor
+forwards it. This preflight performs no SSH, provider, model, image, GPU, or
+paid action.
+
+If the direct CLI reports a credential-shaped, proxy, import, shell-hook, or
+command-routing environment, do not unset individual variables and retry. Use
+the native `env -i` command above. `BASH_ENV`, `ENV`, `SHELLOPTS`, and `PS4`
+cannot affect the child because no child shell runs. An already-running parent
+shell has necessarily parsed the command before `/usr/bin/env` starts; no
+child bootstrap can undo code that already executed in that parent. If the
+parent shell itself is not trusted, stop and open a separately trusted local
+terminal before pasting the literal command. Do not wrap it in another script,
+alias, function, or `eval`.
+
+## 6. Coordinator GO and one command
 
 Only after the coordinator confirms the exact tested merged head,
 authorization, remaining reserve, and fresh temporary key, execute:
 
 ```bash
-llmtracefx-vllm-kv-truth run \
+/usr/bin/env -i PATH=/usr/bin:/bin:/usr/local/bin LANG=C LC_ALL=C \
+  /absolute/protected/kv-truth-venv/bin/python -I -S -B \
+  /absolute/protected/kv-truth-venv/bin/run-vllm-kv-truth-clean-env.py \
+  run \
+  --wheel /absolute/protected/build-output/llmtracefx-1.0.0-py3-none-any.whl \
+  --trusted-manifest /absolute/protected/kv-truth-launch-manifest.json \
+  --trusted-manifest-sha256 <RECORDED_64_HEX_MANIFEST_SHA256> \
   --execution-config /protected/path/execution-config.json \
-  --authorization /protected/path/run-authorization.json
+  --authorization /protected/path/run-authorization.json \
+  --output-dir /protected/path/to/empty-evidence-output
 ```
 
 There are zero retries and zero replacement runs. The command performs its
@@ -167,14 +336,18 @@ use `--network none` plus the fixed offline environment.
 
 Before the one command above, confirm only this checklist:
 
+0. The clean-bootstrap change is merged and that exact merged head has passed
+   CI and CodeQL. No new VM exists before this gate passes.
 1. The source archive is from the exact clean, tested, merged `origin/main`.
 2. Authorization schema 2 seals that head, archive digest, runtime/model/image
    pins, downloader identity, budget, nonce, and zero-retry policy.
 3. The protected config names a fresh key, dedicated known-hosts file, and
-   empty local evidence destination.
-4. The coordinator has issued GO and the full 210-minute reserve gate passes.
+   the same empty output directory passed to the bootstrap.
+4. The externally recorded trusted-manifest SHA-256 still matches and the
+   wheel/environment clean preflight succeeds.
+5. The coordinator has issued GO and the full 210-minute reserve gate passes.
 
-## 6. Private failure diagnostics
+## 7. Private failure diagnostics
 
 Each command operation appends a mode-`0600`
 `private-operation-receipts.jsonl` record under the protected local evidence
@@ -219,13 +392,14 @@ Shutdown is scheduled from the same authenticated SSH session that removes
 the temporary key, so key removal cannot prevent the shutdown command from
 being issued.
 
-## 7. Evidence and termination
+## 8. Evidence and termination
 
 Keep the transferred private bundle private. Verify the public-redacted
 bundle offline:
 
 ```bash
-llmtracefx-vllm-kv-truth verify-public-bundle \
+/absolute/protected/kv-truth-venv/bin/llmtracefx-vllm-kv-truth \
+  verify-public-bundle \
   --bundle-dir /protected/path/to/evidence-output/public
 ```
 
@@ -240,7 +414,34 @@ coordinator must separately terminate the reservation in the provider
 console and preserve provider confirmation. Never claim provider deletion
 from OS state or from the application list-rate ledger.
 
-## 8. Failed-attempt provenance
+If bootstrap, manifest, or offline preflight validation fails after a VM was
+provisioned, no SSH lifecycle began. Terminate the provider reservation
+immediately in the provider console and preserve its termination confirmation;
+do not leave it billing while rebuilding locally. Then remove the one-attempt
+local material:
+
+```bash
+/bin/rm -- \
+  /protected/path/to/fresh-temporary-key \
+  /protected/path/execution-config.json \
+  /protected/path/run-authorization.json
+```
+
+Repair or rebuild the dedicated environment, create a trust manifest at a new
+path (manifest creation deliberately refuses to overwrite), and repeat the
+offline preflight only with a fresh key and fresh authorization. Never weaken
+a check or recompute a digest from the suspect artifact merely to make it
+pass.
+
+If a run fails and `SAFE TO TERMINATE INSTANCE NOW` is absent, teardown is not
+proven. Do not infer provider termination and do not start another attempt.
+Use a separately approved, read-only recovery key path to inspect and perform
+the scoped cleanup, or use the provider console when that is the approved
+recovery route. Confirm zero run-scoped containers/GPU processes, remove the
+temporary key, issue shutdown, and separately confirm provider termination.
+Preserve the private failure receipt and recovery evidence.
+
+## 9. Failed-attempt provenance
 
 The authorized attempt at repository head
 `2720134ca6f285d06ae2b42f4fc3d260bda3c45d` stopped in preflight because the
@@ -249,3 +450,19 @@ one. The vanilla CloudRift Ubuntu 24.04 host did not provide that executable,
 so the marker set was rejected. Teardown succeeded. No model download, image
 pull/build, canary, pair, eviction, or GPU workload occurred, so that attempt
 created no scientific evidence claim.
+
+The authorized CloudRift attempt from merged repository head
+`4901739adeb7f6ff6aee86c2d44dff0336b486c7` then refused locally before SSH
+because its Copilot/CI parent shell contained
+`COPILOT_TRAMPOLINE_TOKEN`, `GH_TOKEN`, and `SSH_AUTH_SOCK`.
+`SubprocessCommandRunner` correctly preserved the strict ambient-environment
+guard. No SSH, model, image, GPU, or scientific stage ran. External teardown
+verification found zero resources, removed the temporary key, shut down the
+OS, and the operator confirmed provider-console termination. The inferred
+cost was approximately `$0.058434`; it is operational provenance, not
+scientific evidence.
+
+Do not provision a new VM for the next attempt until the clean-bootstrap
+change is merged, its exact merged head passes CI and CodeQL, the wheel-installed
+bootstrap preflight passes from the contaminated operator shell, and a new
+authorization binds the resulting exact source archive.

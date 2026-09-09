@@ -77,7 +77,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --locked --extra dev --extra test
+        run: uv sync --locked --extra dev --extra test --extra build
 
       # macOS is the only place the MLX extra can install, because its dependency
       # markers require Darwin on arm64. Installing it here is what makes the
@@ -85,10 +85,31 @@ jobs:
       # monkeypatched stand-in, and the real import path is never executed.
       - name: Install MLX runtime (macOS only)
         if: runner.os == 'macOS'
-        run: uv sync --locked --extra dev --extra test --extra mlx
+        run: uv sync --locked --extra dev --extra test --extra build --extra mlx
+
+      - name: Install trusted test Python (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          mkdir -m 0700 "$GITHUB_WORKSPACE/.test-python"
+          UV_PYTHON_INSTALL_DIR="$GITHUB_WORKSPACE/.test-python" \
+            uv python install "${{ matrix.python-version }}"
+          trusted_python="$(
+            UV_PYTHON_INSTALL_DIR="$GITHUB_WORKSPACE/.test-python" \
+              uv python find \
+                --directory "$GITHUB_WORKSPACE/.test-python" \
+                --no-project \
+                --managed-python \
+                "${{ matrix.python-version }}"
+          )"
+          case "$trusted_python" in
+            "$GITHUB_WORKSPACE/.test-python/"*) ;;
+            *) echo "Managed Python escaped the protected install directory" >&2; exit 1 ;;
+          esac
+          echo "LLMTRACEFX_TEST_PYTHON=$trusted_python" >> "$GITHUB_ENV"
 
       - name: Run test suite
-        run: uv run pytest
+        run: uv run --no-sync pytest
 
       # Constructing MLXLMRuntime is the actual runtime boundary: it rejects
       # anything that is not Darwin on arm64, and raises if mlx or mlx_lm cannot
@@ -200,24 +221,70 @@ jobs:
           python-version: "3.12"
 
       - name: Build sdist and wheel
-        run: uv build
+        run: |
+          uv sync --locked --extra build
+          uv build --no-build-isolation
 
       - name: Verify the wheel imports in a clean environment
         run: |
           set -euo pipefail
-          wheel="$(ls dist/*.whl)"
+          wheel="$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -name '*.whl' -print -quit)"
           echo "Testing $wheel"
-          uv venv --python 3.12 .wheel-check
-          uv pip install --python .wheel-check/bin/python "$wheel"
+          mkdir -m 0700 "$GITHUB_WORKSPACE/.wheel-python"
+          UV_PYTHON_INSTALL_DIR="$GITHUB_WORKSPACE/.wheel-python" uv python install 3.12
+          trusted_python="$(
+            UV_PYTHON_INSTALL_DIR="$GITHUB_WORKSPACE/.wheel-python" \
+              uv python find \
+                --directory "$GITHUB_WORKSPACE/.wheel-python" \
+                --no-project \
+                --managed-python \
+                3.12
+          )"
+          case "$trusted_python" in
+            "$GITHUB_WORKSPACE/.wheel-python/"*) ;;
+            *) echo "Managed Python escaped the protected install directory" >&2; exit 1 ;;
+          esac
+          uv venv --python "$trusted_python" .wheel-check
+          uv pip install --python .wheel-check/bin/python --no-deps "$wheel"
           # Run from a directory without the source tree so the import resolves
           # against the installed wheel rather than ./llmtracefx.
-          cd "$(mktemp -d)"
+          mkdir "$GITHUB_WORKSPACE/.wheel-import-check"
+          cd "$GITHUB_WORKSPACE/.wheel-import-check"
           "$GITHUB_WORKSPACE/.wheel-check/bin/python" -c "
           import importlib.metadata as md
           import llmtracefx
           print('imported llmtracefx from', llmtracefx.__file__)
           print('version', md.version('llmtracefx'))
           "
+          bootstrap="$GITHUB_WORKSPACE/.wheel-check/bin/run-vllm-kv-truth-clean-env.py"
+          python="$GITHUB_WORKSPACE/.wheel-check/bin/python"
+          manifest="$GITHUB_WORKSPACE/.wheel-trust.json"
+          test -f "$bootstrap"
+          test ! -L "$bootstrap"
+          test -x "$bootstrap"
+          /usr/bin/env -i PATH=/usr/bin:/bin:/usr/local/bin LANG=C LC_ALL=C \
+            "$python" -I -S -B "$bootstrap" record-trust \
+              --wheel "$wheel" --output "$manifest"
+          manifest_sha256="$(sha256sum "$manifest" | cut -d ' ' -f 1)"
+          /usr/bin/env \
+            COPILOT_TRAMPOLINE_TOKEN=ci-secret \
+            GH_TOKEN=ci-secret \
+            SSH_AUTH_SOCK=/tmp/host-agent.sock \
+            PYTHONPATH=/tmp/hostile-imports \
+            BASH_ENV=/tmp/host-bash-env \
+            ENV=/tmp/host-shell-env \
+            SHELLOPTS=xtrace \
+            DOCKER_HOST=tcp://127.0.0.1:2375 \
+            HTTPS_PROXY=http://127.0.0.1:8080 \
+            ARBITRARY_SECRET=ci-secret \
+            /usr/bin/env -i PATH=/usr/bin:/bin:/usr/local/bin LANG=C LC_ALL=C \
+              "$python" -I -S -B "$bootstrap" preflight \
+                --wheel "$wheel" \
+                --trusted-manifest "$manifest" \
+                --trusted-manifest-sha256 "$manifest_sha256"
+          # Prove the bootstrap in the minimal no-deps environment first.
+          # Runtime dependencies are installed only for broader smoke checks.
+          uv pip install --python "$python" "$wheel"
           "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-lab" --help
           "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-lab" autopsy --help
           "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-frontier" --help
@@ -285,3 +352,49 @@ jobs:
           # same repository ID as the mlx-community Qwen3.8-27B checkpoint.
           assert plan['model']['official_id'] != 'Qwen/Qwen3.8-27B'
           "
+
+  bootstrap:
+    name: clean bootstrap wheel (${{ matrix.os }}, python 3.12)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          python-version: "3.12"
+
+      - name: Install exact test and build tools
+        run: uv sync --locked --extra dev --extra test --extra build
+
+      - name: Install trusted Python 3.12 runtime
+        run: |
+          mkdir -m 0700 "$GITHUB_WORKSPACE/.bootstrap-python"
+          UV_PYTHON_INSTALL_DIR="$GITHUB_WORKSPACE/.bootstrap-python" \
+            uv python install 3.12
+          trusted_python="$(
+            UV_PYTHON_INSTALL_DIR="$GITHUB_WORKSPACE/.bootstrap-python" \
+                uv python find \
+                  --directory "$GITHUB_WORKSPACE/.bootstrap-python" \
+                  --no-project \
+                  --managed-python \
+                  3.12
+          )"
+            case "$trusted_python" in
+              "$GITHUB_WORKSPACE/.bootstrap-python/"*) ;;
+              *) echo "Managed Python escaped the protected install directory" >&2; exit 1 ;;
+            esac
+            echo "LLMTRACEFX_TEST_PYTHON=$trusted_python" >> "$GITHUB_ENV"
+
+      - name: Build and verify minimal no-deps bootstrap
+        run: |
+          uv run --no-sync pytest -q \
+            tests/deploy/test_vllm_kv_truth_clean_env_launcher.py::test_real_setuptools_wheel_install_and_public_cli_split
