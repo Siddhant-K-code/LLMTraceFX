@@ -145,37 +145,61 @@ The following is the complete setup sequence (replace every placeholder before
 running it):
 
 ```bash
-mkdir /absolute/protected/kv-truth-build-source
-tar --extract \
-  --file /absolute/path/to/vllm-kv-truth-<MERGED_HEAD>.tar \
-  --directory /absolute/protected/kv-truth-build-source
-test "$(< /absolute/protected/kv-truth-build-source/COMMIT_HEAD)" = "<MERGED_HEAD>"
-cd /absolute/protected/kv-truth-build-source
-uv venv --python 3.12 /absolute/protected/kv-truth-build-venv
+/bin/bash <<'BASH'
+set -euo pipefail
+
+archive=/absolute/path/to/vllm-kv-truth-<MERGED_HEAD>.tar
+protected=/absolute/protected
+source_dir=$protected/kv-truth-build-source
+build_dir=$protected/build-output
+build_venv=$protected/kv-truth-build-venv
+run_venv=$protected/kv-truth-venv
+manifest=$protected/kv-truth-launch-manifest.json
+
+mkdir -p "$protected"
+chmod 0700 "$protected"
+for path in "$source_dir" "$build_dir" "$build_venv" "$run_venv" "$manifest"; do
+  test ! -e "$path"
+done
+
+case "$(uname -s)" in
+  Linux) archive_sha256=$(sha256sum "$archive" | awk '{print $1}') ;;
+  Darwin) archive_sha256=$(shasum -a 256 "$archive" | awk '{print $1}') ;;
+  *) echo "unsupported operator platform" >&2; exit 1 ;;
+esac
+test "$archive_sha256" = "<RECORDED_SOURCE_ARCHIVE_SHA256>"
+
+mkdir -m 0700 "$source_dir" "$build_dir"
+tar --extract --file "$archive" --directory "$source_dir"
+test "$(< "$source_dir/COMMIT_HEAD")" = "<MERGED_HEAD>"
+cd "$source_dir"
+
+uv venv --python 3.12 "$build_venv"
 uv pip install \
-  --python /absolute/protected/kv-truth-build-venv/bin/python \
+  --python "$build_venv/bin/python" \
   setuptools==84.0.0 wheel==0.48.0 packaging==26.3
 uv build --no-build-isolation --wheel \
-  --python /absolute/protected/kv-truth-build-venv/bin/python \
-  --out-dir /absolute/protected/build-output
-uv venv --python 3.12 /absolute/protected/kv-truth-venv
+  --python "$build_venv/bin/python" \
+  --out-dir "$build_dir"
+uv venv --python 3.12 "$run_venv"
 uv pip install \
-  --python /absolute/protected/kv-truth-venv/bin/python \
+  --python "$run_venv/bin/python" \
   --no-deps \
-  /absolute/protected/build-output/llmtracefx-1.0.0-py3-none-any.whl
-chmod 0700 /absolute/protected
+  "$build_dir/llmtracefx-1.0.0-py3-none-any.whl"
 
 /usr/bin/env -i PATH=/usr/bin:/bin:/usr/local/bin LANG=C LC_ALL=C \
-  /absolute/protected/kv-truth-venv/bin/python -I -S -B \
-  /absolute/protected/kv-truth-venv/bin/run-vllm-kv-truth-clean-env.py \
+  "$run_venv/bin/python" -I -S -B \
+  "$run_venv/bin/run-vllm-kv-truth-clean-env.py" \
   record-trust \
-  --wheel /absolute/protected/build-output/llmtracefx-1.0.0-py3-none-any.whl \
-  --output /absolute/protected/kv-truth-launch-manifest.json
+  --wheel "$build_dir/llmtracefx-1.0.0-py3-none-any.whl" \
+  --output "$manifest"
 
-# Linux:
-sha256sum /absolute/protected/kv-truth-launch-manifest.json
-# macOS:
-shasum -a 256 /absolute/protected/kv-truth-launch-manifest.json
+case "$(uname -s)" in
+  Linux) manifest_sha256=$(sha256sum "$manifest" | awk '{print $1}') ;;
+  Darwin) manifest_sha256=$(shasum -a 256 "$manifest" | awk '{print $1}') ;;
+esac
+printf 'TRUSTED_MANIFEST_SHA256=%s\n' "$manifest_sha256"
+BASH
 ```
 
 The locked `build` extra and `[build-system]` both fix
