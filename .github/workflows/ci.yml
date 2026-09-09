@@ -213,8 +213,12 @@ jobs:
           UV_PYTHON_INSTALL_DIR="$GITHUB_WORKSPACE/.wheel-python" uv python install 3.12
           trusted_python="$(
             UV_PYTHON_INSTALL_DIR="$GITHUB_WORKSPACE/.wheel-python" \
-              uv python find 3.12
+              uv python find --no-project --managed-python 3.12
           )"
+          case "$trusted_python" in
+            "$GITHUB_WORKSPACE/.wheel-python/"*) ;;
+            *) echo "Managed Python escaped the protected install directory" >&2; exit 1 ;;
+          esac
           uv venv --python "$trusted_python" .wheel-check
           uv pip install --python .wheel-check/bin/python --no-deps "$wheel"
           # Run from a directory without the source tree so the import resolves
@@ -353,9 +357,13 @@ jobs:
             uv python install 3.12
           trusted_python="$(
             UV_PYTHON_INSTALL_DIR="$GITHUB_WORKSPACE/.bootstrap-python" \
-              uv python find 3.12
+                uv python find --no-project --managed-python 3.12
           )"
-          echo "LLMTRACEFX_TEST_PYTHON=$trusted_python" >> "$GITHUB_ENV"
+            case "$trusted_python" in
+              "$GITHUB_WORKSPACE/.bootstrap-python/"*) ;;
+              *) echo "Managed Python escaped the protected install directory" >&2; exit 1 ;;
+            esac
+            echo "LLMTRACEFX_TEST_PYTHON=$trusted_python" >> "$GITHUB_ENV"
 
       - name: Build and verify minimal no-deps bootstrap
         run: |
