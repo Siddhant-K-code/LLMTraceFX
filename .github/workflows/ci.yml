@@ -87,6 +87,27 @@ jobs:
         if: runner.os == 'macOS'
         run: uv sync --locked --extra dev --extra test --extra build --extra mlx
 
+      - name: Install trusted test Python (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          mkdir -m 0700 "$GITHUB_WORKSPACE/.test-python"
+          UV_PYTHON_INSTALL_DIR="$GITHUB_WORKSPACE/.test-python" \
+            uv python install "${{ matrix.python-version }}"
+          trusted_python="$(
+            UV_PYTHON_INSTALL_DIR="$GITHUB_WORKSPACE/.test-python" \
+              uv python find \
+                --directory "$GITHUB_WORKSPACE/.test-python" \
+                --no-project \
+                --managed-python \
+                "${{ matrix.python-version }}"
+          )"
+          case "$trusted_python" in
+            "$GITHUB_WORKSPACE/.test-python/"*) ;;
+            *) echo "Managed Python escaped the protected install directory" >&2; exit 1 ;;
+          esac
+          echo "LLMTRACEFX_TEST_PYTHON=$trusted_python" >> "$GITHUB_ENV"
+
       - name: Run test suite
         run: uv run --no-sync pytest
 

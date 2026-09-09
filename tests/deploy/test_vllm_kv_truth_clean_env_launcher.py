@@ -48,6 +48,11 @@ CONTAMINATED_ENVIRONMENT = {
 }
 PLATFORM_ENVIRONMENT_NAMES = {"__CF_USER_TEXT_ENCODING"}
 
+
+def _test_interpreter_target() -> Path:
+    return Path(os.environ.get("LLMTRACEFX_TEST_PYTHON", sys.executable)).resolve()
+
+
 FAKE_CLI = r"""
 import json
 import os
@@ -155,7 +160,7 @@ def _install_fake_environment(
     site_packages.mkdir(parents=True)
     (root / "pyvenv.cfg").write_text("include-system-site-packages = false\n")
     interpreter = bin_dir / "python"
-    interpreter.symlink_to(interpreter_target or Path(sys.executable).resolve())
+    interpreter.symlink_to(interpreter_target or _test_interpreter_target())
     bootstrap = bin_dir / "run-vllm-kv-truth-clean-env.py"
     source = BOOTSTRAP_SOURCE.read_bytes()
     bootstrap_body = source.split(b"\n", 1)[1]
@@ -919,7 +924,7 @@ def test_interpreter_directory_alias_symlink_chain_is_accepted(tmp_path: Path) -
     target_directory = tmp_path / "uv-python-target"
     target_bin = target_directory / "bin"
     target_bin.mkdir(parents=True)
-    (target_bin / "python").symlink_to(Path(sys.executable).resolve())
+    (target_bin / "python").symlink_to(_test_interpreter_target())
     alias = tmp_path / "cpython-version-alias"
     alias.symlink_to(target_directory, target_is_directory=True)
     interpreter.unlink()
@@ -945,7 +950,7 @@ def test_writable_interpreter_link_parent_is_rejected(tmp_path: Path) -> None:
     unsafe = tmp_path / "unsafe-interpreter"
     unsafe.mkdir()
     unsafe.chmod(0o777)
-    (unsafe / "python").symlink_to(Path(sys.executable).resolve())
+    (unsafe / "python").symlink_to(_test_interpreter_target())
     interpreter.unlink()
     interpreter.symlink_to(unsafe / "python")
     completed = subprocess.run(
