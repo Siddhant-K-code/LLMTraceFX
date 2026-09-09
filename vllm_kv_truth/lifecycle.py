@@ -148,10 +148,12 @@ class HostOrchestrationError(DeploymentPlanError):
         stage: str | None = None,
         substage: str | None = None,
         reason_code: str | None = None,
+        signal_number: int | None = None,
     ) -> None:
         self.stage = stage
         self.substage = substage
         self.reason_code = reason_code
+        self.signal_number = signal_number
         if stage is not None and substage is not None and reason_code is not None:
             message = f"{stage}/{substage}: {reason_code}: {message}"
         super().__init__(message)
@@ -982,11 +984,26 @@ _CREDENTIAL_NAME_FRAGMENTS = (
     "AUTH",
 )
 _FORBIDDEN_ROUTING_VARS = (
+    "ALL_PROXY",
+    "BASH_ENV",
     "DOCKER_HOST",
+    "DOCKER_CONFIG",
+    "ENV",
+    "GIT_ASKPASS",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
     "SSH_AUTH_SOCK",
     "SSH_ASKPASS",
     "GIT_SSH_COMMAND",
     "GIT_SSH",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "PIP_CONFIG_FILE",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "SHELLOPTS",
+    "ZDOTDIR",
 )
 
 
@@ -1009,7 +1026,7 @@ def reject_credential_environment(env: Mapping[str, str]) -> None:
         raise HostOrchestrationError(
             "refusing to run with credential-shaped or command-routing "
             f"environment variables set: {sorted(set(offending))}; use "
-            "run-vllm-kv-truth-clean-env.sh from the verified installation "
+            "run-vllm-kv-truth-clean-env.py through native /usr/bin/env -i "
             "instead of unsetting individual variables"
         )
 
@@ -1273,6 +1290,8 @@ class StrictSSHOptions:
             "StrictHostKeyChecking=yes",
             "-o",
             f"UserKnownHostsFile={self.config.known_hosts_path}",
+            "-o",
+            "GlobalKnownHostsFile=/dev/null",
             "-o",
             "ForwardAgent=no",
             "-o",
@@ -3086,14 +3105,22 @@ class RemoteOrchestrator:
         even if an earlier stage raised or the process is interrupted."""
 
         installed_handlers: dict[int, Any] = {}
+        failure: BaseException | None = None
+        teardown_failure: BaseException | None = None
+        pending_teardown_signals: list[int] = []
 
         def handle_termination(signum: int, _frame: Any) -> NoReturn:
-            raise HostOrchestrationError(
+            error = HostOrchestrationError(
                 "the coordinator received a termination signal",
                 stage="run",
                 substage="signal",
                 reason_code="run_interrupted",
+                signal_number=signum,
             )
+            raise error
+
+        def defer_termination(signum: int, _frame: Any) -> None:
+            pending_teardown_signals.append(signum)
 
         for signal_name in ("SIGTERM", "SIGHUP"):
             signum = getattr(signal, signal_name, None)
@@ -3119,13 +3146,40 @@ class RemoteOrchestrator:
             # KeyboardInterrupt, before the exception propagates.
             self.state = OrchestratorState.FAILED
             self._record("run", False, detail=type(exc).__name__)
-            raise
+            failure = exc
         finally:
             for signum in installed_handlers:
-                signal.signal(signum, signal.SIG_IGN)
+                signal.signal(signum, defer_termination)
             try:
                 self.stage_teardown(local_evidence_bundle_dir)
+            except BaseException as exc:  # noqa: BLE001 - preserved below
+                teardown_failure = exc
             finally:
                 for signum, previous_handler in installed_handlers.items():
                     signal.signal(signum, previous_handler)
+        signal_number = (
+            pending_teardown_signals[-1]
+            if pending_teardown_signals
+            else getattr(failure, "signal_number", None)
+        )
+        if isinstance(signal_number, int):
+            interrupted = (
+                failure
+                if isinstance(failure, HostOrchestrationError)
+                and failure.signal_number == signal_number
+                else HostOrchestrationError(
+                    "the coordinator received a termination signal",
+                    stage="run",
+                    substage="signal",
+                    reason_code="run_interrupted",
+                    signal_number=signal_number,
+                )
+            )
+            if teardown_failure is not None:
+                raise interrupted from teardown_failure
+            raise interrupted
+        if teardown_failure is not None:
+            raise teardown_failure
+        if failure is not None:
+            raise failure
         return tuple(self.outcomes)

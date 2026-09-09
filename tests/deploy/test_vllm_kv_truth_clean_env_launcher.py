@@ -1,247 +1,314 @@
-"""Process-level tests for the pre-Python clean-environment launcher."""
+"""Process tests for the native-env, pre-import Python bootstrap."""
 
 from __future__ import annotations
 
+import base64
+import csv
 import hashlib
+import io
 import json
 import os
+import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
+import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-LAUNCHER = PROJECT_ROOT / "scripts" / "run-vllm-kv-truth-clean-env.sh"
+BOOTSTRAP_SOURCE = PROJECT_ROOT / "scripts" / "run-vllm-kv-truth-clean-env.py"
+SAFE_ENVIRONMENT = {
+    "PATH": "/usr/bin:/bin:/usr/local/bin",
+    "LANG": "C",
+    "LC_ALL": "C",
+}
 CONTAMINATED_ENVIRONMENT = {
     "COPILOT_TRAMPOLINE_TOKEN": "copilot-secret",
     "GH_TOKEN": "github-secret",
-    "SSH_AUTH_SOCK": "/tmp/host-agent.sock",
-    "PYTHONPATH": "/tmp/hostile-imports",
+    "SSH_AUTH_SOCK": "/host-agent.sock",
+    "PYTHONPATH": "/hostile-imports",
+    "PYTHONHOME": "/hostile-python",
     "DOCKER_HOST": "tcp://127.0.0.1:2375",
-    "DOCKER_CONFIG": "/tmp/host-docker-config",
-    "GIT_ASKPASS": "/tmp/host-askpass",
-    "GIT_CONFIG_GLOBAL": "/tmp/host-git-config",
-    "HOME": "/tmp/host-home",
+    "DOCKER_CONFIG": "/host-docker-config",
+    "GIT_ASKPASS": "/host-askpass",
+    "GIT_CONFIG_GLOBAL": "/host-git-config",
     "HTTP_PROXY": "http://127.0.0.1:8080",
     "HTTPS_PROXY": "http://127.0.0.1:8080",
-    "PIP_CONFIG_FILE": "/tmp/host-pip-config",
-    "PERL5LIB": "/tmp/host-perl-modules",
-    "PERL5OPT": "-MHostileModule",
-    "VIRTUAL_ENV": "/tmp/host-venv",
+    "BASH_ENV": "/host-bash-env",
+    "ENV": "/host-shell-env",
+    "SHELLOPTS": "braceexpand:hashall:interactive-comments:xtrace",
+    "PS4": "$(touch should-never-run)",
     "ARBITRARY_SECRET": "not-for-the-child",
 }
-EXPECTED_CHILD_ENVIRONMENT = {
+PLATFORM_ENVIRONMENT_NAMES = {"__CF_USER_TEXT_ENCODING"}
+
+FAKE_CLI = r"""
+import json
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+EXPECTED = {
     "LANG": "C",
     "LC_ALL": "C",
     "PATH": "/usr/bin:/bin:/usr/local/bin",
 }
-PLATFORM_SYNTHESIZED_ENVIRONMENT_NAMES = {"__CF_USER_TEXT_ENCODING"}
+
+def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    unexpected = set(os.environ) - set(EXPECTED) - {"__CF_USER_TEXT_ENCODING"}
+    if unexpected or any(os.environ.get(k) != v for k, v in EXPECTED.items()):
+        return 91
+    if args == ["preflight-clean-environment"]:
+        print("clean environment preflight: ok")
+        return 0
+    output = Path(args[args.index("--output-dir") + 1])
+    auth = Path(args[args.index("--authorization") + 1])
+    authorization = json.loads(auth.read_text(encoding="utf-8"))
+    (output / "started").write_text("yes", encoding="utf-8")
+    def finish(signum, _frame):
+        (output / "cleanup").write_text(f"signal={signum}", encoding="utf-8")
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, finish)
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, finish)
+    if authorization.get("wait_for_signal"):
+        while True:
+            time.sleep(0.02)
+    (output / "observation.json").write_text(
+        json.dumps({"environment": dict(os.environ), "lifecycle": "complete"}),
+        encoding="utf-8",
+    )
+    (output / "cleanup").write_text("complete", encoding="utf-8")
+    return int(authorization.get("exit_code", 0))
+"""
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _write_fake_cli(tmp_path: Path, *, shebang: str | None = None) -> Path:
-    bin_dir = tmp_path / "isolated-install" / "bin"
-    bin_dir.mkdir(parents=True)
-    interpreter = bin_dir / "python3"
-    interpreter.symlink_to(Path(sys.executable).resolve())
-    cli = bin_dir / "llmtracefx-vllm-kv-truth"
-    first_line = shebang or f"#!{interpreter}"
-    cli.write_text(
-        first_line + """
-import json
-import os
-import signal
-import sys
-import time
-from pathlib import Path
+def _record_hash(payload: bytes) -> str:
+    encoded = base64.urlsafe_b64encode(hashlib.sha256(payload).digest())
+    return "sha256=" + encoded.rstrip(b"=").decode("ascii")
 
-EXPECTED_ENV = {
-    "LANG": "C",
-    "LC_ALL": "C",
-    "PATH": "/usr/bin:/bin:/usr/local/bin",
-}
 
-if sys.argv[1:] == ["preflight-clean-environment"]:
-    unexpected = set(os.environ) - set(EXPECTED_ENV) - {"__CF_USER_TEXT_ENCODING"}
-    changed = {
-        name for name, value in EXPECTED_ENV.items() if os.environ.get(name) != value
+def _write_wheel(path: Path, bootstrap: bytes, cli_source: str = FAKE_CLI) -> None:
+    files = {
+        "llmtracefx/__init__.py": b"",
+        "vllm_kv_truth/__init__.py": b"",
+        "vllm_kv_truth/cli.py": cli_source.encode(),
+        ("llmtracefx-1.0.0.data/scripts/" "run-vllm-kv-truth-clean-env.py"): bootstrap,
+        "llmtracefx-1.0.0.dist-info/METADATA": (
+            b"Metadata-Version: 2.1\nName: llmtracefx\nVersion: 1.0.0\n"
+        ),
+        "llmtracefx-1.0.0.dist-info/WHEEL": (
+            b"Wheel-Version: 1.0\nGenerator: tests\nRoot-Is-Purelib: true\n"
+            b"Tag: py3-none-any\n"
+        ),
     }
-    if unexpected or changed:
-        raise SystemExit(91)
-    print("clean environment preflight: ok")
-    raise SystemExit(0)
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    for name, payload in files.items():
+        writer.writerow((name, _record_hash(payload), len(payload)))
+    record_name = "llmtracefx-1.0.0.dist-info/RECORD"
+    writer.writerow((record_name, "", ""))
+    files[record_name] = output.getvalue().encode()
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+        for name, payload in files.items():
+            archive.writestr(name, payload)
 
-args = sys.argv[1:]
-expected_flags = [
-    "run",
-    "--execution-config",
-    args[2],
-    "--authorization",
-    args[4],
-    "--output-dir",
-    args[6],
-]
-if args != expected_flags:
-    raise SystemExit(92)
 
-config_path = Path(args[2])
-authorization_path = Path(args[4])
-output_dir = Path(args[6])
-config = json.loads(config_path.read_text(encoding="utf-8"))
-authorization = json.loads(authorization_path.read_text(encoding="utf-8"))
-if config["local_evidence_dir"] != str(output_dir):
-    raise SystemExit(93)
+def _rewrite_wheel(path: Path, mutate: Callable[[dict[str, bytes]], None]) -> None:
+    with zipfile.ZipFile(path) as archive:
+        files = {
+            info.filename: archive.read(info.filename)
+            for info in archive.infolist()
+            if not info.is_dir()
+        }
+    mutate(files)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as archive:
+        for name, payload in files.items():
+            archive.writestr(name, payload)
 
-(output_dir / "started").write_text("yes", encoding="utf-8")
 
-def finish(signum, _frame):
-    (output_dir / "cleanup").write_text(f"signal={signum}", encoding="utf-8")
-    raise SystemExit(128 + signum)
-
-signal.signal(signal.SIGTERM, finish)
-signal.signal(signal.SIGINT, finish)
-
-if authorization.get("wait_for_signal"):
-    while True:
-        time.sleep(0.05)
-
-(output_dir / "fake-child-observation.json").write_text(
-    json.dumps(
-        {
-            "environment": dict(os.environ),
-            "fake_remote_lifecycle": "complete",
-            "synthetic": True,
-        },
-        sort_keys=True,
-    ),
-    encoding="utf-8",
-)
-(output_dir / "cleanup").write_text("complete", encoding="utf-8")
-raise SystemExit(int(authorization.get("exit_code", 0)))
-""",
-        encoding="utf-8",
+def _install_fake_environment(
+    tmp_path: Path, *, interpreter_target: Path | None = None
+) -> tuple[Path, Path, Path]:
+    root = tmp_path / "dedicated-venv"
+    bin_dir = root / "bin"
+    site_packages = (
+        root
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
     )
-    cli.chmod(0o755)
-    return cli
+    bin_dir.mkdir(parents=True)
+    site_packages.mkdir(parents=True)
+    (root / "pyvenv.cfg").write_text("include-system-site-packages = false\n")
+    interpreter = bin_dir / "python"
+    interpreter.symlink_to(interpreter_target or Path(sys.executable).resolve())
+    bootstrap = bin_dir / "run-vllm-kv-truth-clean-env.py"
+    shutil.copyfile(BOOTSTRAP_SOURCE, bootstrap)
+    bootstrap.chmod(0o755)
+    console_script = bin_dir / "llmtracefx-vllm-kv-truth"
+    console_script.write_text("#!/bin/sh\nexit 99\n")
+    console_script.chmod(0o755)
+    (site_packages / "llmtracefx").mkdir()
+    (site_packages / "llmtracefx" / "__init__.py").write_bytes(b"")
+    (site_packages / "vllm_kv_truth").mkdir()
+    (site_packages / "vllm_kv_truth" / "__init__.py").write_bytes(b"")
+    (site_packages / "vllm_kv_truth" / "cli.py").write_text(FAKE_CLI)
+    dist_info = site_packages / "llmtracefx-1.0.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_bytes(
+        b"Metadata-Version: 2.1\nName: llmtracefx\nVersion: 1.0.0\n"
+    )
+    (dist_info / "WHEEL").write_bytes(
+        b"Wheel-Version: 1.0\nGenerator: tests\nRoot-Is-Purelib: true\n"
+        b"Tag: py3-none-any\n"
+    )
+    wheel = tmp_path / "llmtracefx-1.0.0-py3-none-any.whl"
+    _write_wheel(wheel, bootstrap.read_bytes())
+    return interpreter, bootstrap, wheel
+
+
+def _native_command(interpreter: Path, bootstrap: Path, *args: str) -> list[str]:
+    return [
+        "/usr/bin/env",
+        "-i",
+        *[f"{name}={value}" for name, value in SAFE_ENVIRONMENT.items()],
+        str(interpreter),
+        "-I",
+        "-S",
+        "-B",
+        str(bootstrap),
+        *args,
+    ]
+
+
+def _record_trust(
+    tmp_path: Path, interpreter: Path, bootstrap: Path, wheel: Path
+) -> tuple[Path, str]:
+    manifest = tmp_path / "trusted-launch-manifest.json"
+    completed = subprocess.run(
+        _native_command(
+            interpreter,
+            bootstrap,
+            "record-trust",
+            "--wheel",
+            str(wheel),
+            "--output",
+            str(manifest),
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert stat.S_IMODE(manifest.stat().st_mode) == 0o600
+    return manifest, _sha256(manifest)
+
+
+def _trusted_args(wheel: Path, manifest: Path, manifest_sha256: str) -> list[str]:
+    return [
+        "--wheel",
+        str(wheel),
+        "--trusted-manifest",
+        str(manifest),
+        "--trusted-manifest-sha256",
+        manifest_sha256,
+    ]
 
 
 def _protected_inputs(
-    tmp_path: Path, *, authorization: dict[str, object] | None = None
+    tmp_path: Path, authorization: dict[str, object] | None = None
 ) -> tuple[Path, Path, Path]:
-    private_dir = tmp_path / "private inputs"
-    private_dir.mkdir()
-    output_dir = tmp_path / "evidence output"
-    output_dir.mkdir(mode=0o700)
-    config = private_dir / "execution;config.json"
-    config.write_text(
-        json.dumps({"local_evidence_dir": str(output_dir)}), encoding="utf-8"
-    )
+    private = tmp_path / "private"
+    private.mkdir()
+    output = tmp_path / "output"
+    output.mkdir(mode=0o700)
+    config = private / "execution-config.json"
+    config.write_text(json.dumps({"local_evidence_dir": str(output)}))
     config.chmod(0o600)
-    auth = private_dir / "authorization file.json"
-    auth.write_text(json.dumps(authorization or {}), encoding="utf-8")
+    auth = private / "authorization.json"
+    auth.write_text(json.dumps(authorization or {}))
     auth.chmod(0o600)
-    return config, auth, output_dir
+    return config, auth, output
 
 
-def _run_args(cli: Path, config: Path, auth: Path, output: Path) -> list[str]:
-    return [
-        str(LAUNCHER),
+def test_native_env_strips_shell_hooks_and_ambient_state(tmp_path: Path) -> None:
+    interpreter, bootstrap, wheel = _install_fake_environment(tmp_path)
+    manifest, digest = _record_trust(tmp_path, interpreter, bootstrap, wheel)
+    config, auth, output = _protected_inputs(tmp_path)
+    command = _native_command(
+        interpreter,
+        bootstrap,
         "run",
-        "--cli",
-        str(cli),
-        "--cli-sha256",
-        _sha256(cli),
+        *_trusted_args(wheel, manifest, digest),
         "--execution-config",
         str(config),
         "--authorization",
         str(auth),
         "--output-dir",
         str(output),
-    ]
-
-
-def _contaminated_environment(tmp_path: Path) -> dict[str, str]:
-    malicious_bin = tmp_path / "malicious-bin"
-    malicious_bin.mkdir(exist_ok=True)
-    marker = tmp_path / "path-command-ran"
-    for command in ("env", "sha256sum", "shasum", "stat", "sed"):
-        executable = malicious_bin / command
-        executable.write_text(f"#!/bin/sh\n: > '{marker}'\nexit 99\n", encoding="utf-8")
-        executable.chmod(0o755)
-    return {
-        **os.environ,
-        **CONTAMINATED_ENVIRONMENT,
-        "PATH": str(malicious_bin),
-        "MALICIOUS_PATH_MARKER": str(marker),
-    }
-
-
-def test_clean_launcher_strips_ambient_state_and_completes_fake_lifecycle(
-    tmp_path: Path,
-) -> None:
-    cli = _write_fake_cli(tmp_path)
-    config, auth, output = _protected_inputs(tmp_path)
+    )
     completed = subprocess.run(
-        _run_args(cli, config, auth, output),
-        env=_contaminated_environment(tmp_path),
+        command,
+        env={**os.environ, **CONTAMINATED_ENVIRONMENT},
         capture_output=True,
         text=True,
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
-    observation = json.loads(
-        (output / "fake-child-observation.json").read_text(encoding="utf-8")
-    )
+    observation = json.loads((output / "observation.json").read_text())
     child_environment = observation["environment"]
     assert {
-        name: child_environment[name] for name in EXPECTED_CHILD_ENVIRONMENT
-    } == EXPECTED_CHILD_ENVIRONMENT
-    assert (
-        set(child_environment)
-        <= set(EXPECTED_CHILD_ENVIRONMENT) | PLATFORM_SYNTHESIZED_ENVIRONMENT_NAMES
-    )
+        name: child_environment[name] for name in SAFE_ENVIRONMENT
+    } == SAFE_ENVIRONMENT
+    assert set(child_environment) <= set(SAFE_ENVIRONMENT) | PLATFORM_ENVIRONMENT_NAMES
     assert set(child_environment).isdisjoint(CONTAMINATED_ENVIRONMENT)
-    assert observation["synthetic"] is True
-    assert observation["fake_remote_lifecycle"] == "complete"
-    assert (output / "cleanup").read_text(encoding="utf-8") == "complete"
-    assert not (tmp_path / "path-command-ran").exists()
+    assert observation["lifecycle"] == "complete"
+    assert (output / "cleanup").read_text() == "complete"
+    assert not (tmp_path / "should-never-run").exists()
 
 
-def test_actual_cli_refuses_contamination_but_launcher_preflight_succeeds(
-    tmp_path: Path,
-) -> None:
-    cli = Path(sys.executable).parent / "llmtracefx-vllm-kv-truth"
-    assert cli.is_file(), "the test environment must install the project console script"
-    contaminated = {**os.environ, **CONTAMINATED_ENVIRONMENT}
-    direct = subprocess.run(
-        [str(cli), "preflight-clean-environment"],
-        env=contaminated,
+def test_preflight_requires_native_clean_environment(tmp_path: Path) -> None:
+    interpreter, bootstrap, wheel = _install_fake_environment(tmp_path)
+    manifest, digest = _record_trust(tmp_path, interpreter, bootstrap, wheel)
+    args = [
+        str(interpreter),
+        "-I",
+        "-S",
+        str(bootstrap),
+        "preflight",
+        *_trusted_args(wheel, manifest, digest),
+    ]
+    refused = subprocess.run(
+        args,
+        env={**os.environ, "GH_TOKEN": "secret"},
         capture_output=True,
         text=True,
         check=False,
     )
-    assert direct.returncode == 1
-    for name in ("COPILOT_TRAMPOLINE_TOKEN", "GH_TOKEN", "SSH_AUTH_SOCK"):
-        assert name in direct.stderr
-    assert "run-vllm-kv-truth-clean-env.sh" in direct.stderr
-    assert "instead of unsetting individual variables" in direct.stderr
+    assert refused.returncode == 2
+    assert "fixed clean environment" in refused.stderr
 
     clean = subprocess.run(
-        [
-            str(LAUNCHER),
+        _native_command(
+            interpreter,
+            bootstrap,
             "preflight",
-            "--cli",
-            str(cli),
-            "--cli-sha256",
-            _sha256(cli),
-        ],
-        env=contaminated,
+            *_trusted_args(wheel, manifest, digest),
+        ),
+        env={**os.environ, **CONTAMINATED_ENVIRONMENT},
         capture_output=True,
         text=True,
         check=False,
@@ -251,206 +318,194 @@ def test_actual_cli_refuses_contamination_but_launcher_preflight_succeeds(
 
 
 @pytest.mark.parametrize(
-    ("mutation", "expected_error"),
+    ("mutation", "expected"),
+    [
+        ("wheel", "wheel does not match"),
+        ("bootstrap", "bootstrap does not match"),
+        ("package", "installed package contents do not match"),
+        ("dependency", "installed environment does not match"),
+        ("manifest", "externally recorded SHA-256"),
+        ("stale-wheel", "launch paths do not match"),
+    ],
+)
+def test_trust_root_rejects_tampering(
+    tmp_path: Path, mutation: str, expected: str
+) -> None:
+    interpreter, bootstrap, wheel = _install_fake_environment(tmp_path)
+    manifest, digest = _record_trust(tmp_path, interpreter, bootstrap, wheel)
+    selected_wheel = wheel
+    if mutation == "wheel":
+        with wheel.open("ab") as handle:
+            handle.write(b"tampered")
+    elif mutation == "bootstrap":
+        with bootstrap.open("a") as handle:
+            handle.write("\n# tampered after authorization\n")
+    elif mutation == "package":
+        console_script = interpreter.parent / "llmtracefx-vllm-kv-truth"
+        original_console_digest = _sha256(console_script)
+        package = (
+            interpreter.parent.parent
+            / "lib"
+            / f"python{sys.version_info.major}.{sys.version_info.minor}"
+            / "site-packages"
+            / "vllm_kv_truth"
+            / "cli.py"
+        )
+        package.write_text(FAKE_CLI + "\n# changed with same console entry point\n")
+        assert _sha256(console_script) == original_console_digest
+    elif mutation == "dependency":
+        dependency = (
+            interpreter.parent.parent
+            / "lib"
+            / f"python{sys.version_info.major}.{sys.version_info.minor}"
+            / "site-packages"
+            / "dependency.py"
+        )
+        dependency.write_text("# dependency added after trust recording\n")
+    elif mutation == "manifest":
+        with manifest.open("a") as handle:
+            handle.write(" ")
+    elif mutation == "stale-wheel":
+        selected_wheel = tmp_path / "stale.whl"
+        shutil.copyfile(wheel, selected_wheel)
+
+    completed = subprocess.run(
+        _native_command(
+            interpreter,
+            bootstrap,
+            "preflight",
+            *_trusted_args(selected_wheel, manifest, digest),
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 2
+    assert expected in completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        ("unrecorded", "contents do not exactly match RECORD"),
+        ("unsigned", "payload entries must have hashes and sizes"),
+    ],
+)
+def test_record_trust_rejects_incomplete_wheel_record(
+    tmp_path: Path, mutation: str, expected: str
+) -> None:
+    interpreter, bootstrap, wheel = _install_fake_environment(tmp_path)
+
+    def mutate(files: dict[str, bytes]) -> None:
+        if mutation == "unrecorded":
+            files["unrecorded.py"] = b"raise RuntimeError('unrecorded')\n"
+            return
+        record_name = next(name for name in files if name.endswith(".dist-info/RECORD"))
+        rows = list(csv.reader(io.StringIO(files[record_name].decode("utf-8"))))
+        rows[0][1] = ""
+        output = io.StringIO()
+        writer = csv.writer(output, lineterminator="\n")
+        writer.writerows(rows)
+        files[record_name] = output.getvalue().encode()
+
+    _rewrite_wheel(wheel, mutate)
+    completed = subprocess.run(
+        _native_command(
+            interpreter,
+            bootstrap,
+            "record-trust",
+            "--wheel",
+            str(wheel),
+            "--output",
+            str(tmp_path / "manifest.json"),
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 2
+    assert expected in completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
     [
         ("relative-config", "execution config must be an absolute path"),
         ("config-mode", "execution config must have mode 0600"),
         ("auth-mode", "authorization must have mode 0600"),
-        ("nonempty-output", "output directory must be empty"),
-        ("output-mode", "output directory must have mode 0700"),
-        ("missing-auth", "authorization must be a regular file"),
-        ("wrong-hash", "does not match the expected SHA-256"),
-        ("malformed-hash", "exactly 64 lowercase hexadecimal"),
-        ("wrong-name", "wrong installed name"),
-        ("nonexecutable-cli", "CLI executable is not executable"),
-        ("symlink-cli", "must not contain symlink components"),
-        ("symlink-config", "must not contain symlink components"),
-        ("symlink-output", "must not contain symlink components"),
+        ("output-mode", "mode 0700"),
+        ("nonempty-output", "must be empty"),
+        ("symlink-config", "regular non-symlink file"),
+        ("symlink-output", "unsafe directory component"),
     ],
 )
-def test_launcher_refuses_unsafe_inputs(
-    tmp_path: Path, mutation: str, expected_error: str
+def test_bootstrap_rejects_unsafe_run_inputs(
+    tmp_path: Path, mutation: str, expected: str
 ) -> None:
-    cli = _write_fake_cli(tmp_path)
+    interpreter, bootstrap, wheel = _install_fake_environment(tmp_path)
+    manifest, digest = _record_trust(tmp_path, interpreter, bootstrap, wheel)
     config, auth, output = _protected_inputs(tmp_path)
-    args = _run_args(cli, config, auth, output)
+    config_arg, output_arg = str(config), str(output)
     if mutation == "relative-config":
-        args[7] = "relative.json"
+        config_arg = "relative.json"
     elif mutation == "config-mode":
         config.chmod(0o644)
     elif mutation == "auth-mode":
         auth.chmod(0o640)
-    elif mutation == "nonempty-output":
-        (output / "existing").write_text("x", encoding="utf-8")
     elif mutation == "output-mode":
         output.chmod(0o755)
-    elif mutation == "missing-auth":
-        auth.unlink()
-    elif mutation == "wrong-hash":
-        args[5] = "0" * 64
-    elif mutation == "malformed-hash":
-        args[5] = "ABC"
-    elif mutation == "wrong-name":
-        renamed = cli.with_name("other-cli")
-        cli.rename(renamed)
-        args[3] = str(renamed)
-        args[5] = _sha256(renamed)
-    elif mutation == "nonexecutable-cli":
-        cli.chmod(0o644)
-    elif mutation == "symlink-cli":
-        link = cli.with_name("linked-cli")
-        link.symlink_to(cli)
-        args[3] = str(link)
-        args[5] = _sha256(cli)
+    elif mutation == "nonempty-output":
+        (output / "existing").write_text("x")
     elif mutation == "symlink-config":
-        link = config.with_name("linked-config.json")
+        link = config.with_name("config-link")
         link.symlink_to(config)
-        args[7] = str(link)
+        config_arg = str(link)
     elif mutation == "symlink-output":
-        link = output.with_name("linked-output")
+        link = output.with_name("output-link")
         link.symlink_to(output, target_is_directory=True)
-        args[11] = str(link)
-    completed = subprocess.run(args, capture_output=True, text=True, check=False)
+        output_arg = str(link)
+    completed = subprocess.run(
+        _native_command(
+            interpreter,
+            bootstrap,
+            "run",
+            *_trusted_args(wheel, manifest, digest),
+            "--execution-config",
+            config_arg,
+            "--authorization",
+            str(auth),
+            "--output-dir",
+            output_arg,
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     assert completed.returncode == 2
-    assert expected_error in completed.stderr
+    assert expected in completed.stderr
     assert not (output / "started").exists()
 
 
-def test_launcher_rejects_ambiguous_paths_and_argument_injection(
-    tmp_path: Path,
-) -> None:
-    cli = _write_fake_cli(tmp_path)
-    config, auth, output = _protected_inputs(tmp_path)
-    ambiguous = _run_args(cli, config, auth, output)
-    ambiguous[7] = str(config.parent / ".." / config.parent.name / config.name)
-    refused = subprocess.run(ambiguous, capture_output=True, text=True, check=False)
-    assert refused.returncode == 2
-    assert "path is ambiguous" in refused.stderr
-
-    injected = _run_args(cli, config, auth, output) + [
-        ";touch",
-        str(tmp_path / "pwned"),
-    ]
-    refused = subprocess.run(injected, capture_output=True, text=True, check=False)
-    assert refused.returncode == 2
-    assert "usage:" in refused.stderr
-    assert not (tmp_path / "pwned").exists()
-
-
-def test_launcher_accepts_spaces_and_shell_metacharacters_as_path_data(
-    tmp_path: Path,
-) -> None:
-    cli = _write_fake_cli(tmp_path)
-    config, auth, output = _protected_inputs(tmp_path)
-    completed = subprocess.run(
-        _run_args(cli, config, auth, output),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert completed.returncode == 0, completed.stderr
-    assert (output / "cleanup").is_file()
-    assert not (tmp_path / "config.json").exists()
-
-
-def test_launcher_rejects_malicious_shebang_even_with_matching_hash(
-    tmp_path: Path,
-) -> None:
-    cli = _write_fake_cli(tmp_path, shebang="#!/usr/bin/env python3")
-    completed = subprocess.run(
-        [
-            str(LAUNCHER),
-            "preflight",
-            "--cli",
-            str(cli),
-            "--cli-sha256",
-            _sha256(cli),
-        ],
-        env=_contaminated_environment(tmp_path),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert completed.returncode == 2
-    assert "shebang must not contain arguments" in completed.stderr
-    assert not (tmp_path / "path-command-ran").exists()
-
-
-def test_launcher_accepts_wheel_long_path_trampoline(tmp_path: Path) -> None:
-    cli = _write_fake_cli(tmp_path)
-    lines = cli.read_text(encoding="utf-8").splitlines()
-    interpreter = cli.parent / "python3"
-    cli.write_text(
-        "\n".join(
-            [
-                "#!/bin/sh",
-                f"'''exec' '{interpreter}' \"$0\" \"$@\"",
-                "' '''",
-                *lines[1:],
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    cli.chmod(0o755)
-    completed = subprocess.run(
-        [
-            str(LAUNCHER),
-            "preflight",
-            "--cli",
-            str(cli),
-            "--cli-sha256",
-            _sha256(cli),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert completed.returncode == 0, completed.stderr
-    assert completed.stdout == "clean environment preflight: ok\n"
-
-
-def test_launcher_rejects_symlinked_launcher_path(tmp_path: Path) -> None:
-    cli = _write_fake_cli(tmp_path)
-    launcher_link = tmp_path / "launcher-link"
-    launcher_link.symlink_to(LAUNCHER)
-    completed = subprocess.run(
-        [
-            str(launcher_link),
-            "preflight",
-            "--cli",
-            str(cli),
-            "--cli-sha256",
-            _sha256(cli),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert completed.returncode == 2
-    assert "launcher must not contain symlink components" in completed.stderr
-
-
-def test_cli_exit_code_is_returned_after_fake_cleanup(tmp_path: Path) -> None:
-    cli = _write_fake_cli(tmp_path)
-    config, auth, output = _protected_inputs(tmp_path, authorization={"exit_code": 37})
-    completed = subprocess.run(
-        _run_args(cli, config, auth, output),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert completed.returncode == 37
-    assert (output / "cleanup").read_text(encoding="utf-8") == "complete"
-
-
-def test_sigterm_reaches_cli_and_fake_cleanup_runs(tmp_path: Path) -> None:
-    cli = _write_fake_cli(tmp_path)
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP])
+def test_signal_exit_semantics_follow_cleanup(tmp_path: Path, signum: int) -> None:
+    interpreter, bootstrap, wheel = _install_fake_environment(tmp_path)
+    manifest, digest = _record_trust(tmp_path, interpreter, bootstrap, wheel)
     config, auth, output = _protected_inputs(
         tmp_path, authorization={"wait_for_signal": True}
     )
     process = subprocess.Popen(
-        _run_args(cli, config, auth, output),
+        _native_command(
+            interpreter,
+            bootstrap,
+            "run",
+            *_trusted_args(wheel, manifest, digest),
+            "--execution-config",
+            str(config),
+            "--authorization",
+            str(auth),
+            "--output-dir",
+            str(output),
+        ),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -459,30 +514,190 @@ def test_sigterm_reaches_cli_and_fake_cleanup_runs(tmp_path: Path) -> None:
     while not (output / "started").exists() and time.monotonic() < deadline:
         time.sleep(0.02)
     assert (output / "started").exists()
-    process.send_signal(signal.SIGTERM)
+    process.send_signal(signum)
     _stdout, stderr = process.communicate(timeout=5)
-    assert process.returncode == 128 + signal.SIGTERM, stderr
-    assert (output / "cleanup").read_text(encoding="utf-8") == (
-        f"signal={signal.SIGTERM}"
+    assert process.returncode == 128 + signum, stderr
+    assert (output / "cleanup").read_text() == f"signal={signum}"
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP])
+def test_real_cli_process_preserves_signal_status_after_fake_teardown(
+    tmp_path: Path, signum: int
+) -> None:
+    harness = tmp_path / "real-cli-signal-harness.py"
+    harness.write_text(f"""
+import importlib.util
+import sys
+import time
+from pathlib import Path
+
+PROJECT_ROOT = Path({str(PROJECT_ROOT)!r})
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from vllm_kv_truth import cli, lifecycle
+
+spec = importlib.util.spec_from_file_location(
+    "kv_truth_lifecycle_test_support",
+    PROJECT_ROOT / "tests/deploy/test_vllm_kv_truth_lifecycle.py",
+)
+support = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = support
+spec.loader.exec_module(support)
+
+root = Path(sys.argv[1])
+started = root / "real-cli-started"
+cleanup = root / "real-cli-cleanup"
+config = support._config(root)
+authorization = support._authorization()
+
+class BlockingRunner(support.FakeCommandRunner):
+    def run(self, argv, *, description, timeout, input_text=None):
+        if description == "stage_preflight":
+            started.write_text("yes", encoding="utf-8")
+            while True:
+                time.sleep(0.05)
+        result = super().run(
+            argv,
+            description=description,
+            timeout=timeout,
+            input_text=input_text,
+        )
+        if description == "stage_teardown_cleanup":
+            cleanup.write_text("complete", encoding="utf-8")
+        return result
+
+runner = BlockingRunner()
+cli.ProtectedExecutionConfig.load = classmethod(lambda cls, path: config)
+cli.RunAuthorization.read = classmethod(lambda cls, path: authorization)
+cli.SubprocessCommandRunner = lambda: runner
+
+def orchestrator_factory(*, config, authorization, runner):
+    return lifecycle.RemoteOrchestrator(
+        config=config,
+        authorization=authorization,
+        runner=runner,
+        now_fn=lambda: support.BILLING_STARTED_AT,
     )
 
-
-@pytest.mark.skipif(os.geteuid() != 0, reason="changing file owner requires root")
-def test_launcher_rejects_cli_owned_by_another_user(tmp_path: Path) -> None:
-    cli = _write_fake_cli(tmp_path)
-    os.chown(cli, 1, -1)
-    completed = subprocess.run(
+cli.RemoteOrchestrator = orchestrator_factory
+raise SystemExit(
+    cli.main(
         [
-            str(LAUNCHER),
+            "run",
+            "--execution-config",
+            str(root / "config.json"),
+            "--authorization",
+            str(root / "authorization.json"),
+            "--output-dir",
+            str(config.local_evidence_dir),
+        ]
+    )
+)
+""")
+    process = subprocess.Popen(
+        [sys.executable, "-I", str(harness), str(tmp_path)],
+        env=SAFE_ENVIRONMENT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    started = tmp_path / "real-cli-started"
+    deadline = time.monotonic() + 10
+    while not started.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert started.exists()
+    process.send_signal(signum)
+    stdout, stderr = process.communicate(timeout=10)
+    assert process.returncode == 128 + signum, (stdout, stderr)
+    assert (tmp_path / "real-cli-cleanup").read_text() == "complete"
+    assert "SAFE TO TERMINATE INSTANCE NOW" in stdout
+    assert "run_interrupted" in stderr
+
+
+def test_interpreter_directory_alias_symlink_chain_is_accepted(tmp_path: Path) -> None:
+    interpreter, bootstrap, wheel = _install_fake_environment(tmp_path)
+    root = interpreter.parent.parent
+    target_directory = tmp_path / "uv-python-target"
+    target_bin = target_directory / "bin"
+    target_bin.mkdir(parents=True)
+    (target_bin / "python").symlink_to(Path(sys.executable).resolve())
+    alias = tmp_path / "cpython-version-alias"
+    alias.symlink_to(target_directory, target_is_directory=True)
+    interpreter.unlink()
+    interpreter.symlink_to(alias / "bin" / "python")
+    manifest, digest = _record_trust(tmp_path, interpreter, bootstrap, wheel)
+    completed = subprocess.run(
+        _native_command(
+            interpreter,
+            bootstrap,
             "preflight",
-            "--cli",
-            str(cli),
-            "--cli-sha256",
-            _sha256(cli),
-        ],
+            *_trusted_args(wheel, manifest, digest),
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert root.is_dir()
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_writable_interpreter_link_parent_is_rejected(tmp_path: Path) -> None:
+    interpreter, bootstrap, wheel = _install_fake_environment(tmp_path)
+    unsafe = tmp_path / "unsafe-interpreter"
+    unsafe.mkdir()
+    unsafe.chmod(0o777)
+    (unsafe / "python").symlink_to(Path(sys.executable).resolve())
+    interpreter.unlink()
+    interpreter.symlink_to(unsafe / "python")
+    completed = subprocess.run(
+        _native_command(
+            interpreter,
+            bootstrap,
+            "record-trust",
+            "--wheel",
+            str(wheel),
+            "--output",
+            str(tmp_path / "manifest.json"),
+        ),
         capture_output=True,
         text=True,
         check=False,
     )
     assert completed.returncode == 2
-    assert "owned by the current user" in completed.stderr
+    assert "group- or world-writable" in completed.stderr
+
+
+def test_root_owned_system_interpreter_target_is_accepted(tmp_path: Path) -> None:
+    candidates = [
+        path
+        for path in (Path("/usr/bin/python3"), Path("/bin/python3"))
+        if path.exists() and path.resolve().stat().st_uid == 0
+    ]
+    if not candidates:
+        pytest.skip("no root-owned system Python is available")
+    version = subprocess.check_output(
+        [
+            str(candidates[0]),
+            "-c",
+            "import sys;print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+        ],
+        text=True,
+    ).strip()
+    if version != f"{sys.version_info.major}.{sys.version_info.minor}":
+        pytest.skip("root-owned Python minor does not match the test wheel layout")
+    interpreter, bootstrap, wheel = _install_fake_environment(
+        tmp_path, interpreter_target=candidates[0]
+    )
+    manifest, digest = _record_trust(tmp_path, interpreter, bootstrap, wheel)
+    completed = subprocess.run(
+        _native_command(
+            interpreter,
+            bootstrap,
+            "preflight",
+            *_trusted_args(wheel, manifest, digest),
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr

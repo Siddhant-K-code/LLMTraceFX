@@ -168,7 +168,7 @@ class TestRunCommandRejectsBadInputs:
         )
         assert exit_code == 1
         captured = capsys.readouterr()
-        assert "run-vllm-kv-truth-clean-env.sh" in captured.err
+        assert "run-vllm-kv-truth-clean-env.py" in captured.err
 
     def test_missing_execution_config_fails_cleanly(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

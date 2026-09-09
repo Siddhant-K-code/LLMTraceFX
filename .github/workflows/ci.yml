@@ -90,27 +90,37 @@ jobs:
       - name: Run test suite
         run: uv run pytest
 
-      - name: Verify wheel-installed clean launcher (macOS only)
-        if: runner.os == 'macOS'
+      - name: Verify wheel-installed clean bootstrap (macOS only)
+        if: runner.os == 'macOS' && matrix.python-version == '3.13'
         run: |
           set -euo pipefail
           uv build --out-dir .launcher-dist
-          wheel="$(ls .launcher-dist/*.whl)"
+          wheel="$(find "$GITHUB_WORKSPACE/.launcher-dist" -maxdepth 1 -name '*.whl' -print -quit)"
           uv venv --python "${{ matrix.python-version }}" .launcher-wheel-check
-          uv pip install --python .launcher-wheel-check/bin/python "$wheel"
-          launcher="$GITHUB_WORKSPACE/.launcher-wheel-check/bin/run-vllm-kv-truth-clean-env.sh"
-          kv_truth_cli="$GITHUB_WORKSPACE/.launcher-wheel-check/bin/llmtracefx-vllm-kv-truth"
-          cli_sha256="$(shasum -a 256 "$kv_truth_cli" | cut -d ' ' -f 1)"
-          COPILOT_TRAMPOLINE_TOKEN=ci-secret \
-          GH_TOKEN=ci-secret \
-          SSH_AUTH_SOCK=/tmp/host-agent.sock \
-          PYTHONPATH=/tmp/hostile-imports \
-          DOCKER_HOST=tcp://127.0.0.1:2375 \
-          HTTPS_PROXY=http://127.0.0.1:8080 \
-          ARBITRARY_SECRET=ci-secret \
-            "$launcher" preflight \
-              --cli "$kv_truth_cli" \
-              --cli-sha256 "$cli_sha256"
+          uv pip install --python .launcher-wheel-check/bin/python --no-deps "$wheel"
+          python="$GITHUB_WORKSPACE/.launcher-wheel-check/bin/python"
+          bootstrap="$GITHUB_WORKSPACE/.launcher-wheel-check/bin/run-vllm-kv-truth-clean-env.py"
+          manifest="$GITHUB_WORKSPACE/.launcher-trust.json"
+          /usr/bin/env -i PATH=/usr/bin:/bin:/usr/local/bin LANG=C LC_ALL=C \
+            "$python" -I -S -B "$bootstrap" record-trust \
+              --wheel "$wheel" --output "$manifest"
+          manifest_sha256="$(shasum -a 256 "$manifest" | cut -d ' ' -f 1)"
+          /usr/bin/env \
+            COPILOT_TRAMPOLINE_TOKEN=ci-secret \
+            GH_TOKEN=ci-secret \
+            SSH_AUTH_SOCK=/tmp/host-agent.sock \
+            PYTHONPATH=/tmp/hostile-imports \
+            BASH_ENV=/tmp/host-bash-env \
+            ENV=/tmp/host-shell-env \
+            SHELLOPTS=xtrace \
+            DOCKER_HOST=tcp://127.0.0.1:2375 \
+            HTTPS_PROXY=http://127.0.0.1:8080 \
+            ARBITRARY_SECRET=ci-secret \
+            /usr/bin/env -i PATH=/usr/bin:/bin:/usr/local/bin LANG=C LC_ALL=C \
+              "$python" -I -S -B "$bootstrap" preflight \
+                --wheel "$wheel" \
+                --trusted-manifest "$manifest" \
+                --trusted-manifest-sha256 "$manifest_sha256"
 
       # Constructing MLXLMRuntime is the actual runtime boundary: it rejects
       # anything that is not Darwin on arm64, and raises if mlx or mlx_lm cannot
@@ -227,37 +237,46 @@ jobs:
       - name: Verify the wheel imports in a clean environment
         run: |
           set -euo pipefail
-          wheel="$(ls dist/*.whl)"
+          wheel="$(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -name '*.whl' -print -quit)"
           echo "Testing $wheel"
           uv venv --python 3.12 .wheel-check
           uv pip install --python .wheel-check/bin/python "$wheel"
           # Run from a directory without the source tree so the import resolves
           # against the installed wheel rather than ./llmtracefx.
-          cd "$(mktemp -d)"
+          mkdir "$GITHUB_WORKSPACE/.wheel-import-check"
+          cd "$GITHUB_WORKSPACE/.wheel-import-check"
           "$GITHUB_WORKSPACE/.wheel-check/bin/python" -c "
           import importlib.metadata as md
           import llmtracefx
           print('imported llmtracefx from', llmtracefx.__file__)
           print('version', md.version('llmtracefx'))
           "
-          launcher="$GITHUB_WORKSPACE/.wheel-check/bin/run-vllm-kv-truth-clean-env.sh"
-          kv_truth_cli="$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-vllm-kv-truth"
-          test -f "$launcher"
-          test ! -L "$launcher"
-          test -x "$launcher"
-          test -f "$kv_truth_cli"
-          test ! -L "$kv_truth_cli"
-          cli_sha256="$(sha256sum "$kv_truth_cli" | cut -d ' ' -f 1)"
-          COPILOT_TRAMPOLINE_TOKEN=ci-secret \
-          GH_TOKEN=ci-secret \
-          SSH_AUTH_SOCK=/tmp/host-agent.sock \
-          PYTHONPATH=/tmp/hostile-imports \
-          DOCKER_HOST=tcp://127.0.0.1:2375 \
-          HTTPS_PROXY=http://127.0.0.1:8080 \
-          ARBITRARY_SECRET=ci-secret \
-            "$launcher" preflight \
-              --cli "$kv_truth_cli" \
-              --cli-sha256 "$cli_sha256"
+          bootstrap="$GITHUB_WORKSPACE/.wheel-check/bin/run-vllm-kv-truth-clean-env.py"
+          python="$GITHUB_WORKSPACE/.wheel-check/bin/python"
+          manifest="$GITHUB_WORKSPACE/.wheel-trust.json"
+          test -f "$bootstrap"
+          test ! -L "$bootstrap"
+          test -x "$bootstrap"
+          /usr/bin/env -i PATH=/usr/bin:/bin:/usr/local/bin LANG=C LC_ALL=C \
+            "$python" -I -S -B "$bootstrap" record-trust \
+              --wheel "$wheel" --output "$manifest"
+          manifest_sha256="$(sha256sum "$manifest" | cut -d ' ' -f 1)"
+          /usr/bin/env \
+            COPILOT_TRAMPOLINE_TOKEN=ci-secret \
+            GH_TOKEN=ci-secret \
+            SSH_AUTH_SOCK=/tmp/host-agent.sock \
+            PYTHONPATH=/tmp/hostile-imports \
+            BASH_ENV=/tmp/host-bash-env \
+            ENV=/tmp/host-shell-env \
+            SHELLOPTS=xtrace \
+            DOCKER_HOST=tcp://127.0.0.1:2375 \
+            HTTPS_PROXY=http://127.0.0.1:8080 \
+            ARBITRARY_SECRET=ci-secret \
+            /usr/bin/env -i PATH=/usr/bin:/bin:/usr/local/bin LANG=C LC_ALL=C \
+              "$python" -I -S -B "$bootstrap" preflight \
+                --wheel "$wheel" \
+                --trusted-manifest "$manifest" \
+                --trusted-manifest-sha256 "$manifest_sha256"
           "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-lab" --help
           "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-lab" autopsy --help
           "$GITHUB_WORKSPACE/.wheel-check/bin/llmtracefx-m5-frontier" --help

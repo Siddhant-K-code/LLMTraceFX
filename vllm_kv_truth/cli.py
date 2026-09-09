@@ -26,7 +26,7 @@ from .lifecycle import (
 )
 
 PROG = "llmtracefx-vllm-kv-truth"
-CLEAN_ENV_LAUNCHER = "run-vllm-kv-truth-clean-env.sh"
+CLEAN_ENV_LAUNCHER = "run-vllm-kv-truth-clean-env.py"
 _CLEAN_PARENT_ENVIRONMENT = {
     "PATH": "/usr/bin:/bin:/usr/local/bin",
     "LANG": "C",
@@ -170,7 +170,8 @@ def main(argv: list[str] | None = None) -> int:
         return _verify_public_bundle(args)
     except HostOrchestrationError as exc:
         print(f"{PROG}: error: {exc}", file=sys.stderr)
-        return 1
+        signum = getattr(exc, "signal_number", None)
+        return 128 + signum if isinstance(signum, int) else 1
     except evidence.EvidenceError as exc:
         print(f"{PROG}: error: {exc}", file=sys.stderr)
         return 1
