@@ -15,7 +15,9 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import stat
+import subprocess
 import tarfile
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -535,6 +537,30 @@ class TestRunAuthorization:
         assert "signature_path" not in auth.to_dict()
         assert "authorized_signers_path" not in auth.to_dict()
 
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("signature_path", "relative.sig"),
+            ("authorized_signers_path", "relative-signers"),
+            ("signature_path", "/protected/../authorization.sig"),
+            ("authorized_signers_path", "/protected/../authorized_signers"),
+            ("signature_path", "/protected//authorization.sig"),
+            ("authorized_signers_path", "/protected/authorized_signers/"),
+        ],
+    )
+    def test_signature_paths_must_be_unambiguous_absolute_paths(
+        self, field: str, value: str
+    ) -> None:
+        payload = _authorization_payload()
+        payload["signature_path"] = "/protected/authorization.sig"
+        payload["authorized_signers_path"] = "/protected/authorized_signers"
+        payload[field] = value
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match=f"{field} must be an unambiguous absolute path",
+        ):
+            lifecycle.RunAuthorization.from_dict(payload)
+
     def test_read_from_file(self, tmp_path: Path) -> None:
         payload = _authorization_payload()
         path = tmp_path / "authorization.json"
@@ -693,6 +719,53 @@ class TestProtectedExecutionConfig:
         with pytest.raises(lifecycle.HostOrchestrationError, match="group- or world"):
             lifecycle.ProtectedExecutionConfig.from_dict(payload)
 
+    @pytest.mark.parametrize(
+        ("field", "token"),
+        [
+            ("private_key_path", "%h"),
+            ("private_key_path", "$HOME"),
+            ("private_key_path", "second file"),
+            ("private_key_path", '"quoted"'),
+            ("private_key_path", r"back\slash"),
+            ("private_key_path", "~user"),
+            ("known_hosts_path", "%h"),
+            ("known_hosts_path", "$HOME"),
+            ("known_hosts_path", "second file"),
+            ("known_hosts_path", '"quoted"'),
+            ("known_hosts_path", r"back\slash"),
+            ("known_hosts_path", "~user"),
+        ],
+    )
+    def test_rejects_paths_reinterpreted_by_openssh(
+        self, tmp_path: Path, field: str, token: str
+    ) -> None:
+        payload = self._payload(tmp_path)
+        payload[field] = f"{tmp_path}/{token}"
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="interpreted by OpenSSH"
+        ):
+            lifecycle.ProtectedExecutionConfig.from_dict(payload)
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "private_key_path",
+            "known_hosts_path",
+            "local_evidence_dir",
+            "local_runner_archive",
+        ],
+    )
+    def test_rejects_normalized_local_path_spellings(
+        self, tmp_path: Path, field: str
+    ) -> None:
+        payload = self._payload(tmp_path)
+        payload[field] = str(payload[field]).replace("/", "//", 1)
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match=f"{field} must be an unambiguous absolute path",
+        ):
+            lifecycle.ProtectedExecutionConfig.from_dict(payload)
+
     def test_rejects_missing_key(self, tmp_path: Path) -> None:
         payload = self._payload(tmp_path)
         del payload["host"]
@@ -742,13 +815,21 @@ class TestStrictSSHOptions:
         options = lifecycle.StrictSSHOptions(self._config(tmp_path))
         opts = options.shared_options()
         joined = " ".join(opts)
+        assert opts[:2] == ("-F", "/dev/null")
         assert "BatchMode=yes" in joined
         assert "IdentitiesOnly=yes" in joined
         assert "PasswordAuthentication=no" in joined
         assert "KbdInteractiveAuthentication=no" in joined
         assert "StrictHostKeyChecking=yes" in joined
+        assert "GlobalKnownHostsFile=/dev/null" in joined
         assert "ForwardAgent=no" in joined
         assert "ForwardX11=no" in joined
+        assert "ProxyCommand=none" in joined
+        assert "ProxyJump=none" in joined
+        assert "PermitLocalCommand=no" in joined
+        assert "KnownHostsCommand=none" in joined
+        assert "IdentityAgent=none" in joined
+        assert "PKCS11Provider=none" in joined
         assert "ControlMaster=no" in joined
         assert "ControlPath=none" in joined
 
@@ -759,6 +840,27 @@ class TestStrictSSHOptions:
         assert argv[1:3] == ("-p", "57003")
         assert argv[-2] == "runner@203.0.113.5"
         assert argv[-1] == "echo hi"
+
+    def test_openssh_effective_config_disables_global_known_hosts(
+        self, tmp_path: Path
+    ) -> None:
+        ssh = shutil.which("ssh")
+        if ssh is None:
+            pytest.skip("OpenSSH client is unavailable")
+        options = lifecycle.StrictSSHOptions(self._config(tmp_path))
+        completed = subprocess.run(
+            [ssh, "-G", *options.shared_options(), "runner@203.0.113.5"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        effective = {
+            line.split(maxsplit=1)[0]: line.split(maxsplit=1)[1]
+            for line in completed.stdout.lower().splitlines()
+            if len(line.split(maxsplit=1)) == 2
+        }
+        assert effective["globalknownhostsfile"] == "/dev/null"
 
     def test_scp_uses_the_configured_nondefault_port(self, tmp_path: Path) -> None:
         options = lifecycle.StrictSSHOptions(self._config(tmp_path))
@@ -1603,10 +1705,99 @@ class TestRemoteOrchestratorFullRun:
             with pytest.raises(
                 lifecycle.HostOrchestrationError,
                 match="run/signal: run_interrupted",
-            ):
+            ) as caught:
                 orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        assert caught.value.signal_number == lifecycle.signal.SIGTERM
         descriptions = {call.description for call in runner.calls}
         assert "stage_teardown_cleanup" in descriptions
+
+    def test_sigterm_status_survives_teardown_failure(self, tmp_path: Path) -> None:
+        installed_handlers: dict[int, object] = {}
+
+        def fake_signal(signum: int, handler: object) -> object:
+            previous = installed_handlers.get(signum, lifecycle.signal.SIG_DFL)
+            installed_handlers[signum] = handler
+            return previous
+
+        class _TerminatingRunner(FakeCommandRunner):
+            def run(
+                self,
+                argv: Sequence[str],
+                *,
+                description: str,
+                timeout: float,
+                input_text: str | None = None,
+            ) -> lifecycle.CommandResult:
+                if description == "stage_canary":
+                    handler = installed_handlers[lifecycle.signal.SIGTERM]
+                    assert callable(handler)
+                    handler(lifecycle.signal.SIGTERM, None)
+                return super().run(
+                    argv,
+                    description=description,
+                    timeout=timeout,
+                    input_text=input_text,
+                )
+
+        runner = _TerminatingRunner(fail_stages=frozenset({"stage_teardown_cleanup"}))
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(lifecycle.signal, "getsignal", lambda _signum: None)
+            monkeypatch.setattr(lifecycle.signal, "signal", fake_signal)
+            with pytest.raises(lifecycle.HostOrchestrationError) as caught:
+                orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        assert caught.value.signal_number == lifecycle.signal.SIGTERM
+        assert isinstance(caught.value.__cause__, lifecycle.HostOrchestrationError)
+
+    def test_sigterm_during_teardown_is_deferred_until_cleanup_finishes(
+        self, tmp_path: Path
+    ) -> None:
+        installed_handlers: dict[int, object] = {}
+
+        def fake_signal(signum: int, handler: object) -> object:
+            previous = installed_handlers.get(signum, lifecycle.signal.SIG_DFL)
+            installed_handlers[signum] = handler
+            return previous
+
+        class _TeardownTerminatingRunner(FakeCommandRunner):
+            def run(
+                self,
+                argv: Sequence[str],
+                *,
+                description: str,
+                timeout: float,
+                input_text: str | None = None,
+            ) -> lifecycle.CommandResult:
+                if description == "stage_teardown_cleanup":
+                    handler = installed_handlers[lifecycle.signal.SIGTERM]
+                    assert callable(handler)
+                    handler(lifecycle.signal.SIGTERM, None)
+                return super().run(
+                    argv,
+                    description=description,
+                    timeout=timeout,
+                    input_text=input_text,
+                )
+
+        runner = _TeardownTerminatingRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(lifecycle.signal, "getsignal", lambda _signum: None)
+            monkeypatch.setattr(lifecycle.signal, "signal", fake_signal)
+            with pytest.raises(lifecycle.HostOrchestrationError) as caught:
+                orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        assert caught.value.signal_number == lifecycle.signal.SIGTERM
+        assert orchestrator.state == lifecycle.OrchestratorState.COMPLETE
 
     def test_refuses_to_start_when_budget_reserve_is_exhausted(
         self, tmp_path: Path
@@ -2220,9 +2411,27 @@ class TestSubprocessCommandRunnerCredentialGuard:
         with pytest.raises(lifecycle.HostOrchestrationError, match="credential-shaped"):
             lifecycle.SubprocessCommandRunner()
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "SSH_AUTH_SOCK",
+            "DOCKER_HOST",
+            "DOCKER_CONFIG",
+            "GIT_ASKPASS",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_SSH_COMMAND",
+            "BASH_ENV",
+            "ENV",
+            "SHELLOPTS",
+        ],
+    )
     def test_rejects_forbidden_routing_variable(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, name: str
     ) -> None:
-        monkeypatch.setenv("DOCKER_HOST", "tcp://evil:2375")
+        monkeypatch.setenv(name, "host-controlled")
         with pytest.raises(lifecycle.HostOrchestrationError, match="command-routing"):
             lifecycle.SubprocessCommandRunner()

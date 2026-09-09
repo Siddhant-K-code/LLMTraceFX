@@ -119,6 +119,7 @@ _SHA256_REF = re.compile(r"^sha256:[0-9a-f]{64}$")
 _COMMIT_HEX = re.compile(r"^[0-9a-f]{40}$")
 _NONCE_HEX = re.compile(r"^[0-9a-f]{32,64}$")
 _SAFE_REMOTE_PATH = re.compile(r"^/[A-Za-z0-9._/-]{0,4096}$")
+_SAFE_OPENSSH_LOCAL_PATH = re.compile(r"^/[A-Za-z0-9._/-]{1,4095}$")
 _SAFE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SAFE_HOSTNAME_OR_IP = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.:-]{0,253}[A-Za-z0-9])?$")
 _SAFE_USER = re.compile(r"^[A-Za-z_][A-Za-z0-9._-]{0,31}$")
@@ -148,10 +149,12 @@ class HostOrchestrationError(DeploymentPlanError):
         stage: str | None = None,
         substage: str | None = None,
         reason_code: str | None = None,
+        signal_number: int | None = None,
     ) -> None:
         self.stage = stage
         self.substage = substage
         self.reason_code = reason_code
+        self.signal_number = signal_number
         if stage is not None and substage is not None and reason_code is not None:
             message = f"{stage}/{substage}: {reason_code}: {message}"
         super().__init__(message)
@@ -233,6 +236,29 @@ def _require_safe_regular_file(path: Path, *, label: str) -> Path:
         raise HostOrchestrationError(f"{label} must not be a symlink")
     if not stat.S_ISREG(info.st_mode):
         raise HostOrchestrationError(f"{label} must be a regular file")
+    return path
+
+
+def _require_unambiguous_absolute_local_path(value: str | Path, *, label: str) -> Path:
+    raw = os.fspath(value)
+    path = Path(raw)
+    if (
+        not path.is_absolute()
+        or ".." in path.parts
+        or "//" in raw
+        or str(path) != raw
+        or any(ord(character) < 32 for character in raw)
+    ):
+        raise HostOrchestrationError(f"{label} must be an unambiguous absolute path")
+    return path
+
+
+def _require_literal_openssh_path(value: str, *, label: str) -> Path:
+    path = _require_unambiguous_absolute_local_path(value, label=label)
+    if _SAFE_OPENSSH_LOCAL_PATH.fullmatch(value) is None:
+        raise HostOrchestrationError(
+            f"{label} contains characters interpreted by OpenSSH"
+        )
     return path
 
 
@@ -376,11 +402,13 @@ class ProtectedExecutionConfig:
             raise HostOrchestrationError("port must be an integer from 1 through 65535")
         if not isinstance(user, str) or _SAFE_USER.fullmatch(user) is None:
             raise HostOrchestrationError("user must be a safe POSIX user name")
-        private_key_path = Path(
-            _require_nonempty_str(payload["private_key_path"], "private_key_path")
+        private_key_path = _require_literal_openssh_path(
+            _require_nonempty_str(payload["private_key_path"], "private_key_path"),
+            label="private_key_path",
         )
-        known_hosts_path = Path(
-            _require_nonempty_str(payload["known_hosts_path"], "known_hosts_path")
+        known_hosts_path = _require_literal_openssh_path(
+            _require_nonempty_str(payload["known_hosts_path"], "known_hosts_path"),
+            label="known_hosts_path",
         )
         _require_private_key_permissions(private_key_path, label="private_key_path")
         _require_not_group_or_world_readable(known_hosts_path, label="known_hosts_path")
@@ -390,13 +418,15 @@ class ProtectedExecutionConfig:
         authorized_key_marker = _require_label(
             payload["authorized_key_marker"], field_name="authorized_key_marker"
         )
-        local_evidence_dir = Path(
-            _require_nonempty_str(payload["local_evidence_dir"], "local_evidence_dir")
+        local_evidence_dir = _require_unambiguous_absolute_local_path(
+            _require_nonempty_str(payload["local_evidence_dir"], "local_evidence_dir"),
+            label="local_evidence_dir",
         )
-        local_runner_archive = Path(
+        local_runner_archive = _require_unambiguous_absolute_local_path(
             _require_nonempty_str(
                 payload["local_runner_archive"], "local_runner_archive"
-            )
+            ),
+            label="local_runner_archive",
         )
         if local_runner_archive.exists():
             _require_safe_regular_file(
@@ -844,13 +874,15 @@ class RunAuthorization:
         signature_path: Path | None = None
         authorized_signers_path: Path | None = None
         if _AUTHORIZATION_OPTIONAL_SIGNATURE_KEYS <= observed_keys:
-            signature_path = Path(
-                _require_nonempty_str(data["signature_path"], "signature_path")
+            signature_path = _require_unambiguous_absolute_local_path(
+                _require_nonempty_str(data["signature_path"], "signature_path"),
+                label="signature_path",
             )
-            authorized_signers_path = Path(
+            authorized_signers_path = _require_unambiguous_absolute_local_path(
                 _require_nonempty_str(
                     data["authorized_signers_path"], "authorized_signers_path"
-                )
+                ),
+                label="authorized_signers_path",
             )
 
         return cls(
@@ -964,11 +996,26 @@ _CREDENTIAL_NAME_FRAGMENTS = (
     "AUTH",
 )
 _FORBIDDEN_ROUTING_VARS = (
+    "ALL_PROXY",
+    "BASH_ENV",
     "DOCKER_HOST",
+    "DOCKER_CONFIG",
+    "ENV",
+    "GIT_ASKPASS",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
     "SSH_AUTH_SOCK",
     "SSH_ASKPASS",
     "GIT_SSH_COMMAND",
     "GIT_SSH",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "PIP_CONFIG_FILE",
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "SHELLOPTS",
+    "ZDOTDIR",
 )
 
 
@@ -990,7 +1037,9 @@ def reject_credential_environment(env: Mapping[str, str]) -> None:
     if offending:
         raise HostOrchestrationError(
             "refusing to run with credential-shaped or command-routing "
-            f"environment variables set: {sorted(set(offending))}"
+            f"environment variables set: {sorted(set(offending))}; use "
+            "run-vllm-kv-truth-clean-env.py through native /usr/bin/env -i "
+            "instead of unsetting individual variables"
         )
 
 
@@ -1239,6 +1288,8 @@ class StrictSSHOptions:
 
     def shared_options(self) -> tuple[str, ...]:
         return (
+            "-F",
+            "/dev/null",
             "-o",
             "BatchMode=yes",
             "-o",
@@ -1252,11 +1303,25 @@ class StrictSSHOptions:
             "-o",
             f"UserKnownHostsFile={self.config.known_hosts_path}",
             "-o",
+            "GlobalKnownHostsFile=/dev/null",
+            "-o",
             "ForwardAgent=no",
             "-o",
             "ForwardX11=no",
             "-o",
             "ClearAllForwardings=yes",
+            "-o",
+            "ProxyCommand=none",
+            "-o",
+            "ProxyJump=none",
+            "-o",
+            "PermitLocalCommand=no",
+            "-o",
+            "KnownHostsCommand=none",
+            "-o",
+            "IdentityAgent=none",
+            "-o",
+            "PKCS11Provider=none",
             "-o",
             "ControlMaster=no",
             "-o",
@@ -3052,14 +3117,23 @@ class RemoteOrchestrator:
         even if an earlier stage raised or the process is interrupted."""
 
         installed_handlers: dict[int, Any] = {}
+        failure: BaseException | None = None
+        teardown_failure: BaseException | None = None
+        pending_teardown_signals: list[int] = []
+        teardown_started = False
 
-        def handle_termination(signum: int, _frame: Any) -> NoReturn:
-            raise HostOrchestrationError(
+        def handle_termination(signum: int, _frame: Any) -> None:
+            if teardown_started:
+                pending_teardown_signals.append(signum)
+                return
+            error = HostOrchestrationError(
                 "the coordinator received a termination signal",
                 stage="run",
                 substage="signal",
                 reason_code="run_interrupted",
+                signal_number=signum,
             )
+            raise error
 
         for signal_name in ("SIGTERM", "SIGHUP"):
             signum = getattr(signal, signal_name, None)
@@ -3080,18 +3154,49 @@ class RemoteOrchestrator:
             self.stage_four_ab_pairs()
             self.stage_eviction_lane()
             self.stage_transfer_evidence(local_evidence_bundle_dir)
+            # This assignment remains inside the protected try suite. A signal
+            # before it is caught below; a signal after it is deferred.
+            teardown_started = True
         except BaseException as exc:  # noqa: BLE001 - deliberate: teardown
             # must run on every possible exit path, including
             # KeyboardInterrupt, before the exception propagates.
+            teardown_started = True
             self.state = OrchestratorState.FAILED
             self._record("run", False, detail=type(exc).__name__)
-            raise
+            failure = exc
         finally:
-            for signum in installed_handlers:
-                signal.signal(signum, signal.SIG_IGN)
             try:
                 self.stage_teardown(local_evidence_bundle_dir)
+            except BaseException as exc:  # noqa: BLE001 - preserved below
+                teardown_failure = exc
             finally:
                 for signum, previous_handler in installed_handlers.items():
                     signal.signal(signum, previous_handler)
+        signal_number = (
+            pending_teardown_signals[-1]
+            if pending_teardown_signals
+            else getattr(failure, "signal_number", None)
+        )
+        if isinstance(signal_number, int):
+            interrupted = (
+                failure
+                if isinstance(failure, HostOrchestrationError)
+                and failure.signal_number == signal_number
+                else HostOrchestrationError(
+                    "the coordinator received a termination signal",
+                    stage="run",
+                    substage="signal",
+                    reason_code="run_interrupted",
+                    signal_number=signal_number,
+                )
+            )
+            if teardown_failure is not None:
+                raise interrupted from teardown_failure
+            raise interrupted
+        if teardown_failure is not None:
+            if failure is not None:
+                raise teardown_failure from failure
+            raise teardown_failure
+        if failure is not None:
+            raise failure
         return tuple(self.outcomes)
