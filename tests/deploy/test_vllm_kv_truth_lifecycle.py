@@ -1118,6 +1118,7 @@ class FakeCommandRunner:
             stdout = (
                 "RESIDUAL_CONTAINERS=0\n"
                 "RESIDUAL_GPU_PROCESSES=0\n"
+                "TEARDOWN_SCRIPT_COMPLETE=1\n"
                 "SHUTDOWN_ISSUED=1\n"
             )
             return lifecycle.CommandResult(returncode=0, stdout=stdout, stderr="")
@@ -1754,16 +1755,18 @@ class TestRemoteOrchestratorFullRun:
         script = cleanup_call.input_text or ""
         assert (
             f"if [ -d {orchestrator.config.remote_workspace} ]; then "
-            f"rmdir {orchestrator.config.remote_workspace}; fi"
+            f"rmdir {orchestrator.config.remote_workspace} "
+            "|| cleanup_failed=1; fi"
         ) in script
         assert f"rm -rf {orchestrator.paths.model_dir}" in script
         assert f"rm -rf {orchestrator.paths.hf_scratch_dir}" in script
         assert f"rm -rf {orchestrator.paths.repo_dir}" in script
         assert f"rm -f {orchestrator.paths.source_archive_remote_path}" in script
-        assert "sudo -n shutdown -h +1" in script
-        assert script.index("authorized_keys") < script.index(
-            "sudo -n shutdown -h +1", script.index("authorized_keys")
-        )
+        assert script.count("sudo -n shutdown -h +1") == 1
+        assert "trap finish_teardown EXIT" in script
+        assert script.index(
+            "remove_authorized_key || cleanup_failed=1"
+        ) < script.rindex("exit 0")
         # Mutating discovery is label-scoped; the sole unfiltered query is the
         # read-only final residual check.
         label_filter = f"--filter label={lifecycle.docker_run_label(auth.nonce)}"
@@ -1773,7 +1776,7 @@ class TestRemoteOrchestratorFullRun:
         assert len(docker_listing_lines) == 3
         assert all(label_filter in line for line in docker_listing_lines[:2])
         assert docker_listing_lines[2].startswith(
-            "RESIDUAL_CONTAINER_IDS=$(docker ps -aq)"
+            "if RESIDUAL_CONTAINER_IDS=$(docker ps -aq)"
         )
         image_listing_lines = [
             line for line in script.splitlines() if "docker images" in line
@@ -1792,10 +1795,16 @@ class TestRemoteOrchestratorFullRun:
             f"LABELED_IMAGES=$(docker images -q --filter "
             f"label={lifecycle.docker_run_label(auth.nonce)})"
         ) in script
-        assert "RESIDUAL_CONTAINER_IDS=$(docker ps -aq) ||" in script
-        assert "docker rmi -f; fi" in script
-        assert "docker rmi -f || true; fi" not in script
-        assert script.count("LLMTRACEFX_REASON=teardown_cleanup_failed") >= 4
+        assert "if RESIDUAL_CONTAINER_IDS=$(docker ps -aq); then" in script
+        assert "xargs -r docker rmi -f || cleanup_failed=1" in script
+        assert "xargs -r docker rmi -f || true" not in script
+        assert "LLMTRACEFX_REASON=teardown_cleanup_failed" in script
+        assert "LLMTRACEFX_REASON=teardown_shutdown_failed" in script
+        assert "LLMTRACEFX_REASON=teardown_cleanup_and_shutdown_failed" in script
+        for line in script.splitlines():
+            if line.startswith(("rm -rf ", "rm -f ")):
+                assert line.endswith("|| cleanup_failed=1")
+        assert script.count("else\n  cleanup_failed=1\nfi") >= 5
 
     @pytest.mark.parametrize(
         ("container_ids", "expected_count"),
@@ -1821,11 +1830,18 @@ class TestRemoteOrchestratorFullRun:
         start = next(
             index
             for index, line in enumerate(lines)
-            if line.startswith("RESIDUAL_CONTAINER_IDS=")
+            if line.startswith("if RESIDUAL_CONTAINER_IDS=")
         )
-        fragment = "\n".join(lines[start : start + 2])
+        fragment = "\n".join(lines[start : start + 5])
         result = subprocess.run(
-            ["bash", "-c", f'docker() {{ printf %s "$DOCKER_OUTPUT"; }}\n{fragment}'],
+            [
+                "bash",
+                "-c",
+                "cleanup_failed=0\n"
+                'docker() { printf %s "$DOCKER_OUTPUT"; }\n'
+                f"{fragment}\n"
+                'test "$cleanup_failed" -eq 0',
+            ],
             env={"DOCKER_OUTPUT": container_ids},
             check=True,
             capture_output=True,
@@ -1851,11 +1867,18 @@ class TestRemoteOrchestratorFullRun:
         start = next(
             index
             for index, line in enumerate(lines)
-            if line.startswith("RESIDUAL_CONTAINER_IDS=")
+            if line.startswith("if RESIDUAL_CONTAINER_IDS=")
         )
-        fragment = "\n".join(lines[start : start + 2])
+        fragment = "\n".join(lines[start : start + 5])
         result = subprocess.run(
-            ["bash", "-c", f"docker() {{ return 42; }}\n{fragment}"],
+            [
+                "bash",
+                "-c",
+                "cleanup_failed=0\n"
+                f"docker() {{ return 42; }}\n{fragment}\n"
+                'if [ "$cleanup_failed" -ne 0 ]; then '
+                "echo LLMTRACEFX_REASON=teardown_cleanup_failed >&2; exit 1; fi",
+            ],
             check=False,
             capture_output=True,
             text=True,
@@ -1880,11 +1903,18 @@ class TestRemoteOrchestratorFullRun:
         start = next(
             index
             for index, line in enumerate(lines)
-            if line.startswith("RESIDUAL_GPU_PIDS=")
+            if line.startswith("if RESIDUAL_GPU_PIDS=")
         )
-        fragment = "\n".join(lines[start : start + 2])
+        fragment = "\n".join(lines[start : start + 5])
         result = subprocess.run(
-            ["bash", "-c", f"nvidia-smi() {{ return 42; }}\n{fragment}"],
+            [
+                "bash",
+                "-c",
+                "cleanup_failed=0\n"
+                f"nvidia-smi() {{ return 42; }}\n{fragment}\n"
+                'if [ "$cleanup_failed" -ne 0 ]; then '
+                "echo LLMTRACEFX_REASON=teardown_cleanup_failed >&2; exit 1; fi",
+            ],
             check=False,
             capture_output=True,
             text=True,
@@ -1892,6 +1922,56 @@ class TestRemoteOrchestratorFullRun:
         assert result.returncode != 0
         assert "LLMTRACEFX_REASON=teardown_cleanup_failed" in result.stderr
         assert "RESIDUAL_GPU_PROCESSES=" not in result.stdout
+
+    def test_teardown_continues_key_removal_and_shutdown_after_cleanup_failure(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_teardown(tmp_path / "bundle")
+        script = runner.calls[-1].input_text or ""
+        remote_workspace = tmp_path / "remote-workspace"
+        remote_workspace.mkdir()
+        script = script.replace(
+            orchestrator.config.remote_workspace, str(remote_workspace)
+        )
+        assert orchestrator.config.remote_workspace not in script
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized_keys = ssh_dir / "authorized_keys"
+        authorized_keys.write_text("ssh-ed25519 AAAATEST marker\n", encoding="utf-8")
+        stubs = """
+docker() {
+  if [ "$1" = ps ] && [ "$2" = -q ] && [ "${3-}" = --filter ]; then
+    return 42
+  fi
+  return 0
+}
+nvidia-smi() { return 0; }
+sudo() { test "$1" = -n && test "$2" = shutdown; }
+chmod() { return 0; }
+xargs() { cat >/dev/null; }
+"""
+        result = subprocess.run(
+            ["bash", "-c", stubs + "\n" + script],
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "SHUTDOWN_ISSUED=1" in result.stdout
+        assert "RESIDUAL_CONTAINERS=" in result.stdout
+        assert "RESIDUAL_GPU_PROCESSES=" in result.stdout
+        assert "TEARDOWN_SCRIPT_COMPLETE=1" in result.stdout
+        assert "LLMTRACEFX_REASON=teardown_cleanup_failed" in result.stderr
+        assert "marker" not in authorized_keys.read_text(encoding="utf-8")
 
     def test_sudo_mode_teardown_uses_only_selected_docker_prefix(
         self, tmp_path: Path
@@ -2088,7 +2168,37 @@ class TestRemoteOrchestratorFullRun:
         ):
             orchestrator.stage_teardown(tmp_path / "bundle")
 
-    def test_teardown_shutdown_failure_takes_priority_over_cleanup_failure(
+    def test_teardown_unmarked_failure_reports_unknown_outcome(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner(
+            responses={
+                "stage_teardown_cleanup": lifecycle.CommandResult(
+                    returncode=255,
+                    stdout="",
+                    stderr="",
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="teardown_outcome_unknown",
+        ):
+            orchestrator.stage_teardown(tmp_path / "bundle")
+        receipt = json.loads(
+            orchestrator.operation_receipt_path.read_text(
+                encoding="utf-8"
+            ).splitlines()[-1]
+        )
+        assert receipt["reason_code"] == "teardown_outcome_unknown"
+
+    def test_teardown_combined_failure_preserves_both_outcomes(
         self, tmp_path: Path
     ) -> None:
         runner = FakeCommandRunner(
@@ -2097,8 +2207,7 @@ class TestRemoteOrchestratorFullRun:
                     returncode=1,
                     stdout="",
                     stderr=(
-                        "LLMTRACEFX_REASON=teardown_cleanup_failed\n"
-                        "LLMTRACEFX_REASON=teardown_shutdown_failed\n"
+                        "LLMTRACEFX_REASON=" "teardown_cleanup_and_shutdown_failed\n"
                     ),
                 )
             }
@@ -2111,7 +2220,7 @@ class TestRemoteOrchestratorFullRun:
         )
         with pytest.raises(
             lifecycle.HostOrchestrationError,
-            match="teardown_shutdown_failed",
+            match="teardown_cleanup_and_shutdown_failed",
         ):
             orchestrator.stage_teardown(tmp_path / "bundle")
         receipt = json.loads(
@@ -2119,7 +2228,7 @@ class TestRemoteOrchestratorFullRun:
                 encoding="utf-8"
             ).splitlines()[-1]
         )
-        assert receipt["reason_code"] == "teardown_shutdown_failed"
+        assert receipt["reason_code"] == "teardown_cleanup_and_shutdown_failed"
 
     def test_teardown_refuses_missing_shutdown_marker_with_receipt(
         self, tmp_path: Path
@@ -2128,7 +2237,11 @@ class TestRemoteOrchestratorFullRun:
             responses={
                 "stage_teardown_cleanup": lifecycle.CommandResult(
                     returncode=0,
-                    stdout=("RESIDUAL_CONTAINERS=0\n" "RESIDUAL_GPU_PROCESSES=0\n"),
+                    stdout=(
+                        "RESIDUAL_CONTAINERS=0\n"
+                        "RESIDUAL_GPU_PROCESSES=0\n"
+                        "TEARDOWN_SCRIPT_COMPLETE=1\n"
+                    ),
                     stderr="",
                 )
             }
@@ -2151,6 +2264,34 @@ class TestRemoteOrchestratorFullRun:
         )
         assert receipt["substage"] == "verify_cleanup_shutdown"
         assert receipt["reason_code"] == "teardown_shutdown_failed"
+
+    def test_teardown_refuses_truncated_script_despite_shutdown_marker(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner(
+            responses={
+                "stage_teardown_cleanup": lifecycle.CommandResult(
+                    returncode=0,
+                    stdout=(
+                        "RESIDUAL_CONTAINERS=0\n"
+                        "RESIDUAL_GPU_PROCESSES=0\n"
+                        "SHUTDOWN_ISSUED=1\n"
+                    ),
+                    stderr="",
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="teardown_cleanup_failed",
+        ):
+            orchestrator.stage_teardown(tmp_path / "bundle")
 
     def test_teardown_still_runs_on_keyboard_interrupt(self, tmp_path: Path) -> None:
         class _InterruptingRunner(FakeCommandRunner):
@@ -2812,6 +2953,7 @@ class TestRemoteOrchestratorFullRun:
                     stdout=(
                         "RESIDUAL_CONTAINERS=1\n"
                         "RESIDUAL_GPU_PROCESSES=0\n"
+                        "TEARDOWN_SCRIPT_COMPLETE=1\n"
                         "SHUTDOWN_ISSUED=1\n"
                     ),
                     stderr="",

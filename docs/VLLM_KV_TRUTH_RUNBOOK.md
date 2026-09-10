@@ -424,8 +424,16 @@ model_download_interface_missing, model_download_version_mismatch,
 model_download_failed, model_inventory_mismatch, canary_failed,
 pair_lane_failed, eviction_lane_failed, evidence_archive_failed,
 evidence_digest_failed, evidence_download_failed,
-run_interrupted, teardown_cleanup_failed, teardown_shutdown_failed
+run_interrupted, teardown_cleanup_failed, teardown_shutdown_failed,
+teardown_cleanup_and_shutdown_failed, teardown_outcome_unknown
 ```
+
+`teardown_cleanup_failed` means shutdown was issued but scoped cleanup was not
+fully proved. `teardown_shutdown_failed` and
+`teardown_cleanup_and_shutdown_failed` mean shutdown was not successfully
+proved. `teardown_outcome_unknown`, `operation_timeout`, or
+`operation_start_failed` during teardown means shutdown was not proved. Every
+unproved or failed shutdown requires immediate provider-console termination.
 
 Successful acquisition also writes a private schema-2
 `private-model-acquisition-receipt.json` binding the authorization, inspected

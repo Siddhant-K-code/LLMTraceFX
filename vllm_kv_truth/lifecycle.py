@@ -1299,6 +1299,14 @@ _SAFE_REASON_MESSAGES: dict[str, tuple[str, str]] = {
         "teardown",
         "the remote shutdown command failed",
     ),
+    "teardown_cleanup_and_shutdown_failed": (
+        "teardown",
+        "scoped remote cleanup or key removal and remote shutdown both failed",
+    ),
+    "teardown_outcome_unknown": (
+        "teardown",
+        "the remote teardown ended before cleanup and shutdown were proved",
+    ),
 }
 _SAFE_REASON_MARKER = re.compile(r"^LLMTRACEFX_REASON=([a-z0-9_]{1,80})$")
 _MAX_SAFE_FAILURE_MESSAGE_LENGTH = 160
@@ -1349,13 +1357,8 @@ def _safe_failure(result: CommandResult, default_reason: str) -> tuple[str, str,
             match = _SAFE_REASON_MARKER.fullmatch(line.strip())
             if match is not None and match.group(1) in _SAFE_REASON_MESSAGES:
                 marked_reasons.append(match.group(1))
-        if (
-            default_reason in {"teardown_cleanup_failed", "teardown_shutdown_failed"}
-            and "teardown_shutdown_failed" in marked_reasons
-        ):
-            reason = "teardown_shutdown_failed"
-        elif marked_reasons:
-            reason = marked_reasons[0]
+        if marked_reasons:
+            reason = marked_reasons[-1]
     category, message = _SAFE_REASON_MESSAGES[reason]
     return reason, category, message[:_MAX_SAFE_FAILURE_MESSAGE_LENGTH]
 
@@ -3216,84 +3219,116 @@ class RemoteOrchestrator:
         remove_images = self.docker.xargs_shell("rmi", "-f")
         remove_base_image = self.docker.shell("rmi", "-f", BASE_IMAGE_REFERENCE)
         residual_containers_command = self.docker.shell("ps", "-aq")
-        docker_cleanup_failure = (
-            "{ echo LLMTRACEFX_REASON=teardown_cleanup_failed >&2; exit 1; }"
-        )
         script = "\n".join(
             [
-                "set -eu",
-                "reason=teardown_cleanup_failed",
+                "set -u",
+                "cleanup_failed=0",
                 "shutdown_attempted=0",
                 "finish_teardown() {",
                 "  status=$?",
                 "  trap - EXIT",
+                '  if [ "$status" -ne 0 ]; then cleanup_failed=1; fi',
+                "  shutdown_failed=0",
                 '  if [ "$shutdown_attempted" -eq 0 ]; then',
                 "    shutdown_attempted=1",
                 "    if sudo -n shutdown -h +1; then",
                 '      echo "SHUTDOWN_ISSUED=1"',
                 "    else",
-                '      echo "LLMTRACEFX_REASON=teardown_shutdown_failed" >&2',
-                "      exit 1",
+                "      shutdown_failed=1",
                 "    fi",
                 "  fi",
-                '  if [ "$status" -ne 0 ]; then',
-                '    echo "LLMTRACEFX_REASON=$reason" >&2',
+                '  if [ "$cleanup_failed" -ne 0 ] && '
+                '[ "$shutdown_failed" -ne 0 ]; then',
+                "    echo "
+                '"LLMTRACEFX_REASON=teardown_cleanup_and_shutdown_failed" >&2',
+                "    exit 1",
                 "  fi",
-                '  exit "$status"',
+                '  if [ "$shutdown_failed" -ne 0 ]; then',
+                '    echo "LLMTRACEFX_REASON=teardown_shutdown_failed" >&2',
+                "    exit 1",
+                "  fi",
+                '  if [ "$cleanup_failed" -ne 0 ]; then',
+                '    echo "LLMTRACEFX_REASON=teardown_cleanup_failed" >&2',
+                "    exit 1",
+                "  fi",
+                "  exit 0",
                 "}",
                 "trap finish_teardown EXIT",
-                f"RUNNING_CONTAINERS=$({running_containers}) || "
-                f"{docker_cleanup_failure}",
-                'if [ -n "$RUNNING_CONTAINERS" ]; then '
-                "printf '%s\\n' \"$RUNNING_CONTAINERS\" | "
-                f"{stop_containers}; fi",
-                f"ALL_RUN_CONTAINERS=$({all_containers}) || "
-                f"{docker_cleanup_failure}",
-                'if [ -n "$ALL_RUN_CONTAINERS" ]; then '
-                "printf '%s\\n' \"$ALL_RUN_CONTAINERS\" | "
-                f"{remove_containers}; fi",
-                f"LABELED_IMAGES=$({labeled_images}) || {docker_cleanup_failure}",
-                'if [ -n "$LABELED_IMAGES" ]; then '
-                "printf '%s\\n' \"$LABELED_IMAGES\" | "
+                f"if RUNNING_CONTAINERS=$({running_containers}); then",
+                '  if [ -n "$RUNNING_CONTAINERS" ]; then',
+                "    printf '%s\\n' \"$RUNNING_CONTAINERS\" | "
+                f"{stop_containers} || cleanup_failed=1",
+                "  fi",
+                "else",
+                "  cleanup_failed=1",
+                "fi",
+                f"if ALL_RUN_CONTAINERS=$({all_containers}); then",
+                '  if [ -n "$ALL_RUN_CONTAINERS" ]; then',
+                "    printf '%s\\n' \"$ALL_RUN_CONTAINERS\" | "
+                f"{remove_containers} || cleanup_failed=1",
+                "  fi",
+                "else",
+                "  cleanup_failed=1",
+                "fi",
+                f"if LABELED_IMAGES=$({labeled_images}); then",
+                '  if [ -n "$LABELED_IMAGES" ]; then',
+                "    printf '%s\\n' \"$LABELED_IMAGES\" | "
                 "awk '!seen[$0]++' | "
-                f"{remove_images}; fi",
+                f"{remove_images} || cleanup_failed=1",
+                "  fi",
+                "else",
+                "  cleanup_failed=1",
+                "fi",
                 f"{remove_base_image} || true",
-                f"rm -rf {_quote(self.paths.model_dir)}",
-                f"rm -rf {_quote(self.paths.repo_dir)}",
-                f"rm -rf {_quote(self.paths.evidence_dir)}",
-                f"rm -rf {_quote(self.paths.receipts_dir)}",
-                f"rm -rf {_quote(self.paths.hf_scratch_dir)}",
-                f"rm -f {_quote(self.paths.source_archive_remote_path)}",
-                f"rm -f {_quote(self.config.remote_workspace + '/evidence.tar')}",
-                'AUTHORIZED_KEYS="$HOME/.ssh/authorized_keys"',
-                f"KEY_MARKER={_quote(self.config.authorized_key_marker)}",
-                'test -f "$AUTHORIZED_KEYS"',
-                'KEY_TMP=$(mktemp "$HOME/.ssh/authorized_keys.llmtracefx.XXXXXX")',
-                "awk -v marker=\"$KEY_MARKER\" '$NF != marker' "
-                '"$AUTHORIZED_KEYS" > "$KEY_TMP"',
-                'chmod --reference="$AUTHORIZED_KEYS" "$KEY_TMP"',
-                'mv "$KEY_TMP" "$AUTHORIZED_KEYS"',
-                'test "$(awk -v marker="$KEY_MARKER" '
+                f"rm -rf {_quote(self.paths.model_dir)} || cleanup_failed=1",
+                f"rm -rf {_quote(self.paths.repo_dir)} || cleanup_failed=1",
+                f"rm -rf {_quote(self.paths.evidence_dir)} || cleanup_failed=1",
+                f"rm -rf {_quote(self.paths.receipts_dir)} || cleanup_failed=1",
+                f"rm -rf {_quote(self.paths.hf_scratch_dir)} || cleanup_failed=1",
+                f"rm -f {_quote(self.paths.source_archive_remote_path)} "
+                "|| cleanup_failed=1",
+                f"rm -f {_quote(self.config.remote_workspace + '/evidence.tar')} "
+                "|| cleanup_failed=1",
+                "remove_authorized_key() {",
+                '  AUTHORIZED_KEYS="$HOME/.ssh/authorized_keys"',
+                f"  KEY_MARKER={_quote(self.config.authorized_key_marker)}",
+                '  test -f "$AUTHORIZED_KEYS" || return 1',
+                '  KEY_TMP=$(mktemp "$HOME/.ssh/authorized_keys.llmtracefx.XXXXXX") '
+                "|| return 1",
+                "  if ! awk -v marker=\"$KEY_MARKER\" '$NF != marker' "
+                '"$AUTHORIZED_KEYS" > "$KEY_TMP"; then',
+                '    rm -f "$KEY_TMP"',
+                "    return 1",
+                "  fi",
+                '  chmod --reference="$AUTHORIZED_KEYS" "$KEY_TMP" || '
+                '{ rm -f "$KEY_TMP"; return 1; }',
+                '  mv "$KEY_TMP" "$AUTHORIZED_KEYS" || '
+                '{ rm -f "$KEY_TMP"; return 1; }',
+                '  test "$(awk -v marker="$KEY_MARKER" '
                 "'$NF == marker { count++ } END { print count + 0 }' "
                 '"$AUTHORIZED_KEYS")" = "0"',
-                f"RESIDUAL_CONTAINER_IDS=$({residual_containers_command}) || "
-                f"{docker_cleanup_failure}",
-                "echo \"RESIDUAL_CONTAINERS=$(printf '%s\\n' "
+                "}",
+                "remove_authorized_key || cleanup_failed=1",
+                f"if RESIDUAL_CONTAINER_IDS=$({residual_containers_command}); then",
+                "  echo \"RESIDUAL_CONTAINERS=$(printf '%s\\n' "
                 '"$RESIDUAL_CONTAINER_IDS" | '
                 'sed "/^[[:space:]]*$/d" | wc -l)"',
-                "RESIDUAL_GPU_PIDS=$(nvidia-smi "
-                "--query-compute-apps=pid --format=csv,noheader 2>/dev/null) || "
-                f"{docker_cleanup_failure}",
-                "echo \"RESIDUAL_GPU_PROCESSES=$(printf '%s\\n' "
+                "else",
+                "  cleanup_failed=1",
+                "fi",
+                "if RESIDUAL_GPU_PIDS=$(nvidia-smi "
+                "--query-compute-apps=pid --format=csv,noheader 2>/dev/null); then",
+                "  echo \"RESIDUAL_GPU_PROCESSES=$(printf '%s\\n' "
                 '"$RESIDUAL_GPU_PIDS" | '
                 'sed "/^[[:space:]]*$/d" | wc -l)"',
+                "else",
+                "  cleanup_failed=1",
+                "fi",
                 f"if [ -d {_quote(self.config.remote_workspace)} ]; then "
-                f"rmdir {_quote(self.config.remote_workspace)}; fi",
-                "reason=teardown_shutdown_failed",
-                "shutdown_attempted=1",
-                "sudo -n shutdown -h +1",
-                'echo "SHUTDOWN_ISSUED=1"',
-                "trap - EXIT",
+                f"rmdir {_quote(self.config.remote_workspace)} "
+                "|| cleanup_failed=1; fi",
+                'echo "TEARDOWN_SCRIPT_COMPLETE=1"',
+                "exit 0",
             ]
         )
         result = self._checked(
@@ -3302,7 +3337,7 @@ class RemoteOrchestrator:
             substage="cleanup_key_removal_shutdown",
             description="stage_teardown_cleanup",
             timeout=300,
-            default_reason="teardown_cleanup_failed",
+            default_reason="teardown_outcome_unknown",
             reserve_stage=None,
             input_text=script,
         )
@@ -3343,12 +3378,14 @@ class RemoteOrchestrator:
                 "RESIDUAL_CONTAINERS",
                 "RESIDUAL_GPU_PROCESSES",
                 "SHUTDOWN_ISSUED",
+                "TEARDOWN_SCRIPT_COMPLETE",
             }
         )
         if (
             "RESIDUAL_CONTAINERS" not in markers
             or "RESIDUAL_GPU_PROCESSES" not in markers
             or markers.get("SHUTDOWN_ISSUED") != "1"
+            or markers.get("TEARDOWN_SCRIPT_COMPLETE") != "1"
         ):
             raise HostOrchestrationError(
                 "teardown residual-state check produced no parsable markers"
