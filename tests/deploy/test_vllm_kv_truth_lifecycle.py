@@ -11,6 +11,7 @@ than a placeholder that always refuses.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -1131,30 +1132,126 @@ def _config(
     docker_execution_mode: lifecycle.DockerExecutionMode = (
         lifecycle.DockerExecutionMode.DIRECT
     ),
+    host_key_trust_policy: lifecycle.HostKeyTrustPolicy = (
+        lifecycle.HostKeyTrustPolicy.PROVIDER_PINNED
+    ),
 ) -> lifecycle.ProtectedExecutionConfig:
     key = tmp_path / "key"
     key.write_text("x", encoding="utf-8")
     os.chmod(key, 0o600)
     known_hosts = tmp_path / "known_hosts"
-    known_hosts.write_text("x", encoding="utf-8")
+    config_payload: dict[str, Any] = {
+        "schema_version": lifecycle.PROTECTED_CONFIG_SCHEMA_VERSION,
+        "host": "203.0.113.5",
+        "port": 57003,
+        "user": "runner",
+        "docker_execution_mode": docker_execution_mode.value,
+        "private_key_path": str(key),
+        "known_hosts_path": str(known_hosts),
+        "remote_workspace": "/srv/kv-truth",
+        "authorized_key_marker": "marker",
+        "local_evidence_dir": str(tmp_path / "evidence"),
+        "local_runner_archive": str(tmp_path / "archive.tar"),
+    }
+    if host_key_trust_policy is lifecycle.HostKeyTrustPolicy.TOFU_UNVERIFIED:
+        algorithm = b"ssh-ed25519"
+        key_blob = (
+            len(algorithm).to_bytes(4, "big")
+            + algorithm
+            + (32).to_bytes(4, "big")
+            + b"\x07" * 32
+        )
+        key_base64 = base64.b64encode(key_blob).decode("ascii")
+        known_hosts_content = (
+            f"[203.0.113.5]:57003 ssh-ed25519 {key_base64}\n"
+        ).encode("ascii")
+        known_hosts.write_bytes(known_hosts_content)
+        known_hosts_sha256 = hashlib.sha256(known_hosts_content).hexdigest()
+        receipt_path = tmp_path / "tofu-receipt.json"
+        receipt_unsealed = {
+            "schema_version": lifecycle.TOFU_ENROLLMENT_RECEIPT_SCHEMA_VERSION,
+            "policy": lifecycle.HostKeyTrustPolicy.TOFU_UNVERIFIED.value,
+            "provider_identity_independently_authenticated": False,
+            "identity_statement": lifecycle.TOFU_IDENTITY_STATEMENT,
+            "endpoint": {"host": "203.0.113.5", "port": 57003},
+            "host_key": {
+                "algorithm": "ssh-ed25519",
+                "base64": key_base64,
+                "fingerprint_sha256": lifecycle.openssh_sha256_fingerprint(key_blob),
+            },
+            "observed_at": lifecycle._canonical_timestamp(BILLING_STARTED_AT),
+            "tool": {
+                "path": lifecycle.SSH_KEYSCAN_PATH,
+                "argv": [
+                    lifecycle.SSH_KEYSCAN_PATH,
+                    "-T",
+                    str(lifecycle.SSH_KEYSCAN_CONNECT_TIMEOUT_SECONDS),
+                    "-t",
+                    "ed25519",
+                    "-p",
+                    "57003",
+                    "203.0.113.5",
+                ],
+                "environment": lifecycle.SSH_KEYSCAN_ENVIRONMENT,
+                "process_timeout_seconds": (
+                    lifecycle.SSH_KEYSCAN_PROCESS_TIMEOUT_SECONDS
+                ),
+            },
+            "known_hosts": {
+                "path": str(known_hosts),
+                "content_sha256": known_hosts_sha256,
+            },
+        }
+        receipt = {
+            **receipt_unsealed,
+            "receipt_sha256": lifecycle.sha256_json(receipt_unsealed),
+        }
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        receipt_path.chmod(0o600)
+        config_payload.update(
+            {
+                "schema_version": lifecycle.TOFU_CONFIG_SCHEMA_VERSION,
+                "host_key_trust_policy": host_key_trust_policy.value,
+                "host_key_ed25519_base64": key_base64,
+                "host_key_fingerprint_sha256": (
+                    lifecycle.openssh_sha256_fingerprint(key_blob)
+                ),
+                "known_hosts_sha256": known_hosts_sha256,
+                "tofu_enrollment_receipt_path": str(receipt_path),
+                "tofu_enrollment_receipt_sha256": receipt["receipt_sha256"],
+                "tofu_unverified_acknowledgement": (
+                    lifecycle.TOFU_UNVERIFIED_ACKNOWLEDGEMENT
+                ),
+            }
+        )
+    else:
+        known_hosts.write_text("x", encoding="utf-8")
     os.chmod(known_hosts, 0o600)
     archive = tmp_path / "archive.tar"
     if not archive.exists():
         _write_source_archive(archive)
-    return lifecycle.ProtectedExecutionConfig.from_dict(
-        {
-            "schema_version": lifecycle.PROTECTED_CONFIG_SCHEMA_VERSION,
-            "host": "203.0.113.5",
-            "port": 57003,
-            "user": "runner",
-            "docker_execution_mode": docker_execution_mode.value,
-            "private_key_path": str(key),
-            "known_hosts_path": str(known_hosts),
-            "remote_workspace": "/srv/kv-truth",
-            "authorized_key_marker": "marker",
-            "local_evidence_dir": str(tmp_path / "evidence"),
-            "local_runner_archive": str(archive),
-        }
+    config_payload["local_runner_archive"] = str(archive)
+    return lifecycle.ProtectedExecutionConfig.from_dict(config_payload)
+
+
+def _authorization_for_config(
+    config: lifecycle.ProtectedExecutionConfig,
+) -> lifecycle.RunAuthorization:
+    if config.host_key_trust_policy is lifecycle.HostKeyTrustPolicy.PROVIDER_PINNED:
+        return _authorization(docker_execution_mode=config.docker_execution_mode.value)
+    assert config.host_key_ed25519_base64 is not None
+    return _authorization(
+        schema_version=lifecycle.TOFU_AUTHORIZATION_SCHEMA_VERSION,
+        docker_execution_mode=config.docker_execution_mode.value,
+        host_key_trust_policy=config.host_key_trust_policy.value,
+        host_key_ed25519_sha256=hashlib.sha256(
+            base64.b64decode(config.host_key_ed25519_base64)
+        ).hexdigest(),
+        host_key_fingerprint_sha256=config.host_key_fingerprint_sha256,
+        known_hosts_sha256=config.known_hosts_sha256,
+        tofu_enrollment_receipt_sha256=config.tofu_enrollment_receipt_sha256,
+        host_key_trust_binding_sha256=config.host_key_trust_binding_sha256(),
+        tofu_unverified_acknowledgement=(lifecycle.TOFU_UNVERIFIED_ACKNOWLEDGEMENT),
     )
 
 
@@ -1403,6 +1500,62 @@ class TestRemoteOrchestratorFullRun:
         assert {receipt["docker_execution_config_sha256"] for receipt in receipts} == {
             lifecycle.docker_execution_config_sha256(mode)
         }
+
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            lifecycle.DockerExecutionMode.DIRECT,
+            lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE,
+        ],
+    )
+    @pytest.mark.parametrize(
+        "policy",
+        [
+            lifecycle.HostKeyTrustPolicy.PROVIDER_PINNED,
+            lifecycle.HostKeyTrustPolicy.TOFU_UNVERIFIED,
+        ],
+    )
+    def test_fake_remote_lifecycle_remains_valid_for_both_trust_policies(
+        self,
+        tmp_path: Path,
+        mode: lifecycle.DockerExecutionMode,
+        policy: lifecycle.HostKeyTrustPolicy,
+    ) -> None:
+        config = _config(
+            tmp_path,
+            docker_execution_mode=mode,
+            host_key_trust_policy=policy,
+        )
+        responses = {}
+        if mode is lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE:
+            responses["stage_preflight"] = lifecycle.CommandResult(
+                returncode=0,
+                stdout=_preflight_stdout(
+                    DOCKER_EXECUTION_MODE=mode.value,
+                    DOCKER_EXECUTION_CONFIG_SHA256=(
+                        lifecycle.docker_execution_config_sha256(mode)
+                    ),
+                ),
+                stderr="",
+            )
+        runner = FakeCommandRunner(responses=responses)
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=config,
+            authorization=_authorization_for_config(config),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        outcomes = orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        assert all(outcome.ok for outcome in outcomes)
+        assert orchestrator.state is lifecycle.OrchestratorState.COMPLETE
+        ssh_record = evidence.PrivateEvidenceBundle.read(
+            tmp_path / "bundle" / "private_bundle.json"
+        ).ssh_options_public_record
+        if policy is lifecycle.HostKeyTrustPolicy.TOFU_UNVERIFIED:
+            assert ssh_record["host_key_trust_policy"] == "tofu_unverified"
+            assert ssh_record["provider_identity_independently_authenticated"] is False
+        else:
+            assert "host_key_trust_policy" not in ssh_record
 
     def test_direct_mode_never_mixes_in_sudo_docker_calls(self, tmp_path: Path) -> None:
         runner = FakeCommandRunner()
@@ -2206,9 +2359,7 @@ xargs() { cat >/dev/null; }
                 "stage_teardown_cleanup": lifecycle.CommandResult(
                     returncode=1,
                     stdout="",
-                    stderr=(
-                        "LLMTRACEFX_REASON=" "teardown_cleanup_and_shutdown_failed\n"
-                    ),
+                    stderr=("LLMTRACEFX_REASON=teardown_cleanup_and_shutdown_failed\n"),
                 )
             }
         )

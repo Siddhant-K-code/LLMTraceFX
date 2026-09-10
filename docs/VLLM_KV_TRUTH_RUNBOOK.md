@@ -46,11 +46,49 @@ Do not rebuild or replace this archive after authorization is signed.
 Provision exactly one RTX 4090 host only after the PR is merged. Generate a
 new temporary SSH key with the exact comment
 `llmtracefx-kv-truth-authorized-key` (or another safe, unique marker recorded
-as `authorized_key_marker` below) and a dedicated known-hosts file. Install
-that one public-key line on the host. The orchestrator verifies there is
+as `authorized_key_marker` below) and a dedicated known-hosts file. Prefer
+adding that fresh public key to the CloudRift customer account and selecting
+it for the instance in the rent request. Do not use password SSH to install
+the key when rent-time public-key selection is available. Never store a
+provider token or password in the config, authorization, environment,
+receipt, command history, or evidence.
+
+If the provider UI does not offer rent-time key selection, a manual
+provider-console alternative is acceptable only when that console is
+independent of the SSH endpoint and can install the exact fresh public-key
+line without password SSH. CloudRift did not expose such a browser/web console
+in the September 10 workflow, so this alternative was unavailable there.
+
+The orchestrator verifies there is
 exactly one authorized-key line ending in the marker and atomically removes
 it during teardown. Verify the private key mode is `0600`; never reuse a key
 from an earlier VM.
+
+Choose exactly one host-key trust policy before enrollment:
+
+- `provider_pinned` is the existing strong path. Obtain the ED25519 host key
+  or fingerprint through a provider-authenticated channel independent of the
+  SSH endpoint, write the exact OpenSSH host token (`IP` for port 22,
+  `[IP]:port` otherwise) followed by `ssh-ed25519 <base64>` to the dedicated
+  mode-`0600` known-hosts file, and use protected-config schema 2
+  plus authorization schema 3 exactly as before. A key learned from the same
+  SSH connection is not provider-pinned.
+- `tofu_unverified` is an explicit weaker enrollment path. It observes one
+  ED25519 key unauthenticated from the preregistered literal IP and port. It
+  does not authenticate provider identity, resist an active MITM during
+  enrollment, prove secure provider provenance, or independently verify the
+  host key. It requires the clean-bootstrap enrollment operation,
+  protected-config schema 3, authorization schema 4, and the exact
+  acknowledgement shown below. There is no fallback or migration between
+  policies.
+
+CloudRift API OpenAPI v0.62.0
+(`https://api.cloudrift.ai/api-docs/openapi2.json`) exposes instance
+endpoint/login data and customer SSH public keys, but no VM SSH host public
+key or fingerprint field. The public CloudRift SSH and VM documentation also
+provides no independent host-key source. Therefore CloudRift cannot currently
+satisfy `provider_pinned` through those documented surfaces; use
+`tofu_unverified` only when its limitations are explicitly accepted.
 
 Before GO, perform only the coordinator-approved read-only preflight: boot
 time, UTC clock, one GPU, GPU name/memory/driver/compute capability, zero GPU
@@ -102,7 +140,8 @@ daemon without an interactive password.
 
 ## 3. Write protected execution config
 
-Write a `0600` JSON file with exactly these keys:
+For `provider_pinned`, write the existing `0600` schema-2 JSON file with
+exactly these keys:
 
 ```json
 {
@@ -127,6 +166,29 @@ config cannot silently acquire elevated Docker behavior.
 The SSH port belongs only in this protected file. Never place the target,
 user, port, key path, or known-hosts path in shell arguments, logs, evidence,
 or the authorization.
+
+For `tofu_unverified`, do not write or seal the final config until the
+enrollment in section 5 succeeds. Then write a `0600` schema-3 config with the
+schema-2 fields plus exactly:
+
+```json
+{
+  "schema_version": "3",
+  "host_key_trust_policy": "tofu_unverified",
+  "host_key_ed25519_base64": "<receipt host_key.base64>",
+  "host_key_fingerprint_sha256": "<receipt host_key.fingerprint_sha256>",
+  "known_hosts_sha256": "<receipt known_hosts.content_sha256>",
+  "tofu_enrollment_receipt_path": "/protected/path/to/tofu-enrollment-receipt.json",
+  "tofu_enrollment_receipt_sha256": "<receipt receipt_sha256>",
+  "tofu_unverified_acknowledgement": "I understand that provider identity was not independently authenticated and that TOFU enrollment does not resist an active MITM."
+}
+```
+
+This fragment supplements, rather than replaces, every common schema-2
+execution field. The loader verifies the receipt seal, endpoint, raw ED25519
+key, computed OpenSSH SHA-256 fingerprint, known-hosts bytes/digest/path, and
+acknowledgement before any authenticated SSH can be built. Schema 2 remains
+`provider_pinned`; it cannot consume a TOFU receipt.
 
 ## 4. Calculate and sign authorization
 
@@ -182,6 +244,25 @@ Set `authorization_expiry` no earlier than the end of cleanup. Calculate
 authorization object without `authorization_sha256`. Optional detached
 OpenSSH signing uses both `signature_path` and `authorized_signers_path`;
 supplying only one is invalid.
+
+For `provider_pinned`, authorization schema 3 is unchanged. For
+`tofu_unverified`, use authorization schema 4 and additionally bind:
+
+```text
+host_key_trust_policy=tofu_unverified
+host_key_ed25519_sha256=<SHA-256 hex of decoded OpenSSH key blob>
+host_key_fingerprint_sha256=<OpenSSH SHA256: fingerprint>
+known_hosts_sha256=<SHA-256 hex of exact canonical known-hosts bytes>
+tofu_enrollment_receipt_sha256=<receipt self-seal>
+host_key_trust_binding_sha256=<ProtectedExecutionConfig.host_key_trust_binding_sha256()>
+tofu_unverified_acknowledgement=<exact acknowledgement above>
+```
+
+The trust-binding digest commits to the literal endpoint, raw key,
+fingerprint, known-hosts digest, receipt digest, policy, and acknowledgement
+without publishing the endpoint. Compute the schema-4 authorization seal only
+after the schema-3 config loads successfully. A provider-pinned config cannot
+consume schema 4, and a TOFU config cannot consume schema 3.
 
 ## 5. Build, install, authorize, and preflight the clean bootstrap
 
@@ -313,7 +394,81 @@ bootstrap deliberately does not accept signature, signer, target, user, SSH
 key, known-hosts, or remote-workspace arguments.
 The public `llmtracefx-vllm-kv-truth` console script exposes only
 `verify-public-bundle`; `run` and `preflight` exist only in the internal
-dispatcher called by the bootstrap after trust verification.
+dispatcher called by the bootstrap after trust verification. `enroll-tofu`
+is likewise internal and cannot be reached through the public CLI.
+
+### Explicit TOFU enrollment
+
+Skip this subsection for `provider_pinned`. For `tofu_unverified`, create a
+new protected directory, an empty dedicated known-hosts file, and one
+mode-`0600` request. The directory must be current-user-owned mode `0700`;
+the known-hosts file must be a current-user-owned, non-symlink, empty regular
+file with exact mode `0600`; and the receipt path must not exist:
+
+```bash
+install -d -m 0700 /protected/path/tofu
+install -m 0600 /dev/null /protected/path/tofu/known_hosts
+```
+
+```json
+{
+  "schema_version": "1",
+  "host_key_trust_policy": "tofu_unverified",
+  "tofu_unverified_acknowledgement": "I understand that provider identity was not independently authenticated and that TOFU enrollment does not resist an active MITM.",
+  "host": "<canonical literal instance IP>",
+  "port": 22,
+  "known_hosts_path": "/protected/path/tofu/known_hosts",
+  "receipt_path": "/protected/path/tofu/tofu-enrollment-receipt.json"
+}
+```
+
+Write that object to
+`/protected/path/tofu/tofu-enrollment-request.json`, set mode `0600`, and run
+the single enrollment command:
+
+```bash
+/usr/bin/env -i PATH=/usr/bin:/bin:/usr/local/bin LANG=C LC_ALL=C \
+  /absolute/protected/kv-truth-venv/bin/python -I -S -B \
+  /absolute/protected/kv-truth-venv/bin/run-vllm-kv-truth-clean-env.py \
+  enroll-tofu \
+  --wheel /absolute/protected/build-output/llmtracefx-1.0.0-py3-none-any.whl \
+  --trusted-manifest /absolute/protected/kv-truth-launch-manifest.json \
+  --trusted-manifest-sha256 <RECORDED_64_HEX_MANIFEST_SHA256> \
+  --enrollment-request /protected/path/tofu/tofu-enrollment-request.json
+```
+
+After trust verification, the internal operation invokes exactly:
+
+```text
+/usr/bin/ssh-keyscan -T 5 -t ed25519 -p <port> <literal-IP>
+```
+
+The subprocess has a 10-second outer timeout and only
+`PATH=/usr/bin:/bin:/usr/local/bin`, `LANG=C`, and `LC_ALL=C`. No shell,
+DNS name, SSH config, proxy/jump, agent, password, global known-hosts file, or
+authenticated SSH is used. enrollment accepts exactly one complete output key line for the canonical
+OpenSSH host token (`IP` for port 22, `[IP]:port` otherwise), algorithm
+`ssh-ed25519`, and one structurally valid 32-byte ED25519 key. Zero lines,
+duplicates, multiple distinct keys,
+other algorithms, endpoint mismatch, malformed/truncated output, ambiguous
+stderr, timeout, nonzero exit, path substitution, or changed output files are
+hard refusals.
+
+The new mode-`0600` receipt canonically records `policy=tofu_unverified`, the
+statement that provider identity was not independently authenticated, the
+endpoint, raw ED25519 key, computed SHA-256 fingerprint, UTC observation
+time, absolute tool/argv/environment/timeout provenance, known-hosts
+path/content hash, and its own SHA-256 seal. Keep the request, receipt, and
+known-hosts file private. Return to sections 3 and 4 to write schema-3 config
+and schema-4 authorization from those exact bytes; never edit the enrolled
+file or receipt after sealing.
+
+If enrollment refuses, no authenticated SSH or workload has occurred. Remove
+the empty or partially written dedicated files and terminate any already
+created provider reservation through the provider control plane; preserve
+termination confirmation. Do not rerun against the same endpoint/key
+material, accept a second line, switch policy, or copy a key from a password
+SSH session.
 
 Run the offline environment preflight first:
 
@@ -386,15 +541,21 @@ Before the one command above, confirm only this checklist:
 0. The clean-bootstrap change is merged and that exact merged head has passed
    CI and CodeQL. No new VM exists before this gate passes.
 1. The source archive is from the exact clean, tested, merged `origin/main`.
-2. Authorization schema 3 seals that head, archive digest, Docker execution
-   mode and execution-policy digest, runtime/model/image pins, downloader
-   identity, budget, nonce, and zero-retry policy.
-3. Protected-config schema 2 names the same Docker execution mode, a fresh
-   key, dedicated known-hosts file, and the same empty output directory passed
-   to the bootstrap.
-4. The externally recorded trusted-manifest SHA-256 still matches and the
+2. The host-key policy is exactly one of: unchanged `provider_pinned` with
+   protected-config schema 2 and authorization schema 3; or explicit
+   `tofu_unverified` with a fresh clean-bootstrap receipt, protected-config
+   schema 3, and authorization schema 4. No fallback is configured.
+3. Authorization seals that head, archive digest, Docker execution mode and
+   execution-policy digest, runtime/model/image pins, downloader identity,
+   budget, nonce, zero-retry policy, and, for TOFU, every host-key trust
+   binding.
+4. The protected config names the same Docker execution mode, a fresh client
+   key installed by rent-time selection or the permitted independent
+   provider-console alternative (never password SSH), a dedicated known-hosts
+   file, and the same empty output directory passed to the bootstrap.
+5. The externally recorded trusted-manifest SHA-256 still matches and the
    wheel/environment clean preflight succeeds.
-5. The coordinator has issued GO and the full 210-minute reserve gate passes.
+6. The coordinator has issued GO and the full 210-minute reserve gate passes.
 
 ## 7. Private failure diagnostics
 
@@ -465,6 +626,19 @@ bundle offline:
   --bundle-dir /protected/path/to/evidence-output/public
 ```
 
+When every workload, runtime, budget, transfer, and teardown verifier passes,
+scientific runtime/cache evidence may be evaluated under either host-key
+policy. A TOFU bundle explicitly records
+`host_key_trust_policy=tofu_unverified`,
+`provider_identity_independently_authenticated=false`, and false support for
+enrollment MITM resistance, secure provider provenance, and independent
+host-key verification. It redacts raw host-identity fields. Such a bundle
+must not support claims of provider-authenticated host identity, MITM
+resistance during enrollment, secure provider provenance, or independent
+host-key verification. Missing strong identity evidence is always
+unsupported; it is never inferred from successful SSH, workload output,
+runtime attestation, teardown, or provider endpoint reuse.
+
 Wait for the exact message:
 
 ```text
@@ -485,9 +659,16 @@ local material:
 ```bash
 /bin/rm -- \
   /protected/path/to/fresh-temporary-key \
+  /protected/path/to/dedicated-known-hosts \
+  /protected/path/to/tofu-enrollment-request.json \
+  /protected/path/to/tofu-enrollment-receipt.json \
   /protected/path/execution-config.json \
   /protected/path/run-authorization.json
 ```
+
+Omit the two TOFU files for `provider_pinned`. If any listed file is absent,
+remove only the files belonging to this one attempt; never broaden the cleanup
+with a wildcard.
 
 Repair or rebuild the dedicated environment, create a trust manifest at a new
 path (manifest creation deliberately refuses to overwrite), and repeat the
@@ -539,9 +720,21 @@ provider reservation was terminated and confirmed, and all one-attempt local
 credentials were destroyed. This manual pre-GO refusal is operational
 provenance only, not scientific evidence.
 
+On September 10, the subsequent prepared run correctly refused host identity
+because the only available host key had been learned through the same
+manually TOFU-accepted password SSH connection. That observation was not an
+independent provider pin and was not relabeled as one. No runner SSH,
+workload, image/model action, or GPU/scientific stage occurred. The
+reservation was terminated and its one-attempt key was cleaned. The
+nonsecret refusal receipt SHA-256 was
+`504c8be0fab8259d3d2e116831d8207570392895d684eb7a71b817d3b751d69e`.
+The inferred cost upper bound was `$0.204875`; official provider spend remains
+unknown. This is operational/non-scientific provenance and creates no result
+or evidence-catalog entry.
+
 Do not provision a new VM for the next attempt until the clean-bootstrap
 change is merged, its exact merged head passes CI and CodeQL, the wheel-installed
 bootstrap preflight passes from the contaminated operator shell, the selected
 Docker execution mode passes its exact read-only provider-console probe, and a
-new schema-3 authorization binds both that mode and the resulting exact source
-archive.
+new authorization of the policy-appropriate schema binds that mode, the
+resulting exact source archive, and all required host-key trust evidence.

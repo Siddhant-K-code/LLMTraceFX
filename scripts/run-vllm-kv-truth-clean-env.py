@@ -639,7 +639,12 @@ def _verify_wheel_install(wheel_bytes: bytes, root: Path, interpreter: Path) -> 
 
 
 def _parse_options(argv: list[str]) -> tuple[str, dict[str, str]]:
-    if not argv or argv[0] not in {"record-trust", "preflight", "run"}:
+    if not argv or argv[0] not in {
+        "record-trust",
+        "preflight",
+        "enroll-tofu",
+        "run",
+    }:
         _fail("usage error")
     command = argv[0]
     required = {
@@ -648,6 +653,12 @@ def _parse_options(argv: list[str]) -> tuple[str, dict[str, str]]:
             "--wheel",
             "--trusted-manifest",
             "--trusted-manifest-sha256",
+        },
+        "enroll-tofu": {
+            "--wheel",
+            "--trusted-manifest",
+            "--trusted-manifest-sha256",
+            "--enrollment-request",
         },
         "run": {
             "--wheel",
@@ -870,6 +881,15 @@ def main(argv: list[str] | None = None) -> int:
     cli_args: list[str]
     if command == "preflight":
         cli_args = ["preflight"]
+    elif command == "enroll-tofu":
+        request = _require_private_input(
+            values["--enrollment-request"], "TOFU enrollment request"
+        )
+        cli_args = [
+            "enroll-tofu",
+            "--enrollment-request",
+            str(request),
+        ]
     else:
         config = _require_private_input(
             values["--execution-config"], "execution config"

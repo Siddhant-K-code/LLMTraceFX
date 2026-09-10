@@ -75,6 +75,20 @@ def bootstrap_dispatch(argv):
     if args == ["preflight"]:
         print("clean environment preflight: ok")
         return 0
+    if args[0] == "enroll-tofu":
+        request = Path(args[args.index("--enrollment-request") + 1])
+        payload = json.loads(request.read_text(encoding="utf-8"))
+        Path(payload["receipt_path"]).write_text(
+            json.dumps(
+                {
+                    "environment": dict(os.environ),
+                    "operation": "enroll-tofu",
+                    "request_path": str(request),
+                }
+            ),
+            encoding="utf-8",
+        )
+        return 0
     output = Path(args[args.index("--output-dir") + 1])
     auth = Path(args[args.index("--authorization") + 1])
     authorization = json.loads(auth.read_text(encoding="utf-8"))
@@ -111,7 +125,7 @@ def _write_wheel(path: Path, bootstrap: bytes, cli_source: str = FAKE_CLI) -> No
         "llmtracefx/__init__.py": b"",
         "vllm_kv_truth/__init__.py": b"",
         "vllm_kv_truth/cli.py": cli_source.encode(),
-        ("llmtracefx-1.0.0.data/scripts/" "run-vllm-kv-truth-clean-env.py"): bootstrap,
+        ("llmtracefx-1.0.0.data/scripts/run-vllm-kv-truth-clean-env.py"): bootstrap,
         "llmtracefx-1.0.0.dist-info/METADATA": (
             b"Metadata-Version: 2.1\nName: llmtracefx\nVersion: 1.0.0\n"
         ),
@@ -364,7 +378,12 @@ def test_real_setuptools_wheel_install_and_public_cli_split(tmp_path: Path) -> N
 
     public_cli = venv / "bin" / "llmtracefx-vllm-kv-truth"
     private_read_marker = tmp_path / "private-input-was-read"
-    for command in ("run", "preflight", "preflight-clean-environment"):
+    for command in (
+        "run",
+        "preflight",
+        "preflight-clean-environment",
+        "enroll-tofu",
+    ):
         refused = subprocess.run(
             [
                 "/usr/bin/env",
@@ -489,6 +508,45 @@ def test_native_env_strips_shell_hooks_and_ambient_state(tmp_path: Path) -> None
     assert set(child_environment).isdisjoint(CONTAMINATED_ENVIRONMENT)
     assert observation["lifecycle"] == "complete"
     assert (output / "cleanup").read_text() == "complete"
+    assert not (tmp_path / "should-never-run").exists()
+
+
+def test_native_clean_bootstrap_enrollment_strips_ambient_state(
+    tmp_path: Path,
+) -> None:
+    interpreter, bootstrap, wheel = _install_fake_environment(tmp_path)
+    manifest, digest = _record_trust(tmp_path, interpreter, bootstrap, wheel)
+    protected = tmp_path / "protected-enrollment"
+    protected.mkdir(mode=0o700)
+    receipt = protected / "receipt.json"
+    request = protected / "request.json"
+    request.write_text(json.dumps({"receipt_path": str(receipt)}), encoding="utf-8")
+    request.chmod(0o600)
+    completed = subprocess.run(
+        _native_command(
+            interpreter,
+            bootstrap,
+            "enroll-tofu",
+            *_trusted_args(wheel, manifest, digest),
+            "--enrollment-request",
+            str(request),
+        ),
+        env={**os.environ, **CONTAMINATED_ENVIRONMENT},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    observation = json.loads(receipt.read_text(encoding="utf-8"))
+    assert observation["operation"] == "enroll-tofu"
+    assert observation["request_path"] == str(request)
+    assert {
+        name: observation["environment"][name] for name in SAFE_ENVIRONMENT
+    } == SAFE_ENVIRONMENT
+    assert set(observation["environment"]) <= (
+        set(SAFE_ENVIRONMENT) | PLATFORM_ENVIRONMENT_NAMES
+    )
+    assert set(observation["environment"]).isdisjoint(CONTAMINATED_ENVIRONMENT)
     assert not (tmp_path / "should-never-run").exists()
 
 
