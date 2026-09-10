@@ -550,8 +550,9 @@ Before the one command above, confirm only this checklist:
    budget, nonce, zero-retry policy, and, for TOFU, every host-key trust
    binding.
 4. The protected config names the same Docker execution mode, a fresh client
-   key selected at rent time, dedicated known-hosts file, and the same empty
-   output directory passed to the bootstrap.
+   key installed by rent-time selection or the permitted independent
+   provider-console alternative (never password SSH), a dedicated known-hosts
+   file, and the same empty output directory passed to the bootstrap.
 5. The externally recorded trusted-manifest SHA-256 still matches and the
    wheel/environment clean preflight succeeds.
 6. The coordinator has issued GO and the full 210-minute reserve gate passes.
