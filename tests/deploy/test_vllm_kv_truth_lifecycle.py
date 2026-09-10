@@ -1322,6 +1322,7 @@ class TestRemoteOrchestratorFullRun:
         marker, value = result.stdout.split("=", 1)
         assert marker == "CONTAINER_COUNT"
         assert value.strip() == expected_count
+        assert "CONTAINER_IDS=$(docker ps -aq)" in script
 
     def test_preflight_gpu_process_query_failure_cannot_report_zero(
         self, tmp_path: Path
@@ -1437,6 +1438,25 @@ class TestRemoteOrchestratorFullRun:
                 now_fn=lambda: BILLING_STARTED_AT,
             )
         assert runner.calls == []
+
+    def test_docker_execution_policy_cannot_be_reassigned_after_validation(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(AttributeError):
+            orchestrator.docker = lifecycle.DockerCommand(  # type: ignore[misc]
+                lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE
+            )
+        orchestrator.stage_preflight()
+        script = runner.calls[-1].input_text or ""
+        assert "CONTAINER_IDS=$(docker ps -aq)" in script
+        assert "sudo -n -- docker" not in script
 
     def test_denied_sudo_docker_refuses_before_image_or_gpu_work(
         self, tmp_path: Path
@@ -1753,8 +1773,13 @@ class TestRemoteOrchestratorFullRun:
         assert len(docker_listing_lines) == 3
         assert all(label_filter in line for line in docker_listing_lines[:2])
         assert docker_listing_lines[2].startswith(
-            "RESIDUAL_CONTAINER_IDS=$(docker ps -q)"
+            "RESIDUAL_CONTAINER_IDS=$(docker ps -aq)"
         )
+        image_listing_lines = [
+            line for line in script.splitlines() if "docker images" in line
+        ]
+        assert len(image_listing_lines) == 1
+        assert all(label_filter in line for line in image_listing_lines)
         assert (
             f"RUNNING_CONTAINERS=$(docker ps -q --filter "
             f"label={lifecycle.docker_run_label(auth.nonce)})"
@@ -1767,7 +1792,9 @@ class TestRemoteOrchestratorFullRun:
             f"LABELED_IMAGES=$(docker images -q --filter "
             f"label={lifecycle.docker_run_label(auth.nonce)})"
         ) in script
-        assert "RESIDUAL_CONTAINER_IDS=$(docker ps -q) ||" in script
+        assert "RESIDUAL_CONTAINER_IDS=$(docker ps -aq) ||" in script
+        assert "docker rmi -f; fi" in script
+        assert "docker rmi -f || true; fi" not in script
         assert script.count("LLMTRACEFX_REASON=teardown_cleanup_failed") >= 4
 
     @pytest.mark.parametrize(
@@ -2061,6 +2088,39 @@ class TestRemoteOrchestratorFullRun:
         ):
             orchestrator.stage_teardown(tmp_path / "bundle")
 
+    def test_teardown_shutdown_failure_takes_priority_over_cleanup_failure(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner(
+            responses={
+                "stage_teardown_cleanup": lifecycle.CommandResult(
+                    returncode=1,
+                    stdout="",
+                    stderr=(
+                        "LLMTRACEFX_REASON=teardown_cleanup_failed\n"
+                        "LLMTRACEFX_REASON=teardown_shutdown_failed\n"
+                    ),
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="teardown_shutdown_failed",
+        ):
+            orchestrator.stage_teardown(tmp_path / "bundle")
+        receipt = json.loads(
+            orchestrator.operation_receipt_path.read_text(
+                encoding="utf-8"
+            ).splitlines()[-1]
+        )
+        assert receipt["reason_code"] == "teardown_shutdown_failed"
+
     def test_teardown_refuses_missing_shutdown_marker_with_receipt(
         self, tmp_path: Path
     ) -> None:
@@ -2068,7 +2128,7 @@ class TestRemoteOrchestratorFullRun:
             responses={
                 "stage_teardown_cleanup": lifecycle.CommandResult(
                     returncode=0,
-                    stdout="RESIDUAL_CONTAINERS=0\nRESIDUAL_GPU_PROCESSES=0\n",
+                    stdout=("RESIDUAL_CONTAINERS=0\n" "RESIDUAL_GPU_PROCESSES=0\n"),
                     stderr="",
                 )
             }

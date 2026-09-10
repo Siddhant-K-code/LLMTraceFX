@@ -68,7 +68,7 @@ For `direct`, run this read-only provider-console probe as the eventual SSH
 user:
 
 ```bash
-docker ps -q >/dev/null &&
+docker ps -aq >/dev/null &&
 docker info >/dev/null &&
 docker version --format '{{.Server.Version}}' &&
 sudo -n true
@@ -78,7 +78,7 @@ For `sudo_noninteractive`, run this exact read-only provider-console probe as
 the eventual SSH user:
 
 ```bash
-sudo -n -- docker ps -q >/dev/null &&
+sudo -n -- docker ps -aq >/dev/null &&
 sudo -n -- docker info >/dev/null &&
 sudo -n -- docker version --format '{{.Server.Version}}' &&
 sudo -n true
@@ -440,7 +440,8 @@ lifecycle execution begins, teardown still runs after any stage failure or
 SIGTERM/SIGHUP. Input or signature rejection happens before all remote
 activity and therefore before lifecycle teardown. `SAFE TO TERMINATE INSTANCE
 NOW` retains its existing meaning and is emitted only after scoped cleanup,
-temporary-key removal, zero-residual checks, and shutdown issuance succeed.
+temporary-key removal, zero residual containers (running or stopped), zero
+GPU compute processes, and shutdown issuance succeed.
 Shutdown is scheduled from the same authenticated SSH session that removes
 the temporary key, so key removal cannot prevent the shutdown command from
 being issued.
@@ -490,9 +491,10 @@ If a run fails and `SAFE TO TERMINATE INSTANCE NOW` is absent, teardown is not
 proven. Do not infer provider termination and do not start another attempt.
 Use a separately approved, read-only recovery key path to inspect and perform
 the scoped cleanup, or use the provider console when that is the approved
-recovery route. Confirm zero run-scoped containers/GPU processes, remove the
-temporary key, issue shutdown, and separately confirm provider termination.
-Preserve the private failure receipt and recovery evidence.
+recovery route. Confirm zero containers in the selected Docker daemon
+(including stopped containers), no run-labeled images, and zero GPU processes;
+remove the temporary key, issue shutdown, and separately confirm provider
+termination. Preserve the private failure receipt and recovery evidence.
 
 ## 9. Failed-attempt provenance
 

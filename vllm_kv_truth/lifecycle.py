@@ -1344,11 +1344,18 @@ def _safe_failure(result: CommandResult, default_reason: str) -> tuple[str, str,
         reason = "operation_start_failed"
     else:
         reason = default_reason
+        marked_reasons: list[str] = []
         for line in result.stderr.splitlines():
             match = _SAFE_REASON_MARKER.fullmatch(line.strip())
             if match is not None and match.group(1) in _SAFE_REASON_MESSAGES:
-                reason = match.group(1)
-                break
+                marked_reasons.append(match.group(1))
+        if (
+            default_reason in {"teardown_cleanup_failed", "teardown_shutdown_failed"}
+            and "teardown_shutdown_failed" in marked_reasons
+        ):
+            reason = "teardown_shutdown_failed"
+        elif marked_reasons:
+            reason = marked_reasons[0]
     category, message = _SAFE_REASON_MESSAGES[reason]
     return reason, category, message[:_MAX_SAFE_FAILURE_MESSAGE_LENGTH]
 
@@ -1943,7 +1950,7 @@ class RemoteOrchestrator:
                 "protected config Docker execution hash does not match authorization"
             )
         self.ssh_options = StrictSSHOptions(config)
-        self.docker = DockerCommand(config.docker_execution_mode)
+        self._docker = DockerCommand(config.docker_execution_mode)
         self.paths = RunPaths(config.remote_workspace)
         self.state = OrchestratorState.PENDING
         self.outcomes: list[StageOutcome] = []
@@ -1955,6 +1962,12 @@ class RemoteOrchestrator:
     @property
     def operation_receipt_path(self) -> Path:
         return self.config.local_evidence_dir / "private-operation-receipts.jsonl"
+
+    @property
+    def docker(self) -> DockerCommand:
+        """The immutable Docker policy validated against sealed authorization."""
+
+        return self._docker
 
     def _persist_operation_receipts(self) -> None:
         directory = self.config.local_evidence_dir
@@ -2153,7 +2166,7 @@ class RemoteOrchestrator:
     def stage_preflight(self) -> StageOutcome:
         self._require_budget("existing_preflight_planning_reserve")
         self.state = OrchestratorState.PREFLIGHT
-        docker_ps = self.docker.shell("ps", "-q")
+        docker_ps = self.docker.shell("ps", "-aq")
         docker_info = self.docker.shell("info")
         docker_version = self.docker.shell("version", "--format", "{{.Server.Version}}")
         docker_failure = (
@@ -3202,7 +3215,7 @@ class RemoteOrchestrator:
         remove_containers = self.docker.xargs_shell("rm", "-f")
         remove_images = self.docker.xargs_shell("rmi", "-f")
         remove_base_image = self.docker.shell("rmi", "-f", BASE_IMAGE_REFERENCE)
-        residual_containers = self.docker.shell("ps", "-q")
+        residual_containers_command = self.docker.shell("ps", "-aq")
         docker_cleanup_failure = (
             "{ echo LLMTRACEFX_REASON=teardown_cleanup_failed >&2; exit 1; }"
         )
@@ -3242,7 +3255,8 @@ class RemoteOrchestrator:
                 f"LABELED_IMAGES=$({labeled_images}) || {docker_cleanup_failure}",
                 'if [ -n "$LABELED_IMAGES" ]; then '
                 "printf '%s\\n' \"$LABELED_IMAGES\" | "
-                f"{remove_images} || true; fi",
+                "awk '!seen[$0]++' | "
+                f"{remove_images}; fi",
                 f"{remove_base_image} || true",
                 f"rm -rf {_quote(self.paths.model_dir)}",
                 f"rm -rf {_quote(self.paths.repo_dir)}",
@@ -3262,7 +3276,7 @@ class RemoteOrchestrator:
                 'test "$(awk -v marker="$KEY_MARKER" '
                 "'$NF == marker { count++ } END { print count + 0 }' "
                 '"$AUTHORIZED_KEYS")" = "0"',
-                f"RESIDUAL_CONTAINER_IDS=$({residual_containers}) || "
+                f"RESIDUAL_CONTAINER_IDS=$({residual_containers_command}) || "
                 f"{docker_cleanup_failure}",
                 "echo \"RESIDUAL_CONTAINERS=$(printf '%s\\n' "
                 '"$RESIDUAL_CONTAINER_IDS" | '
@@ -3342,9 +3356,7 @@ class RemoteOrchestrator:
         residual_containers = int(markers["RESIDUAL_CONTAINERS"].strip())
         residual_gpu_processes = int(markers["RESIDUAL_GPU_PROCESSES"].strip())
         if residual_containers != 0:
-            raise HostOrchestrationError(
-                "residual experiment-scoped containers remain after teardown"
-            )
+            raise HostOrchestrationError("residual containers remain after teardown")
         if residual_gpu_processes != 0:
             raise HostOrchestrationError(
                 "residual GPU compute processes remain after teardown"
