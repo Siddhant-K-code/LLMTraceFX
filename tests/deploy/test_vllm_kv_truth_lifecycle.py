@@ -380,6 +380,7 @@ def _authorization_payload(**overrides: Any) -> dict[str, Any]:
         "gpu_expected_name": lifecycle.EXPECTED_GPU_NAME,
         "gpu_expected_driver": lifecycle.EXPECTED_DRIVER,
         "gpu_expected_memory_mib": lifecycle.EXPECTED_MEMORY_MIB,
+        "docker_execution_mode": lifecycle.DockerExecutionMode.DIRECT.value,
         "rate_usd_per_hour": "0.500000",
         "total_cap_usd": "10.000000",
         "billing_started_at": lifecycle._canonical_timestamp(BILLING_STARTED_AT),
@@ -399,6 +400,15 @@ def _authorization_payload(**overrides: Any) -> dict[str, Any]:
         "nonce": VALID_NONCE,
     }
     payload.update(overrides)
+    if "docker_execution_config_sha256" not in payload:
+        try:
+            mode = lifecycle.DockerExecutionMode.parse(payload["docker_execution_mode"])
+        except lifecycle.HostOrchestrationError:
+            payload["docker_execution_config_sha256"] = "0" * 64
+        else:
+            payload["docker_execution_config_sha256"] = (
+                lifecycle.docker_execution_config_sha256(mode)
+            )
     seal_input = {k: v for k, v in payload.items() if k != "authorization_sha256"}
     payload["authorization_sha256"] = lifecycle.build_authorization_seal(seal_input)
     return payload
@@ -424,6 +434,32 @@ class TestRunAuthorization:
             {k: v for k, v in payload.items() if k != "authorization_sha256"}
         )
         with pytest.raises(lifecycle.HostOrchestrationError, match="protocol_id"):
+            lifecycle.RunAuthorization.from_dict(payload)
+
+    def test_rejects_tampered_docker_execution_mode(self) -> None:
+        payload = _authorization_payload()
+        payload["docker_execution_mode"] = (
+            lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE.value
+        )
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="docker_execution_config_sha256",
+        ):
+            lifecycle.RunAuthorization.from_dict(payload)
+
+    def test_rejects_unknown_docker_execution_mode_with_valid_seal(self) -> None:
+        payload = _authorization_payload(docker_execution_mode="auto")
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="docker_execution_mode"
+        ):
+            lifecycle.RunAuthorization.from_dict(payload)
+
+    def test_rejects_tampered_docker_execution_config_hash(self) -> None:
+        payload = _authorization_payload(docker_execution_config_sha256="0" * 64)
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="docker_execution_config_sha256",
+        ):
             lifecycle.RunAuthorization.from_dict(payload)
 
     def test_rejects_wrong_model_inventory_digest(self) -> None:
@@ -637,7 +673,12 @@ class TestProtectedExecutionConfig:
         path.write_text("example.com ssh-ed25519 AAAA", encoding="utf-8")
         os.chmod(path, mode)
 
-    def _payload(self, tmp_path: Path) -> dict[str, Any]:
+    def _payload(
+        self,
+        tmp_path: Path,
+        *,
+        docker_execution_mode: str = lifecycle.DockerExecutionMode.DIRECT.value,
+    ) -> dict[str, Any]:
         key_path = tmp_path / "id_ed25519"
         known_hosts = tmp_path / "known_hosts"
         self._write_key(key_path)
@@ -645,9 +686,11 @@ class TestProtectedExecutionConfig:
         archive = tmp_path / "runner.tar.gz"
         archive.write_bytes(b"fake archive")
         return {
+            "schema_version": lifecycle.PROTECTED_CONFIG_SCHEMA_VERSION,
             "host": "198.51.100.10",
             "port": 57003,
             "user": "deploy",
+            "docker_execution_mode": docker_execution_mode,
             "private_key_path": str(key_path),
             "known_hosts_path": str(known_hosts),
             "remote_workspace": "/home/deploy/kv-truth-run",
@@ -664,8 +707,14 @@ class TestProtectedExecutionConfig:
         config = lifecycle.ProtectedExecutionConfig.load(config_path)
         assert config.host == "198.51.100.10"
         assert config.public_record() == {
-            "schema_version": "1",
+            "schema_version": lifecycle.PROTECTED_CONFIG_SCHEMA_VERSION,
             "source": "protected_execution_config",
+            "docker_execution_mode": lifecycle.DockerExecutionMode.DIRECT.value,
+            "docker_execution_config_sha256": (
+                lifecycle.docker_execution_config_sha256(
+                    lifecycle.DockerExecutionMode.DIRECT
+                )
+            ),
         }
 
     def test_public_record_never_leaks_sensitive_fields(self, tmp_path: Path) -> None:
@@ -772,6 +821,29 @@ class TestProtectedExecutionConfig:
         with pytest.raises(lifecycle.HostOrchestrationError, match="required set"):
             lifecycle.ProtectedExecutionConfig.from_dict(payload)
 
+    @pytest.mark.parametrize("mode", ["", "sudo", "auto", 1, None])
+    def test_rejects_unexpected_docker_execution_mode(
+        self, tmp_path: Path, mode: Any
+    ) -> None:
+        payload = self._payload(tmp_path)
+        payload["docker_execution_mode"] = mode
+        with pytest.raises(
+            lifecycle.HostOrchestrationError, match="docker_execution_mode"
+        ):
+            lifecycle.ProtectedExecutionConfig.from_dict(payload)
+
+    def test_rejects_legacy_config_without_explicit_mode(self, tmp_path: Path) -> None:
+        payload = self._payload(tmp_path)
+        del payload["docker_execution_mode"]
+        with pytest.raises(lifecycle.HostOrchestrationError, match="required set"):
+            lifecycle.ProtectedExecutionConfig.from_dict(payload)
+
+    def test_rejects_legacy_config_schema(self, tmp_path: Path) -> None:
+        payload = self._payload(tmp_path)
+        payload["schema_version"] = "1"
+        with pytest.raises(lifecycle.HostOrchestrationError, match="schema_version"):
+            lifecycle.ProtectedExecutionConfig.from_dict(payload)
+
     def test_rejects_unsafe_remote_workspace(self, tmp_path: Path) -> None:
         payload = self._payload(tmp_path)
         payload["remote_workspace"] = "/home/deploy/../etc"
@@ -797,9 +869,11 @@ class TestStrictSSHOptions:
         os.chmod(known_hosts, 0o600)
         return lifecycle.ProtectedExecutionConfig.from_dict(
             {
+                "schema_version": lifecycle.PROTECTED_CONFIG_SCHEMA_VERSION,
                 "host": "203.0.113.5",
                 "port": 57003,
                 "user": "runner",
+                "docker_execution_mode": lifecycle.DockerExecutionMode.DIRECT.value,
                 "private_key_path": str(key),
                 "known_hosts_path": str(known_hosts),
                 "remote_workspace": "/srv/kv-truth",
@@ -879,6 +953,28 @@ class TestStrictSSHOptions:
         assert str(config.known_hosts_path) not in record_text
 
 
+class TestDockerCommand:
+    def test_direct_mode_builds_exact_argv(self) -> None:
+        docker = lifecycle.DockerCommand(lifecycle.DockerExecutionMode.DIRECT)
+        assert docker.argv("ps", "-q") == ("docker", "ps", "-q")
+        assert docker.shell("ps", "-q") == "docker ps -q"
+
+    def test_sudo_mode_builds_exact_noninteractive_argv(self) -> None:
+        docker = lifecycle.DockerCommand(
+            lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE
+        )
+        assert docker.argv("ps", "-q") == (
+            "sudo",
+            "-n",
+            "--",
+            "docker",
+            "ps",
+            "-q",
+        )
+        assert docker.shell("ps", "-q") == "sudo -n -- docker ps -q"
+        assert docker.xargs_shell("rm", "-f") == ("xargs -r sudo -n -- docker rm -f")
+
+
 @dataclass
 class RecordedCall:
     argv: tuple[str, ...]
@@ -899,6 +995,12 @@ def _preflight_stdout(**overrides: str) -> str:
             f"{lifecycle.EXPECTED_GPU_COMPUTE_CAPABILITY}"
         ),
         "GPU_PROCESS_COUNT": "0",
+        "DOCKER_EXECUTION_MODE": lifecycle.DockerExecutionMode.DIRECT.value,
+        "DOCKER_EXECUTION_CONFIG_SHA256": (
+            lifecycle.docker_execution_config_sha256(
+                lifecycle.DockerExecutionMode.DIRECT
+            )
+        ),
         "CONTAINER_COUNT": "0",
         "SUDO_NONINTERACTIVE": "1",
         "DISK_FREE_BYTES": str(lifecycle.MINIMUM_DISK_FREE_BYTES),
@@ -1016,13 +1118,20 @@ class FakeCommandRunner:
             stdout = (
                 "RESIDUAL_CONTAINERS=0\n"
                 "RESIDUAL_GPU_PROCESSES=0\n"
+                "TEARDOWN_SCRIPT_COMPLETE=1\n"
                 "SHUTDOWN_ISSUED=1\n"
             )
             return lifecycle.CommandResult(returncode=0, stdout=stdout, stderr="")
         return lifecycle.CommandResult(returncode=0, stdout="", stderr="")
 
 
-def _config(tmp_path: Path) -> lifecycle.ProtectedExecutionConfig:
+def _config(
+    tmp_path: Path,
+    *,
+    docker_execution_mode: lifecycle.DockerExecutionMode = (
+        lifecycle.DockerExecutionMode.DIRECT
+    ),
+) -> lifecycle.ProtectedExecutionConfig:
     key = tmp_path / "key"
     key.write_text("x", encoding="utf-8")
     os.chmod(key, 0o600)
@@ -1034,9 +1143,11 @@ def _config(tmp_path: Path) -> lifecycle.ProtectedExecutionConfig:
         _write_source_archive(archive)
     return lifecycle.ProtectedExecutionConfig.from_dict(
         {
+            "schema_version": lifecycle.PROTECTED_CONFIG_SCHEMA_VERSION,
             "host": "203.0.113.5",
             "port": 57003,
             "user": "runner",
+            "docker_execution_mode": docker_execution_mode.value,
             "private_key_path": str(key),
             "known_hosts_path": str(known_hosts),
             "remote_workspace": "/srv/kv-truth",
@@ -1048,6 +1159,21 @@ def _config(tmp_path: Path) -> lifecycle.ProtectedExecutionConfig:
 
 
 class TestRemoteOrchestratorFullRun:
+    @staticmethod
+    def _remote_docker_lines(runner: FakeCommandRunner) -> list[str]:
+        lines: list[str] = []
+        for call in runner.calls:
+            texts = [call.input_text or ""]
+            if call.argv and call.argv[0] == "ssh":
+                texts.append(call.argv[-1])
+            for text in texts:
+                lines.extend(
+                    line.strip()
+                    for line in text.splitlines()
+                    if "docker" in line and "command -v docker" not in line
+                )
+        return lines
+
     def test_full_run_never_touches_network_or_gpu_and_succeeds(
         self, tmp_path: Path
     ) -> None:
@@ -1159,6 +1285,223 @@ class TestRemoteOrchestratorFullRun:
         assert outcome.ok
         assert "HF_CLI" not in script
         assert "command -v huggingface-cli" not in script
+        assert "DOCKER_EXECUTION_MODE=direct" in script
+        assert "sudo -n -- docker" not in script
+
+    @pytest.mark.parametrize(
+        ("container_ids", "expected_count"),
+        [
+            ("", "0"),
+            ("container-one", "1"),
+            ("container-one\ncontainer-two", "2"),
+        ],
+    )
+    def test_preflight_container_count_preserves_the_last_id(
+        self, tmp_path: Path, container_ids: str, expected_count: str
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_preflight()
+        script = runner.calls[-1].input_text or ""
+        count_line = next(
+            line
+            for line in script.splitlines()
+            if line.startswith('echo "CONTAINER_COUNT=')
+        )
+        result = subprocess.run(
+            ["bash", "-c", count_line],
+            env={"CONTAINER_IDS": container_ids},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        marker, value = result.stdout.split("=", 1)
+        assert marker == "CONTAINER_COUNT"
+        assert value.strip() == expected_count
+        assert "CONTAINER_IDS=$(docker ps -aq)" in script
+
+    def test_preflight_gpu_process_query_failure_cannot_report_zero(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_preflight()
+        script = runner.calls[-1].input_text or ""
+        lines = script.splitlines()
+        start = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith("GPU_PROCESS_IDS=")
+        )
+        fragment = "\n".join(lines[start : start + 2])
+        result = subprocess.run(
+            ["bash", "-c", f"nvidia-smi() {{ return 42; }}\n{fragment}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "LLMTRACEFX_REASON=preflight_probe_failed" in result.stderr
+        assert "GPU_PROCESS_COUNT=" not in result.stdout
+
+    def test_sudo_noninteractive_mode_prefixes_every_docker_call(
+        self, tmp_path: Path
+    ) -> None:
+        mode = lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE
+        config = _config(tmp_path, docker_execution_mode=mode)
+        authorization = _authorization(docker_execution_mode=mode.value)
+        runner = FakeCommandRunner(
+            responses={
+                "stage_preflight": lifecycle.CommandResult(
+                    returncode=0,
+                    stdout=_preflight_stdout(
+                        DOCKER_EXECUTION_MODE=mode.value,
+                        DOCKER_EXECUTION_CONFIG_SHA256=(
+                            lifecycle.docker_execution_config_sha256(mode)
+                        ),
+                    ),
+                    stderr="",
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=config,
+            authorization=authorization,
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        outcomes = orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        assert all(outcome.ok for outcome in outcomes)
+        docker_lines = self._remote_docker_lines(runner)
+        assert docker_lines
+        assert all("sudo -n -- docker" in line for line in docker_lines)
+        assert all(
+            line.replace("preflight_docker_execution_denied", "").count("docker")
+            == line.count("sudo -n -- docker")
+            for line in docker_lines
+        )
+        receipts = [
+            json.loads(line)
+            for line in orchestrator.operation_receipt_path.read_text(
+                encoding="utf-8"
+            ).splitlines()
+        ]
+        assert receipts
+        assert {receipt["docker_execution_mode"] for receipt in receipts} == {
+            mode.value
+        }
+        assert {receipt["docker_execution_config_sha256"] for receipt in receipts} == {
+            lifecycle.docker_execution_config_sha256(mode)
+        }
+
+    def test_direct_mode_never_mixes_in_sudo_docker_calls(self, tmp_path: Path) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        outcomes = orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        assert all(outcome.ok for outcome in outcomes)
+        docker_lines = self._remote_docker_lines(runner)
+        assert docker_lines
+        assert all("sudo -n -- docker" not in line for line in docker_lines)
+        assert all("docker" in line for line in docker_lines)
+
+    def test_config_authorization_mode_mismatch_refuses_before_ssh(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="does not match authorization",
+        ):
+            lifecycle.RemoteOrchestrator(
+                config=_config(
+                    tmp_path,
+                    docker_execution_mode=(
+                        lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE
+                    ),
+                ),
+                authorization=_authorization(),
+                runner=runner,
+                now_fn=lambda: BILLING_STARTED_AT,
+            )
+        assert runner.calls == []
+
+    def test_docker_execution_policy_cannot_be_reassigned_after_validation(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(AttributeError):
+            orchestrator.docker = lifecycle.DockerCommand(  # type: ignore[misc]
+                lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE
+            )
+        orchestrator.stage_preflight()
+        script = runner.calls[-1].input_text or ""
+        assert "CONTAINER_IDS=$(docker ps -aq)" in script
+        assert "sudo -n -- docker" not in script
+
+    def test_denied_sudo_docker_refuses_before_image_or_gpu_work(
+        self, tmp_path: Path
+    ) -> None:
+        mode = lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE
+        runner = FakeCommandRunner(
+            responses={
+                "stage_preflight": lifecycle.CommandResult(
+                    returncode=1,
+                    stdout="",
+                    stderr=(
+                        "sudo: a password is required\n"
+                        "LLMTRACEFX_REASON=preflight_docker_execution_denied\n"
+                    ),
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path, docker_execution_mode=mode),
+            authorization=_authorization(docker_execution_mode=mode.value),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="preflight_docker_execution_denied",
+        ):
+            orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        descriptions = [call.description for call in runner.calls]
+        assert descriptions == ["stage_preflight", "stage_teardown_cleanup"]
+        assert not any(
+            description
+            in {
+                "stage_image_preparation",
+                "stage_model_acquisition_download",
+                "stage_canary",
+                "stage_eviction_lane",
+            }
+            or description.startswith("stage_four_ab_pairs")
+            for description in descriptions
+        )
+        teardown = runner.calls[-1].input_text or ""
+        assert "sudo -n -- docker" in teardown
+        assert "xargs -r sudo -n -- docker" in teardown
 
     def test_model_acquisition_uses_only_labeled_digest_bound_container_mounts(
         self, tmp_path: Path
@@ -1194,8 +1537,15 @@ class TestRemoteOrchestratorFullRun:
                 / "private-model-acquisition-receipt.json"
             ).read_text(encoding="utf-8")
         )
+        assert receipt["schema_version"] == "2"
         assert receipt["downloader"]["version"] == lifecycle.DOWNLOADER_VERSION
         assert receipt["downloader"]["source"] == lifecycle.DOWNLOADER_SOURCE
+        assert receipt["docker_execution_mode"] == "direct"
+        assert receipt["docker_execution_config_sha256"] == (
+            lifecycle.docker_execution_config_sha256(
+                lifecycle.DockerExecutionMode.DIRECT
+            )
+        )
         assert receipt["verified_file_count"] == 15
         assert receipt["verified_total_bytes"] == 16_397_461_266
 
@@ -1405,27 +1755,242 @@ class TestRemoteOrchestratorFullRun:
         script = cleanup_call.input_text or ""
         assert (
             f"if [ -d {orchestrator.config.remote_workspace} ]; then "
-            f"rmdir {orchestrator.config.remote_workspace}; fi"
+            f"rmdir {orchestrator.config.remote_workspace} "
+            "|| cleanup_failed=1; fi"
         ) in script
         assert f"rm -rf {orchestrator.paths.model_dir}" in script
         assert f"rm -rf {orchestrator.paths.hf_scratch_dir}" in script
         assert f"rm -rf {orchestrator.paths.repo_dir}" in script
         assert f"rm -f {orchestrator.paths.source_archive_remote_path}" in script
-        assert "sudo -n shutdown -h +1" in script
-        assert script.index("authorized_keys") < script.index(
-            "sudo -n shutdown -h +1", script.index("authorized_keys")
+        assert script.count("sudo -n shutdown -h +1") == 1
+        assert "trap finish_teardown EXIT" in script
+        assert script.index(
+            "remove_authorized_key || cleanup_failed=1"
+        ) < script.rindex("exit 0")
+        # Mutating discovery is label-scoped; the sole unfiltered query is the
+        # read-only final residual check.
+        label_filter = f"--filter label={lifecycle.docker_run_label(auth.nonce)}"
+        docker_listing_lines = [
+            line for line in script.splitlines() if "docker ps" in line
+        ]
+        assert len(docker_listing_lines) == 3
+        assert all(label_filter in line for line in docker_listing_lines[:2])
+        assert docker_listing_lines[2].startswith(
+            "if RESIDUAL_CONTAINER_IDS=$(docker ps -aq)"
         )
+        image_listing_lines = [
+            line for line in script.splitlines() if "docker images" in line
+        ]
+        assert len(image_listing_lines) == 1
+        assert all(label_filter in line for line in image_listing_lines)
         assert (
-            "docker ps -q" not in script.replace("docker ps -q --filter", "PLACEHOLDER")
-            or "--filter" in script
-        )
-        # Never a blanket, unfiltered container listing/removal.
+            f"RUNNING_CONTAINERS=$(docker ps -q --filter "
+            f"label={lifecycle.docker_run_label(auth.nonce)})"
+        ) in script
+        assert (
+            f"ALL_RUN_CONTAINERS=$(docker ps -aq --filter "
+            f"label={lifecycle.docker_run_label(auth.nonce)})"
+        ) in script
+        assert (
+            f"LABELED_IMAGES=$(docker images -q --filter "
+            f"label={lifecycle.docker_run_label(auth.nonce)})"
+        ) in script
+        assert "if RESIDUAL_CONTAINER_IDS=$(docker ps -aq); then" in script
+        assert "xargs -r docker rmi -f || cleanup_failed=1" in script
+        assert "xargs -r docker rmi -f || true" not in script
+        assert "LLMTRACEFX_REASON=teardown_cleanup_failed" in script
+        assert "LLMTRACEFX_REASON=teardown_shutdown_failed" in script
+        assert "LLMTRACEFX_REASON=teardown_cleanup_and_shutdown_failed" in script
         for line in script.splitlines():
-            if line.strip().startswith("docker ps") or line.strip().startswith(
-                "docker images"
-            ):
-                assert "--filter" in line
-                assert lifecycle.docker_run_label(auth.nonce) in line
+            if line.startswith(("rm -rf ", "rm -f ")):
+                assert line.endswith("|| cleanup_failed=1")
+        assert script.count("else\n  cleanup_failed=1\nfi") >= 5
+
+    @pytest.mark.parametrize(
+        ("container_ids", "expected_count"),
+        [
+            ("", "0"),
+            ("container-one", "1"),
+            ("container-one\ncontainer-two", "2"),
+        ],
+    )
+    def test_teardown_residual_container_query_counts_exactly(
+        self, tmp_path: Path, container_ids: str, expected_count: str
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_teardown(tmp_path / "bundle")
+        script = runner.calls[-1].input_text or ""
+        lines = script.splitlines()
+        start = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith("if RESIDUAL_CONTAINER_IDS=")
+        )
+        fragment = "\n".join(lines[start : start + 5])
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "cleanup_failed=0\n"
+                'docker() { printf %s "$DOCKER_OUTPUT"; }\n'
+                f"{fragment}\n"
+                'test "$cleanup_failed" -eq 0',
+            ],
+            env={"DOCKER_OUTPUT": container_ids},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        marker, value = result.stdout.split("=", 1)
+        assert marker == "RESIDUAL_CONTAINERS"
+        assert value.strip() == expected_count
+
+    def test_teardown_residual_container_query_failure_cannot_report_zero(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_teardown(tmp_path / "bundle")
+        script = runner.calls[-1].input_text or ""
+        lines = script.splitlines()
+        start = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith("if RESIDUAL_CONTAINER_IDS=")
+        )
+        fragment = "\n".join(lines[start : start + 5])
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "cleanup_failed=0\n"
+                f"docker() {{ return 42; }}\n{fragment}\n"
+                'if [ "$cleanup_failed" -ne 0 ]; then '
+                "echo LLMTRACEFX_REASON=teardown_cleanup_failed >&2; exit 1; fi",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "LLMTRACEFX_REASON=teardown_cleanup_failed" in result.stderr
+        assert "RESIDUAL_CONTAINERS=" not in result.stdout
+
+    def test_teardown_gpu_process_query_failure_cannot_report_zero(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_teardown(tmp_path / "bundle")
+        script = runner.calls[-1].input_text or ""
+        lines = script.splitlines()
+        start = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith("if RESIDUAL_GPU_PIDS=")
+        )
+        fragment = "\n".join(lines[start : start + 5])
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                "cleanup_failed=0\n"
+                f"nvidia-smi() {{ return 42; }}\n{fragment}\n"
+                'if [ "$cleanup_failed" -ne 0 ]; then '
+                "echo LLMTRACEFX_REASON=teardown_cleanup_failed >&2; exit 1; fi",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "LLMTRACEFX_REASON=teardown_cleanup_failed" in result.stderr
+        assert "RESIDUAL_GPU_PROCESSES=" not in result.stdout
+
+    def test_teardown_continues_key_removal_and_shutdown_after_cleanup_failure(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_teardown(tmp_path / "bundle")
+        script = runner.calls[-1].input_text or ""
+        remote_workspace = tmp_path / "remote-workspace"
+        remote_workspace.mkdir()
+        script = script.replace(
+            orchestrator.config.remote_workspace, str(remote_workspace)
+        )
+        assert orchestrator.config.remote_workspace not in script
+        home = tmp_path / "home"
+        ssh_dir = home / ".ssh"
+        ssh_dir.mkdir(parents=True)
+        authorized_keys = ssh_dir / "authorized_keys"
+        authorized_keys.write_text("ssh-ed25519 AAAATEST marker\n", encoding="utf-8")
+        stubs = """
+docker() {
+  if [ "$1" = ps ] && [ "$2" = -q ] && [ "${3-}" = --filter ]; then
+    return 42
+  fi
+  return 0
+}
+nvidia-smi() { return 0; }
+sudo() { test "$1" = -n && test "$2" = shutdown; }
+chmod() { return 0; }
+xargs() { cat >/dev/null; }
+"""
+        result = subprocess.run(
+            ["bash", "-c", stubs + "\n" + script],
+            env={"HOME": str(home), "PATH": os.environ["PATH"]},
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "SHUTDOWN_ISSUED=1" in result.stdout
+        assert "RESIDUAL_CONTAINERS=" in result.stdout
+        assert "RESIDUAL_GPU_PROCESSES=" in result.stdout
+        assert "TEARDOWN_SCRIPT_COMPLETE=1" in result.stdout
+        assert "LLMTRACEFX_REASON=teardown_cleanup_failed" in result.stderr
+        assert "marker" not in authorized_keys.read_text(encoding="utf-8")
+
+    def test_sudo_mode_teardown_uses_only_selected_docker_prefix(
+        self, tmp_path: Path
+    ) -> None:
+        mode = lifecycle.DockerExecutionMode.SUDO_NONINTERACTIVE
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path, docker_execution_mode=mode),
+            authorization=_authorization(docker_execution_mode=mode.value),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_teardown(tmp_path / "bundle")
+        script = runner.calls[-1].input_text or ""
+        docker_lines = [
+            line.strip() for line in script.splitlines() if "docker" in line
+        ]
+        assert docker_lines
+        assert all("sudo -n -- docker" in line for line in docker_lines)
 
     def test_teardown_emits_safe_to_terminate_message(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -1603,6 +2168,68 @@ class TestRemoteOrchestratorFullRun:
         ):
             orchestrator.stage_teardown(tmp_path / "bundle")
 
+    def test_teardown_unmarked_failure_reports_unknown_outcome(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner(
+            responses={
+                "stage_teardown_cleanup": lifecycle.CommandResult(
+                    returncode=255,
+                    stdout="",
+                    stderr="",
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="teardown_outcome_unknown",
+        ):
+            orchestrator.stage_teardown(tmp_path / "bundle")
+        receipt = json.loads(
+            orchestrator.operation_receipt_path.read_text(
+                encoding="utf-8"
+            ).splitlines()[-1]
+        )
+        assert receipt["reason_code"] == "teardown_outcome_unknown"
+
+    def test_teardown_combined_failure_preserves_both_outcomes(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner(
+            responses={
+                "stage_teardown_cleanup": lifecycle.CommandResult(
+                    returncode=1,
+                    stdout="",
+                    stderr=(
+                        "LLMTRACEFX_REASON=" "teardown_cleanup_and_shutdown_failed\n"
+                    ),
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="teardown_cleanup_and_shutdown_failed",
+        ):
+            orchestrator.stage_teardown(tmp_path / "bundle")
+        receipt = json.loads(
+            orchestrator.operation_receipt_path.read_text(
+                encoding="utf-8"
+            ).splitlines()[-1]
+        )
+        assert receipt["reason_code"] == "teardown_cleanup_and_shutdown_failed"
+
     def test_teardown_refuses_missing_shutdown_marker_with_receipt(
         self, tmp_path: Path
     ) -> None:
@@ -1610,7 +2237,11 @@ class TestRemoteOrchestratorFullRun:
             responses={
                 "stage_teardown_cleanup": lifecycle.CommandResult(
                     returncode=0,
-                    stdout="RESIDUAL_CONTAINERS=0\nRESIDUAL_GPU_PROCESSES=0\n",
+                    stdout=(
+                        "RESIDUAL_CONTAINERS=0\n"
+                        "RESIDUAL_GPU_PROCESSES=0\n"
+                        "TEARDOWN_SCRIPT_COMPLETE=1\n"
+                    ),
                     stderr="",
                 )
             }
@@ -1633,6 +2264,34 @@ class TestRemoteOrchestratorFullRun:
         )
         assert receipt["substage"] == "verify_cleanup_shutdown"
         assert receipt["reason_code"] == "teardown_shutdown_failed"
+
+    def test_teardown_refuses_truncated_script_despite_shutdown_marker(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner(
+            responses={
+                "stage_teardown_cleanup": lifecycle.CommandResult(
+                    returncode=0,
+                    stdout=(
+                        "RESIDUAL_CONTAINERS=0\n"
+                        "RESIDUAL_GPU_PROCESSES=0\n"
+                        "SHUTDOWN_ISSUED=1\n"
+                    ),
+                    stderr="",
+                )
+            }
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(
+            lifecycle.HostOrchestrationError,
+            match="teardown_cleanup_failed",
+        ):
+            orchestrator.stage_teardown(tmp_path / "bundle")
 
     def test_teardown_still_runs_on_keyboard_interrupt(self, tmp_path: Path) -> None:
         class _InterruptingRunner(FakeCommandRunner):
@@ -2294,6 +2953,7 @@ class TestRemoteOrchestratorFullRun:
                     stdout=(
                         "RESIDUAL_CONTAINERS=1\n"
                         "RESIDUAL_GPU_PROCESSES=0\n"
+                        "TEARDOWN_SCRIPT_COMPLETE=1\n"
                         "SHUTDOWN_ISSUED=1\n"
                     ),
                     stderr="",
