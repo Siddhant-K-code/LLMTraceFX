@@ -610,6 +610,12 @@ _ALLOWED_KEY_NAMES_WITH_FORBIDDEN_FRAGMENTS = frozenset(
         "cache_salt_present",
         "kv_events_use_int_block_hashes",
         "strict_host_key_checking",
+        "host_key_trust_policy",
+        "host_key_trust_binding_sha256",
+        "host_identity_fields_redacted",
+        "independent_host_key_verification_supported",
+        "enrollment_mitm_resistance_supported",
+        "secure_provider_provenance_supported",
     }
 )
 

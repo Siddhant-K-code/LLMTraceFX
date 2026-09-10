@@ -56,8 +56,11 @@ strings alone never establish runtime support.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import io
+import ipaddress
 import json
 import os
 import re
@@ -111,6 +114,7 @@ from .model_download import (
 
 MAX_CONFIG_ARTIFACT_BYTES = 64 * 1024
 MAX_AUTHORIZATION_ARTIFACT_BYTES = 64 * 1024
+MAX_TOFU_ARTIFACT_BYTES = 64 * 1024
 MAX_MANIFEST_ARTIFACT_BYTES = 4 * 1024 * 1024
 MAX_SOURCE_ARCHIVE_BYTES = 256 * 1024 * 1024
 
@@ -123,6 +127,7 @@ _SAFE_OPENSSH_LOCAL_PATH = re.compile(r"^/[A-Za-z0-9._/-]{1,4095}$")
 _SAFE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SAFE_HOSTNAME_OR_IP = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.:-]{0,253}[A-Za-z0-9])?$")
 _SAFE_USER = re.compile(r"^[A-Za-z_][A-Za-z0-9._-]{0,31}$")
+_OPENSSH_SHA256_FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 
 EXPECTED_GPU_COMPUTE_CAPABILITY = "8.9"
 MINIMUM_HOST_RAM_BYTES = 48_000_000_000
@@ -262,6 +267,74 @@ def _require_literal_openssh_path(value: str, *, label: str) -> Path:
     return path
 
 
+def _require_canonical_ip_literal(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise HostOrchestrationError(f"{field_name} must be an IP literal")
+    try:
+        parsed = ipaddress.ip_address(value)
+    except ValueError as exc:
+        raise HostOrchestrationError(
+            f"{field_name} must be an IP literal; DNS names are not allowed"
+        ) from exc
+    canonical = str(parsed)
+    if value != canonical:
+        raise HostOrchestrationError(
+            f"{field_name} must use the canonical IP literal spelling"
+        )
+    return canonical
+
+
+def _require_private_parent(path: Path, *, label: str) -> None:
+    parent = path.parent
+    try:
+        info = parent.lstat()
+    except OSError as exc:
+        raise HostOrchestrationError(
+            f"{label} parent directory could not be inspected: {exc}"
+        ) from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise HostOrchestrationError(f"{label} parent must be a non-symlink directory")
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise HostOrchestrationError(
+            f"{label} parent must be current-user-owned with mode 0700"
+        )
+
+
+def _decode_ed25519_public_key(key_base64: Any) -> bytes:
+    if not isinstance(key_base64, str) or not key_base64:
+        raise HostOrchestrationError("ED25519 public key must be non-empty base64")
+    try:
+        decoded = base64.b64decode(key_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HostOrchestrationError(
+            "ED25519 public key is not valid canonical base64"
+        ) from exc
+    if base64.b64encode(decoded).decode("ascii") != key_base64:
+        raise HostOrchestrationError("ED25519 public key is not valid canonical base64")
+    if len(decoded) < 4:
+        raise HostOrchestrationError("ED25519 public key is truncated")
+    algorithm_length = int.from_bytes(decoded[:4], "big")
+    algorithm_end = 4 + algorithm_length
+    if decoded[4:algorithm_end] != b"ssh-ed25519":
+        raise HostOrchestrationError(
+            "ED25519 public key blob does not identify ssh-ed25519"
+        )
+    if len(decoded) < algorithm_end + 4:
+        raise HostOrchestrationError("ED25519 public key is truncated")
+    key_length = int.from_bytes(decoded[algorithm_end : algorithm_end + 4], "big")
+    key = decoded[algorithm_end + 4 :]
+    if key_length != 32 or len(key) != 32:
+        raise HostOrchestrationError(
+            "ED25519 public key blob must contain exactly 32 key bytes"
+        )
+    return decoded
+
+
+def openssh_sha256_fingerprint(key_blob: bytes) -> str:
+    encoded = base64.b64encode(hashlib.sha256(key_blob).digest())
+    return "SHA256:" + encoded.rstrip(b"=").decode("ascii")
+
+
 def _require_private_key_permissions(path: Path, *, label: str) -> Path:
     """Require exactly ``0600`` (owner read/write only, no group/other bits)."""
 
@@ -269,7 +342,7 @@ def _require_private_key_permissions(path: Path, *, label: str) -> Path:
     mode = stat.S_IMODE(path.lstat().st_mode)
     if mode != 0o600:
         raise HostOrchestrationError(
-            f"{label} must be mode 0600 (owner read/write only); found " f"{oct(mode)}"
+            f"{label} must be mode 0600 (owner read/write only); found {oct(mode)}"
         )
     return path
 
@@ -281,8 +354,7 @@ def _require_not_group_or_world_readable(path: Path, *, label: str) -> Path:
     mode = stat.S_IMODE(path.lstat().st_mode)
     if mode & 0o077:
         raise HostOrchestrationError(
-            f"{label} must not be group- or world-readable/writable; found "
-            f"{oct(mode)}"
+            f"{label} must not be group- or world-readable/writable; found {oct(mode)}"
         )
     return path
 
@@ -313,11 +385,298 @@ def _require_pattern(value: Any, pattern: re.Pattern[str], *, field_name: str) -
 
 
 # ---------------------------------------------------------------------------
-# Protected execution config: the only place host/user/key/known-hosts and
-# remote-path facts may be read from, and never as individual CLI arguments.
+# Host-key trust enrollment and protected execution config.
 # ---------------------------------------------------------------------------
 
-_CONFIG_REQUIRED_KEYS = frozenset(
+PROVIDER_PINNED_CONFIG_SCHEMA_VERSION = "2"
+TOFU_CONFIG_SCHEMA_VERSION = "3"
+PROTECTED_CONFIG_SCHEMA_VERSION = PROVIDER_PINNED_CONFIG_SCHEMA_VERSION
+TOFU_ENROLLMENT_REQUEST_SCHEMA_VERSION = "1"
+TOFU_ENROLLMENT_RECEIPT_SCHEMA_VERSION = "1"
+TOFU_UNVERIFIED_ACKNOWLEDGEMENT = (
+    "I understand that provider identity was not independently authenticated "
+    "and that TOFU enrollment does not resist an active MITM."
+)
+TOFU_IDENTITY_STATEMENT = (
+    "Provider identity was not independently authenticated; this key was "
+    "observed unauthenticated from the preregistered endpoint."
+)
+SSH_KEYSCAN_PATH = "/usr/bin/ssh-keyscan"
+SSH_KEYSCAN_CONNECT_TIMEOUT_SECONDS = 5
+SSH_KEYSCAN_PROCESS_TIMEOUT_SECONDS = 10
+SSH_KEYSCAN_ENVIRONMENT = {
+    "PATH": "/usr/bin:/bin:/usr/local/bin",
+    "LANG": "C",
+    "LC_ALL": "C",
+}
+
+
+class HostKeyTrustPolicy(str, Enum):
+    PROVIDER_PINNED = "provider_pinned"
+    TOFU_UNVERIFIED = "tofu_unverified"
+
+    @classmethod
+    def parse(cls, value: Any) -> HostKeyTrustPolicy:
+        if not isinstance(value, str):
+            raise HostOrchestrationError("host_key_trust_policy must be a string")
+        try:
+            return cls(value)
+        except ValueError as exc:
+            raise HostOrchestrationError(
+                "host_key_trust_policy must be 'provider_pinned' or 'tofu_unverified'"
+            ) from exc
+
+
+@dataclass(frozen=True)
+class TofuEnrollmentRequest:
+    host: str = field(repr=False)
+    port: int = field(repr=False)
+    known_hosts_path: Path = field(repr=False)
+    receipt_path: Path = field(repr=False)
+
+    @classmethod
+    def read(cls, path: Path) -> TofuEnrollmentRequest:
+        _require_private_parent(path, label="TOFU enrollment request")
+        _require_not_group_or_world_readable(path, label="TOFU enrollment request")
+        try:
+            raw = json.loads(
+                read_bounded_regular_text(path, MAX_TOFU_ARTIFACT_BYTES),
+                parse_constant=reject_non_finite_json_constant,
+            )
+        except (OSError, ArtifactReadError, ValueError, RecursionError) as exc:
+            raise HostOrchestrationError(
+                f"TOFU enrollment request could not be read safely: {exc}"
+            ) from exc
+        required = {
+            "schema_version",
+            "host_key_trust_policy",
+            "tofu_unverified_acknowledgement",
+            "host",
+            "port",
+            "known_hosts_path",
+            "receipt_path",
+        }
+        if not isinstance(raw, dict) or set(raw) != required:
+            raise HostOrchestrationError(
+                "TOFU enrollment request keys differ from the required set"
+            )
+        if raw["schema_version"] != TOFU_ENROLLMENT_REQUEST_SCHEMA_VERSION:
+            raise HostOrchestrationError(
+                "TOFU enrollment request schema_version is unsupported"
+            )
+        if (
+            HostKeyTrustPolicy.parse(raw["host_key_trust_policy"])
+            is not HostKeyTrustPolicy.TOFU_UNVERIFIED
+        ):
+            raise HostOrchestrationError(
+                "TOFU enrollment request must explicitly select tofu_unverified"
+            )
+        if raw["tofu_unverified_acknowledgement"] != TOFU_UNVERIFIED_ACKNOWLEDGEMENT:
+            raise HostOrchestrationError(
+                "TOFU enrollment request lacks the exact unverified acknowledgement"
+            )
+        host = _require_canonical_ip_literal(raw["host"], field_name="host")
+        port = raw["port"]
+        if (
+            not isinstance(port, int)
+            or isinstance(port, bool)
+            or not 1 <= port <= 65535
+        ):
+            raise HostOrchestrationError("port must be an integer from 1 through 65535")
+        known_hosts_path = _require_literal_openssh_path(
+            _require_nonempty_str(raw["known_hosts_path"], "known_hosts_path"),
+            label="known_hosts_path",
+        )
+        receipt_path = _require_unambiguous_absolute_local_path(
+            _require_nonempty_str(raw["receipt_path"], "receipt_path"),
+            label="receipt_path",
+        )
+        if known_hosts_path == receipt_path:
+            raise HostOrchestrationError(
+                "known_hosts_path and receipt_path must be different"
+            )
+        _require_private_parent(known_hosts_path, label="known_hosts_path")
+        _require_private_parent(receipt_path, label="receipt_path")
+        _require_private_key_permissions(known_hosts_path, label="known_hosts_path")
+        try:
+            if known_hosts_path.stat().st_size != 0:
+                raise HostOrchestrationError(
+                    "known_hosts_path must be a fresh empty file"
+                )
+        except OSError as exc:
+            raise HostOrchestrationError(
+                f"known_hosts_path could not be inspected: {exc}"
+            ) from exc
+        if receipt_path.exists() or receipt_path.is_symlink():
+            raise HostOrchestrationError(
+                "receipt_path must not already exist or be a symlink"
+            )
+        return cls(
+            host=host,
+            port=port,
+            known_hosts_path=known_hosts_path,
+            receipt_path=receipt_path,
+        )
+
+
+@dataclass(frozen=True)
+class TofuEnrollmentReceipt:
+    host: str = field(repr=False)
+    port: int = field(repr=False)
+    host_key_ed25519_base64: str = field(repr=False)
+    host_key_fingerprint_sha256: str
+    observed_at: datetime
+    known_hosts_path: Path = field(repr=False)
+    known_hosts_sha256: str
+    receipt_sha256: str
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> TofuEnrollmentReceipt:
+        required = {
+            "schema_version",
+            "policy",
+            "provider_identity_independently_authenticated",
+            "identity_statement",
+            "endpoint",
+            "host_key",
+            "observed_at",
+            "tool",
+            "known_hosts",
+            "receipt_sha256",
+        }
+        if not isinstance(raw, dict) or set(raw) != required:
+            raise HostOrchestrationError(
+                "TOFU enrollment receipt keys differ from the required set"
+            )
+        if raw["schema_version"] != TOFU_ENROLLMENT_RECEIPT_SCHEMA_VERSION:
+            raise HostOrchestrationError(
+                "TOFU enrollment receipt schema_version is unsupported"
+            )
+        if raw["policy"] != HostKeyTrustPolicy.TOFU_UNVERIFIED.value:
+            raise HostOrchestrationError(
+                "TOFU enrollment receipt policy must be tofu_unverified"
+            )
+        if raw["provider_identity_independently_authenticated"] is not False:
+            raise HostOrchestrationError(
+                "TOFU enrollment receipt must deny independent provider identity"
+            )
+        if raw["identity_statement"] != TOFU_IDENTITY_STATEMENT:
+            raise HostOrchestrationError(
+                "TOFU enrollment receipt identity statement is invalid"
+            )
+        endpoint = raw["endpoint"]
+        if not isinstance(endpoint, dict) or set(endpoint) != {"host", "port"}:
+            raise HostOrchestrationError(
+                "TOFU enrollment receipt endpoint is malformed"
+            )
+        host = _require_canonical_ip_literal(
+            endpoint["host"], field_name="endpoint.host"
+        )
+        port = endpoint["port"]
+        if (
+            not isinstance(port, int)
+            or isinstance(port, bool)
+            or not 1 <= port <= 65535
+        ):
+            raise HostOrchestrationError(
+                "TOFU enrollment receipt endpoint port is invalid"
+            )
+        host_key = raw["host_key"]
+        if not isinstance(host_key, dict) or set(host_key) != {
+            "algorithm",
+            "base64",
+            "fingerprint_sha256",
+        }:
+            raise HostOrchestrationError(
+                "TOFU enrollment receipt host key is malformed"
+            )
+        if host_key["algorithm"] != "ssh-ed25519":
+            raise HostOrchestrationError(
+                "TOFU enrollment receipt host key must be ssh-ed25519"
+            )
+        key_blob = _decode_ed25519_public_key(host_key["base64"])
+        fingerprint = openssh_sha256_fingerprint(key_blob)
+        if (
+            _OPENSSH_SHA256_FINGERPRINT.fullmatch(str(host_key["fingerprint_sha256"]))
+            is None
+            or host_key["fingerprint_sha256"] != fingerprint
+        ):
+            raise HostOrchestrationError(
+                "TOFU enrollment receipt fingerprint does not match its key"
+            )
+        observed_at = _parse_utc(raw["observed_at"], field_name="observed_at")
+        tool = raw["tool"]
+        expected_argv = [
+            SSH_KEYSCAN_PATH,
+            "-T",
+            str(SSH_KEYSCAN_CONNECT_TIMEOUT_SECONDS),
+            "-t",
+            "ed25519",
+            "-p",
+            str(port),
+            host,
+        ]
+        if tool != {
+            "path": SSH_KEYSCAN_PATH,
+            "argv": expected_argv,
+            "environment": SSH_KEYSCAN_ENVIRONMENT,
+            "process_timeout_seconds": SSH_KEYSCAN_PROCESS_TIMEOUT_SECONDS,
+        }:
+            raise HostOrchestrationError(
+                "TOFU enrollment receipt tool provenance is invalid"
+            )
+        known_hosts = raw["known_hosts"]
+        if not isinstance(known_hosts, dict) or set(known_hosts) != {
+            "path",
+            "content_sha256",
+        }:
+            raise HostOrchestrationError(
+                "TOFU enrollment receipt known_hosts binding is malformed"
+            )
+        known_hosts_path = _require_literal_openssh_path(
+            _require_nonempty_str(known_hosts["path"], "known_hosts.path"),
+            label="known_hosts.path",
+        )
+        known_hosts_sha256 = _require_pattern(
+            known_hosts["content_sha256"],
+            _SHA256_HEX,
+            field_name="known_hosts.content_sha256",
+        )
+        unsealed = {key: value for key, value in raw.items() if key != "receipt_sha256"}
+        receipt_sha256 = _require_pattern(
+            raw["receipt_sha256"], _SHA256_HEX, field_name="receipt_sha256"
+        )
+        if sha256_json(unsealed) != receipt_sha256:
+            raise HostOrchestrationError(
+                "TOFU enrollment receipt does not verify against its own content"
+            )
+        return cls(
+            host=host,
+            port=port,
+            host_key_ed25519_base64=host_key["base64"],
+            host_key_fingerprint_sha256=fingerprint,
+            observed_at=observed_at,
+            known_hosts_path=known_hosts_path,
+            known_hosts_sha256=known_hosts_sha256,
+            receipt_sha256=receipt_sha256,
+        )
+
+    @classmethod
+    def read(cls, path: Path) -> TofuEnrollmentReceipt:
+        _require_not_group_or_world_readable(path, label="TOFU enrollment receipt")
+        try:
+            raw = json.loads(
+                read_bounded_regular_text(path, MAX_TOFU_ARTIFACT_BYTES),
+                parse_constant=reject_non_finite_json_constant,
+            )
+        except (OSError, ArtifactReadError, ValueError, RecursionError) as exc:
+            raise HostOrchestrationError(
+                f"TOFU enrollment receipt could not be read safely: {exc}"
+            ) from exc
+        return cls.from_dict(raw)
+
+
+_PROVIDER_PINNED_CONFIG_REQUIRED_KEYS = frozenset(
     {
         "schema_version",
         "host",
@@ -333,7 +692,18 @@ _CONFIG_REQUIRED_KEYS = frozenset(
     }
 )
 
-PROTECTED_CONFIG_SCHEMA_VERSION = "2"
+_TOFU_CONFIG_REQUIRED_KEYS = frozenset(
+    {
+        *_PROVIDER_PINNED_CONFIG_REQUIRED_KEYS,
+        "host_key_trust_policy",
+        "host_key_ed25519_base64",
+        "host_key_fingerprint_sha256",
+        "known_hosts_sha256",
+        "tofu_enrollment_receipt_path",
+        "tofu_enrollment_receipt_sha256",
+        "tofu_unverified_acknowledgement",
+    }
+)
 
 
 class DockerExecutionMode(str, Enum):
@@ -378,6 +748,7 @@ class ProtectedExecutionConfig:
     host: str = field(repr=False)
     port: int = field(repr=False)
     user: str = field(repr=False)
+    host_key_trust_policy: HostKeyTrustPolicy
     docker_execution_mode: DockerExecutionMode
     private_key_path: Path = field(repr=False)
     known_hosts_path: Path = field(repr=False)
@@ -385,6 +756,11 @@ class ProtectedExecutionConfig:
     authorized_key_marker: str = field(repr=False)
     local_evidence_dir: Path = field(repr=False)
     local_runner_archive: Path = field(repr=False)
+    host_key_ed25519_base64: str | None = field(default=None, repr=False)
+    host_key_fingerprint_sha256: str | None = field(default=None, repr=False)
+    known_hosts_sha256: str | None = field(default=None, repr=False)
+    tofu_enrollment_receipt_path: Path | None = field(default=None, repr=False)
+    tofu_enrollment_receipt_sha256: str | None = field(default=None, repr=False)
 
     @classmethod
     def load(cls, path: Path) -> ProtectedExecutionConfig:
@@ -408,9 +784,19 @@ class ProtectedExecutionConfig:
             ) from exc
         if not isinstance(payload, dict):
             raise HostOrchestrationError("protected execution config must be an object")
-        if set(payload) != _CONFIG_REQUIRED_KEYS:
-            missing = sorted(_CONFIG_REQUIRED_KEYS - set(payload))
-            extra = sorted(set(payload) - _CONFIG_REQUIRED_KEYS)
+        schema_version = payload.get("schema_version")
+        required_keys = (
+            _PROVIDER_PINNED_CONFIG_REQUIRED_KEYS
+            if schema_version == PROVIDER_PINNED_CONFIG_SCHEMA_VERSION
+            else (
+                _TOFU_CONFIG_REQUIRED_KEYS
+                if schema_version == TOFU_CONFIG_SCHEMA_VERSION
+                else frozenset()
+            )
+        )
+        if not required_keys or set(payload) != required_keys:
+            missing = sorted(required_keys - set(payload))
+            extra = sorted(set(payload) - required_keys)
             raise HostOrchestrationError(
                 "protected execution config keys differ from the required set "
                 f"(missing={missing}, extra={extra})"
@@ -419,13 +805,27 @@ class ProtectedExecutionConfig:
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> ProtectedExecutionConfig:
-        if set(payload) != _CONFIG_REQUIRED_KEYS:
-            raise HostOrchestrationError(
-                "protected execution config keys differ from the required set"
+        schema_version = payload.get("schema_version")
+        if schema_version == PROVIDER_PINNED_CONFIG_SCHEMA_VERSION:
+            required_keys = _PROVIDER_PINNED_CONFIG_REQUIRED_KEYS
+            host_key_trust_policy = HostKeyTrustPolicy.PROVIDER_PINNED
+        elif schema_version == TOFU_CONFIG_SCHEMA_VERSION:
+            required_keys = _TOFU_CONFIG_REQUIRED_KEYS
+            host_key_trust_policy = HostKeyTrustPolicy.parse(
+                payload.get("host_key_trust_policy")
             )
-        if payload["schema_version"] != PROTECTED_CONFIG_SCHEMA_VERSION:
+            if host_key_trust_policy is not HostKeyTrustPolicy.TOFU_UNVERIFIED:
+                raise HostOrchestrationError(
+                    "protected execution config schema 3 is reserved for explicit "
+                    "tofu_unverified enrollment"
+                )
+        else:
             raise HostOrchestrationError(
                 "protected execution config schema_version is unsupported"
+            )
+        if set(payload) != required_keys:
+            raise HostOrchestrationError(
+                "protected execution config keys differ from the required set"
             )
         host = payload["host"]
         user = payload["user"]
@@ -475,10 +875,95 @@ class ProtectedExecutionConfig:
             )
         if local_evidence_dir.exists() and local_evidence_dir.is_symlink():
             raise HostOrchestrationError("local_evidence_dir must not be a symlink")
+
+        host_key_ed25519_base64: str | None = None
+        host_key_fingerprint_sha256: str | None = None
+        known_hosts_sha256: str | None = None
+        tofu_enrollment_receipt_path: Path | None = None
+        tofu_enrollment_receipt_sha256: str | None = None
+        if host_key_trust_policy is HostKeyTrustPolicy.TOFU_UNVERIFIED:
+            if (
+                payload["tofu_unverified_acknowledgement"]
+                != TOFU_UNVERIFIED_ACKNOWLEDGEMENT
+            ):
+                raise HostOrchestrationError(
+                    "protected execution config lacks the exact TOFU unverified "
+                    "acknowledgement"
+                )
+            host = _require_canonical_ip_literal(host, field_name="host")
+            key_blob = _decode_ed25519_public_key(payload["host_key_ed25519_base64"])
+            host_key_ed25519_base64 = payload["host_key_ed25519_base64"]
+            host_key_fingerprint_sha256 = _require_pattern(
+                payload["host_key_fingerprint_sha256"],
+                _OPENSSH_SHA256_FINGERPRINT,
+                field_name="host_key_fingerprint_sha256",
+            )
+            if host_key_fingerprint_sha256 != openssh_sha256_fingerprint(key_blob):
+                raise HostOrchestrationError(
+                    "host_key_fingerprint_sha256 does not match the ED25519 key"
+                )
+            known_hosts_sha256 = _require_pattern(
+                payload["known_hosts_sha256"],
+                _SHA256_HEX,
+                field_name="known_hosts_sha256",
+            )
+            tofu_enrollment_receipt_path = _require_unambiguous_absolute_local_path(
+                _require_nonempty_str(
+                    payload["tofu_enrollment_receipt_path"],
+                    "tofu_enrollment_receipt_path",
+                ),
+                label="tofu_enrollment_receipt_path",
+            )
+            _require_private_parent(known_hosts_path, label="known_hosts_path")
+            _require_private_parent(
+                tofu_enrollment_receipt_path,
+                label="tofu_enrollment_receipt_path",
+            )
+            tofu_enrollment_receipt_sha256 = _require_pattern(
+                payload["tofu_enrollment_receipt_sha256"],
+                _SHA256_HEX,
+                field_name="tofu_enrollment_receipt_sha256",
+            )
+            receipt = TofuEnrollmentReceipt.read(tofu_enrollment_receipt_path)
+            expected_known_hosts = (
+                f"[{host}]:{port} ssh-ed25519 {host_key_ed25519_base64}\n"
+            ).encode("ascii")
+            try:
+                actual_known_hosts = read_bounded_regular_bytes(
+                    known_hosts_path, MAX_TOFU_ARTIFACT_BYTES
+                )
+            except (OSError, ArtifactReadError) as exc:
+                raise HostOrchestrationError(
+                    f"known_hosts_path could not be read safely: {exc}"
+                ) from exc
+            actual_known_hosts_sha256 = hashlib.sha256(actual_known_hosts).hexdigest()
+            mismatches = []
+            if actual_known_hosts != expected_known_hosts:
+                mismatches.append("known_hosts content")
+            if actual_known_hosts_sha256 != known_hosts_sha256:
+                mismatches.append("known_hosts_sha256")
+            if receipt.host != host or receipt.port != port:
+                mismatches.append("endpoint")
+            if receipt.known_hosts_path != known_hosts_path:
+                mismatches.append("known_hosts path")
+            if receipt.host_key_ed25519_base64 != host_key_ed25519_base64:
+                mismatches.append("ED25519 key")
+            if receipt.host_key_fingerprint_sha256 != host_key_fingerprint_sha256:
+                mismatches.append("fingerprint")
+            if receipt.known_hosts_sha256 != known_hosts_sha256:
+                mismatches.append("receipt known_hosts digest")
+            if receipt.receipt_sha256 != tofu_enrollment_receipt_sha256:
+                mismatches.append("receipt digest")
+            if mismatches:
+                raise HostOrchestrationError(
+                    "TOFU enrollment bindings do not match the protected config: "
+                    + ", ".join(mismatches)
+                )
         return cls(
             host=host,
             port=port,
             user=user,
+            host_key_trust_policy=host_key_trust_policy,
             docker_execution_mode=docker_execution_mode,
             private_key_path=private_key_path,
             known_hosts_path=known_hosts_path,
@@ -486,19 +971,60 @@ class ProtectedExecutionConfig:
             authorized_key_marker=authorized_key_marker,
             local_evidence_dir=local_evidence_dir,
             local_runner_archive=local_runner_archive,
+            host_key_ed25519_base64=host_key_ed25519_base64,
+            host_key_fingerprint_sha256=host_key_fingerprint_sha256,
+            known_hosts_sha256=known_hosts_sha256,
+            tofu_enrollment_receipt_path=tofu_enrollment_receipt_path,
+            tofu_enrollment_receipt_sha256=tofu_enrollment_receipt_sha256,
         )
 
     def public_record(self) -> dict[str, Any]:
         """Publication/evidence-safe view: no host/user/key/known-hosts/paths."""
 
-        return {
-            "schema_version": PROTECTED_CONFIG_SCHEMA_VERSION,
+        record: dict[str, Any] = {
+            "schema_version": (
+                TOFU_CONFIG_SCHEMA_VERSION
+                if self.host_key_trust_policy is HostKeyTrustPolicy.TOFU_UNVERIFIED
+                else PROVIDER_PINNED_CONFIG_SCHEMA_VERSION
+            ),
             "source": "protected_execution_config",
             "docker_execution_mode": self.docker_execution_mode.value,
             "docker_execution_config_sha256": docker_execution_config_sha256(
                 self.docker_execution_mode
             ),
         }
+        if self.host_key_trust_policy is HostKeyTrustPolicy.TOFU_UNVERIFIED:
+            record.update(
+                {
+                    "host_key_trust_policy": self.host_key_trust_policy.value,
+                    "provider_identity_independently_authenticated": False,
+                    "tofu_enrollment_receipt_sha256": (
+                        self.tofu_enrollment_receipt_sha256
+                    ),
+                }
+            )
+        return record
+
+    def host_key_trust_binding_sha256(self) -> str:
+        if self.host_key_trust_policy is HostKeyTrustPolicy.PROVIDER_PINNED:
+            return sha256_json(
+                {"host_key_trust_policy": HostKeyTrustPolicy.PROVIDER_PINNED.value}
+            )
+        assert self.host_key_ed25519_base64 is not None
+        assert self.host_key_fingerprint_sha256 is not None
+        assert self.known_hosts_sha256 is not None
+        assert self.tofu_enrollment_receipt_sha256 is not None
+        return sha256_json(
+            {
+                "host_key_trust_policy": self.host_key_trust_policy.value,
+                "endpoint": {"host": self.host, "port": self.port},
+                "host_key_ed25519_base64": self.host_key_ed25519_base64,
+                "host_key_fingerprint_sha256": self.host_key_fingerprint_sha256,
+                "known_hosts_sha256": self.known_hosts_sha256,
+                "tofu_enrollment_receipt_sha256": (self.tofu_enrollment_receipt_sha256),
+                "tofu_unverified_acknowledgement": TOFU_UNVERIFIED_ACKNOWLEDGEMENT,
+            }
+        )
 
 
 def _require_nonempty_str(value: Any, field_name: str) -> str:
@@ -641,8 +1167,10 @@ def list_rate_cost_usd(elapsed_minutes: Decimal, rate_usd_per_hour: Decimal) -> 
 # ---------------------------------------------------------------------------
 
 AUTHORIZATION_SCHEMA_VERSION = "3"
+TOFU_AUTHORIZATION_SCHEMA_VERSION = "4"
 AUTHORIZATION_SIGNER_IDENTITY = "vllm-kv-truth-coordinator"
 AUTHORIZATION_SIGNATURE_NAMESPACE = "llmtracefx-vllm-kv-truth-authorization-v3"
+TOFU_AUTHORIZATION_SIGNATURE_NAMESPACE = "llmtracefx-vllm-kv-truth-authorization-v4"
 
 _AUTHORIZATION_REQUIRED_KEYS = frozenset(
     {
@@ -681,6 +1209,18 @@ _AUTHORIZATION_REQUIRED_KEYS = frozenset(
 )
 _AUTHORIZATION_OPTIONAL_SIGNATURE_KEYS = frozenset(
     {"signature_path", "authorized_signers_path"}
+)
+_TOFU_AUTHORIZATION_REQUIRED_KEYS = frozenset(
+    {
+        *_AUTHORIZATION_REQUIRED_KEYS,
+        "host_key_trust_policy",
+        "host_key_ed25519_sha256",
+        "host_key_fingerprint_sha256",
+        "known_hosts_sha256",
+        "tofu_enrollment_receipt_sha256",
+        "host_key_trust_binding_sha256",
+        "tofu_unverified_acknowledgement",
+    }
 )
 
 
@@ -725,6 +1265,12 @@ class RunAuthorization:
     authorization_expiry: datetime
     nonce: str
     authorization_sha256: str
+    host_key_trust_policy: HostKeyTrustPolicy = HostKeyTrustPolicy.PROVIDER_PINNED
+    host_key_ed25519_sha256: str | None = field(default=None, repr=False)
+    host_key_fingerprint_sha256: str | None = field(default=None, repr=False)
+    known_hosts_sha256: str | None = field(default=None, repr=False)
+    tofu_enrollment_receipt_sha256: str | None = field(default=None, repr=False)
+    host_key_trust_binding_sha256: str | None = field(default=None, repr=False)
     signature_path: Path | None = field(default=None, repr=False)
     authorized_signers_path: Path | None = field(default=None, repr=False)
 
@@ -742,8 +1288,12 @@ class RunAuthorization:
         return self.authorized_at <= now <= self.authorization_expiry
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "schema_version": AUTHORIZATION_SCHEMA_VERSION,
+        payload = {
+            "schema_version": (
+                TOFU_AUTHORIZATION_SCHEMA_VERSION
+                if self.host_key_trust_policy is HostKeyTrustPolicy.TOFU_UNVERIFIED
+                else AUTHORIZATION_SCHEMA_VERSION
+            ),
             "protocol_id": PROTOCOL_ID,
             "repository_head": self.repository_head,
             "base_image_reference": BASE_IMAGE_REFERENCE,
@@ -775,6 +1325,25 @@ class RunAuthorization:
             "nonce": self.nonce,
             "authorization_sha256": self.authorization_sha256,
         }
+        if self.host_key_trust_policy is HostKeyTrustPolicy.TOFU_UNVERIFIED:
+            payload.update(
+                {
+                    "host_key_trust_policy": self.host_key_trust_policy.value,
+                    "host_key_ed25519_sha256": self.host_key_ed25519_sha256,
+                    "host_key_fingerprint_sha256": (self.host_key_fingerprint_sha256),
+                    "known_hosts_sha256": self.known_hosts_sha256,
+                    "tofu_enrollment_receipt_sha256": (
+                        self.tofu_enrollment_receipt_sha256
+                    ),
+                    "host_key_trust_binding_sha256": (
+                        self.host_key_trust_binding_sha256
+                    ),
+                    "tofu_unverified_acknowledgement": (
+                        TOFU_UNVERIFIED_ACKNOWLEDGEMENT
+                    ),
+                }
+            )
+        return payload
 
     @classmethod
     def from_dict(
@@ -782,12 +1351,31 @@ class RunAuthorization:
     ) -> RunAuthorization:
         if not isinstance(data, dict):
             raise HostOrchestrationError("authorization must be a JSON object")
+        schema_version = data.get("schema_version")
+        if schema_version == AUTHORIZATION_SCHEMA_VERSION:
+            required_keys = _AUTHORIZATION_REQUIRED_KEYS
+            host_key_trust_policy = HostKeyTrustPolicy.PROVIDER_PINNED
+        elif schema_version == TOFU_AUTHORIZATION_SCHEMA_VERSION:
+            required_keys = _TOFU_AUTHORIZATION_REQUIRED_KEYS
+            host_key_trust_policy = HostKeyTrustPolicy.parse(
+                data.get("host_key_trust_policy")
+            )
+            if host_key_trust_policy is not HostKeyTrustPolicy.TOFU_UNVERIFIED:
+                raise HostOrchestrationError(
+                    "authorization schema 4 is reserved for explicit "
+                    "tofu_unverified enrollment"
+                )
+        else:
+            raise HostOrchestrationError(
+                "authorization 'schema_version' does not match the approved "
+                "protocol envelope"
+            )
         observed_keys = set(data)
-        if observed_keys != _AUTHORIZATION_REQUIRED_KEYS:
-            signed_extra = observed_keys - _AUTHORIZATION_REQUIRED_KEYS
+        if observed_keys != required_keys:
+            signed_extra = observed_keys - required_keys
             if signed_extra and (
                 signed_extra != _AUTHORIZATION_OPTIONAL_SIGNATURE_KEYS
-                or observed_keys - signed_extra != _AUTHORIZATION_REQUIRED_KEYS
+                or observed_keys - signed_extra != required_keys
             ):
                 raise HostOrchestrationError(
                     "authorization keys differ from the required set "
@@ -799,7 +1387,7 @@ class RunAuthorization:
                 )
 
         fixed = {
-            "schema_version": AUTHORIZATION_SCHEMA_VERSION,
+            "schema_version": schema_version,
             "protocol_id": PROTOCOL_ID,
             "base_image_reference": BASE_IMAGE_REFERENCE,
             "vllm_version": REQUIRED_VLLM_VERSION,
@@ -864,7 +1452,7 @@ class RunAuthorization:
         )
         if docker_execution_config_digest != expected_docker_execution_config_digest:
             raise HostOrchestrationError(
-                "docker_execution_config_sha256 does not match " "docker_execution_mode"
+                "docker_execution_config_sha256 does not match docker_execution_mode"
             )
         rate_usd_per_hour = _canonical_decimal(
             data["rate_usd_per_hour"], field_name="rate_usd_per_hour"
@@ -926,6 +1514,45 @@ class RunAuthorization:
             )
         nonce = _require_pattern(data["nonce"], _NONCE_HEX, field_name="nonce")
 
+        host_key_ed25519_sha256: str | None = None
+        host_key_fingerprint_sha256: str | None = None
+        known_hosts_sha256: str | None = None
+        tofu_enrollment_receipt_sha256: str | None = None
+        host_key_trust_binding_sha256: str | None = None
+        if host_key_trust_policy is HostKeyTrustPolicy.TOFU_UNVERIFIED:
+            if (
+                data["tofu_unverified_acknowledgement"]
+                != TOFU_UNVERIFIED_ACKNOWLEDGEMENT
+            ):
+                raise HostOrchestrationError(
+                    "authorization lacks the exact TOFU unverified acknowledgement"
+                )
+            host_key_ed25519_sha256 = _require_pattern(
+                data["host_key_ed25519_sha256"],
+                _SHA256_HEX,
+                field_name="host_key_ed25519_sha256",
+            )
+            host_key_fingerprint_sha256 = _require_pattern(
+                data["host_key_fingerprint_sha256"],
+                _OPENSSH_SHA256_FINGERPRINT,
+                field_name="host_key_fingerprint_sha256",
+            )
+            known_hosts_sha256 = _require_pattern(
+                data["known_hosts_sha256"],
+                _SHA256_HEX,
+                field_name="known_hosts_sha256",
+            )
+            tofu_enrollment_receipt_sha256 = _require_pattern(
+                data["tofu_enrollment_receipt_sha256"],
+                _SHA256_HEX,
+                field_name="tofu_enrollment_receipt_sha256",
+            )
+            host_key_trust_binding_sha256 = _require_pattern(
+                data["host_key_trust_binding_sha256"],
+                _SHA256_HEX,
+                field_name="host_key_trust_binding_sha256",
+            )
+
         expected_seal = sha256_json(
             {
                 k: v
@@ -969,6 +1596,12 @@ class RunAuthorization:
             authorization_expiry=authorization_expiry,
             nonce=nonce,
             authorization_sha256=data["authorization_sha256"],
+            host_key_trust_policy=host_key_trust_policy,
+            host_key_ed25519_sha256=host_key_ed25519_sha256,
+            host_key_fingerprint_sha256=host_key_fingerprint_sha256,
+            known_hosts_sha256=known_hosts_sha256,
+            tofu_enrollment_receipt_sha256=tofu_enrollment_receipt_sha256,
+            host_key_trust_binding_sha256=host_key_trust_binding_sha256,
             signature_path=signature_path,
             authorized_signers_path=authorized_signers_path,
         )
@@ -988,7 +1621,22 @@ class RunAuthorization:
         """Publication-safe view: every field here is already a digest,
         commitment, timestamp, or non-sensitive identity value."""
 
-        return self.to_dict()
+        payload = self.to_dict()
+        if self.host_key_trust_policy is HostKeyTrustPolicy.TOFU_UNVERIFIED:
+            for key in (
+                "host_key_ed25519_sha256",
+                "host_key_fingerprint_sha256",
+                "known_hosts_sha256",
+            ):
+                del payload[key]
+            payload["host_identity_fields_redacted"] = True
+        return payload
+
+    @property
+    def signature_namespace(self) -> str:
+        if self.host_key_trust_policy is HostKeyTrustPolicy.TOFU_UNVERIFIED:
+            return TOFU_AUTHORIZATION_SIGNATURE_NAMESPACE
+        return AUTHORIZATION_SIGNATURE_NAMESPACE
 
 
 def build_authorization_seal(payload_without_seal: Mapping[str, Any]) -> str:
@@ -1033,7 +1681,7 @@ def verify_authorization_signature(
             "-I",
             AUTHORIZATION_SIGNER_IDENTITY,
             "-n",
-            AUTHORIZATION_SIGNATURE_NAMESPACE,
+            authorization.signature_namespace,
             "-s",
             str(signature_path),
         ),
@@ -1175,7 +1823,7 @@ class SubprocessCommandRunner:
                 stderr="",
                 timed_out=True,
             )
-        except OSError:
+        except (OSError, UnicodeError):
             return CommandResult(
                 returncode=-1,
                 stdout="",
@@ -1187,6 +1835,156 @@ class SubprocessCommandRunner:
             stdout=completed.stdout,
             stderr=completed.stderr,
         )
+
+
+def _parse_keyscan_output(
+    result: CommandResult, *, host: str, port: int
+) -> tuple[str, str]:
+    if result.timed_out:
+        raise HostOrchestrationError("TOFU ssh-keyscan timed out")
+    if result.start_failed:
+        raise HostOrchestrationError("TOFU ssh-keyscan could not start")
+    if result.returncode != 0:
+        raise HostOrchestrationError("TOFU ssh-keyscan returned a nonzero status")
+    if result.stderr:
+        prefixes = (f"# {host}:{port} SSH-", f"# [{host}]:{port} SSH-")
+        for line in result.stderr.splitlines():
+            if (
+                len(line) > 512
+                or any(ord(character) < 32 for character in line)
+                or not line.startswith(prefixes)
+            ):
+                raise HostOrchestrationError("TOFU ssh-keyscan stderr was ambiguous")
+    if "\r" in result.stdout or not result.stdout.endswith("\n"):
+        raise HostOrchestrationError("TOFU ssh-keyscan output was truncated")
+    lines = result.stdout.splitlines()
+    if len(lines) != 1:
+        raise HostOrchestrationError(
+            "TOFU ssh-keyscan must return exactly one host-key line"
+        )
+    parts = lines[0].split()
+    if len(parts) != 3:
+        raise HostOrchestrationError("TOFU ssh-keyscan output was malformed")
+    expected_endpoint = f"[{host}]:{port}"
+    if parts[0] != expected_endpoint:
+        raise HostOrchestrationError(
+            "TOFU ssh-keyscan endpoint does not match the preregistered endpoint"
+        )
+    if parts[1] != "ssh-ed25519":
+        raise HostOrchestrationError(
+            "TOFU ssh-keyscan returned an unexpected host-key algorithm"
+        )
+    key_blob = _decode_ed25519_public_key(parts[2])
+    return parts[2], openssh_sha256_fingerprint(key_blob)
+
+
+def enroll_tofu_host_key(
+    request_path: Path,
+    runner: CommandRunner,
+    *,
+    now_fn: NowFn = lambda: datetime.now(timezone.utc),
+) -> TofuEnrollmentReceipt:
+    """Enroll one unauthenticated ED25519 key for one preregistered IP endpoint."""
+
+    request = TofuEnrollmentRequest.read(request_path)
+    flags = os.O_RDWR
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(request.known_hosts_path, flags)
+    except OSError as exc:
+        raise HostOrchestrationError(
+            f"known_hosts_path could not be opened safely: {exc}"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_uid != os.geteuid()
+            or stat.S_IMODE(opened.st_mode) != 0o600
+            or opened.st_size != 0
+        ):
+            raise HostOrchestrationError(
+                "known_hosts_path must remain a fresh current-user-owned mode-0600 "
+                "empty regular file"
+            )
+        argv = (
+            SSH_KEYSCAN_PATH,
+            "-T",
+            str(SSH_KEYSCAN_CONNECT_TIMEOUT_SECONDS),
+            "-t",
+            "ed25519",
+            "-p",
+            str(request.port),
+            request.host,
+        )
+        result = runner.run(
+            argv,
+            description="enroll_tofu_host_key",
+            timeout=SSH_KEYSCAN_PROCESS_TIMEOUT_SECONDS,
+        )
+        key_base64, fingerprint = _parse_keyscan_output(
+            result, host=request.host, port=request.port
+        )
+        current = request.known_hosts_path.lstat()
+        if (
+            current.st_dev != opened.st_dev
+            or current.st_ino != opened.st_ino
+            or current.st_size != 0
+        ):
+            raise HostOrchestrationError(
+                "known_hosts_path changed during TOFU enrollment"
+            )
+        known_hosts_content = (
+            f"[{request.host}]:{request.port} ssh-ed25519 {key_base64}\n"
+        ).encode("ascii")
+        os.write(descriptor, known_hosts_content)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+    known_hosts_sha256 = hashlib.sha256(known_hosts_content).hexdigest()
+    observed_at = now_fn().astimezone(timezone.utc)
+    unsealed = {
+        "schema_version": TOFU_ENROLLMENT_RECEIPT_SCHEMA_VERSION,
+        "policy": HostKeyTrustPolicy.TOFU_UNVERIFIED.value,
+        "provider_identity_independently_authenticated": False,
+        "identity_statement": TOFU_IDENTITY_STATEMENT,
+        "endpoint": {"host": request.host, "port": request.port},
+        "host_key": {
+            "algorithm": "ssh-ed25519",
+            "base64": key_base64,
+            "fingerprint_sha256": fingerprint,
+        },
+        "observed_at": _canonical_timestamp(observed_at),
+        "tool": {
+            "path": SSH_KEYSCAN_PATH,
+            "argv": list(argv),
+            "environment": SSH_KEYSCAN_ENVIRONMENT,
+            "process_timeout_seconds": SSH_KEYSCAN_PROCESS_TIMEOUT_SECONDS,
+        },
+        "known_hosts": {
+            "path": str(request.known_hosts_path),
+            "content_sha256": known_hosts_sha256,
+        },
+    }
+    payload = {**unsealed, "receipt_sha256": sha256_json(unsealed)}
+    encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("ascii")
+    receipt_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        receipt_flags |= os.O_NOFOLLOW
+    try:
+        receipt_descriptor = os.open(request.receipt_path, receipt_flags, 0o600)
+    except OSError as exc:
+        raise HostOrchestrationError(
+            f"TOFU enrollment receipt must be a new non-symlink file: {exc}"
+        ) from exc
+    try:
+        os.write(receipt_descriptor, encoded)
+        os.fsync(receipt_descriptor)
+    finally:
+        os.close(receipt_descriptor)
+    return TofuEnrollmentReceipt.from_dict(payload)
 
 
 def checked(
@@ -1454,7 +2252,7 @@ class StrictSSHOptions:
         """Publication-safe: only the fixed option *names*, never values
         that could identify the host/user/key/known-hosts path."""
 
-        return {
+        record = {
             "batch_mode": True,
             "identities_only": True,
             "password_authentication": False,
@@ -1465,6 +2263,20 @@ class StrictSSHOptions:
             "control_master": False,
             "control_path": "none",
         }
+        if self.config.host_key_trust_policy is HostKeyTrustPolicy.TOFU_UNVERIFIED:
+            record.update(
+                {
+                    "host_key_trust_policy": (HostKeyTrustPolicy.TOFU_UNVERIFIED.value),
+                    "provider_identity_independently_authenticated": False,
+                    "enrollment_mitm_resistance_supported": False,
+                    "secure_provider_provenance_supported": False,
+                    "independent_host_key_verification_supported": False,
+                    "tofu_enrollment_receipt_sha256": (
+                        self.config.tofu_enrollment_receipt_sha256
+                    ),
+                }
+            )
+        return record
 
 
 # ---------------------------------------------------------------------------
@@ -1938,6 +2750,40 @@ class RemoteOrchestrator:
         self.authorization = authorization
         self.runner = runner
         self.now_fn = now_fn
+        if config.host_key_trust_policy is not authorization.host_key_trust_policy:
+            raise HostOrchestrationError(
+                "protected config host-key trust policy does not match authorization"
+            )
+        if config.host_key_trust_policy is HostKeyTrustPolicy.TOFU_UNVERIFIED:
+            assert config.host_key_ed25519_base64 is not None
+            expected_key_sha256 = hashlib.sha256(
+                _decode_ed25519_public_key(config.host_key_ed25519_base64)
+            ).hexdigest()
+            mismatches = []
+            if expected_key_sha256 != authorization.host_key_ed25519_sha256:
+                mismatches.append("ED25519 key")
+            if (
+                config.host_key_fingerprint_sha256
+                != authorization.host_key_fingerprint_sha256
+            ):
+                mismatches.append("fingerprint")
+            if config.known_hosts_sha256 != authorization.known_hosts_sha256:
+                mismatches.append("known_hosts digest")
+            if (
+                config.tofu_enrollment_receipt_sha256
+                != authorization.tofu_enrollment_receipt_sha256
+            ):
+                mismatches.append("TOFU enrollment receipt digest")
+            if (
+                config.host_key_trust_binding_sha256()
+                != authorization.host_key_trust_binding_sha256
+            ):
+                mismatches.append("host-key trust binding")
+            if mismatches:
+                raise HostOrchestrationError(
+                    "protected config TOFU bindings do not match authorization: "
+                    + ", ".join(mismatches)
+                )
         if config.docker_execution_mode is not authorization.docker_execution_mode:
             raise HostOrchestrationError(
                 "protected config Docker execution mode does not match authorization"
@@ -2173,8 +3019,7 @@ class RemoteOrchestrator:
         docker_info = self.docker.shell("info")
         docker_version = self.docker.shell("version", "--format", "{{.Server.Version}}")
         docker_failure = (
-            "{ echo LLMTRACEFX_REASON=preflight_docker_execution_denied >&2; "
-            "exit 1; }"
+            "{ echo LLMTRACEFX_REASON=preflight_docker_execution_denied >&2; exit 1; }"
         )
         script = "\n".join(
             [
@@ -2472,7 +3317,7 @@ class RemoteOrchestrator:
                 f"mkdir -p {_quote(self.paths.repo_dir)}",
                 f"tar -xf {_quote(self.paths.source_archive_remote_path)} "
                 f"-C {_quote(self.paths.repo_dir)}",
-                f"test \"$(cat {_quote(self.paths.repo_dir + '/' + _COMMIT_HEAD_MEMBER)})\" "
+                f'test "$(cat {_quote(self.paths.repo_dir + "/" + _COMMIT_HEAD_MEMBER)})" '
                 f"= {_quote(self.authorization.repository_head)}",
                 f"echo EXPECTED_HEAD={_quote(self.authorization.repository_head)}",
                 f"cd {_quote(self.paths.repo_dir)}",
@@ -2617,8 +3462,7 @@ class RemoteOrchestrator:
             )
         if "EXPECTED_HEAD" not in markers:
             raise HostOrchestrationError(
-                "image preparation output did not confirm the extracted source "
-                "commit"
+                "image preparation output did not confirm the extracted source commit"
             )
         remote_head = markers["EXPECTED_HEAD"].strip()
         if remote_head != self.authorization.repository_head:
@@ -3152,7 +3996,7 @@ class RemoteOrchestrator:
         private_bundle = evidence.PrivateEvidenceBundle(
             run_mode=evidence.RUN_MODE_REAL_RUN,
             experiment_nonce=self.authorization.nonce,
-            authorization=self.authorization.to_dict(),
+            authorization=self.authorization.redact(),
             ssh_options_public_record=self.ssh_options.public_record(),
             lane_receipts=lane_receipts,
             claim_matrix=claim_matrix,
@@ -3239,8 +4083,7 @@ class RemoteOrchestrator:
                 "  fi",
                 '  if [ "$cleanup_failed" -ne 0 ] && '
                 '[ "$shutdown_failed" -ne 0 ]; then',
-                "    echo "
-                '"LLMTRACEFX_REASON=teardown_cleanup_and_shutdown_failed" >&2',
+                '    echo "LLMTRACEFX_REASON=teardown_cleanup_and_shutdown_failed" >&2',
                 "    exit 1",
                 "  fi",
                 '  if [ "$shutdown_failed" -ne 0 ]; then',
@@ -3302,8 +4145,7 @@ class RemoteOrchestrator:
                 "  fi",
                 '  chmod --reference="$AUTHORIZED_KEYS" "$KEY_TMP" || '
                 '{ rm -f "$KEY_TMP"; return 1; }',
-                '  mv "$KEY_TMP" "$AUTHORIZED_KEYS" || '
-                '{ rm -f "$KEY_TMP"; return 1; }',
+                '  mv "$KEY_TMP" "$AUTHORIZED_KEYS" || { rm -f "$KEY_TMP"; return 1; }',
                 '  test "$(awk -v marker="$KEY_MARKER" '
                 "'$NF == marker { count++ } END { print count + 0 }' "
                 '"$AUTHORIZED_KEYS")" = "0"',

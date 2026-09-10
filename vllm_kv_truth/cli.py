@@ -19,6 +19,7 @@ from .lifecycle import (
     RemoteOrchestrator,
     RunAuthorization,
     SubprocessCommandRunner,
+    enroll_tofu_host_key,
     reject_credential_environment,
     verify_authorization_signature,
 )
@@ -57,6 +58,8 @@ def _build_bootstrap_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--execution-config", required=True, type=Path)
     run_parser.add_argument("--authorization", required=True, type=Path)
     run_parser.add_argument("--output-dir", required=True, type=Path)
+    enroll_parser = subparsers.add_parser("enroll-tofu")
+    enroll_parser.add_argument("--enrollment-request", required=True, type=Path)
     subparsers.add_parser("preflight")
     return parser
 
@@ -120,6 +123,14 @@ def _preflight_clean_environment() -> int:
     return 0
 
 
+def _enroll_tofu(args: argparse.Namespace) -> int:
+    _require_clean_parent_environment()
+    receipt = enroll_tofu_host_key(args.enrollment_request, SubprocessCommandRunner())
+    print(f"TOFU enrollment receipt SHA-256: {receipt.receipt_sha256}")
+    print("host identity: tofu_unverified (provider identity not authenticated)")
+    return 0
+
+
 def _verify_public_bundle(args: argparse.Namespace) -> int:
     bundle = evidence.verify_public_bundle_directory(args.bundle_dir)
     payload = bundle.to_dict()
@@ -156,6 +167,8 @@ def bootstrap_dispatch(argv: list[str]) -> int:
     try:
         if args.command == "preflight":
             return _preflight_clean_environment()
+        if args.command == "enroll-tofu":
+            return _enroll_tofu(args)
         return _run(args)
     except HostOrchestrationError as exc:
         print(f"{PROG}: error: {exc}", file=sys.stderr)
