@@ -95,8 +95,12 @@ def _successful_runner(
     return FakeRunner(
         lifecycle.CommandResult(
             returncode=0,
-            stdout=f"[{host}]:{port} ssh-ed25519 {key}\n",
-            stderr=f"# {host}:{port} SSH-2.0-test-server\n",
+            stdout=(
+                f"# {host}:{port} SSH-2.0-test-server\n"
+                f"{lifecycle.openssh_known_hosts_host_token(host, port)} "
+                f"ssh-ed25519 {key}\n"
+            ),
+            stderr="",
         )
     )
 
@@ -260,7 +264,10 @@ def test_tofu_subprocess_uses_only_fixed_environment(
         return subprocess.CompletedProcess(
             argv,
             0,
-            stdout=f"[203.0.113.8]:57003 ssh-ed25519 {_key_base64()}\n",
+            stdout=(
+                "# 203.0.113.8:57003 SSH-2.0-test-server\n"
+                f"[203.0.113.8]:57003 ssh-ed25519 {_key_base64()}\n"
+            ),
             stderr="",
         )
 
@@ -396,6 +403,37 @@ def test_tofu_requires_fresh_protected_known_hosts(
         lifecycle.enroll_tofu_host_key(request, _successful_runner())
 
 
+@pytest.mark.parametrize("mutation", ["symlink-ancestor", "writable-ancestor"])
+def test_tofu_rejects_unsafe_higher_ancestry(tmp_path: Path, mutation: str) -> None:
+    protected = _protected_dir(tmp_path)
+    request, _unused_known_hosts, _unused_receipt = _request(protected)
+    if mutation == "symlink-ancestor":
+        actual = tmp_path / "actual"
+        actual.mkdir(mode=0o700)
+        leaf = actual / "leaf"
+        leaf.mkdir(mode=0o700)
+        ancestor = tmp_path / "ancestor-link"
+        ancestor.symlink_to(actual, target_is_directory=True)
+    else:
+        ancestor = tmp_path / "writable-ancestor"
+        ancestor.mkdir(mode=0o700)
+        ancestor.chmod(0o777)
+        leaf = ancestor / "leaf"
+        leaf.mkdir(mode=0o700)
+    known_hosts = ancestor / "leaf" / "known_hosts"
+    known_hosts.write_bytes(b"")
+    known_hosts.chmod(0o600)
+    raw = json.loads(request.read_text(encoding="utf-8"))
+    raw["known_hosts_path"] = str(known_hosts)
+    raw["receipt_path"] = str(ancestor / "leaf" / "receipt.json")
+    request.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(
+        lifecycle.HostOrchestrationError,
+        match="ancestry.*symlink|ancestry.*writable",
+    ):
+        lifecycle.enroll_tofu_host_key(request, _successful_runner())
+
+
 @pytest.mark.parametrize("host", ["example.com", "203.0.113.008", "2001:0db8::1"])
 def test_tofu_requires_canonical_direct_ip(tmp_path: Path, host: str) -> None:
     protected = _protected_dir(tmp_path)
@@ -410,6 +448,19 @@ def test_tofu_requires_valid_literal_port(tmp_path: Path, port: Any) -> None:
     request, _known_hosts, _receipt = _request(protected, port=port)
     with pytest.raises(lifecycle.HostOrchestrationError, match="port"):
         lifecycle.enroll_tofu_host_key(request, _successful_runner(port=22))
+
+
+def test_tofu_uses_native_default_port_known_hosts_token(tmp_path: Path) -> None:
+    protected = _protected_dir(tmp_path)
+    request, known_hosts, _receipt = _request(protected, port=22)
+    lifecycle.enroll_tofu_host_key(
+        request,
+        _successful_runner(port=22),
+        now_fn=lambda: OBSERVED_AT,
+    )
+    assert known_hosts.read_text(encoding="ascii") == (
+        f"203.0.113.8 ssh-ed25519 {_key_base64()}\n"
+    )
 
 
 def test_tofu_config_and_authorization_bind_every_trust_artifact(
@@ -486,6 +537,23 @@ def test_changed_known_hosts_or_receipt_refuses_before_ssh(tmp_path: Path) -> No
     raw_receipt["observed_at"] = "2031-01-01T00:00:00.000000Z"
     receipt_path.write_text(json.dumps(raw_receipt), encoding="utf-8")
     with pytest.raises(lifecycle.HostOrchestrationError, match="own content"):
+        lifecycle.ProtectedExecutionConfig.from_dict(payload)
+
+
+def test_tofu_config_rejects_private_key_with_symlinked_ancestor(
+    tmp_path: Path,
+) -> None:
+    known_hosts, receipt_path, receipt, _runner = _enroll(tmp_path)
+    payload = _config_payload(tmp_path, known_hosts, receipt_path, receipt)
+    actual = tmp_path / "actual-key-parent"
+    actual.mkdir(mode=0o700)
+    key = actual / "key"
+    key.write_text("private", encoding="utf-8")
+    key.chmod(0o600)
+    alias = tmp_path / "key-parent-alias"
+    alias.symlink_to(actual, target_is_directory=True)
+    payload["private_key_path"] = str(alias / "key")
+    with pytest.raises(lifecycle.HostOrchestrationError, match="ancestry.*symlink"):
         lifecycle.ProtectedExecutionConfig.from_dict(payload)
 
 

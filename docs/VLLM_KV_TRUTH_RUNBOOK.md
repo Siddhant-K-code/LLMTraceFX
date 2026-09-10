@@ -68,8 +68,9 @@ Choose exactly one host-key trust policy before enrollment:
 
 - `provider_pinned` is the existing strong path. Obtain the ED25519 host key
   or fingerprint through a provider-authenticated channel independent of the
-  SSH endpoint, write the exact `[IP]:port ssh-ed25519 <base64>` line to the
-  dedicated mode-`0600` known-hosts file, and use protected-config schema 2
+  SSH endpoint, write the exact OpenSSH host token (`IP` for port 22,
+  `[IP]:port` otherwise) followed by `ssh-ed25519 <base64>` to the dedicated
+  mode-`0600` known-hosts file, and use protected-config schema 2
   plus authorization schema 3 exactly as before. A key learned from the same
   SSH connection is not provider-pinned.
 - `tofu_unverified` is an explicit weaker enrollment path. It observes one
@@ -445,9 +446,10 @@ After trust verification, the internal operation invokes exactly:
 The subprocess has a 10-second outer timeout and only
 `PATH=/usr/bin:/bin:/usr/local/bin`, `LANG=C`, and `LC_ALL=C`. No shell,
 DNS name, SSH config, proxy/jump, agent, password, global known-hosts file, or
-authenticated SSH is used. Enrollment accepts exactly one complete output
-line for exact `[IP]:port`, algorithm `ssh-ed25519`, and one structurally
-valid 32-byte ED25519 key. Zero lines, duplicates, multiple distinct keys,
+authenticated SSH is used. enrollment accepts exactly one complete output key line for the canonical
+OpenSSH host token (`IP` for port 22, `[IP]:port` otherwise), algorithm
+`ssh-ed25519`, and one structurally valid 32-byte ED25519 key. Zero lines,
+duplicates, multiple distinct keys,
 other algorithms, endpoint mismatch, malformed/truncated output, ambiguous
 stderr, timeout, nonzero exit, path substitution, or changed output files are
 hard refusals.

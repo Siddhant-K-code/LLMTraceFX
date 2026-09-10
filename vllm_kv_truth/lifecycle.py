@@ -285,6 +285,7 @@ def _require_canonical_ip_literal(value: Any, *, field_name: str) -> str:
 
 
 def _require_private_parent(path: Path, *, label: str) -> None:
+    _require_trusted_ancestry(path, label=label)
     parent = path.parent
     try:
         info = parent.lstat()
@@ -298,6 +299,32 @@ def _require_private_parent(path: Path, *, label: str) -> None:
         raise HostOrchestrationError(
             f"{label} parent must be current-user-owned with mode 0700"
         )
+
+
+def _require_trusted_ancestry(path: Path, *, label: str) -> None:
+    cursor = Path("/")
+    for component in path.parent.parts[1:]:
+        cursor /= component
+        try:
+            info = cursor.lstat()
+        except OSError as exc:
+            raise HostOrchestrationError(
+                f"{label} ancestor could not be inspected: {exc}"
+            ) from exc
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise HostOrchestrationError(
+                f"{label} ancestry must contain only non-symlink directories"
+            )
+        if info.st_uid not in {0, os.geteuid()}:
+            raise HostOrchestrationError(
+                f"{label} ancestry contains an untrusted owner"
+            )
+        if stat.S_IMODE(info.st_mode) & 0o022:
+            root_owned_sticky = info.st_uid == 0 and bool(info.st_mode & stat.S_ISVTX)
+            if not root_owned_sticky:
+                raise HostOrchestrationError(
+                    f"{label} ancestry contains a group- or world-writable directory"
+                )
 
 
 def _decode_ed25519_public_key(key_base64: Any) -> bytes:
@@ -333,6 +360,10 @@ def _decode_ed25519_public_key(key_base64: Any) -> bytes:
 def openssh_sha256_fingerprint(key_blob: bytes) -> str:
     encoded = base64.b64encode(hashlib.sha256(key_blob).digest())
     return "SHA256:" + encoded.rstrip(b"=").decode("ascii")
+
+
+def openssh_known_hosts_host_token(host: str, port: int) -> str:
+    return host if port == 22 else f"[{host}]:{port}"
 
 
 def _require_private_key_permissions(path: Path, *, label: str) -> Path:
@@ -851,6 +882,8 @@ class ProtectedExecutionConfig:
             _require_nonempty_str(payload["known_hosts_path"], "known_hosts_path"),
             label="known_hosts_path",
         )
+        _require_trusted_ancestry(private_key_path, label="private_key_path")
+        _require_trusted_ancestry(known_hosts_path, label="known_hosts_path")
         _require_private_key_permissions(private_key_path, label="private_key_path")
         _require_not_group_or_world_readable(known_hosts_path, label="known_hosts_path")
         remote_workspace = _require_safe_remote_path(
@@ -926,7 +959,8 @@ class ProtectedExecutionConfig:
             )
             receipt = TofuEnrollmentReceipt.read(tofu_enrollment_receipt_path)
             expected_known_hosts = (
-                f"[{host}]:{port} ssh-ed25519 {host_key_ed25519_base64}\n"
+                f"{openssh_known_hosts_host_token(host, port)} "
+                f"ssh-ed25519 {host_key_ed25519_base64}\n"
             ).encode("ascii")
             try:
                 actual_known_hosts = read_bounded_regular_bytes(
@@ -1847,25 +1881,32 @@ def _parse_keyscan_output(
     if result.returncode != 0:
         raise HostOrchestrationError("TOFU ssh-keyscan returned a nonzero status")
     if result.stderr:
-        prefixes = (f"# {host}:{port} SSH-", f"# [{host}]:{port} SSH-")
-        for line in result.stderr.splitlines():
-            if (
-                len(line) > 512
-                or any(ord(character) < 32 for character in line)
-                or not line.startswith(prefixes)
-            ):
-                raise HostOrchestrationError("TOFU ssh-keyscan stderr was ambiguous")
+        raise HostOrchestrationError("TOFU ssh-keyscan stderr was ambiguous")
     if "\r" in result.stdout or not result.stdout.endswith("\n"):
         raise HostOrchestrationError("TOFU ssh-keyscan output was truncated")
     lines = result.stdout.splitlines()
-    if len(lines) != 1:
+    key_lines: list[str] = []
+    banner_prefixes = (f"# {host}:{port} SSH-", f"# [{host}]:{port} SSH-")
+    for line in lines:
+        if line.startswith("#"):
+            if (
+                len(line) > 512
+                or any(ord(character) < 32 for character in line)
+                or not line.startswith(banner_prefixes)
+            ):
+                raise HostOrchestrationError(
+                    "TOFU ssh-keyscan output contained an ambiguous banner"
+                )
+        else:
+            key_lines.append(line)
+    if len(key_lines) != 1:
         raise HostOrchestrationError(
             "TOFU ssh-keyscan must return exactly one host-key line"
         )
-    parts = lines[0].split()
+    parts = key_lines[0].split()
     if len(parts) != 3:
         raise HostOrchestrationError("TOFU ssh-keyscan output was malformed")
-    expected_endpoint = f"[{host}]:{port}"
+    expected_endpoint = openssh_known_hosts_host_token(host, port)
     if parts[0] != expected_endpoint:
         raise HostOrchestrationError(
             "TOFU ssh-keyscan endpoint does not match the preregistered endpoint"
@@ -1936,7 +1977,8 @@ def enroll_tofu_host_key(
                 "known_hosts_path changed during TOFU enrollment"
             )
         known_hosts_content = (
-            f"[{request.host}]:{request.port} ssh-ed25519 {key_base64}\n"
+            f"{openssh_known_hosts_host_token(request.host, request.port)} "
+            f"ssh-ed25519 {key_base64}\n"
         ).encode("ascii")
         os.write(descriptor, known_hosts_content)
         os.fsync(descriptor)
