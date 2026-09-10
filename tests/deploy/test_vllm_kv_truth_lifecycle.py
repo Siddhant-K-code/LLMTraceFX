@@ -1287,6 +1287,71 @@ class TestRemoteOrchestratorFullRun:
         assert "DOCKER_EXECUTION_MODE=direct" in script
         assert "sudo -n -- docker" not in script
 
+    @pytest.mark.parametrize(
+        ("container_ids", "expected_count"),
+        [
+            ("", "0"),
+            ("container-one", "1"),
+            ("container-one\ncontainer-two", "2"),
+        ],
+    )
+    def test_preflight_container_count_preserves_the_last_id(
+        self, tmp_path: Path, container_ids: str, expected_count: str
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_preflight()
+        script = runner.calls[-1].input_text or ""
+        count_line = next(
+            line
+            for line in script.splitlines()
+            if line.startswith('echo "CONTAINER_COUNT=')
+        )
+        result = subprocess.run(
+            ["bash", "-c", count_line],
+            env={"CONTAINER_IDS": container_ids},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        marker, value = result.stdout.split("=", 1)
+        assert marker == "CONTAINER_COUNT"
+        assert value.strip() == expected_count
+
+    def test_preflight_gpu_process_query_failure_cannot_report_zero(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_preflight()
+        script = runner.calls[-1].input_text or ""
+        lines = script.splitlines()
+        start = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith("GPU_PROCESS_IDS=")
+        )
+        fragment = "\n".join(lines[start : start + 2])
+        result = subprocess.run(
+            ["bash", "-c", f"nvidia-smi() {{ return 42; }}\n{fragment}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "LLMTRACEFX_REASON=preflight_probe_failed" in result.stderr
+        assert "GPU_PROCESS_COUNT=" not in result.stdout
+
     def test_sudo_noninteractive_mode_prefixes_every_docker_call(
         self, tmp_path: Path
     ) -> None:
@@ -1451,6 +1516,7 @@ class TestRemoteOrchestratorFullRun:
                 / "private-model-acquisition-receipt.json"
             ).read_text(encoding="utf-8")
         )
+        assert receipt["schema_version"] == "2"
         assert receipt["downloader"]["version"] == lifecycle.DOWNLOADER_VERSION
         assert receipt["downloader"]["source"] == lifecycle.DOWNLOADER_SOURCE
         assert receipt["docker_execution_mode"] == "direct"
@@ -1678,17 +1744,127 @@ class TestRemoteOrchestratorFullRun:
         assert script.index("authorized_keys") < script.index(
             "sudo -n shutdown -h +1", script.index("authorized_keys")
         )
-        assert (
-            "docker ps -q" not in script.replace("docker ps -q --filter", "PLACEHOLDER")
-            or "--filter" in script
+        # Mutating discovery is label-scoped; the sole unfiltered query is the
+        # read-only final residual check.
+        label_filter = f"--filter label={lifecycle.docker_run_label(auth.nonce)}"
+        docker_listing_lines = [
+            line for line in script.splitlines() if "docker ps" in line
+        ]
+        assert len(docker_listing_lines) == 3
+        assert all(label_filter in line for line in docker_listing_lines[:2])
+        assert docker_listing_lines[2].startswith(
+            "RESIDUAL_CONTAINER_IDS=$(docker ps -q)"
         )
-        # Never a blanket, unfiltered container listing/removal.
-        for line in script.splitlines():
-            if line.strip().startswith("docker ps") or line.strip().startswith(
-                "docker images"
-            ):
-                assert "--filter" in line
-                assert lifecycle.docker_run_label(auth.nonce) in line
+        assert (
+            f"RUNNING_CONTAINERS=$(docker ps -q --filter "
+            f"label={lifecycle.docker_run_label(auth.nonce)})"
+        ) in script
+        assert (
+            f"ALL_RUN_CONTAINERS=$(docker ps -aq --filter "
+            f"label={lifecycle.docker_run_label(auth.nonce)})"
+        ) in script
+        assert (
+            f"LABELED_IMAGES=$(docker images -q --filter "
+            f"label={lifecycle.docker_run_label(auth.nonce)})"
+        ) in script
+        assert "RESIDUAL_CONTAINER_IDS=$(docker ps -q) ||" in script
+        assert script.count("LLMTRACEFX_REASON=teardown_cleanup_failed") >= 4
+
+    @pytest.mark.parametrize(
+        ("container_ids", "expected_count"),
+        [
+            ("", "0"),
+            ("container-one", "1"),
+            ("container-one\ncontainer-two", "2"),
+        ],
+    )
+    def test_teardown_residual_container_query_counts_exactly(
+        self, tmp_path: Path, container_ids: str, expected_count: str
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_teardown(tmp_path / "bundle")
+        script = runner.calls[-1].input_text or ""
+        lines = script.splitlines()
+        start = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith("RESIDUAL_CONTAINER_IDS=")
+        )
+        fragment = "\n".join(lines[start : start + 2])
+        result = subprocess.run(
+            ["bash", "-c", f'docker() {{ printf %s "$DOCKER_OUTPUT"; }}\n{fragment}'],
+            env={"DOCKER_OUTPUT": container_ids},
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        marker, value = result.stdout.split("=", 1)
+        assert marker == "RESIDUAL_CONTAINERS"
+        assert value.strip() == expected_count
+
+    def test_teardown_residual_container_query_failure_cannot_report_zero(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_teardown(tmp_path / "bundle")
+        script = runner.calls[-1].input_text or ""
+        lines = script.splitlines()
+        start = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith("RESIDUAL_CONTAINER_IDS=")
+        )
+        fragment = "\n".join(lines[start : start + 2])
+        result = subprocess.run(
+            ["bash", "-c", f"docker() {{ return 42; }}\n{fragment}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "LLMTRACEFX_REASON=teardown_cleanup_failed" in result.stderr
+        assert "RESIDUAL_CONTAINERS=" not in result.stdout
+
+    def test_teardown_gpu_process_query_failure_cannot_report_zero(
+        self, tmp_path: Path
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        orchestrator.stage_teardown(tmp_path / "bundle")
+        script = runner.calls[-1].input_text or ""
+        lines = script.splitlines()
+        start = next(
+            index
+            for index, line in enumerate(lines)
+            if line.startswith("RESIDUAL_GPU_PIDS=")
+        )
+        fragment = "\n".join(lines[start : start + 2])
+        result = subprocess.run(
+            ["bash", "-c", f"nvidia-smi() {{ return 42; }}\n{fragment}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "LLMTRACEFX_REASON=teardown_cleanup_failed" in result.stderr
+        assert "RESIDUAL_GPU_PROCESSES=" not in result.stdout
 
     def test_sudo_mode_teardown_uses_only_selected_docker_prefix(
         self, tmp_path: Path

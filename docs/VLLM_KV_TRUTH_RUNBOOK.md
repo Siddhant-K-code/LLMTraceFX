@@ -70,7 +70,8 @@ user:
 ```bash
 docker ps -q >/dev/null &&
 docker info >/dev/null &&
-docker version --format '{{.Server.Version}}'
+docker version --format '{{.Server.Version}}' &&
+sudo -n true
 ```
 
 For `sudo_noninteractive`, run this exact read-only provider-console probe as
@@ -79,13 +80,25 @@ the eventual SSH user:
 ```bash
 sudo -n -- docker ps -q >/dev/null &&
 sudo -n -- docker info >/dev/null &&
-sudo -n -- docker version --format '{{.Server.Version}}'
+sudo -n -- docker version --format '{{.Server.Version}}' &&
+sudo -n true
 ```
 
-Record only the mode whose complete three-command probe succeeds. A password
+Record only the mode whose complete probe succeeds. A password
 prompt, permission denial, missing executable, empty version, or partial pass
 is a refusal. The orchestrator never falls back between modes: every Docker
-operation, including teardown, uses the preregistered prefix.
+operation, including teardown, uses the preregistered prefix. Container
+quiescence is scoped to the Docker daemon reached by that exact prefix; do not
+claim or rely on a second rootless daemon or Docker context. The independent
+`sudo -n true` gate is also mandatory because teardown schedules OS shutdown
+through noninteractive sudo.
+
+During orchestrator preflight, `DOCKER_EXECUTION_MODE` and
+`DOCKER_EXECUTION_CONFIG_SHA256` are coordinator-sealed binding markers, not
+facts discovered from the host. Host capability is proved only when `ps`,
+`info`, and server `version` all succeed through the exact selected prefix;
+those successful commands attest that the selected command can reach the
+daemon without an interactive password.
 
 ## 3. Write protected execution config
 
@@ -393,7 +406,7 @@ Each schema-2 record contains only:
 ```text
 stage, substage, command_description, return_code, timed_out,
 stderr_category, stderr_message, reason_code, reserved_minutes,
-docker_execution_mode
+docker_execution_mode, docker_execution_config_sha256
 ```
 
 No argv, host, user, IP, key/known-hosts path, credential, remote/model path,
@@ -414,11 +427,12 @@ evidence_digest_failed, evidence_download_failed,
 run_interrupted, teardown_cleanup_failed, teardown_shutdown_failed
 ```
 
-Successful acquisition also writes a private schema-1
+Successful acquisition also writes a private schema-2
 `private-model-acquisition-receipt.json` binding the authorization, inspected
-image ID, explicit Docker execution mode and network mode, run label,
-downloader package/version/interface/source, exact model revision, and
-verified inventory totals.
+image ID, explicit Docker execution mode and
+`docker_execution_config_sha256`, network mode, run label, downloader
+package/version/interface/source, exact model revision, and verified inventory
+totals.
 
 The terminal reports `stage/substage`, reason code, and the corresponding safe
 message. Once trusted configuration and authorization have been loaded and
@@ -503,16 +517,17 @@ scientific evidence.
 
 The next CloudRift reservation at merged repository head
 `74c9856aaaafb9deb8a2553ea99ad1c559ba6e3d` passed the offline clean-bootstrap
-preflight and independently matched the preregistered RTX 4090, driver,
-memory, compute-capability, boot-time, and zero-GPU-process facts. Its
-read-only provider-console probe then found that the standard `riftuser`
-account could not access `/var/run/docker.sock`: direct `docker ps -q` and
-`docker info` failed with permission denied. The runner never started and no
-SSH lifecycle, image/model action, GPU workload, or scientific stage
-occurred. The temporary key was removed, the provider reservation was
-terminated and confirmed, and all one-attempt local credentials were
-destroyed. This `preflight_probe_failed` event is operational provenance only,
-not scientific evidence.
+preflight. Separate read-only provider-console observations, not runner
+attestations, matched the preregistered RTX 4090, driver, memory,
+compute-capability, boot-time, and zero-GPU-process facts. That same manual
+provider-console probe found that the standard `riftuser` account could not
+access `/var/run/docker.sock`: direct `docker ps -q` and `docker info` failed
+with permission denied. The runner never started, so no operation receipt or
+runner reason code was emitted and no SSH lifecycle, image/model action, GPU
+workload, or scientific stage occurred. The temporary key was removed, the
+provider reservation was terminated and confirmed, and all one-attempt local
+credentials were destroyed. This manual pre-GO refusal is operational
+provenance only, not scientific evidence.
 
 Do not provision a new VM for the next attempt until the clean-bootstrap
 change is merged, its exact merged head passes CI and CodeQL, the wheel-installed

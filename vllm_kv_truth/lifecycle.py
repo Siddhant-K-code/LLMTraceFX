@@ -2186,14 +2186,16 @@ class RemoteOrchestrator:
                 "nvidia-smi --query-gpu=name,driver_version,memory.total,"
                 "compute_cap --format=csv,noheader,nounits | "
                 "sed 's/^/GPU=/'",
-                'echo "GPU_PROCESS_COUNT=$(nvidia-smi '
-                "--query-compute-apps=pid --format=csv,noheader 2>/dev/null | "
+                "GPU_PROCESS_IDS=$(nvidia-smi "
+                "--query-compute-apps=pid --format=csv,noheader 2>/dev/null) || "
+                "{ echo LLMTRACEFX_REASON=preflight_probe_failed >&2; exit 1; }",
+                'echo "GPU_PROCESS_COUNT=$(printf \'%s\\n\' "$GPU_PROCESS_IDS" | '
                 'sed "/^[[:space:]]*$/d" | wc -l)"',
                 f'echo "DOCKER_EXECUTION_MODE={self.docker.mode.value}"',
                 "echo DOCKER_EXECUTION_CONFIG_SHA256="
                 + self.authorization.docker_execution_config_sha256,
                 f"CONTAINER_IDS=$({docker_ps}) || {docker_failure}",
-                'echo "CONTAINER_COUNT=$(printf %s "$CONTAINER_IDS" | '
+                'echo "CONTAINER_COUNT=$(printf \'%s\\n\' "$CONTAINER_IDS" | '
                 'sed "/^[[:space:]]*$/d" | wc -l)"',
                 f"{docker_info} >/dev/null || {docker_failure}",
                 "sudo -n true",
@@ -2687,7 +2689,7 @@ class RemoteOrchestrator:
         download_attestation: Mapping[str, Any],
     ) -> None:
         payload = {
-            "schema_version": "1",
+            "schema_version": "2",
             "protocol_id": PROTOCOL_ID,
             "authorization_sha256": self.authorization.authorization_sha256,
             "docker_execution_mode": self.docker.mode.value,
@@ -3201,6 +3203,9 @@ class RemoteOrchestrator:
         remove_images = self.docker.xargs_shell("rmi", "-f")
         remove_base_image = self.docker.shell("rmi", "-f", BASE_IMAGE_REFERENCE)
         residual_containers = self.docker.shell("ps", "-q")
+        docker_cleanup_failure = (
+            "{ echo LLMTRACEFX_REASON=teardown_cleanup_failed >&2; exit 1; }"
+        )
         script = "\n".join(
             [
                 "set -eu",
@@ -3224,9 +3229,20 @@ class RemoteOrchestrator:
                 '  exit "$status"',
                 "}",
                 "trap finish_teardown EXIT",
-                f"{running_containers} | {stop_containers}",
-                f"{all_containers} | {remove_containers}",
-                f"{labeled_images} | {remove_images} || true",
+                f"RUNNING_CONTAINERS=$({running_containers}) || "
+                f"{docker_cleanup_failure}",
+                'if [ -n "$RUNNING_CONTAINERS" ]; then '
+                "printf '%s\\n' \"$RUNNING_CONTAINERS\" | "
+                f"{stop_containers}; fi",
+                f"ALL_RUN_CONTAINERS=$({all_containers}) || "
+                f"{docker_cleanup_failure}",
+                'if [ -n "$ALL_RUN_CONTAINERS" ]; then '
+                "printf '%s\\n' \"$ALL_RUN_CONTAINERS\" | "
+                f"{remove_containers}; fi",
+                f"LABELED_IMAGES=$({labeled_images}) || {docker_cleanup_failure}",
+                'if [ -n "$LABELED_IMAGES" ]; then '
+                "printf '%s\\n' \"$LABELED_IMAGES\" | "
+                f"{remove_images} || true; fi",
                 f"{remove_base_image} || true",
                 f"rm -rf {_quote(self.paths.model_dir)}",
                 f"rm -rf {_quote(self.paths.repo_dir)}",
@@ -3246,10 +3262,17 @@ class RemoteOrchestrator:
                 'test "$(awk -v marker="$KEY_MARKER" '
                 "'$NF == marker { count++ } END { print count + 0 }' "
                 '"$AUTHORIZED_KEYS")" = "0"',
-                f'echo "RESIDUAL_CONTAINERS=$({residual_containers} | wc -l)"',
-                'echo "RESIDUAL_GPU_PROCESSES=$('
-                "nvidia-smi --query-compute-apps=pid --format=csv,noheader "
-                '2>/dev/null | sed "/^[[:space:]]*$/d" | wc -l)"',
+                f"RESIDUAL_CONTAINER_IDS=$({residual_containers}) || "
+                f"{docker_cleanup_failure}",
+                "echo \"RESIDUAL_CONTAINERS=$(printf '%s\\n' "
+                '"$RESIDUAL_CONTAINER_IDS" | '
+                'sed "/^[[:space:]]*$/d" | wc -l)"',
+                "RESIDUAL_GPU_PIDS=$(nvidia-smi "
+                "--query-compute-apps=pid --format=csv,noheader 2>/dev/null) || "
+                f"{docker_cleanup_failure}",
+                "echo \"RESIDUAL_GPU_PROCESSES=$(printf '%s\\n' "
+                '"$RESIDUAL_GPU_PIDS" | '
+                'sed "/^[[:space:]]*$/d" | wc -l)"',
                 f"if [ -d {_quote(self.config.remote_workspace)} ]; then "
                 f"rmdir {_quote(self.config.remote_workspace)}; fi",
                 "reason=teardown_shutdown_failed",
