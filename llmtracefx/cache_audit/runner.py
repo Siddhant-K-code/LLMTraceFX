@@ -56,7 +56,14 @@ def source_commit() -> tuple[str | None, str | None]:
     }
     result = subprocess.run(
         [
-            "git",
+            "/usr/bin/git",
+            "--no-replace-objects",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.attributesFile=/dev/null",
             "-C",
             str(repository),
             "show",

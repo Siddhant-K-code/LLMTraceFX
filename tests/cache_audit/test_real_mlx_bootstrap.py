@@ -10,6 +10,7 @@ import sys
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -173,10 +174,91 @@ def test_canonical_commands_refuse_direct_console_execution(
         real_mlx._run_cli(args)
 
 
+def test_forged_trusted_environment_refuses_nonisolated_interpreter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLMTRACEFX_TRUSTED_BOOTSTRAP", "1")
+    monkeypatch.setenv("LLMTRACEFX_TRUSTED_COMMIT", "a" * 40)
+    monkeypatch.setenv("LLMTRACEFX_TRUSTED_REPO_ROOT", str(PROJECT_ROOT))
+    monkeypatch.setenv("LLMTRACEFX_TRUSTED_SNAPSHOT_ROOT", str(PROJECT_ROOT))
+    with pytest.raises(real_mlx.RealMLXExperimentError, match="Python -I -S"):
+        real_mlx._require_trusted_canonical_dispatch("a" * 40)
+
+
+def test_fake_snapshot_refuses_even_with_forged_trusted_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_snapshot = tmp_path / "snapshot"
+    for package in ("llmtracefx", "vllm_kv_truth"):
+        root = fake_snapshot / package
+        root.mkdir(parents=True)
+        (root / "__init__.py").write_text("", encoding="ascii")
+        (root / "__init__.py").chmod(0o400)
+        root.chmod(0o500)
+    fake_snapshot.chmod(0o500)
+    monkeypatch.setenv("LLMTRACEFX_TRUSTED_BOOTSTRAP", "1")
+    monkeypatch.setenv("LLMTRACEFX_TRUSTED_COMMIT", "a" * 40)
+    monkeypatch.setenv("LLMTRACEFX_TRUSTED_REPO_ROOT", str(PROJECT_ROOT))
+    monkeypatch.setenv("LLMTRACEFX_TRUSTED_SNAPSHOT_ROOT", str(fake_snapshot))
+    monkeypatch.setattr(real_mlx, "_PROJECT_ROOT", PROJECT_ROOT)
+    monkeypatch.setattr(real_mlx, "_TRUSTED_SNAPSHOT_ROOT", fake_snapshot)
+    monkeypatch.setattr(real_mlx, "_INSTALLED_PROJECT_ROOT", fake_snapshot)
+    monkeypatch.setattr(
+        real_mlx,
+        "sys",
+        SimpleNamespace(
+            flags=SimpleNamespace(isolated=1, no_site=1),
+            modules=sys.modules,
+        ),
+    )
+    with pytest.raises(real_mlx.RealMLXExperimentError, match="origin is untrusted"):
+        real_mlx._require_trusted_canonical_dispatch("a" * 40)
+
+
 def test_bootstrap_prefers_verified_site_packages_before_repository() -> None:
     source = BOOTSTRAP.read_text(encoding="utf-8")
     assert "sys.path.extend((str(site_root), str(snapshot)))" in source
     assert "sys.path.insert(0, str(repo_root))" not in source
+
+
+def test_bootstrap_git_uses_absolute_binary_minimal_env_and_disabled_features(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace = _bootstrap_namespace()
+    observed: dict[str, Any] = {}
+
+    def run(command: list[str], **kwargs: Any) -> SimpleNamespace:
+        observed["command"] = command
+        observed["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(namespace["subprocess"], "run", run)
+    namespace["_git"](PROJECT_ROOT, ["show", "HEAD"], text=True)
+    command = observed["command"]
+    assert command[0] == "/usr/bin/git"
+    assert "core.fsmonitor=false" in command
+    assert "core.hooksPath=/dev/null" in command
+    assert "core.attributesFile=/dev/null" in command
+    assert observed["kwargs"]["env"] == namespace["_git_environment"]()
+    assert "show" in command
+
+
+def test_bootstrap_snapshot_directories_are_read_only(tmp_path: Path) -> None:
+    namespace = _bootstrap_namespace()
+    commit = subprocess.run(
+        ["/usr/bin/git", "rev-parse", "HEAD"],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    snapshot = namespace["_materialize_snapshot"](PROJECT_ROOT, commit, tmp_path)
+    assert snapshot.stat().st_mode & 0o222 == 0
+    assert all(
+        path.stat().st_mode & 0o222 == 0
+        for path in snapshot.rglob("*")
+        if path.is_dir()
+    )
 
 
 @dataclass

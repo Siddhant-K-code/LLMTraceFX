@@ -337,7 +337,36 @@ _AGGREGATE_FILES = {
     "SHA256SUMS",
 }
 CANONICAL_RUN_ATTEMPT = 1
+CANONICAL_RUN_ID = "qwen3-4b-99469aa8-attempt-1"
+CANONICAL_OUTPUT_WORKSPACE = Path(
+    "/Users/siddhant-git-ai/.cache/llmtracefx/qwen3-4b-kv-cache-v1/"
+    "canonical-run-attempt-1"
+)
+CANONICAL_ATTEMPT_MARKER = Path(
+    "/Users/siddhant-git-ai/.cache/llmtracefx/canonical-attempts/"
+    "qwen3-4b-99469aa8-attempt-1.json"
+)
 PRIOR_INVALIDATED_RUN_LEDGER_DIGESTS: tuple[str, ...] = ()
+_GIT_ENVIRONMENT = {
+    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "HOME": "/dev/null",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+}
+_GIT_COMMAND = (
+    "/usr/bin/git",
+    "--no-replace-objects",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.attributesFile=/dev/null",
+)
 
 
 class RealMLXExperimentError(RuntimeError):
@@ -355,6 +384,18 @@ def _digest_bytes(value: bytes) -> str:
 def _require_canonical_run_attempt(run_attempt: Any) -> None:
     if type(run_attempt) is not int or run_attempt != CANONICAL_RUN_ATTEMPT:
         raise RealMLXExperimentError("frozen protocol accepts only run attempt 1")
+
+
+def _safe_git(
+    repository: Path, args: Sequence[str], *, text: bool = False
+) -> subprocess.CompletedProcess[Any]:
+    return subprocess.run(
+        [*_GIT_COMMAND, "-C", str(repository), *args],
+        capture_output=True,
+        check=False,
+        env=_GIT_ENVIRONMENT,
+        text=text,
+    )
 
 
 def _experiment_cache_config() -> CacheConfig:
@@ -2612,49 +2653,6 @@ def _verify_stage_rows(
             raise RealMLXExperimentError("public stage request ID is not redacted")
 
 
-def _require_capacity_eviction_verdicts(
-    records: Sequence[RequestEvidence],
-) -> None:
-    records_by_id = {record.spec.request_id: record for record in records}
-    for lane_id in LANE_IDS:
-        treatment = records_by_id.get(f"{lane_id}:capacity-eviction:a-miss")
-        if treatment is None or treatment.verdict is not Verdict.EVICTED:
-            raise RealMLXExperimentError(
-                f"{lane_id} capacity-eviction treatment is not evicted"
-            )
-
-
-def _require_private_output_gates(
-    records: Sequence[RequestEvidence],
-    workload: FrozenMLXWorkload,
-) -> None:
-    if any(
-        record.terminal_state is not TerminalState.COMPLETED
-        or record.output.token_identity.value is not True
-        or record.output.correctness.value is not True
-        or len(record.output.output_token_ids or ())
-        != EXPECTED_CALIBRATION_OUTPUT_TOKENS[
-            _request_block_id(record.spec.request_id).split(":", 1)[0]
-        ]
-        or record.output.baseline_token_ids != record.output.output_token_ids
-        for record in records
-    ):
-        raise RealMLXExperimentError(
-            "complete replicate output identity/correctness gate failed"
-        )
-    for record in records:
-        lane_id = _request_block_id(record.spec.request_id).split(":", 1)[0]
-        lane = workload.lane(lane_id)
-        calibration_outputs = lane.calibration_outputs
-        if calibration_outputs is None:
-            raise RealMLXExperimentError("replicate workload is not calibrated")
-        array_name = _request_source_array(record.spec.request_id)
-        if record.output.output_token_ids != calibration_outputs[array_name]:
-            raise RealMLXExperimentError(
-                f"{record.spec.request_id} output differs from calibration"
-            )
-
-
 def _request_source_array(request_id: str) -> str:
     block = _request_block_id(request_id)
     _, case = block.split(":", 1)
@@ -2819,9 +2817,6 @@ def verify_replicate(
         != tuple(record.spec.request_id for record in records)
     ):
         raise RealMLXExperimentError("replicate standard bundle contract mismatch")
-    if not public:
-        _require_capacity_eviction_verdicts(records)
-
     if public:
         binding = _safe_object(directory / "workload-binding.json")
         expected_specs = _schedule_shape_specs(replicate_id, public=True)
@@ -2860,8 +2855,6 @@ def verify_replicate(
             != attempt["lane_request_counts"]
         ):
             raise RealMLXExperimentError("replicate lane request count drifted")
-        _require_private_output_gates(records, workload)
-
     environment = _safe_object(directory / "environment.json")
     _exact_keys(
         environment,
@@ -3103,6 +3096,11 @@ def _claim_matrix(index: Mapping[str, Any]) -> dict[str, Any]:
         "lane_scenario_observations": index["lane_scenario_counts"],
         "lane_request_observations": index["lane_request_counts"],
         "verdict_observations": index["verdict_counts"],
+        "observation_count_rule": (
+            "identity, correctness, reuse, and verdict counts are measured "
+            "observations, not replicate pass preconditions"
+        ),
+        "negative_measured_outcomes_preserved": True,
         "allocation_step_boundary_256_is_block_cache_claim": False,
         "same_length_different_ids_interpretation": (
             "early_divergence_same_length_case_without_zero_reuse_guarantee"
@@ -3263,6 +3261,9 @@ def _paired_sample(
     treatment_memory_free = treatment_stage["system_memory_free_percent"]
     control_recomputed = _fact_number(control.reuse.unexpected_recomputed_tokens)
     treatment_recomputed = _fact_number(treatment.reuse.unexpected_recomputed_tokens)
+    control_policy_reusable = _fact_number(control.reuse.policy_reusable_tokens)
+    control_reusable_blocks = _fact_number(control.reuse.reusable_blocks)
+    control_engine_cached = _fact_number(control.reuse.engine_cached_tokens)
     control_output_tokens = len(control.output.output_token_ids or ())
     treatment_output_tokens = len(treatment.output.output_token_ids or ())
     supported_treatment_verdicts = {
@@ -3308,6 +3309,9 @@ def _paired_sample(
         "treatment_input_tokens": treatment.spec.input_token_count,
         "control_generated_output_tokens": control_output_tokens,
         "treatment_generated_output_tokens": treatment_output_tokens,
+        "control_policy_reusable_tokens": control_policy_reusable,
+        "control_policy_reusable_blocks": control_reusable_blocks,
+        "control_engine_cached_tokens": control_engine_cached,
         "semantic_prefix_tokens": _fact_number(treatment.reuse.semantic_prefix_tokens),
         "policy_reusable_tokens": _fact_number(treatment.reuse.policy_reusable_tokens),
         "policy_reusable_blocks": _fact_number(treatment.reuse.reusable_blocks),
@@ -3369,6 +3373,7 @@ def _paired_sample(
         "treatment_output_token_identity": treatment.output.token_identity.value,
         "control_deterministic_correctness": control.output.correctness.value,
         "treatment_deterministic_correctness": treatment.output.correctness.value,
+        "control_verdict": (None if control.verdict is None else control.verdict.value),
         "verdict": (None if treatment.verdict is None else treatment.verdict.value),
         "performance_eligibility": treatment.eligibility.performance.value,
         "output_eligibility": treatment.eligibility.output_equivalence.value,
@@ -3435,6 +3440,9 @@ def _descriptive_summary(
     if set(grouped) != expected:
         raise RealMLXExperimentError("descriptive comparison matrix is incomplete")
     metrics = (
+        "control_policy_reusable_tokens",
+        "control_policy_reusable_blocks",
+        "control_engine_cached_tokens",
         "semantic_prefix_tokens",
         "policy_reusable_tokens",
         "policy_reusable_blocks",
@@ -3453,6 +3461,9 @@ def _descriptive_summary(
         samples = sorted(grouped[name], key=lambda item: item["replicate_id"])
         comparisons[name] = {
             "independent_units": len(samples),
+            "comparable_pair_count": sum(
+                sample["paired_latency_comparable"] for sample in samples
+            ),
             "samples": samples,
             "statistics": {
                 metric: _statistics([sample[metric] for sample in samples])
@@ -3496,6 +3507,8 @@ def _public_results_from_private(
         "source": "verified_private_records_before_redaction",
         "independent_unit": "one_fresh_replicate_child_process",
         "raw_sample_scope": "one_control_treatment_pair_per_cell_per_replicate",
+        "delta_convention": "treatment_minus_control",
+        "ratio_convention": "treatment_divided_by_control",
         "comparison_count": len(comparisons),
         "comparisons": comparisons,
     }
@@ -3522,6 +3535,8 @@ def _verify_public_results(
             "source",
             "independent_unit",
             "raw_sample_scope",
+            "delta_convention",
+            "ratio_convention",
             "comparison_count",
             "comparisons",
         },
@@ -3547,12 +3562,17 @@ def _verify_public_results(
         or value["independent_unit"] != "one_fresh_replicate_child_process"
         or value["raw_sample_scope"]
         != "one_control_treatment_pair_per_cell_per_replicate"
+        or value["delta_convention"] != "treatment_minus_control"
+        or value["ratio_convention"] != "treatment_divided_by_control"
         or value["comparison_count"] != len(expected_names)
         or not isinstance(comparisons, dict)
         or set(comparisons) != expected_names
     ):
         raise RealMLXExperimentError("public results contract mismatch")
     metric_names = {
+        "control_policy_reusable_tokens",
+        "control_policy_reusable_blocks",
+        "control_engine_cached_tokens",
         "semantic_prefix_tokens",
         "policy_reusable_tokens",
         "policy_reusable_blocks",
@@ -3573,6 +3593,9 @@ def _verify_public_results(
         "treatment_input_tokens",
         "control_generated_output_tokens",
         "treatment_generated_output_tokens",
+        "control_policy_reusable_tokens",
+        "control_policy_reusable_blocks",
+        "control_engine_cached_tokens",
         "semantic_prefix_tokens",
         "policy_reusable_tokens",
         "policy_reusable_blocks",
@@ -3602,6 +3625,7 @@ def _verify_public_results(
         "treatment_output_token_identity",
         "control_deterministic_correctness",
         "treatment_deterministic_correctness",
+        "control_verdict",
         "verdict",
         "performance_eligibility",
         "output_eligibility",
@@ -3615,6 +3639,7 @@ def _verify_public_results(
             comparison,
             {
                 "independent_units",
+                "comparable_pair_count",
                 "samples",
                 "statistics",
                 "output_identity_true_pair_count",
@@ -3625,10 +3650,28 @@ def _verify_public_results(
         samples = comparison["samples"]
         if (
             not isinstance(samples, list)
-            or not 5 <= len(samples) <= 6
+            or len(samples) != len(REPLICATE_IDS)
             or comparison["independent_units"] != len(samples)
-            or comparison["output_identity_true_pair_count"] != len(samples)
-            or comparison["correctness_true_pair_count"] != len(samples)
+            or comparison["comparable_pair_count"]
+            != sum(
+                isinstance(sample, dict)
+                and sample.get("paired_latency_comparable") is True
+                for sample in samples
+            )
+            or comparison["output_identity_true_pair_count"]
+            != sum(
+                isinstance(sample, dict)
+                and sample.get("control_output_token_identity") is True
+                and sample.get("treatment_output_token_identity") is True
+                for sample in samples
+            )
+            or comparison["correctness_true_pair_count"]
+            != sum(
+                isinstance(sample, dict)
+                and sample.get("control_deterministic_correctness") is True
+                and sample.get("treatment_deterministic_correctness") is True
+                for sample in samples
+            )
         ):
             raise RealMLXExperimentError("public result sample count is invalid")
         lane_id = name.split(":", 1)[0]
@@ -3648,10 +3691,10 @@ def _verify_public_results(
                 or sample["lane_id"] != lane_id
                 or sample["control_input_tokens"] != expected_input_tokens
                 or sample["treatment_input_tokens"] != expected_input_tokens
-                or sample["control_output_token_identity"] is not True
-                or sample["treatment_output_token_identity"] is not True
-                or sample["control_deterministic_correctness"] is not True
-                or sample["treatment_deterministic_correctness"] is not True
+                or not isinstance(sample["control_output_token_identity"], bool)
+                or not isinstance(sample["treatment_output_token_identity"], bool)
+                or not isinstance(sample["control_deterministic_correctness"], bool)
+                or not isinstance(sample["treatment_deterministic_correctness"], bool)
                 or not isinstance(sample["paired_latency_comparable"], bool)
             ):
                 raise RealMLXExperimentError("public result sample binding is invalid")
@@ -3664,7 +3707,7 @@ def _verify_public_results(
                 if (
                     isinstance(count, bool)
                     or not isinstance(count, int)
-                    or count != EXPECTED_CALIBRATION_OUTPUT_TOKENS[lane_id]
+                    or count < 0
                     or count > MAX_OUTPUT_TOKENS
                     or count > expected_input_tokens
                 ):
@@ -3673,6 +3716,8 @@ def _verify_public_results(
                     )
             for key in (
                 "semantic_prefix_tokens",
+                "control_policy_reusable_tokens",
+                "control_engine_cached_tokens",
                 "policy_reusable_tokens",
                 "policy_reusable_blocks",
                 "engine_cached_tokens",
@@ -3693,6 +3738,9 @@ def _verify_public_results(
                 ):
                     raise RealMLXExperimentError("public result value is out of bounds")
             semantic = sample["semantic_prefix_tokens"]
+            control_policy = sample["control_policy_reusable_tokens"]
+            control_reusable_blocks = sample["control_policy_reusable_blocks"]
+            control_engine_cached = sample["control_engine_cached_tokens"]
             policy = sample["policy_reusable_tokens"]
             reusable_blocks = sample["policy_reusable_blocks"]
             engine_cached = sample["engine_cached_tokens"]
@@ -3704,6 +3752,8 @@ def _verify_public_results(
                     isinstance(number, bool) or not isinstance(number, int)
                     for number in (
                         semantic,
+                        control_policy,
+                        control_engine_cached,
                         policy,
                         engine_cached,
                         engine_created,
@@ -3711,7 +3761,11 @@ def _verify_public_results(
                         recomputed,
                     )
                 )
+                or control_reusable_blocks is not None
                 or reusable_blocks is not None
+                or not 0 <= control_policy <= expected_input_tokens
+                or not 0 <= control_engine_cached <= expected_input_tokens
+                or control_engine_cached != control_policy
                 or not 0 <= semantic <= expected_input_tokens
                 or not 0 <= policy <= semantic
                 or not 0 <= engine_cached <= expected_input_tokens
@@ -3720,41 +3774,19 @@ def _verify_public_results(
                 or not 0 <= recomputed <= observed
                 or engine_cached + engine_created != expected_input_tokens
                 or observed != expected_input_tokens - policy
-                or recomputed != 0
                 or engine_cached != policy
             ):
                 raise RealMLXExperimentError(
                     "public result reuse counters are inconsistent"
                 )
-            verdict = sample["verdict"]
-            if verdict == Verdict.VERIFIED_HIT.value:
-                verdict_valid = policy > 0 and semantic == expected_input_tokens
-            elif verdict == Verdict.PARTIAL_REUSE.value:
-                verdict_valid = policy > 0 and semantic < expected_input_tokens
-            elif verdict == Verdict.VERIFIED_MISS.value:
-                verdict_valid = (
-                    policy == 0
-                    and engine_cached == 0
-                    and observed == expected_input_tokens
-                    and case != "capacity-eviction"
-                )
-            elif verdict == Verdict.EVICTED.value:
-                verdict_valid = (
-                    case == "capacity-eviction"
-                    and policy == 0
-                    and engine_cached == 0
-                    and observed == expected_input_tokens
-                )
-            else:
-                verdict_valid = False
-            if not verdict_valid or (
-                sample["performance_eligibility"] != EligibilityStatus.INELIGIBLE.value
-                or sample["output_eligibility"] != EligibilityStatus.ELIGIBLE.value
-                or sample["quality_eligibility"]
-                not in {
-                    EligibilityStatus.UNAVAILABLE.value,
-                    EligibilityStatus.NOT_APPLICABLE.value,
-                }
+            valid_verdicts = {verdict.value for verdict in Verdict}
+            valid_eligibility = {status.value for status in EligibilityStatus}
+            if (
+                sample["control_verdict"] not in valid_verdicts
+                or sample["verdict"] not in valid_verdicts
+                or sample["performance_eligibility"] not in valid_eligibility
+                or sample["output_eligibility"] not in valid_eligibility
+                or sample["quality_eligibility"] not in valid_eligibility
             ):
                 raise RealMLXExperimentError(
                     f"public result verdict relationship is invalid: {name}/"
@@ -3772,6 +3804,15 @@ def _verify_public_results(
             if case == "capacity-eviction" and sample["paired_latency_comparable"]:
                 raise RealMLXExperimentError(
                     "eviction latency samples are not adjacent"
+                )
+            if sample["paired_latency_comparable"] and not (
+                sample["control_output_token_identity"]
+                and sample["treatment_output_token_identity"]
+                and sample["control_deterministic_correctness"]
+                and sample["treatment_deterministic_correctness"]
+            ):
+                raise RealMLXExperimentError(
+                    "output divergence cannot be timing-comparable"
                 )
             if sample["paired_latency_comparable"]:
                 if any(
@@ -3974,6 +4015,7 @@ def _verify_public_result_record_bindings(
         "lane_id",
         "control_input_tokens",
         "treatment_input_tokens",
+        "control_engine_cached_tokens",
         "policy_reusable_blocks",
         "engine_cached_tokens",
         "engine_created_tokens",
@@ -3991,6 +4033,28 @@ def _verify_public_result_record_bindings(
         "control_system_memory",
         "treatment_system_memory",
     }
+    if not public:
+        retained_fields.update(
+            {
+                "control_generated_output_tokens",
+                "treatment_generated_output_tokens",
+                "control_policy_reusable_tokens",
+                "control_policy_reusable_blocks",
+                "semantic_prefix_tokens",
+                "policy_reusable_tokens",
+                "unexpected_recomputed_tokens",
+                "paired_latency_comparable",
+                "control_output_token_identity",
+                "treatment_output_token_identity",
+                "control_deterministic_correctness",
+                "treatment_deterministic_correctness",
+                "control_verdict",
+                "verdict",
+                "performance_eligibility",
+                "output_eligibility",
+                "quality_eligibility",
+            }
+        )
     for name, comparison in results["comparisons"].items():
         observed_samples = comparison["samples"]
         expected_samples = expected["comparisons"][name]["samples"]
@@ -4067,6 +4131,14 @@ def _experiment_contract(
             "attempted_replicates": 6,
             "required_complete_replicates": 6,
             "maximum_failed_replicates": 0,
+        },
+        "canonical_run_id": binding["canonical_run_id"],
+        "canonical_output_workspace_digest": binding[
+            "canonical_output_workspace_digest"
+        ],
+        "canonical_attempt_marker": {
+            "identity": binding["canonical_attempt_marker_id"],
+            "started_digest": binding["canonical_attempt_marker_digest"],
         },
         "run_attempt": binding["run_attempt"],
         "prior_invalidated_run_ledger_digests": binding[
@@ -4180,6 +4252,16 @@ def _write_derived(root: Path, *, public: bool) -> None:
         attempts_dir=root / "replicates",
         expected_results_digest=results_digest,
     )
+    ledger_rows = _parse_jsonl(root / "run-ledger.jsonl")
+    terminal = ledger_rows[-1]
+    if (
+        terminal.get("status") != "aggregate_eligible"
+        or terminal.get("complete_replicates") != len(REPLICATE_IDS)
+        or not _aggregate_eligibility_from_rows(ledger_rows)
+    ):
+        raise RealMLXExperimentError(
+            "standalone aggregate verification requires six eligible replicates"
+        )
     complete_ids = _complete_attempt_ids(root / "replicates")
     _verify_public_results(results, complete_replicate_ids=complete_ids)
     _verify_public_result_record_bindings(
@@ -4499,6 +4581,15 @@ def verify_aggregate(root: Path, *, public: bool | None = None) -> dict[str, Any
         attempts_dir=root / "replicates",
         expected_results_digest=results_digest,
     )
+    ledger_rows = _parse_jsonl(root / "run-ledger.jsonl")
+    if (
+        ledger_rows[-1].get("status") != "aggregate_eligible"
+        or ledger_rows[-1].get("complete_replicates") != len(REPLICATE_IDS)
+        or not _aggregate_eligibility_from_rows(ledger_rows)
+    ):
+        raise RealMLXExperimentError(
+            "standalone aggregate verification requires six eligible replicates"
+        )
     complete_ids = _complete_attempt_ids(root / "replicates")
     _verify_public_results(results, complete_replicate_ids=complete_ids)
     contract = _safe_object(root / "experiment-contract.json")
@@ -4520,6 +4611,10 @@ def verify_aggregate(root: Path, *, public: bool | None = None) -> dict[str, Any
         public=inferred_public,
         run_binding=run_binding,
     )
+    if index["complete_replicates"] != len(REPLICATE_IDS):
+        raise RealMLXExperimentError(
+            "standalone aggregate verification requires six complete replicates"
+        )
     if not inferred_public and results != _public_results_from_private(
         root / "replicates", data_only_bundle=True
     ):
@@ -4820,28 +4915,6 @@ def _replicate_child_command(
     ]
 
 
-def _git_path_is_tracked(path: Path) -> bool:
-    try:
-        relative = path.relative_to(_PROJECT_ROOT).as_posix()
-    except ValueError:
-        return False
-    result = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(_PROJECT_ROOT),
-            "ls-files",
-            "--error-unmatch",
-            "--",
-            relative,
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-    return result.returncode == 0
-
-
 def _reject_import_shadows(output_workspace: Path) -> None:
     roots = (_PROJECT_ROOT, output_workspace.parent)
     checked: set[Path] = set()
@@ -4852,8 +4925,6 @@ def _reject_import_shadows(output_workspace: Path) -> None:
                 continue
             checked.add(candidate)
             if not (candidate.exists() or candidate.is_symlink()):
-                continue
-            if root == _PROJECT_ROOT and _git_path_is_tracked(candidate):
                 continue
             raise RealMLXExperimentError("unsafe top-level import shadow candidate")
 
@@ -5008,31 +5079,20 @@ def _validate_supervisor_source(expected_commit: str) -> str:
     commit, commit_at = source_commit()
     if commit != expected_commit or commit_at is None:
         raise RealMLXExperimentError("current Git HEAD does not match expected commit")
-    status = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(_PROJECT_ROOT),
-            "status",
-            "--porcelain=v1",
-            "--untracked-files=no",
-        ],
-        capture_output=True,
-        check=False,
+    status = _safe_git(
+        _PROJECT_ROOT,
+        ["status", "--porcelain=v1", "--untracked-files=no"],
         text=True,
-        env={
-            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "HOME": "/dev/null",
-            "LC_ALL": "C",
-            "LANG": "C",
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": "/dev/null",
-            "GIT_NO_LAZY_FETCH": "1",
-            "GIT_NO_REPLACE_OBJECTS": "1",
-        },
     )
     if status.returncode != 0 or status.stdout:
         raise RealMLXExperimentError("tracked worktree must be clean")
+    head = _safe_git(
+        _PROJECT_ROOT,
+        ["rev-parse", "--verify", "HEAD^{commit}"],
+        text=True,
+    )
+    if head.returncode != 0 or head.stdout.strip() != expected_commit:
+        raise RealMLXExperimentError("current Git HEAD does not match expected commit")
     package_digest = package_source_digest()
     if _git_package_digest(_PROJECT_ROOT, expected_commit) != package_digest:
         raise RealMLXExperimentError(
@@ -5045,6 +5105,82 @@ def _validate_supervisor_source(expected_commit: str) -> str:
     if commit_time.tzinfo is None or commit_time > datetime.now(timezone.utc):
         raise RealMLXExperimentError("expected commit chronology is invalid")
     return package_digest
+
+
+def _require_trusted_canonical_dispatch(expected_commit: Any) -> None:
+    if sys.flags.isolated != 1 or sys.flags.no_site != 1:
+        raise RealMLXExperimentError(
+            "canonical execution requires the trusted Python -I -S bootstrap"
+        )
+    if (
+        not isinstance(expected_commit, str)
+        or re.fullmatch(r"[0-9a-f]{40}", expected_commit) is None
+        or os.environ.get("LLMTRACEFX_TRUSTED_BOOTSTRAP") != "1"
+        or os.environ.get("LLMTRACEFX_TRUSTED_COMMIT") != expected_commit
+    ):
+        raise RealMLXExperimentError("canonical trusted commit binding is invalid")
+    repo_text = os.environ.get("LLMTRACEFX_TRUSTED_REPO_ROOT")
+    snapshot_text = os.environ.get("LLMTRACEFX_TRUSTED_SNAPSHOT_ROOT")
+    if not repo_text or not snapshot_text:
+        raise RealMLXExperimentError(
+            "canonical trusted source environment is incomplete"
+        )
+    try:
+        repo = Path(os.path.abspath(repo_text))
+        snapshot = Path(os.path.abspath(snapshot_text))
+        if (
+            repo.is_symlink()
+            or snapshot.is_symlink()
+            or repo.resolve(strict=True) != repo
+            or snapshot.resolve(strict=True) != snapshot
+            or not repo.is_dir()
+            or not snapshot.is_dir()
+        ):
+            raise OSError
+    except OSError as exc:
+        raise RealMLXExperimentError(
+            "canonical trusted source roots are unavailable"
+        ) from exc
+    if (
+        repo != _PROJECT_ROOT
+        or snapshot != _TRUSTED_SNAPSHOT_ROOT
+        or snapshot != _INSTALLED_PROJECT_ROOT
+        or _is_relative_to(snapshot, repo)
+        or _is_relative_to(repo, snapshot)
+    ):
+        raise RealMLXExperimentError("canonical trusted source roots are invalid")
+    package_module = sys.modules.get("llmtracefx")
+    package_file = getattr(package_module, "__file__", None)
+    try:
+        origins = (
+            Path(__file__).resolve(strict=True),
+            Path(str(package_file)).resolve(strict=True),
+        )
+    except OSError as exc:
+        raise RealMLXExperimentError(
+            "canonical loaded package origin is unavailable"
+        ) from exc
+    if any(not _is_relative_to(origin, snapshot) for origin in origins):
+        raise RealMLXExperimentError("canonical loaded package origin is untrusted")
+    for package_name in ("llmtracefx", "vllm_kv_truth"):
+        package_root = snapshot / package_name
+        if (
+            package_root.is_symlink()
+            or not package_root.is_dir()
+            or package_root.stat().st_mode & 0o222
+        ):
+            raise RealMLXExperimentError("canonical source snapshot is not read-only")
+        for path in package_root.rglob("*"):
+            if (
+                path.is_symlink()
+                or not (path.is_file() or path.is_dir())
+                or path.stat().st_mode & 0o222
+            ):
+                raise RealMLXExperimentError(
+                    "canonical source snapshot is not read-only"
+                )
+    if _validate_supervisor_source(expected_commit) != package_source_digest():
+        raise RealMLXExperimentError("canonical source snapshot digest mismatch")
 
 
 def _resolve_existing_file(path: Path, label: str) -> Path:
@@ -5104,12 +5240,113 @@ def _resolve_run_all_paths(
     conversion_summary: Path,
     output_workspace: Path,
 ) -> tuple[Path, Path, Path, Path]:
-    return (
+    resolved = (
         _resolve_existing_file(workload, "workload"),
         _resolve_existing_directory(model_dir, "model directory"),
         _resolve_existing_file(conversion_summary, "conversion summary"),
         _resolve_new_directory(output_workspace, "run-all output workspace"),
     )
+    if resolved[3] != CANONICAL_OUTPUT_WORKSPACE:
+        raise RealMLXExperimentError(
+            "frozen protocol requires the exact canonical output workspace"
+        )
+    marker = CANONICAL_ATTEMPT_MARKER.expanduser().absolute()
+    if marker.exists() or marker.is_symlink():
+        raise RealMLXExperimentError("canonical run attempt 1 is already consumed")
+    return resolved
+
+
+def _workspace_digest() -> str:
+    return _digest_bytes(str(CANONICAL_OUTPUT_WORKSPACE).encode("utf-8"))
+
+
+def _marker_identity() -> str:
+    return CANONICAL_ATTEMPT_MARKER.name
+
+
+def _consume_canonical_attempt(
+    *,
+    expected_commit: str,
+    workload: FrozenMLXWorkload,
+) -> tuple[dict[str, Any], str]:
+    marker = CANONICAL_ATTEMPT_MARKER.expanduser().absolute()
+    parent = marker.parent
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if parent.is_symlink() or parent.resolve(strict=True) != parent:
+        raise RealMLXExperimentError("canonical attempt marker parent is unsafe")
+    payload = {
+        "schema_version": "1",
+        "canonical_run_id": CANONICAL_RUN_ID,
+        "attempt_marker_id": _marker_identity(),
+        "run_attempt": CANONICAL_RUN_ATTEMPT,
+        "status": "started",
+        "started_at": _utc_now(),
+        "expected_commit": expected_commit,
+        "frozen_workload_digest": workload.to_dict()["workload_digest"],
+        "model_artifact_digest": EXPECTED_MODEL_ARTIFACT_DIGEST,
+        "canonical_output_workspace": str(CANONICAL_OUTPUT_WORKSPACE),
+        "canonical_output_workspace_digest": _workspace_digest(),
+    }
+    content = _json_bytes(payload)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(marker, flags, 0o600)
+    except FileExistsError as exc:
+        raise RealMLXExperimentError(
+            "canonical run attempt 1 is already consumed"
+        ) from exc
+    try:
+        os.write(descriptor, content)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    parent_descriptor = os.open(parent, os.O_RDONLY)
+    try:
+        os.fsync(parent_descriptor)
+    finally:
+        os.close(parent_descriptor)
+    return payload, _digest_bytes(content)
+
+
+def _finalize_canonical_attempt_marker(
+    started: Mapping[str, Any],
+    started_digest: str,
+    *,
+    status: str,
+    ledger: Path,
+) -> None:
+    if status not in {"completed", "failed"}:
+        raise RealMLXExperimentError("canonical attempt terminal status is invalid")
+    marker = CANONICAL_ATTEMPT_MARKER.expanduser().absolute()
+    if marker.is_symlink() or not marker.is_file():
+        raise RealMLXExperimentError("canonical attempt marker is unavailable")
+    before = marker.stat()
+    ledger_digest = (
+        _digest_bytes(ledger.read_bytes())
+        if ledger.is_file() and not ledger.is_symlink()
+        else None
+    )
+    terminal = {
+        **dict(started),
+        "status": status,
+        "finalized_at": _utc_now(),
+        "started_marker_digest": started_digest,
+        "run_ledger_digest": ledger_digest,
+    }
+    flags = os.O_WRONLY | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(marker, flags)
+    try:
+        after_open = os.fstat(descriptor)
+        if (before.st_dev, before.st_ino) != (after_open.st_dev, after_open.st_ino):
+            raise RealMLXExperimentError("canonical attempt marker was replaced")
+        os.write(descriptor, _json_bytes(terminal))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 @dataclass(frozen=True)
@@ -5220,6 +5457,9 @@ def run_preflight(
         receipt = {
             "schema_version": "1",
             "canonical_execution": False,
+            "canonical_run_id": CANONICAL_RUN_ID,
+            "canonical_output_workspace": str(CANONICAL_OUTPUT_WORKSPACE),
+            "canonical_attempt_marker_id": _marker_identity(),
             "run_attempt": CANONICAL_RUN_ATTEMPT,
             "prior_invalidated_run_ledger_digests": list(
                 PRIOR_INVALIDATED_RUN_LEDGER_DIGESTS
@@ -5231,6 +5471,9 @@ def run_preflight(
         receipt = {
             "schema_version": "1",
             "canonical_execution": False,
+            "canonical_run_id": CANONICAL_RUN_ID,
+            "canonical_output_workspace": str(CANONICAL_OUTPUT_WORKSPACE),
+            "canonical_attempt_marker_id": _marker_identity(),
             "run_attempt": CANONICAL_RUN_ATTEMPT,
             "prior_invalidated_run_ledger_digests": list(
                 PRIOR_INVALIDATED_RUN_LEDGER_DIGESTS
@@ -5260,12 +5503,21 @@ def _run_binding(
     workload: FrozenMLXWorkload,
     runtime_packages: Mapping[str, Any],
     run_attempt: int,
+    attempt_marker_digest: str | None = None,
 ) -> dict[str, Any]:
     _require_canonical_run_attempt(run_attempt)
     if re.fullmatch(r"sha256:[0-9a-f]{64}", package_digest) is None:
         raise RealMLXExperimentError("package source digest is invalid")
     _verify_runtime_package_identity(runtime_packages)
+    if attempt_marker_digest is None:
+        attempt_marker_digest = "sha256:" + "0" * 64
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", attempt_marker_digest) is None:
+        raise RealMLXExperimentError("canonical attempt marker digest is invalid")
     return {
+        "canonical_run_id": CANONICAL_RUN_ID,
+        "canonical_output_workspace_digest": _workspace_digest(),
+        "canonical_attempt_marker_id": _marker_identity(),
+        "canonical_attempt_marker_digest": attempt_marker_digest,
         "run_attempt": CANONICAL_RUN_ATTEMPT,
         "prior_invalidated_run_ledger_digests": list(
             PRIOR_INVALIDATED_RUN_LEDGER_DIGESTS
@@ -5508,6 +5760,10 @@ def _verify_run_ledger(
     ):
         raise RealMLXExperimentError("run ledger timestamps are out of order")
     binding_keys = {
+        "canonical_run_id",
+        "canonical_output_workspace_digest",
+        "canonical_attempt_marker_id",
+        "canonical_attempt_marker_digest",
         "run_attempt",
         "prior_invalidated_run_ledger_digests",
         "expected_commit",
@@ -5540,6 +5796,14 @@ def _verify_run_ledger(
         or run_start["event"] != "run-start"
         or run_start["status"] != "running"
         or run_start["reason"] is not None
+        or binding["canonical_run_id"] != CANONICAL_RUN_ID
+        or binding["canonical_output_workspace_digest"] != _workspace_digest()
+        or binding["canonical_attempt_marker_id"] != _marker_identity()
+        or re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(binding["canonical_attempt_marker_digest"]),
+        )
+        is None
         or binding["run_attempt"] != CANONICAL_RUN_ATTEMPT
         or binding["prior_invalidated_run_ledger_digests"]
         != list(PRIOR_INVALIDATED_RUN_LEDGER_DIGESTS)
@@ -6308,6 +6572,42 @@ def run_all_replicates(
         output_workspace=output_workspace,
         expected_commit=expected_commit,
     )
+    marker, marker_digest = _consume_canonical_attempt(
+        expected_commit=expected_commit,
+        workload=preflight_state.workload,
+    )
+    ledger = preflight_state.output_workspace / "run-ledger.jsonl"
+    try:
+        result = _run_all_replicates_after_consumption(
+            preflight_state=preflight_state,
+            expected_commit=expected_commit,
+            run_attempt=run_attempt,
+            attempt_marker_digest=marker_digest,
+        )
+    except BaseException:
+        _finalize_canonical_attempt_marker(
+            marker,
+            marker_digest,
+            status="failed",
+            ledger=ledger,
+        )
+        raise
+    _finalize_canonical_attempt_marker(
+        marker,
+        marker_digest,
+        status=("completed" if result["run_all_complete"] else "failed"),
+        ledger=ledger,
+    )
+    return result
+
+
+def _run_all_replicates_after_consumption(
+    *,
+    preflight_state: _RunPreflight,
+    expected_commit: str,
+    run_attempt: int,
+    attempt_marker_digest: str,
+) -> dict[str, Any]:
     workload = preflight_state.workload_path
     model_dir = preflight_state.model_dir
     conversion_summary = preflight_state.conversion_summary
@@ -6319,6 +6619,7 @@ def run_all_replicates(
         workload=preflight_state.workload,
         runtime_packages=preflight_state.runtime_packages,
         run_attempt=run_attempt,
+        attempt_marker_digest=attempt_marker_digest,
     )
     output_workspace.mkdir(parents=True)
     attempts = output_workspace / "attempts"
@@ -6740,10 +7041,8 @@ def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
         "sandbox-probe",
         "sanitize",
         "verify",
-    } and (os.environ.get("LLMTRACEFX_TRUSTED_BOOTSTRAP") != "1"):
-        raise RealMLXExperimentError(
-            "canonical execution requires the trusted Python -I -S bootstrap"
-        )
+    }:
+        _require_trusted_canonical_dispatch(getattr(args, "expected_commit", None))
     if args.command == "compile":
         snapshot_owner, snapshot, _ = _verified_model_snapshot(
             args.model_dir, args.conversion_summary

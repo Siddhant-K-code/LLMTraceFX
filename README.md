@@ -736,14 +736,23 @@ implement a side-effect-free `--help` path.
   arrays and provides no evidence against cross-prefix or cross-namespace
   contamination; it confirms only that cached and fresh paths produced the
   same fixed answer. It is a mechanical timing-comparability gate, not
-  independent corroboration of reuse. All six preregistered
-  replicates must complete and validate; every failure disqualifies the run,
-  with no replacement. `preflight` and `run-all` require `--run-attempt 1` and
-  bind an empty prior-invalidated-ledger list. The global preflight gate runs
+  independent corroboration of reuse. All six preregistered process
+  replicates must complete structurally, with no replacement. Measured output
+  divergence, incorrect output, recomputation, or a non-evicted capacity
+  revisit remains a valid negative result rather than invalidating a completed
+  replicate; observation counts are not pass thresholds, and such pairs are
+  not latency-comparable. `preflight` and `run-all` require `--run-attempt 1`,
+  canonical run ID `qwen3-4b-99469aa8-attempt-1`, and the exact workspace
+  `/Users/siddhant-git-ai/.cache/llmtracefx/qwen3-4b-kv-cache-v1/canonical-run-attempt-1`.
+  They bind an empty prior-invalidated-ledger list. The global preflight gate runs
   before workspace creation, so an initial refusal consumes no replicate and
   can be retried only after explicit clean-reboot confirmation. Once attempt 1
   starts, any invalidation permanently invalidates the canonical result under
-  this preregistration; no new-workspace retry is canonical. MLX allocator
+  this preregistration. Immediately before workspace/ledger creation,
+  `run-all` atomically consumes the durable external marker
+  `/Users/siddhant-git-ai/.cache/llmtracefx/canonical-attempts/qwen3-4b-99469aa8-attempt-1.json`;
+  preflight only verifies its absence. The marker is finalized in place and
+  is never deleted by the runner, so no new-workspace retry is canonical. MLX allocator
   peaks reset immediately before each cache fetch, covering lookup/copy/trim
   plus generation from an equivalent cold/hit boundary; stage instrumentation
   remains outside client clocks. Within each pair the

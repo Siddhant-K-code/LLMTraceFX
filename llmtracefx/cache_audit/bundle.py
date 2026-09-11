@@ -72,6 +72,16 @@ _GIT_ENV = {
     "GIT_NO_LAZY_FETCH": "1",
     "GIT_NO_REPLACE_OBJECTS": "1",
 }
+_GIT_COMMAND = (
+    "/usr/bin/git",
+    "--no-replace-objects",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.attributesFile=/dev/null",
+)
 
 
 class CacheAuditBundleError(ValueError):
@@ -666,8 +676,7 @@ def _timestamp(value: str, field: str) -> datetime:
 def _repository_is_incomplete(repository: Path) -> bool:
     shallow = subprocess.run(
         [
-            "git",
-            "--no-replace-objects",
+            *_GIT_COMMAND,
             "-C",
             str(repository),
             "rev-parse",
@@ -685,8 +694,7 @@ def _repository_is_incomplete(repository: Path) -> bool:
         return True
     partial = subprocess.run(
         [
-            "git",
-            "--no-replace-objects",
+            *_GIT_COMMAND,
             "-C",
             str(repository),
             "config",
@@ -712,8 +720,7 @@ def _repository_is_incomplete(repository: Path) -> bool:
 def _package_objects_missing(repository: Path, commit: str) -> bool:
     result = subprocess.run(
         [
-            "git",
-            "--no-replace-objects",
+            *_GIT_COMMAND,
             "-C",
             str(repository),
             "rev-list",
@@ -738,8 +745,7 @@ def _package_objects_missing(repository: Path, commit: str) -> bool:
 def _git_package_digest(repository: Path, commit: str) -> str:
     listing = subprocess.run(
         [
-            "git",
-            "--no-replace-objects",
+            *_GIT_COMMAND,
             "-C",
             str(repository),
             "ls-tree",
@@ -771,8 +777,7 @@ def _git_package_digest(repository: Path, commit: str) -> str:
     for relative_text in paths:
         result = subprocess.run(
             [
-                "git",
-                "--no-replace-objects",
+                *_GIT_COMMAND,
                 "-C",
                 str(repository),
                 "show",
@@ -817,10 +822,46 @@ def _verify_manifest_chronology(
     repository = repository or Path(__file__).resolve().parents[2]
     if not (repository / ".git").exists():
         return "unavailable"
+    status = subprocess.run(
+        [
+            *_GIT_COMMAND,
+            "-C",
+            str(repository),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=no",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        env=_GIT_ENV,
+    )
+    if status.returncode != 0:
+        raise CacheAuditBundleError("repository status is unavailable")
+    if status.stdout:
+        head = subprocess.run(
+            [
+                *_GIT_COMMAND,
+                "-C",
+                str(repository),
+                "rev-parse",
+                "--verify",
+                "HEAD^{commit}",
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+            env=_GIT_ENV,
+        )
+        if (
+            head.returncode == 0
+            and head.stdout.strip() == manifest.generator_commit
+            and manifest.generator_package_digest == package_source_digest()
+        ):
+            return "unavailable"
     object_type = subprocess.run(
         [
-            "git",
-            "--no-replace-objects",
+            *_GIT_COMMAND,
             "-C",
             str(repository),
             "cat-file",
@@ -840,8 +881,7 @@ def _verify_manifest_chronology(
         raise CacheAuditBundleError("generator object is not a commit")
     result = subprocess.run(
         [
-            "git",
-            "--no-replace-objects",
+            *_GIT_COMMAND,
             "-C",
             str(repository),
             "show",

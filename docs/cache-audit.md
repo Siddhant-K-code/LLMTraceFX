@@ -311,7 +311,8 @@ EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-t
 EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py \
   run-all --model-dir MODEL \
   --workload calibrated.json --expected-commit FULL_40_CHARACTER_GIT_SHA \
-  --output-workspace real-mlx-run --run-attempt 1
+  --output-workspace /Users/siddhant-git-ai/.cache/llmtracefx/qwen3-4b-kv-cache-v1/canonical-run-attempt-1 \
+  --run-attempt 1
 ```
 
 `run-all` resolves all input and output paths before creating anything and
@@ -349,11 +350,21 @@ writing an explicitly new receipt:
 EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py \
   preflight --model-dir MODEL \
   --workload calibrated.json --expected-commit FULL_40_CHARACTER_GIT_SHA \
-  --output-workspace real-mlx-run --output preflight.json --run-attempt 1
+  --output-workspace /Users/siddhant-git-ai/.cache/llmtracefx/qwen3-4b-kv-cache-v1/canonical-run-attempt-1 \
+  --output preflight.json --run-attempt 1
 ```
 
-`run-all` repeats this gate rather than trusting a prior receipt. After it
-passes, `run-all` creates a workspace containing exactly
+`run-all` repeats this gate rather than trusting a prior receipt. Both commands
+require canonical run ID `qwen3-4b-99469aa8-attempt-1` and the exact absolute
+workspace shown above. Preflight only checks that the durable external marker
+`/Users/siddhant-git-ai/.cache/llmtracefx/canonical-attempts/qwen3-4b-99469aa8-attempt-1.json`
+is absent and consumes nothing. After all gates pass, `run-all` atomically
+creates that marker immediately before the workspace and ledger, binding the
+commit, workload, model, workspace, and started state. Existing markers are
+always refused. The same marker inode is finalized with terminal state and
+ledger digest and runner code never deletes it. The marker identity and
+started digest are retained in the ledger and aggregate contract.
+`run-all` then creates a workspace containing exactly
 `attempts/`, `private-artifacts/`, and `run-ledger.jsonl`. The append-only
 ledger binds the expected commit, package-source digest, installed runtime
 package-tree identities, calibrated workload and lane digests, model digest,
@@ -397,11 +408,18 @@ Failed IDs retain bounded private logs and
 partial artifacts in `private-artifacts/`, receive exactly one failed marker,
 and are never replaced. Failed process-group cleanup or a surviving orphan
 aborts all later launches while still finalizing every planned ID exactly once.
-All six preregistered replicates must complete and validate. Any per-replicate
+All six preregistered process replicates must complete and validate structurally. Any per-replicate
 preflight, launch, started, runtime, timeout, source, cleanup, or
 `supervisor_aborted_before_start` failure is preserved but invalidates the
 full run; failed IDs are never replaced. The global gate runs before workspace
 creation, so an initial refusal consumes no replicate.
+Output identity and deterministic correctness failures, recomputation, and any
+schema-valid cache verdict—including a non-`evicted` capacity revisit—are
+preserved canonical observations, not replicate-fatal gates. Their counts are
+observations rather than pass preconditions. A pair with failed identity or
+correctness, or an eviction-pressure pair, has
+`paired_latency_comparable: false`; warmup and calibration remain pre-run
+compatibility gates.
 Both `preflight` and `run-all` require the literal integer
 `--run-attempt 1`; the receipt and canonical ledger bind
 `run_attempt: 1` and `prior_invalidated_run_ledger_digests: []`; those fields
@@ -420,7 +438,8 @@ Aggregation and sanitization remain explicit:
 
 ```console
 PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py aggregate \
-  --run-workspace real-mlx-run --output-dir private-aggregate \
+  --run-workspace /Users/siddhant-git-ai/.cache/llmtracefx/qwen3-4b-kv-cache-v1/canonical-run-attempt-1 \
+  --output-dir private-aggregate \
   --expected-commit FULL_40_CHARACTER_GIT_SHA
 PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py verify private-aggregate \
   --expected-commit FULL_40_CHARACTER_GIT_SHA
@@ -440,13 +459,19 @@ covered by the recursive `SHA256SUMS`.
 `results.json` is derived from verified private records before nested bundle
 redaction and preserves per-lane/case paired reuse, engine verdict, timing,
 memory-level, output-count, identity, and correctness observations plus
-descriptive medians and ranges. It contains no token arrays, prompts, paths,
+descriptive medians and ranges. Every cell has exactly six raw samples and an
+explicit comparable-pair count. It declares deltas as treatment minus control
+and ratios as treatment divided by control, and retains control verdict,
+control engine-cached-token, and control policy-reuse observations. These are
+descriptive measurements, not causal claims. It contains no token arrays, prompts, paths,
 host IDs, or secrets.
 
 Real-MLX aggregate bundles deliberately contain no executable verifier.
 Offline verification must invoke the independently installed, version-pinned
-`llmtracefx-real-mlx-cache-audit verify` command. The verifier checks the
-ledger against every attempt, reproduces `results.json` from private
+`llmtracefx-real-mlx-cache-audit verify` command. The verifier requires a
+terminal `aggregate_eligible` ledger with exactly six complete replicates and
+exactly six raw samples in every result cell. It checks the ledger against
+every attempt, reproduces `results.json` from private
 aggregates, strictly validates public result schemas and bounds, and verifies
 the result digest bound by the ledger and experiment contract. Unkeyed
 `SHA256SUMS` provides integrity only, not authenticity. The Git commit that
@@ -496,4 +521,6 @@ Within every pair the cold control always precedes the warm treatment, so
 monotone drift can inflate an apparent latency benefit; reported deltas are
 descriptive and are not causal speedups. The
 output workspace must be outside every repository and free of top-level import
-shadows for every runtime import package. Every failure is disqualifying.
+shadows for every runtime import package. Every process/lifecycle failure is
+disqualifying; a completed request's negative measured output or cache outcome
+is retained as evidence.

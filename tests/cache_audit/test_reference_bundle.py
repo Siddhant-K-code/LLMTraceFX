@@ -65,6 +65,37 @@ def test_reference_adapter_exercises_truth_states() -> None:
     assert verdicts["namespace-isolation"] is Verdict.VERIFIED_MISS
 
 
+def test_bundle_git_uses_absolute_binary_minimal_env_and_disabled_features(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    commands: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(command: list[str], **kwargs: object) -> object:
+        commands.append((command, kwargs))
+        return type("Completed", (), {"returncode": 0, "stdout": "false\n"})()
+
+    monkeypatch.setattr(cache_bundle.subprocess, "run", run)
+    assert cache_bundle._repository_is_incomplete(tmp_path) is False
+    command, kwargs = commands[0]
+    assert command[0] == "/usr/bin/git"
+    assert "core.fsmonitor=false" in command
+    assert "core.hooksPath=/dev/null" in command
+    assert "core.attributesFile=/dev/null" in command
+    assert kwargs["env"] == cache_bundle._GIT_ENV
+    verifier = cache_bundle._portable_verifier(
+        AuditManifest.from_dict(
+            json.loads(
+                Path(
+                    "examples/cache-audit/reference-positive-control/"
+                    "audit-manifest.json"
+                ).read_text()
+            )
+        )
+    )
+    assert '"/usr/bin/git"' in verifier
+    assert "GIT_ENV = {**os.environ" not in verifier
+
+
 def test_bundle_round_trip_and_tamper_detection(tmp_path: Path) -> None:
     output = tmp_path / "bundle"
     requests = adversarial_requests()

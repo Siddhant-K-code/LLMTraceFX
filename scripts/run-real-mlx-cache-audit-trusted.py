@@ -413,7 +413,19 @@ def _git(
     repo_root: Path, args: list[str], *, text: bool = False
 ) -> subprocess.CompletedProcess[Any]:
     return subprocess.run(
-        ["git", "-C", str(repo_root), *args],
+        [
+            "/usr/bin/git",
+            "--no-replace-objects",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.attributesFile=/dev/null",
+            "-C",
+            str(repo_root),
+            *args,
+        ],
         capture_output=True,
         check=False,
         env=_git_environment(),
@@ -530,6 +542,13 @@ def _materialize_snapshot(
     for required in _SNAPSHOT_PREFIXES:
         if not (snapshot / required.rstrip("/")).is_dir():
             raise BootstrapError("trusted source snapshot is incomplete")
+    for directory in sorted(
+        (path for path in snapshot.rglob("*") if path.is_dir()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
+        directory.chmod(0o500)
+    snapshot.chmod(0o500)
     return snapshot
 
 

@@ -43,7 +43,6 @@ from llmtracefx.cache_audit.real_mlx import (
     _experiment_cache_config,
     _json_bytes,
     _request_stage_memory,
-    _require_private_output_gates,
     _safe_environment,
     _write_json,
     _write_recursive_checksums,
@@ -67,6 +66,20 @@ from llmtracefx.cache_audit.schema import (
 from llmtracefx.optimizer.lab.qwen3_8b.conversion import conversion_manifest_hash
 from llmtracefx.optimizer.lab.qwen3_8b.conversion_manifest import ConversionManifest
 from llmtracefx.optimizer.schema import Measurement, MetricProvenance
+
+
+@pytest.fixture(autouse=True)
+def _isolated_canonical_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        real_mlx_module,
+        "CANONICAL_OUTPUT_WORKSPACE",
+        tmp_path / "run",
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "CANONICAL_ATTEMPT_MARKER",
+        tmp_path / "canonical-attempts" / "qwen3-4b-99469aa8-attempt-1.json",
+    )
 
 
 class FakeTokenizer:
@@ -651,11 +664,13 @@ def test_source_validation_rejects_tracked_dirt_and_package_drift(
     with pytest.raises(RealMLXExperimentError, match="tracked worktree"):
         real_mlx_module._validate_supervisor_source(expected_commit)
 
-    monkeypatch.setattr(
-        real_mlx_module.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "", ""),
-    )
+    def clean_git(
+        command: list[str], **_kwargs: Any
+    ) -> subprocess.CompletedProcess[str]:
+        output = expected_commit + "\n" if "rev-parse" in command else ""
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    monkeypatch.setattr(real_mlx_module.subprocess, "run", clean_git)
     monkeypatch.setattr(
         real_mlx_module,
         "package_source_digest",
@@ -999,25 +1014,6 @@ def test_calibration_repeats_base_with_fresh_adapters() -> None:
         assert all(
             len(output) == 3 for output in (lane.calibration_outputs or {}).values()
         )
-
-
-def test_each_request_must_match_its_source_array_calibration_output() -> None:
-    calibrated = _calibrated_workload()
-    requests = requests_for_replicate(calibrated, "replicate-0")
-    records = MLXIdentityReference().run(requests)
-    _require_private_output_gates(records, calibrated)
-
-    outputs = dict(calibrated.lanes[0].calibration_outputs or {})
-    outputs["mutation_137"] = (0, 0, 0)
-    mismatched = replace(
-        calibrated,
-        lanes=(
-            replace(calibrated.lanes[0], calibration_outputs=outputs),
-            calibrated.lanes[1],
-        ),
-    )
-    with pytest.raises(RealMLXExperimentError, match="differs from calibration"):
-        _require_private_output_gates(records, mismatched)
 
 
 def test_failed_replicate_finishes_with_one_valid_terminal_marker(
@@ -1483,6 +1479,23 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
         assemble_aggregate(workspace / "attempts", tmp_path / "bare-attempts")
     assert assemble_aggregate(workspace, private)["complete_replicates"] == 6
     assert verify_aggregate(private)["verified"] is True
+    results = json.loads((private / "results.json").read_text())
+    assert results["delta_convention"] == "treatment_minus_control"
+    assert results["ratio_convention"] == "treatment_divided_by_control"
+    assert all(
+        comparison["independent_units"] == 6
+        and len(comparison["samples"]) == 6
+        and comparison["comparable_pair_count"]
+        == sum(sample["paired_latency_comparable"] for sample in comparison["samples"])
+        for comparison in results["comparisons"].values()
+    )
+    assert all(
+        "control_verdict" in sample
+        and "control_engine_cached_tokens" in sample
+        and "control_policy_reusable_tokens" in sample
+        for comparison in results["comparisons"].values()
+        for sample in comparison["samples"]
+    )
     with pytest.raises(cache_bundle.CacheAuditBundleError, match="bundle files differ"):
         cache_bundle.verify_bundle(private / "replicates" / "replicate-0" / "bundle")
     private_index = json.loads((private / "replicate-index.json").read_text())
@@ -1553,6 +1566,15 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     assert len(contract["combined_blocks"]) == 14
     assert set(contract["exact_block_schedules"]) == set(REPLICATE_IDS)
     assert contract["run_attempt"] == 1
+    assert contract["canonical_run_id"] == real_mlx_module.CANONICAL_RUN_ID
+    assert (
+        contract["canonical_output_workspace_digest"]
+        == real_mlx_module._workspace_digest()
+    )
+    assert contract["canonical_attempt_marker"] == {
+        "identity": real_mlx_module.CANONICAL_ATTEMPT_MARKER.name,
+        "started_digest": "sha256:" + "0" * 64,
+    }
     assert contract["prior_invalidated_run_ledger_digests"] == []
     assert contract["evidence_binding"]["expected_commit"] == "a" * 40
     assert contract["evidence_binding"]["run_attempt"] == 1
@@ -1669,6 +1691,8 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     assert any("observation" in row for row in public_ledger)
     public_run_start = next(row for row in public_ledger if row["event"] == "run-start")
     assert public_run_start["run_attempt"] == 1
+    assert public_run_start["canonical_run_id"] == real_mlx_module.CANONICAL_RUN_ID
+    assert public_run_start["canonical_attempt_marker_digest"] == "sha256:" + "0" * 64
     assert public_run_start["prior_invalidated_run_ledger_digests"] == []
     public_workload_binding = json.loads(
         (public / "replicates" / "replicate-0" / "workload-binding.json").read_text()
@@ -1705,8 +1729,19 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     ] = False
     _write_json(results_path, results_value)
     _write_recursive_checksums(results_tamper)
-    with pytest.raises(RealMLXExperimentError, match="sample binding"):
+    with pytest.raises(RealMLXExperimentError, match="public result"):
         verify_aggregate(results_tamper)
+
+    sample_count_tamper = tmp_path / "sample-count-tamper"
+    shutil.copytree(public, sample_count_tamper)
+    sample_count_results = sample_count_tamper / "results.json"
+    sample_count_value = json.loads(sample_count_results.read_text())
+    sample_count_value["comparisons"]["1k:cold-exact"]["samples"].pop()
+    sample_count_value["comparisons"]["1k:cold-exact"]["independent_units"] = 5
+    _write_json(sample_count_results, sample_count_value)
+    _write_recursive_checksums(sample_count_tamper)
+    with pytest.raises(RealMLXExperimentError, match="sample count"):
+        verify_aggregate(sample_count_tamper)
 
     memory_tamper = tmp_path / "memory-tamper"
     shutil.copytree(public, memory_tamper)
@@ -2171,26 +2206,6 @@ def test_all_six_eligibility_rejects_preflight_and_started_failures(
     assert not real_mlx_module._aggregate_eligibility_from_rows(synthetic)
 
 
-def test_capacity_eviction_gate_requires_both_lane_treatments(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    workspace = _make_attempts(tmp_path, monkeypatch)
-    attempts = workspace / "attempts"
-    _, records = real_mlx_module.read_bundle(attempts / "replicate-0" / "bundle")
-    real_mlx_module._require_capacity_eviction_verdicts(records)
-    tampered = [
-        (
-            replace(record, verdict=Verdict.VERIFIED_MISS)
-            if record.spec.request_id == "4k:capacity-eviction:a-miss"
-            else record
-        )
-        for record in records
-    ]
-
-    with pytest.raises(RealMLXExperimentError, match="4k capacity-eviction"):
-        real_mlx_module._require_capacity_eviction_verdicts(tampered)
-
-
 def test_aggregate_requires_all_six_without_replacement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2489,6 +2504,7 @@ def test_run_all_global_machine_failure_creates_no_workspace(
     )
 
     workspace = tmp_path / "blocked"
+    monkeypatch.setattr(real_mlx_module, "CANONICAL_OUTPUT_WORKSPACE", workspace)
     with pytest.raises(
         RealMLXExperimentError,
         match="NEEDS_CLEAN_BOOT:preflight_memory_below_floor",
@@ -2516,6 +2532,7 @@ def test_global_preflight_rejects_parent_and_sandbox_runtime_identity_mismatch(
     conversion_summary.write_text("{}")
     output_workspace = tmp_path / "output" / "run"
     output_workspace.parent.mkdir()
+    monkeypatch.setattr(real_mlx_module, "CANONICAL_OUTPUT_WORKSPACE", output_workspace)
     parent_identity = _runtime_packages()
     sandbox_identity = _runtime_packages()
     sandbox_identity["mlx"]["tree_sha256"] = "sha256:" + "f" * 64
@@ -2813,6 +2830,115 @@ def test_direct_preflight_rejects_noncanonical_attempt_before_writing(
     assert not receipt.exists()
 
 
+def test_canonical_workspace_is_exact_and_consumed_marker_is_durable(
+    tmp_path: Path,
+) -> None:
+    workload = tmp_path / "workload.json"
+    model = tmp_path / "model"
+    summary = tmp_path / "summary.json"
+    workload.write_text("{}")
+    model.mkdir()
+    summary.write_text("{}")
+    with pytest.raises(RealMLXExperimentError, match="exact canonical"):
+        real_mlx_module._resolve_run_all_paths(
+            workload=workload,
+            model_dir=model,
+            conversion_summary=summary,
+            output_workspace=tmp_path / "wrong-run",
+        )
+
+    started, digest = real_mlx_module._consume_canonical_attempt(
+        expected_commit="a" * 40,
+        workload=_calibrated_workload(),
+    )
+    marker = real_mlx_module.CANONICAL_ATTEMPT_MARKER
+    inode = marker.stat().st_ino
+    with pytest.raises(RealMLXExperimentError, match="already consumed"):
+        real_mlx_module._consume_canonical_attempt(
+            expected_commit="a" * 40,
+            workload=_calibrated_workload(),
+        )
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text('{"status":"complete"}\n', encoding="ascii")
+    real_mlx_module._finalize_canonical_attempt_marker(
+        started,
+        digest,
+        status="completed",
+        ledger=ledger,
+    )
+    terminal = json.loads(marker.read_text())
+    assert marker.stat().st_ino == inode
+    assert terminal["status"] == "completed"
+    assert terminal["started_marker_digest"] == digest
+    assert terminal["run_ledger_digest"] == _digest_bytes(ledger.read_bytes())
+
+
+def test_preflight_does_not_consume_marker_and_run_consumes_after_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workload = _calibrated_workload()
+    state = real_mlx_module._RunPreflight(
+        workload_path=tmp_path / "workload.json",
+        model_dir=tmp_path / "model",
+        conversion_summary=tmp_path / "summary.json",
+        output_workspace=real_mlx_module.CANONICAL_OUTPUT_WORKSPACE,
+        package_digest="sha256:" + "b" * 64,
+        workload=workload,
+        runtime_packages=_runtime_packages(),
+        machine_observation={},
+    )
+    monkeypatch.setattr(real_mlx_module, "_run_global_preflight", lambda **_: state)
+    receipt = tmp_path / "preflight.json"
+    result = real_mlx_module.run_preflight(
+        workload=state.workload_path,
+        model_dir=state.model_dir,
+        conversion_summary=state.conversion_summary,
+        output_workspace=state.output_workspace,
+        expected_commit="a" * 40,
+        output=receipt,
+        run_attempt=1,
+    )
+    assert result["preflight_passed"] is True
+    assert not real_mlx_module.CANONICAL_ATTEMPT_MARKER.exists()
+
+    def execute(**_: Any) -> dict[str, Any]:
+        assert real_mlx_module.CANONICAL_ATTEMPT_MARKER.is_file()
+        assert not state.output_workspace.exists()
+        return {"run_all_complete": False}
+
+    monkeypatch.setattr(
+        real_mlx_module, "_run_all_replicates_after_consumption", execute
+    )
+    real_mlx_module.run_all_replicates(
+        workload=state.workload_path,
+        model_dir=state.model_dir,
+        conversion_summary=state.conversion_summary,
+        output_workspace=state.output_workspace,
+        expected_commit="a" * 40,
+        run_attempt=1,
+    )
+    marker = json.loads(real_mlx_module.CANONICAL_ATTEMPT_MARKER.read_text())
+    assert marker["status"] == "failed"
+    assert marker["run_ledger_digest"] is None
+
+
+def test_public_results_allow_measured_output_failure_and_nonevicted_verdict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _make_attempts(tmp_path, monkeypatch)
+    results = real_mlx_module._public_results_from_private(workspace / "attempts")
+    comparison = results["comparisons"]["1k:capacity-eviction"]
+    sample = comparison["samples"][0]
+    sample["control_output_token_identity"] = False
+    sample["treatment_output_token_identity"] = False
+    sample["control_deterministic_correctness"] = False
+    sample["treatment_deterministic_correctness"] = False
+    sample["verdict"] = Verdict.VERIFIED_MISS.value
+    comparison["output_identity_true_pair_count"] -= 1
+    comparison["correctness_true_pair_count"] -= 1
+    real_mlx_module._verify_public_results(results)
+
+
 def test_run_all_rejects_symlinked_input_before_creating_workspace(
     tmp_path: Path,
 ) -> None:
@@ -2976,6 +3102,9 @@ def test_preflight_refusal_writes_only_explicit_receipt(
     assert json.loads(receipt.read_text()) == {
         "schema_version": "1",
         "canonical_execution": False,
+        "canonical_run_id": real_mlx_module.CANONICAL_RUN_ID,
+        "canonical_output_workspace": str(real_mlx_module.CANONICAL_OUTPUT_WORKSPACE),
+        "canonical_attempt_marker_id": real_mlx_module.CANONICAL_ATTEMPT_MARKER.name,
         "run_attempt": 1,
         "prior_invalidated_run_ledger_digests": [],
         "status": "refused",
