@@ -733,16 +733,20 @@ implement a side-effect-free `--help` path.
   output.
 - The canonical real-MLX audit is scoped to one host, model, and conversion.
   Its constant-target `CACHE_OK` identity/correctness check is a low-power
-  guard that cannot rule out all KV corruption. Five-of-six eligibility allows
-  only one excluded, never-started replicate with an explicit preflight
-  machine-policy refusal; started failures and supervisor-abort cascades
-  disqualify the run, with no replacement. Host chip and installed-memory
-  mismatches also disqualify the run. An eligible exclusion removes one
-  counterbalanced schedule arm, so order coverage is incomplete. Before
+  guard that cannot rule out all KV corruption. All six preregistered
+  replicates must complete and validate; every failure disqualifies the run,
+  with no replacement. The global preflight gate runs before workspace
+  creation, so an initial refusal consumes no replicate. Within each pair the
+  cold control always precedes the warm treatment, so monotone drift can
+  inflate an apparent latency benefit; deltas are descriptive, not causal
+  speedups. Before
   runtime imports, every distribution in the locked MLX-LM closure is hashed
   from standard-library metadata and compared with the immutable packaged
-  Apple Silicon/Python 3.13 identity allowlist. Its output workspace must be
-  outside every repository and free of runtime-package import shadows.
+  Apple Silicon/Python 3.13 identity allowlist. Canonical execution requires
+  `EXTERNAL_VENV/bin/python -I -S
+  /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py ...`; the console
+  entry point remains for help and tests. Its output workspace must be outside
+  every repository and free of runtime-package import shadows.
 - API timing is observed at the client. It cannot expose provider queueing,
   prefill, kernel execution, or server-side clocks.
 - Native Qwen MTP execution is not supported by the current MLX-LM path.

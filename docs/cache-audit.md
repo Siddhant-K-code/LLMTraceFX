@@ -249,7 +249,13 @@ implementations.
 
 ## Private real-MLX experiment
 
-`llmtracefx-real-mlx-cache-audit` is the fail-closed Apple Silicon workflow.
+`llmtracefx-real-mlx-cache-audit` remains the public help/test entry point. Every
+canonical command must instead use the committed standard-library bootstrap as
+`EXTERNAL_VENV/bin/python -I -S
+/absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py ...`. The bootstrap
+derives the one allowed `site-packages` root from that interpreter, verifies
+the complete frozen runtime identity before importing any runtime package, and
+keeps site startup disabled.
 It never downloads a model. The pinned artifact is the eight-file local
 self-conversion of `Qwen/Qwen3-4B` revision
 `1cfa9a7208912126459214e8b04321603b3df60c` (Apache-2.0), produced with
@@ -285,10 +291,13 @@ After the calibrated workload digests have been reviewed and pinned, `run-all`
 is the canonical execution path:
 
 ```console
-uv run llmtracefx-real-mlx-cache-audit compile --model-dir MODEL --output workload.json
-uv run llmtracefx-real-mlx-cache-audit calibrate --model-dir MODEL \
+EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py \
+  compile --model-dir MODEL --output workload.json
+EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py \
+  calibrate --model-dir MODEL \
   --workload workload.json --output calibrated.json
-uv run llmtracefx-real-mlx-cache-audit run-all --model-dir MODEL \
+EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py \
+  run-all --model-dir MODEL \
   --workload calibrated.json --expected-commit FULL_40_CHARACTER_GIT_SHA \
   --output-workspace real-mlx-run
 ```
@@ -297,19 +306,22 @@ uv run llmtracefx-real-mlx-cache-audit run-all --model-dir MODEL \
 refuses missing, non-regular, or symlinked inputs, a mismatched Git HEAD,
 tracked changes, package-source drift, top-level import-shadow candidates, an
 existing output workspace, or an unavailable macOS network sandbox. Before
-creating the workspace, it runs an isolated (`python -I`) model-free probe from
+creating the workspace, it runs an isolated (`python -I -S`) model-free probe from
 a resolved non-repository directory under the exact network-denied sandbox.
 The probe uses only standard-library distribution metadata and regular-file
 hashing before runtime verification; it does not import a target package to
 discover its origin. It verifies the exact frozen 34-distribution MLX-LM
-closure, including every declared site-packages file and declared environment
-entry-point script, against the immutable Apple Silicon/Python 3.13 identity
+closure, including every declared regular non-symlink file under
+site-packages except generated `.dist-info/RECORD`, against the immutable
+Apple Silicon/Python 3.13 identity
 allowlist shipped in `llmtracefx/cache_audit/data/`. The allowlist itself is
 bound by a SHA-256 constant in code and records only distribution, exact
 version, trusted-root label, regular-file count, total bytes, and deterministic
-tree digest—never absolute paths. Missing, symlinked, out-of-install-root, or
-declared bytecode/`__pycache__` files are rejected; `.dist-info` metadata and
-`RECORD` are included. The probe also verifies source/package identity, current
+tree digest—never absolute paths. Generated scripts outside site-packages are excluded, so
+the identity is portable across external-venv paths. Missing or symlinked
+package files, duplicate normalized expected distributions, `.pth`,
+`sitecustomize.py`, `usercustomize.py`, `__pycache__`, `.pyc`, and `.pyo` are
+rejected before import. The probe also verifies source/package identity, current
 process RSS, system swap, and system memory pressure. It then applies one global
 machine gate. A failure returns
 `NEEDS_CLEAN_BOOT:<reason>` without creating a ledger or consuming a replicate
@@ -319,7 +331,8 @@ identity. The same checks can be recorded without canonical execution by
 writing an explicitly new receipt:
 
 ```console
-uv run llmtracefx-real-mlx-cache-audit preflight --model-dir MODEL \
+EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py \
+  preflight --model-dir MODEL \
   --workload calibrated.json --expected-commit FULL_40_CHARACTER_GIT_SHA \
   --output-workspace real-mlx-run --output preflight.json
 ```
@@ -339,7 +352,9 @@ finalized row binds the status, safe reason code, and deterministic digest of
 its final attempt directory. Each child receives the expected commit and
 revalidates the clean source/package tree and immutable runtime-distribution
 identities before loading the model and immediately before finalizing evidence.
-The parent repeats source validation before and after every child.
+The parent repeats source validation before and after every child. The
+sandbox probe and every replicate child re-enter the same trusted bootstrap,
+never `python -m`.
 
 Each replicate loads the model once, then performs exactly one untimed,
 discarded, direct runtime generation against a fresh cache per lane. Warm-ups
@@ -350,7 +365,10 @@ deterministic full 14-block permutations interleave the lanes,
 spread the six first positions, and avoid fixing the interior/allocation-step
 pair in one adjacent order. The supervisor launches each ID once in a fresh, sequential, network-denied
 child process. Its environment is rebuilt from a minimal explicit allowlist:
-a fixed system `PATH`, offline flags, and a fresh instance ID. Parent `HOME`,
+a fixed system `PATH`, offline flags, a fresh instance ID, and `TMPDIR` bound
+to a private directory on the output-workspace filesystem. The directory is
+removed after the child; if cleanup fails it is preserved with private failure
+evidence and the run is invalid. Parent `HOME`,
 `PYTHONPATH`, `DYLD*`, cloud/auth/token-file variables, and unknown variables
 are never inherited. Preflight requires the Apple M5 Pro/24 GiB host contract,
 at least 25% `vm_stat` availability, no more than 12 GiB swap, at least 20 GiB
@@ -364,26 +382,25 @@ Failed IDs retain bounded private logs and
 partial artifacts in `private-artifacts/`, receive exactly one failed marker,
 and are never replaced. Failed process-group cleanup or a surviving orphan
 aborts all later launches while still finalizing every planned ID exactly once.
-Five-of-six eligibility permits at most one failed replicate, and only when it
-never started and its finalized reason is an explicit preflight machine-policy
-refusal. A started failure, launch failure, timeout, source failure, or
-`supervisor_aborted_before_start` cascade disqualifies the full run even when
-five replicates completed; failed IDs are never replaced.
+All six preregistered replicates must complete and validate. Any per-replicate
+preflight, launch, started, runtime, timeout, source, cleanup, or
+`supervisor_aborted_before_start` failure is preserved but invalidates the
+full run; failed IDs are never replaced. The global gate runs before workspace
+creation, so an initial refusal consumes no replicate.
 After the replicates finish, a terminal ledger row is appended even if public
 results derivation or verification fails; that state is recorded as
 `results_derivation_failed` with no results digest. The command exits nonzero
-unless at least five of six replicates complete and public results derivation
-succeeds.
+unless all six replicates complete and public results derivation succeeds.
 
 Aggregation and sanitization remain explicit:
 
 ```console
-PINNED_ENV/bin/llmtracefx-real-mlx-cache-audit aggregate \
+PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py aggregate \
   --run-workspace real-mlx-run --output-dir private-aggregate
-PINNED_ENV/bin/llmtracefx-real-mlx-cache-audit verify private-aggregate
-PINNED_ENV/bin/llmtracefx-real-mlx-cache-audit sanitize private-aggregate \
+PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py verify private-aggregate
+PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py sanitize private-aggregate \
   --output-dir public-aggregate
-PINNED_ENV/bin/llmtracefx-real-mlx-cache-audit verify public-aggregate
+PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py verify public-aggregate
 ```
 
 Aggregation accepts only the complete three-entry run workspace. It verifies
@@ -435,14 +452,14 @@ or output agreement.
 
 The fixed interpretation limits are one observation per cell per replicate,
 descriptive medians and ranges only, possible schedule/order and thermal
-effects, and incomplete order coverage when one excluded replicate removes a
-counterbalanced schedule arm, non-causal allocator-active/cache, RSS, swap, and
-pressure levels,
+effects, and non-causal allocator-active/cache, RSS, swap, and pressure levels,
 monitoring/stage-observation scheduling perturbation, no block-cache
 interpretation of allocation step 256, token-granular MLX cache behavior, and
 no power, energy, kernel, or utilization claims. The constant-target
 `CACHE_OK` identity/correctness check is a low-power guard and cannot rule out
-all KV corruption. Evidence is scoped to one host, model, and conversion. The
+all KV corruption. Evidence is scoped to one host, model, and conversion.
+Within every pair the cold control always precedes the warm treatment, so
+monotone drift can inflate an apparent latency benefit; reported deltas are
+descriptive and are not causal speedups. The
 output workspace must be outside every repository and free of top-level import
-shadows for every runtime import package. A host chip or installed-memory
-mismatch is disqualifying and is not an eligible five-of-six exclusion.
+shadows for every runtime import package. Every failure is disqualifying.

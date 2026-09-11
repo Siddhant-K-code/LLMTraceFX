@@ -24,7 +24,6 @@ import signal
 import stat
 import subprocess
 import sys
-import sysconfig
 import tempfile
 import time
 from collections import Counter
@@ -121,7 +120,7 @@ REQUIRED_SAFETENSORS_VERSION = "0.8.0"
 REQUIRED_NUMPY_VERSION = "2.2.6"
 REQUIRED_TOKENIZERS_VERSION = "0.23.1"
 EXPECTED_RUNTIME_PACKAGE_IDENTITIES_SHA256 = (
-    "sha256:771a47f7ab419b4a11ec9ac333501f08c74550938f9b0ae53cd19ea762ed4c9d"
+    "sha256:391e14ce1b09b5de11b96ab24f98dd73c4c8334625599e1cda5dd5f4906c16a5"
 )
 CHILD_TIMEOUT_SECONDS = 12 * 60
 TOTAL_TIMEOUT_SECONDS = 90 * 60
@@ -146,7 +145,11 @@ EXPECTED_CALIBRATED_LANE_DIGESTS = {
 EXPECTED_CALIBRATION_OUTPUT_TOKENS = {"1k": 3, "4k": 3}
 MODEL_ID = "local-self-converted/qwen3-4b-mlx-q4g64"
 TOKENIZER_ID = "Qwen/Qwen3-4B@1cfa9a7208912126459214e8b04321603b3df60c"
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_INSTALLED_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT = Path(
+    os.environ.get("LLMTRACEFX_TRUSTED_REPO_ROOT", str(_INSTALLED_PROJECT_ROOT))
+).resolve()
+_TRUSTED_BOOTSTRAP = _PROJECT_ROOT / "scripts" / "run-real-mlx-cache-audit-trusted.py"
 DEFAULT_CONVERSION_SUMMARY = (
     _PROJECT_ROOT / "llmtracefx/cache_audit/data/qwen3-4b-conversion-summary.json"
 )
@@ -296,16 +299,6 @@ _ABORT_LATER_REASONS = {
     "source_validation_failed",
     "total_timeout",
     "total_timeout_before_start",
-}
-_ALLOWED_PREFLIGHT_MACHINE_POLICY_REASONS = {
-    "preflight_memory_unavailable",
-    "preflight_memory_below_floor",
-    "preflight_swap_unavailable",
-    "preflight_swap_above_ceiling",
-    "preflight_disk_unavailable",
-    "preflight_disk_below_floor",
-    "preflight_process_inventory_unavailable",
-    "preflight_heavy_process_present",
 }
 _PRIVATE_REPLICATE_FILES = {
     "attempt.json",
@@ -1615,38 +1608,68 @@ def _regular_file_identity(path: Path) -> tuple[int, str]:
 
 
 def _trusted_site_roots() -> tuple[tuple[str, Path, Path], ...]:
-    roots: dict[Path, tuple[str, Path]] = {}
-    try:
-        scripts_root = Path(sysconfig.get_path("scripts")).resolve(strict=True)
-    except OSError as exc:
-        raise RealMLXExperimentError("trusted runtime scripts are unavailable") from exc
-    if not scripts_root.is_dir():
-        raise RealMLXExperimentError("trusted runtime scripts are unavailable")
-    for key in ("purelib", "platlib"):
-        raw = sysconfig.get_path(key)
-        try:
-            root = Path(raw).resolve(strict=True)
-        except OSError as exc:
-            raise RealMLXExperimentError(
-                "trusted site-packages is unavailable"
-            ) from exc
-        if root.is_dir():
-            roots.setdefault(root, (key, scripts_root))
-    if not roots:
-        raise RealMLXExperimentError("trusted site-packages is unavailable")
-    return tuple(
-        sorted(
-            (
-                (label, root, trusted_scripts)
-                for root, (label, trusted_scripts) in roots.items()
-            ),
-            key=lambda item: (item[0], item[1].as_posix()),
-        )
+    executable = Path(os.path.abspath(sys.executable))
+    if executable.parent.name != "bin":
+        raise RealMLXExperimentError("trusted runtime venv is unavailable")
+    venv_root = executable.parent.parent
+    site_root = (
+        venv_root
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
     )
+    try:
+        resolved_venv = venv_root.resolve(strict=True)
+        resolved_site = site_root.resolve(strict=True)
+        scripts_root = (resolved_venv / "bin").resolve(strict=True)
+    except OSError as exc:
+        raise RealMLXExperimentError("trusted site-packages is unavailable") from exc
+    if (
+        venv_root.is_symlink()
+        or site_root.is_symlink()
+        or scripts_root.is_symlink()
+        or resolved_venv != venv_root.absolute()
+        or resolved_site != site_root.absolute()
+        or not resolved_site.is_dir()
+        or not scripts_root.is_dir()
+        or not _is_relative_to(resolved_site, resolved_venv)
+    ):
+        raise RealMLXExperimentError("trusted site-packages is unavailable")
+    return (("purelib", resolved_site, scripts_root),)
 
 
 def _normalized_distribution_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _reject_site_startup_artifacts(trusted_root: Path) -> None:
+    for path in trusted_root.rglob("*"):
+        if path.is_symlink():
+            raise RealMLXExperimentError(
+                "runtime site-packages contains an unsafe symlink"
+            )
+        if (
+            path.name == "__pycache__"
+            or path.name in {"sitecustomize.py", "usercustomize.py"}
+            or path.suffix.lower() in {".pth", ".pyc", ".pyo"}
+        ):
+            raise RealMLXExperimentError(
+                "runtime site-packages contains a startup hook or bytecode"
+            )
+
+
+def _validate_expected_distribution_uniqueness(trusted_root: Path) -> None:
+    counts: Counter[str] = Counter()
+    for distribution in metadata.distributions(path=[str(trusted_root)]):
+        installed_name = distribution.metadata["Name"]
+        if isinstance(installed_name, str):
+            normalized = _normalized_distribution_name(installed_name)
+            if normalized in _RUNTIME_DISTRIBUTION_VERSIONS:
+                counts[normalized] += 1
+    if any(counts[name] != 1 for name in _RUNTIME_DISTRIBUTION_VERSIONS):
+        raise RealMLXExperimentError(
+            "runtime package closure has missing or duplicate distributions"
+        )
 
 
 def _distribution_tree_identity(
@@ -1675,8 +1698,17 @@ def _distribution_tree_identity(
             raise RealMLXExperimentError(
                 f"{distribution_name} runtime distribution declares unsafe bytecode or path"
             )
+        located = Path(os.path.abspath(str(distribution.locate_file(item))))
+        if not _is_relative_to(located, trusted_root):
+            if _is_relative_to(located, trusted_scripts_root):
+                continue
+            raise RealMLXExperimentError(
+                f"{distribution_name} runtime distribution file is out of root"
+            )
+        relative = located.relative_to(trusted_root)
+        if relative.name == "RECORD" and relative.parent.name.endswith(".dist-info"):
+            continue
         try:
-            located = Path(os.path.abspath(str(distribution.locate_file(item))))
             resolved = located.resolve(strict=True)
         except OSError as exc:
             raise RealMLXExperimentError(
@@ -1686,18 +1718,11 @@ def _distribution_tree_identity(
             raise RealMLXExperimentError(
                 f"{distribution_name} runtime distribution contains a symlink"
             )
-        if _is_relative_to(resolved, trusted_root):
-            logical_path = (
-                "site-packages/" + resolved.relative_to(trusted_root).as_posix()
-            )
-        elif _is_relative_to(resolved, trusted_scripts_root):
-            logical_path = (
-                "scripts/" + resolved.relative_to(trusted_scripts_root).as_posix()
-            )
-        else:
+        if not _is_relative_to(resolved, trusted_root):
             raise RealMLXExperimentError(
                 f"{distribution_name} runtime distribution file is out of root"
             )
+        logical_path = "site-packages/" + resolved.relative_to(trusted_root).as_posix()
         if logical_path in seen or _is_relative_to(resolved, output_workspace.parent):
             raise RealMLXExperimentError(
                 f"{distribution_name} runtime distribution contains an unsafe file"
@@ -1727,6 +1752,9 @@ def _compute_runtime_package_identity(
     output_workspace: Path,
 ) -> dict[str, dict[str, str | int]]:
     site_roots = _trusted_site_roots()
+    for _, root, _ in site_roots:
+        _reject_site_startup_artifacts(root)
+        _validate_expected_distribution_uniqueness(root)
     identities: dict[str, dict[str, str | int]] = {}
     for distribution_name, required_version in _RUNTIME_DISTRIBUTION_VERSIONS.items():
         distribution = _runtime_distribution(distribution_name)
@@ -1800,7 +1828,7 @@ def _validate_runtime_package_identity_schema(value: Any) -> None:
         if (
             entry["distribution"] != name
             or entry["version"] != required_version
-            or entry["trusted_root"] not in {"purelib", "platlib"}
+            or entry["trusted_root"] != "purelib"
             or isinstance(entry["file_count"], bool)
             or not isinstance(entry["file_count"], int)
             or entry["file_count"] <= 0
@@ -2933,15 +2961,10 @@ def _replicate_index(
                 }
             )
         entries.append(entry)
-    if complete < 5:
-        raise RealMLXExperimentError(
-            "aggregate requires at least 5 complete of 6 attempts"
-        )
+    if complete != len(REPLICATE_IDS):
+        raise RealMLXExperimentError("aggregate requires all 6 attempts complete")
     if not _aggregate_eligibility_from_rows(_parse_jsonl(root / "run-ledger.jsonl")):
-        raise RealMLXExperimentError(
-            "aggregate requires six complete attempts or five complete attempts "
-            "and one allowed never-started preflight refusal"
-        )
+        raise RealMLXExperimentError("aggregate requires all 6 attempts complete")
     if len(compatible_bindings) != 1:
         raise RealMLXExperimentError("complete replicates have incompatible bindings")
     binding = next(iter(compatible_bindings))
@@ -3926,15 +3949,12 @@ def _experiment_contract(
         "schema_version": AGGREGATE_SCHEMA_VERSION,
         "publication_mode": "public_redacted" if public else "private",
         "replicate_ids": list(REPLICATE_IDS),
-        "minimum_complete": 5,
+        "minimum_complete": 6,
         "replacement_allowed": False,
         "replicate_eligibility": {
             "attempted_replicates": 6,
-            "maximum_failed_replicates": 1,
-            "failed_replicate_must_be_never_started": True,
-            "allowed_failed_reasons": sorted(_ALLOWED_PREFLIGHT_MACHINE_POLICY_REASONS),
-            "started_failure_disqualifies": True,
-            "supervisor_aborted_before_start_disqualifies": True,
+            "required_complete_replicates": 6,
+            "maximum_failed_replicates": 0,
         },
         "evidence_binding": dict(binding),
         "results_digest": results_digest,
@@ -3943,6 +3963,7 @@ def _experiment_contract(
             "authenticity_anchor": "git_commit_containing_final_public_evidence",
         },
         "execution": "six independent fresh child processes; sequential",
+        "child_temporary_directory": "private_output_workspace_filesystem",
         "performance_dry_run_used": False,
         "parent_timeout_minutes": 90,
         "child_timeout_minutes": 12,
@@ -3981,10 +4002,11 @@ def _experiment_contract(
             "constant-target CACHE_OK identity/correctness is a low-power guard "
             "that cannot rule out all KV corruption",
             "evidence is scoped to one host, model, and conversion",
-            "at most one replicate may be excluded, only for an allowed "
-            "never-started preflight machine-policy refusal",
-            "an excluded replicate removes one counterbalanced schedule arm, "
-            "leaving incomplete order coverage",
+            "all six preregistered replicates must complete; failures are preserved "
+            "but invalidate the run and no replacements are allowed",
+            "within each pair the cold control always precedes the warm treatment, "
+            "so monotone drift can inflate apparent latency benefit",
+            "paired timing deltas are descriptive and are not causal speedups",
             "no power, energy, kernel, or utilization claims",
             "namespace isolation is harness-enforced key separation, not native MLX tenancy",
         ],
@@ -4112,16 +4134,11 @@ def assemble_aggregate(run_workspace: Path, output_dir: Path) -> dict[str, Any]:
         )
         for replicate_id in REPLICATE_IDS
     ]
-    if sum(state["status"] == "complete" for state in states) < 5:
-        raise RealMLXExperimentError(
-            "aggregate requires at least 5 complete of 6 attempts"
-        )
+    if sum(state["status"] == "complete" for state in states) != len(REPLICATE_IDS):
+        raise RealMLXExperimentError("aggregate requires all 6 attempts complete")
     _verify_run_ledger(ledger, attempts_dir=attempts_dir)
     if not _aggregate_eligibility_from_rows(_parse_jsonl(ledger)):
-        raise RealMLXExperimentError(
-            "aggregate requires six complete attempts or five complete attempts "
-            "and one allowed never-started preflight refusal"
-        )
+        raise RealMLXExperimentError("aggregate requires all 6 attempts complete")
     output_dir.mkdir(parents=True)
     (output_dir / "replicates").mkdir()
     try:
@@ -4603,7 +4620,9 @@ def _machine_policy_reason(
     return None
 
 
-def _offline_child_environment(instance_id: str) -> dict[str, str]:
+def _offline_child_environment(
+    instance_id: str, *, private_temp_root: Path | None = None
+) -> dict[str, str]:
     if re.fullmatch(r"[0-9a-f]{32}", instance_id) is None:
         raise RealMLXExperimentError("run instance ID is invalid")
     environment = {
@@ -4617,7 +4636,27 @@ def _offline_child_environment(instance_id: str) -> dict[str, str]:
         "PYTHONSAFEPATH": "1",
         RUN_INSTANCE_ENV: instance_id,
     }
+    if private_temp_root is not None:
+        resolved = private_temp_root.resolve(strict=True)
+        if (
+            private_temp_root.is_symlink()
+            or not resolved.is_dir()
+            or resolved != private_temp_root.absolute()
+        ):
+            raise RealMLXExperimentError("private child temp root is unsafe")
+        environment["TMPDIR"] = str(resolved)
     return environment
+
+
+def _trusted_bootstrap_command(*args: str) -> list[str]:
+    bootstrap = _TRUSTED_BOOTSTRAP
+    if (
+        bootstrap.is_symlink()
+        or not bootstrap.is_file()
+        or bootstrap.resolve(strict=True) != bootstrap.absolute()
+    ):
+        raise RealMLXExperimentError("trusted bootstrap script is unavailable")
+    return [sys.executable, "-I", "-S", str(bootstrap), *args]
 
 
 def _replicate_child_command(
@@ -4637,11 +4676,7 @@ def _replicate_child_command(
         str(sandbox),
         "-p",
         SANDBOX_POLICY,
-        sys.executable,
-        "-I",
-        "-m",
-        "llmtracefx.cache_audit.real_mlx",
-        "replicate",
+        *_trusted_bootstrap_command("replicate"),
         "--workload",
         str(workload),
         "--model-dir",
@@ -4708,7 +4743,7 @@ def _validate_probe_module_origin(output_workspace: Path) -> None:
         raise RealMLXExperimentError("real_mlx module origin is unavailable") from exc
     if (
         origin != expected
-        or not _is_relative_to(origin, _PROJECT_ROOT)
+        or not _is_relative_to(origin, _INSTALLED_PROJECT_ROOT)
         or _is_relative_to(origin, output_workspace)
         or _distribution_version("llmtracefx") != REQUIRED_LLMTRACEFX_VERSION
     ):
@@ -4737,11 +4772,7 @@ def _sandbox_probe_command(
         str(sandbox),
         "-p",
         SANDBOX_POLICY,
-        sys.executable,
-        "-I",
-        "-m",
-        "llmtracefx.cache_audit.real_mlx",
-        "sandbox-probe",
+        *_trusted_bootstrap_command("sandbox-probe"),
         "--output-workspace",
         str(output_workspace),
         "--expected-commit",
@@ -4790,6 +4821,10 @@ def _run_exact_sandbox_probe(
         expected_commit=expected_commit,
         expected_package_digest=expected_package_digest,
     )
+    private_temp_root = (
+        output_workspace.parent / f".{output_workspace.name}.preflight-tmp"
+    )
+    private_temp_root.mkdir(mode=0o700)
     try:
         result = subprocess.run(
             command,
@@ -4798,11 +4833,15 @@ def _run_exact_sandbox_probe(
             check=False,
             text=True,
             timeout=60,
-            env=_offline_child_environment(secrets.token_hex(16)),
+            env=_offline_child_environment(
+                secrets.token_hex(16), private_temp_root=private_temp_root
+            ),
             cwd=cwd,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise RealMLXExperimentError("exact sandbox probe failed") from exc
+    finally:
+        shutil.rmtree(private_temp_root, ignore_errors=False)
     if result.returncode != 0 or len(result.stdout) > MAX_CHILD_LOG_BYTES:
         raise RealMLXExperimentError("exact sandbox probe failed")
     try:
@@ -4829,7 +4868,30 @@ def _validate_supervisor_source(expected_commit: str) -> str:
     if re.fullmatch(r"[0-9a-f]{40}", expected_commit) is None:
         raise RealMLXExperimentError("expected commit must be a full lowercase SHA")
     _reject_import_shadows(_PROJECT_ROOT / ".source-validation-output")
-    commit, commit_at = source_commit()
+    if _PROJECT_ROOT == _INSTALLED_PROJECT_ROOT:
+        commit, commit_at = source_commit()
+    else:
+        commit_result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(_PROJECT_ROOT),
+                "show",
+                "-s",
+                "--format=%H%n%cI",
+                "HEAD",
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+            env={**os.environ, "GIT_NO_LAZY_FETCH": "1"},
+        )
+        lines = commit_result.stdout.strip().splitlines()
+        commit, commit_at = (
+            (lines[0], lines[1])
+            if commit_result.returncode == 0 and len(lines) == 2
+            else (None, None)
+        )
     if commit != expected_commit or commit_at is None:
         raise RealMLXExperimentError("current Git HEAD does not match expected commit")
     status = subprocess.run(
@@ -5263,25 +5325,7 @@ def _aggregate_eligibility_from_rows(rows: Sequence[Mapping[str, Any]]) -> bool:
     }
     if set(finalized) != set(REPLICATE_IDS):
         return False
-    failed = [
-        (replicate_id, row)
-        for replicate_id, row in finalized.items()
-        if row.get("status") != "complete"
-    ]
-    if not failed:
-        return True
-    if len(failed) != 1:
-        return False
-    replicate_id, row = failed[0]
-    started = any(
-        item.get("event") == "started" and item.get("replicate_id") == replicate_id
-        for item in rows
-    )
-    return (
-        not started
-        and row.get("status") == "failed"
-        and row.get("reason") in _ALLOWED_PREFLIGHT_MACHINE_POLICY_REASONS
-    )
+    return all(row.get("status") == "complete" for row in finalized.values())
 
 
 def _verify_run_ledger(
@@ -5832,7 +5876,7 @@ def _verify_run_ledger(
                     if eligible
                     else (
                         "insufficient_complete_replicates"
-                        if complete < 5
+                        if complete < len(REPLICATE_IDS)
                         else "aggregate_ineligible"
                     )
                 )
@@ -5842,7 +5886,7 @@ def _verify_run_ledger(
                     if eligible
                     else (
                         "insufficient_complete_replicates"
-                        if complete < 5
+                        if complete < len(REPLICATE_IDS)
                         else "ineligible_replicate_failure"
                     )
                 )
@@ -5975,7 +6019,7 @@ def _finalize_run_ledger(
             if eligible
             else (
                 "insufficient_complete_replicates"
-                if complete_replicates < 5
+                if complete_replicates < len(REPLICATE_IDS)
                 else "aggregate_ineligible"
             )
         )
@@ -5996,7 +6040,7 @@ def _finalize_run_ledger(
                     if eligible
                     else (
                         "insufficient_complete_replicates"
-                        if complete_replicates < 5
+                        if complete_replicates < len(REPLICATE_IDS)
                         else "ineligible_replicate_failure"
                     )
                 )
@@ -6195,6 +6239,8 @@ def run_all_replicates(
                     _json_bytes(binding["runtime_packages"])
                 ),
             )
+            private_temp_root = output_workspace / f".{replicate_id}.tmp"
+            private_temp_root.mkdir(mode=0o700)
             child_started = time.monotonic()
             with (
                 tempfile.TemporaryFile(mode="w+b") as stdout,
@@ -6208,7 +6254,9 @@ def run_all_replicates(
                         stdin=subprocess.DEVNULL,
                         stdout=stdout,
                         stderr=stderr,
-                        env=_offline_child_environment(instance_id),
+                        env=_offline_child_environment(
+                            instance_id, private_temp_root=private_temp_root
+                        ),
                         cwd=output_workspace.parent,
                         shell=False,
                         start_new_session=True,
@@ -6339,6 +6387,13 @@ def run_all_replicates(
                     ),
                 )
                 ledger_sequence += 1
+                temp_cleanup_failed = False
+                try:
+                    shutil.rmtree(private_temp_root, ignore_errors=False)
+                except OSError:
+                    reason = "process_cleanup_failed"
+                    abort_remaining = True
+                    temp_cleanup_failed = True
                 if reason is None:
                     try:
                         verify_replicate(
@@ -6370,6 +6425,8 @@ def run_all_replicates(
                         stdout,
                         stderr,
                     )
+                    if temp_cleanup_failed and private_temp_root.exists():
+                        os.replace(private_temp_root, artifact_dir / "private-temp")
         else:
             postflight = _machine_observation(
                 output_workspace,
@@ -6514,6 +6571,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
+    if args.command in {"run-all", "preflight", "replicate", "sandbox-probe"} and (
+        os.environ.get("LLMTRACEFX_TRUSTED_BOOTSTRAP") != "1"
+    ):
+        raise RealMLXExperimentError(
+            "canonical execution requires the trusted Python -I -S bootstrap"
+        )
     if args.command == "compile":
         snapshot_owner, snapshot, _ = _verified_model_snapshot(
             args.model_dir, args.conversion_summary

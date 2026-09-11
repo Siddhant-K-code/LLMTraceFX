@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import builtins
 import hashlib
 import json
 import platform
@@ -394,6 +393,8 @@ def test_runtime_package_identity_hashes_complete_safe_trees(
                 Path(package_name) / "native.so",
                 Path(package_name) / "data" / "runtime.json",
                 Path(f"{package_name}-1.dist-info") / "METADATA",
+                Path(f"{package_name}-1.dist-info") / "RECORD",
+                Path("../bin") / f"{package_name}-tool",
             ]
 
         def locate_file(self, item: object) -> Path:
@@ -415,6 +416,12 @@ def test_runtime_package_identity_hashes_complete_safe_trees(
         )
         (dist_info / "METADATA").write_text(
             f"Name: {distribution_name}\nVersion: {version}\n", encoding="ascii"
+        )
+        (dist_info / "RECORD").write_text(
+            f"absolute-root={site_packages}\n", encoding="ascii"
+        )
+        (scripts / f"{package_name}-tool").write_text(
+            f"#!/bin/sh\n# {site_packages}\n", encoding="ascii"
         )
         distributions[distribution_name] = FakeDistribution(distribution_name, version)
 
@@ -449,6 +456,14 @@ def test_runtime_package_identity_hashes_complete_safe_trees(
     injected = real_mlx_module._compute_runtime_package_identity(output_workspace)
     assert injected["mlx-lm"]["file_count"] == 5
     assert injected["mlx-lm"]["tree_sha256"] != tampered["mlx-lm"]["tree_sha256"]
+
+    duplicate = site_packages / "mlx_lm_duplicate.dist-info"
+    duplicate.mkdir()
+    (duplicate / "METADATA").write_text(
+        "Name: mlx_lm\nVersion: 0.31.3\n", encoding="ascii"
+    )
+    with pytest.raises(RealMLXExperimentError, match="duplicate distributions"):
+        real_mlx_module._compute_runtime_package_identity(output_workspace)
 
 
 def test_runtime_package_identity_rejects_missing_and_symlinked_tree_files(
@@ -487,6 +502,9 @@ def test_runtime_package_identity_rejects_missing_and_symlinked_tree_files(
         "_RUNTIME_DISTRIBUTION_VERSIONS",
         {"mlx": real_mlx_module.REQUIRED_MLX_VERSION},
     )
+    monkeypatch.setattr(
+        real_mlx_module, "_validate_expected_distribution_uniqueness", lambda _p: None
+    )
 
     with pytest.raises(RealMLXExperimentError, match="missing file"):
         real_mlx_module._compute_runtime_package_identity(output_parent / "run")
@@ -506,32 +524,21 @@ def test_runtime_package_identity_rejects_missing_and_symlinked_tree_files(
         real_mlx_module._compute_runtime_package_identity(output_parent / "run")
 
 
-@pytest.mark.skipif(
-    platform.system() != "Darwin", reason="canonical MLX closure is macOS-only"
-)
-def test_runtime_package_identity_real_environment_imports_no_runtime_targets(
+def test_runtime_package_identity_rejects_local_startup_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    target_roots = {
-        package.split(".", 1)[0] for package in real_mlx_module._RUNTIME_IMPORT_PACKAGES
-    }
-    original_import = builtins.__import__
-
-    def reject_runtime_import(
-        name: str,
-        globals: Any = None,
-        locals: Any = None,
-        fromlist: Any = (),
-        level: int = 0,
-    ) -> Any:
-        if level == 0 and name.split(".", 1)[0] in target_roots:
-            raise AssertionError(f"runtime import attempted: {name}")
-        return original_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", reject_runtime_import)
-    identity = real_mlx_module._compute_runtime_package_identity(tmp_path / "run")
-    assert set(identity) == set(real_mlx_module._RUNTIME_DISTRIBUTION_VERSIONS)
-    assert all(entry["file_count"] > 0 for entry in identity.values())
+    site = tmp_path / "site-packages"
+    scripts = tmp_path / "bin"
+    site.mkdir()
+    scripts.mkdir()
+    (site / "unsafe.pth").write_text("import unsafe\n")
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_trusted_site_roots",
+        lambda: (("purelib", site, scripts),),
+    )
+    with pytest.raises(RealMLXExperimentError, match="startup hook"):
+        real_mlx_module._compute_runtime_package_identity(tmp_path / "run")
 
 
 def test_heavy_process_gate_counts_every_nonexcluded_large_process(
@@ -556,7 +563,7 @@ def test_heavy_process_gate_counts_every_nonexcluded_large_process(
     )
 
 
-def test_host_identity_mismatch_is_not_an_eligible_exclusion() -> None:
+def test_any_replicate_failure_is_ineligible() -> None:
     def rows(failed_reason: str) -> list[dict[str, str]]:
         return [
             {
@@ -576,9 +583,12 @@ def test_host_identity_mismatch_is_not_an_eligible_exclusion() -> None:
     assert not real_mlx_module._aggregate_eligibility_from_rows(
         rows("preflight_host_memory_mismatch")
     )
-    assert real_mlx_module._aggregate_eligibility_from_rows(
+    assert not real_mlx_module._aggregate_eligibility_from_rows(
         rows("preflight_memory_below_floor")
     )
+    complete = rows("unused")
+    complete[-1].update(status="complete", reason="completed")
+    assert real_mlx_module._aggregate_eligibility_from_rows(complete)
 
 
 def test_import_shadow_scan_is_narrow_and_fail_closed(
@@ -1157,7 +1167,12 @@ def _request_spec(request_id: str, order: int) -> RequestSpec:
     )
 
 
-def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def _make_attempts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    failed_last: bool = False,
+) -> Path:
     expected_commit = "a" * 40
     monkeypatch.setattr(
         cache_runner,
@@ -1196,7 +1211,7 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for index, replicate_id in enumerate(REPLICATE_IDS):
         replicate = attempts / replicate_id
         replicate.mkdir()
-        if index == 5:
+        if failed_last and index == 5:
             _write_json(
                 replicate / "attempt.json",
                 {
@@ -1430,11 +1445,11 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         )
         sequence += 1
     results = real_mlx_module._public_results_from_private(attempts)
-    results_digest = _digest_bytes(_json_bytes(results))
+    results_digest = None if failed_last else _digest_bytes(_json_bytes(results))
     real_mlx_module._finalize_run_ledger(
         ledger,
         sequence=sequence,
-        complete_replicates=5,
+        complete_replicates=5 if failed_last else 6,
         results_digest=results_digest,
     )
     return workspace
@@ -1449,26 +1464,22 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
         (
             workspace / "attempts" / replicate_id / "bundle" / "evidence_bundle.py"
         ).is_file()
-        for replicate_id in REPLICATE_IDS[:5]
+        for replicate_id in REPLICATE_IDS
     )
     with pytest.raises(RealMLXExperimentError, match="run workspace allowlist"):
         assemble_aggregate(workspace / "attempts", tmp_path / "bare-attempts")
-    assert assemble_aggregate(workspace, private)["complete_replicates"] == 5
+    assert assemble_aggregate(workspace, private)["complete_replicates"] == 6
     assert verify_aggregate(private)["verified"] is True
     with pytest.raises(cache_bundle.CacheAuditBundleError, match="bundle files differ"):
         cache_bundle.verify_bundle(private / "replicates" / "replicate-0" / "bundle")
     private_index = json.loads((private / "replicate-index.json").read_text())
-    assert private_index["lane_request_counts"] == {"1k": 90, "4k": 90}
+    assert private_index["lane_request_counts"] == {"1k": 108, "4k": 108}
     assert set(private_index["lane_scenario_counts"]) == set(LANE_IDS)
-    assert private_index["replicates"][-1] == {
-        "replicate_id": "replicate-5",
-        "status": "failed",
-        "reason": "preflight_heavy_process_present",
-    }
+    assert private_index["replicates"][-1]["status"] == "complete"
     private_claims = json.loads((private / "claim-matrix.json").read_text())
     assert private_claims["lane_request_observations"] == {
-        "1k": 90,
-        "4k": 90,
+        "1k": 108,
+        "4k": 108,
     }
     comparisons = json.loads((private / "descriptive-summary.json").read_text())[
         "comparisons"
@@ -1516,19 +1527,12 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     assert contract["evidence_binding"]["expected_commit"] == "a" * 40
     assert contract["replicate_eligibility"] == {
         "attempted_replicates": 6,
-        "maximum_failed_replicates": 1,
-        "failed_replicate_must_be_never_started": True,
-        "allowed_failed_reasons": sorted(
-            real_mlx_module._ALLOWED_PREFLIGHT_MACHINE_POLICY_REASONS
-        ),
-        "started_failure_disqualifies": True,
-        "supervisor_aborted_before_start_disqualifies": True,
+        "required_complete_replicates": 6,
+        "maximum_failed_replicates": 0,
     }
-    assert "preflight_host_chip_mismatch" not in (
-        real_mlx_module._ALLOWED_PREFLIGHT_MACHINE_POLICY_REASONS
-    )
-    assert "preflight_host_memory_mismatch" not in (
-        real_mlx_module._ALLOWED_PREFLIGHT_MACHINE_POLICY_REASONS
+    assert contract["minimum_complete"] == 6
+    assert (
+        contract["child_temporary_directory"] == "private_output_workspace_filesystem"
     )
     assert (
         contract["integrity_and_authenticity"]["sha256sums"] == "integrity_only_unkeyed"
@@ -1540,10 +1544,7 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     assert any(
         "2-second monitoring" in limitation for limitation in contract["limitations"]
     )
-    assert any(
-        "incomplete order coverage" in limitation
-        for limitation in contract["limitations"]
-    )
+    assert any("not causal speedups" in item for item in contract["limitations"])
     assert (private / "results.json").is_file()
     assert (private / "run-ledger.jsonl").is_file()
     assert not (private / "private-artifacts").exists()
@@ -1600,7 +1601,7 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     public = tmp_path / "public"
     assert sanitize_aggregate(private, public)["publication_mode"] == "public_redacted"
     public_index = json.loads((public / "replicate-index.json").read_text())
-    assert public_index["lane_request_counts"] == {"1k": 90, "4k": 90}
+    assert public_index["lane_request_counts"] == {"1k": 108, "4k": 108}
     assert public_index["evidence_binding"]["expected_commit"] == "a" * 40
     assert public_index["evidence_binding"]["generator_package_digest"].startswith(
         "sha256:"
@@ -1890,7 +1891,7 @@ def test_run_ledger_enforces_monitor_and_preserves_pre_postflight_terminal_reaso
     run_finalized = rows[-1]
     run_finalized["status"] = "insufficient_complete_replicates"
     run_finalized["reason"] = "insufficient_complete_replicates"
-    run_finalized["complete_replicates"] = 4
+    run_finalized["complete_replicates"] = 5
     run_finalized["results_digest"] = None
     ledger.write_text(
         "".join(real_mlx_module._json_line(row) for row in rows),
@@ -1971,14 +1972,17 @@ def test_run_ledger_rejects_supervisor_abort_without_earlier_aborting_reason(
         encoding="ascii",
     )
 
-    with pytest.raises(RealMLXExperimentError, match="lacks an earlier aborting"):
+    with pytest.raises(
+        RealMLXExperimentError,
+        match="external preflight state|lacks an earlier aborting",
+    ):
         real_mlx_module._verify_run_ledger(ledger)
 
 
-def test_five_of_six_eligibility_rejects_non_preflight_and_started_failures(
+def test_all_six_eligibility_rejects_preflight_and_started_failures(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    workspace = _make_attempts(tmp_path, monkeypatch)
+    workspace = _make_attempts(tmp_path, monkeypatch, failed_last=True)
     ledger = workspace / "run-ledger.jsonl"
     original = [
         json.loads(line) for line in ledger.read_text(encoding="ascii").splitlines()
@@ -2019,8 +2023,8 @@ def test_five_of_six_eligibility_rejects_non_preflight_and_started_failures(
         results_digest=None,
     )
     finalized = json.loads(ledger.read_text(encoding="ascii").splitlines()[-1])
-    assert finalized["status"] == "aggregate_ineligible"
-    assert finalized["reason"] == "ineligible_replicate_failure"
+    assert finalized["status"] == "insufficient_complete_replicates"
+    assert finalized["reason"] == "insufficient_complete_replicates"
     real_mlx_module._verify_run_ledger(ledger)
 
     rows = [dict(row) for row in original[:-1]]
@@ -2072,7 +2076,7 @@ def test_five_of_six_eligibility_rejects_non_preflight_and_started_failures(
         results_digest=None,
     )
     finalized = json.loads(ledger.read_text(encoding="ascii").splitlines()[-1])
-    assert finalized["status"] == "aggregate_ineligible"
+    assert finalized["status"] == "insufficient_complete_replicates"
     real_mlx_module._verify_run_ledger(ledger)
 
     synthetic = [
@@ -2115,7 +2119,7 @@ def test_capacity_eviction_gate_requires_both_lane_treatments(
         real_mlx_module._require_capacity_eviction_verdicts(tampered)
 
 
-def test_aggregate_requires_five_of_six_without_replacement(
+def test_aggregate_requires_all_six_without_replacement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace = _make_attempts(tmp_path, monkeypatch)
@@ -2146,7 +2150,7 @@ def test_aggregate_requires_five_of_six_without_replacement(
                 "scope": "current_replicate_child_process",
             },
         )
-    with pytest.raises(RealMLXExperimentError, match="at least 5"):
+    with pytest.raises(RealMLXExperimentError, match="all 6"):
         assemble_aggregate(workspace, tmp_path / "aggregate")
 
     (attempts / "replicate-5").rename(attempts / "replicate-6")
@@ -2295,6 +2299,9 @@ def test_run_all_uses_fresh_offline_sandboxed_children(
     assert all(launch["env"]["HF_HUB_OFFLINE"] == "1" for launch in launches)
     assert all(launch["env"]["PYTHONSAFEPATH"] == "1" for launch in launches)
     assert all("-I" in launch["command"] for launch in launches)
+    assert all("-S" in launch["command"] for launch in launches)
+    assert all(Path(launch["env"]["TMPDIR"]).parent == workspace for launch in launches)
+    assert all(not Path(launch["env"]["TMPDIR"]).exists() for launch in launches)
     assert all(
         launch["env"][real_mlx_module.RUN_INSTANCE_ENV] in observed_instances
         for launch in launches
@@ -2725,10 +2732,14 @@ def test_replicate_child_uses_current_module_and_expected_commit(
         runtime_packages_digest="sha256:" + "b" * 64,
     )
 
-    module_index = command.index("-m")
-    assert command[module_index - 2] == real_mlx_module.sys.executable
-    assert command[module_index - 1] == "-I"
-    assert command[module_index + 1] == "llmtracefx.cache_audit.real_mlx"
+    bootstrap_index = command.index(str(real_mlx_module._TRUSTED_BOOTSTRAP))
+    assert command[bootstrap_index - 3 : bootstrap_index + 2] == [
+        real_mlx_module.sys.executable,
+        "-I",
+        "-S",
+        str(real_mlx_module._TRUSTED_BOOTSTRAP),
+        "replicate",
+    ]
     assert command[command.index("--expected-commit") + 1] == "a" * 40
     assert command[command.index("--runtime-packages-digest") + 1] == (
         "sha256:" + "b" * 64
@@ -2776,12 +2787,13 @@ def test_sandbox_probe_is_isolated_and_uses_non_repository_cwd(
     assert len(calls) == 1
     assert calls[0]["cwd"] == tmp_path
     command = calls[0]["command"]
-    module_index = command.index("-m")
-    assert command[module_index - 2 : module_index + 2] == [
+    bootstrap_index = command.index(str(real_mlx_module._TRUSTED_BOOTSTRAP))
+    assert command[bootstrap_index - 3 : bootstrap_index + 2] == [
         real_mlx_module.sys.executable,
         "-I",
-        "-m",
-        "llmtracefx.cache_audit.real_mlx",
+        "-S",
+        str(real_mlx_module._TRUSTED_BOOTSTRAP),
+        "sandbox-probe",
     ]
     assert real_mlx_module.SANDBOX_POLICY in command
 
