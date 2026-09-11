@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import platform
 import shutil
+import subprocess
+import sys
 from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any
@@ -202,6 +205,171 @@ def _calibrated_workload() -> FrozenMLXWorkload:
             for lane in workload.lanes
         ),
     )
+
+
+def _runtime_packages() -> dict[str, dict[str, str]]:
+    return {
+        name: {
+            "version": version,
+            "origin": f"site-packages/{name}/__init__.py",
+            "origin_sha256": "sha256:" + hashlib.sha256(name.encode()).hexdigest(),
+        }
+        for name, version in real_mlx_module._RUNTIME_PACKAGE_VERSIONS.items()
+    }
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="Mach RSS is macOS-only")
+def test_current_rss_uses_in_process_mach_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse_subprocess(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("current RSS must not launch a subprocess")
+
+    monkeypatch.setattr(real_mlx_module.subprocess, "run", refuse_subprocess)
+    rss = real_mlx_module._current_rss_bytes()
+    assert isinstance(rss, int)
+    assert rss > 0
+    monkeypatch.setattr(
+        real_mlx_module.ctypes,
+        "CDLL",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unavailable")),
+    )
+    assert real_mlx_module._current_rss_bytes() is None
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="sandbox-exec is macOS-only")
+def test_exact_sandbox_policy_model_free_smoke(tmp_path: Path) -> None:
+    real_mlx_module._ensure_non_repository_cwd(tmp_path)
+    code = """
+from llmtracefx.cache_audit.bundle import _git_package_digest, package_source_digest
+from pathlib import Path
+from llmtracefx.cache_audit.real_mlx import (
+    _PROJECT_ROOT,
+    RealMLXExperimentError,
+    _current_rss_bytes,
+    _runtime_package_identity,
+    _system_memory_free_percent,
+    _system_swap_used_bytes,
+    _validate_supervisor_source,
+)
+from llmtracefx.cache_audit.runner import source_commit
+commit, _ = source_commit()
+assert commit is not None
+assert _current_rss_bytes() is not None
+assert _system_swap_used_bytes() is not None
+assert _system_memory_free_percent() is not None
+assert package_source_digest().startswith("sha256:")
+assert _git_package_digest(_PROJECT_ROOT, commit).startswith("sha256:")
+assert set(_runtime_package_identity(Path.cwd() / "run")) == {
+    "mlx", "mlx_lm", "transformers", "safetensors"
+}
+try:
+    validated = _validate_supervisor_source(commit)
+except RealMLXExperimentError as exc:
+    assert str(exc) == "tracked worktree must be clean"
+else:
+    assert validated == package_source_digest()
+"""
+    command = [
+        "/usr/bin/sandbox-exec",
+        "-p",
+        real_mlx_module.SANDBOX_POLICY,
+        sys.executable,
+        "-I",
+        "-c",
+        code,
+    ]
+    result = subprocess.run(
+        command,
+        cwd=tmp_path,
+        env=real_mlx_module._offline_child_environment("a" * 32),
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_heavy_process_gate_counts_every_nonexcluded_large_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gib = 1024**3
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_process_inventory",
+        lambda: [
+            (10, 1, 2 * gib),
+            (11, 10, 2 * gib),
+            (20, 1, gib),
+            (22, 1, 3 * gib),
+            (21, 1, gib - 1),
+        ],
+    )
+
+    assert real_mlx_module._heavy_process_summary({10}) == (
+        2,
+        ("other_large_process",),
+    )
+
+
+def test_import_shadow_scan_is_narrow_and_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    output_parent = tmp_path / "output-parent"
+    output_parent.mkdir()
+    output_workspace = output_parent / "run"
+    (repository / "unrelated-ignored-directory").mkdir()
+    monkeypatch.setattr(real_mlx_module, "_PROJECT_ROOT", repository)
+
+    real_mlx_module._reject_import_shadows(output_workspace)
+    (output_parent / "mlx.py").write_text("raise RuntimeError('shadowed')\n")
+    with pytest.raises(RealMLXExperimentError, match="import shadow"):
+        real_mlx_module._reject_import_shadows(output_workspace)
+    (output_parent / "mlx.py").unlink()
+    (repository / "mlx_lm").mkdir()
+    with pytest.raises(RealMLXExperimentError, match="import shadow"):
+        real_mlx_module._reject_import_shadows(output_workspace)
+
+
+def test_source_validation_rejects_tracked_dirt_and_package_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_commit = "a" * 40
+    monkeypatch.setattr(
+        real_mlx_module,
+        "source_commit",
+        lambda: (expected_commit, "2026-01-01T00:00:00Z"),
+    )
+    monkeypatch.setattr(
+        real_mlx_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, " M llmtracefx/cache_audit/real_mlx.py\n", ""
+        ),
+    )
+    with pytest.raises(RealMLXExperimentError, match="tracked worktree"):
+        real_mlx_module._validate_supervisor_source(expected_commit)
+
+    monkeypatch.setattr(
+        real_mlx_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "package_source_digest",
+        lambda: "sha256:" + "b" * 64,
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_git_package_digest",
+        lambda *_args: "sha256:" + "c" * 64,
+    )
+    with pytest.raises(RealMLXExperimentError, match="does not match expected commit"):
+        real_mlx_module._validate_supervisor_source(expected_commit)
 
 
 def test_workload_invariants_and_counterbalanced_schedule() -> None:
@@ -815,6 +983,9 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 "runtime_identity_digest": _digest_bytes(
                     _json_bytes(real_mlx_module._EXPECTED_RUNTIME_IDENTITY)
                 ),
+                "runtime_packages_digest": _digest_bytes(
+                    _json_bytes(_runtime_packages())
+                ),
                 "cache_config_digest": _digest_bytes(
                     _json_bytes(_experiment_cache_config().to_dict())
                 ),
@@ -888,6 +1059,7 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         expected_commit=expected_commit,
         package_digest=package_digest,
         workload=workload,
+        runtime_packages=_runtime_packages(),
     )
     ledger = workspace / "run-ledger.jsonl"
     real_mlx_module._create_run_ledger(ledger, binding)
@@ -1335,6 +1507,131 @@ def test_run_ledger_rejects_lifecycle_schema_and_instance_tampering(
         real_mlx_module._verify_run_ledger(ledger)
 
 
+def test_run_ledger_rejects_monitor_and_postflight_reason_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _make_attempts(tmp_path, monkeypatch)
+    ledger = workspace / "run-ledger.jsonl"
+    original = [
+        json.loads(line) for line in ledger.read_text(encoding="ascii").splitlines()
+    ]
+
+    rows = [dict(row) for row in original]
+    postflight_index = next(
+        index
+        for index, row in enumerate(rows)
+        if row.get("replicate_id") == "replicate-0" and row["event"] == "postflight"
+    )
+    failed_observation = dict(rows[postflight_index]["observation"])
+    failed_observation["vm_stat_available_ratio"] = 0.1
+    rows.insert(
+        postflight_index,
+        {
+            "schema_version": "2",
+            "sequence": -1,
+            "timestamp": rows[postflight_index]["timestamp"],
+            "replicate_id": "replicate-0",
+            "event": "monitor",
+            "status": "failed",
+            "reason": "runtime_memory_below_floor",
+            "observation": failed_observation,
+            "elapsed_seconds": 2.0,
+        },
+    )
+    rows[postflight_index + 1]["elapsed_seconds"] = 2.5
+    finalized = next(
+        row
+        for row in rows
+        if row.get("replicate_id") == "replicate-0" and row["event"] == "finalized"
+    )
+    finalized["status"] = "failed"
+    finalized["reason"] = "child_exit_nonzero"
+    for sequence, row in enumerate(rows):
+        row["sequence"] = sequence
+    ledger.write_text(
+        "".join(real_mlx_module._json_line(row) for row in rows),
+        encoding="ascii",
+    )
+    with pytest.raises(RealMLXExperimentError, match="contradicts failed policy"):
+        real_mlx_module._verify_run_ledger(ledger)
+
+    rows = [dict(row) for row in original]
+    postflight = next(
+        row
+        for row in rows
+        if row.get("replicate_id") == "replicate-0" and row["event"] == "postflight"
+    )
+    postflight["observation"] = dict(postflight["observation"])
+    postflight["observation"]["vm_stat_available_ratio"] = 0.1
+    postflight["status"] = "failed"
+    postflight["reason"] = "runtime_memory_below_floor"
+    finalized = next(
+        row
+        for row in rows
+        if row.get("replicate_id") == "replicate-0" and row["event"] == "finalized"
+    )
+    finalized["status"] = "failed"
+    finalized["reason"] = "child_exit_nonzero"
+    ledger.write_text(
+        "".join(real_mlx_module._json_line(row) for row in rows),
+        encoding="ascii",
+    )
+    with pytest.raises(RealMLXExperimentError, match="contradicts failed policy"):
+        real_mlx_module._verify_run_ledger(ledger)
+
+
+def test_run_ledger_requires_started_rows_and_abort_ordering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _make_attempts(tmp_path, monkeypatch)
+    ledger = workspace / "run-ledger.jsonl"
+    original = ledger.read_text(encoding="ascii")
+
+    rows = [
+        row
+        for row in (json.loads(line) for line in original.splitlines())
+        if not (row.get("replicate_id") == "replicate-0" and row["event"] == "started")
+    ]
+    postflight = next(
+        row
+        for row in rows
+        if row.get("replicate_id") == "replicate-0" and row["event"] == "postflight"
+    )
+    postflight["status"] = "not_started"
+    postflight["reason"] = "child_timeout"
+    postflight.pop("elapsed_seconds")
+    finalized = next(
+        row
+        for row in rows
+        if row.get("replicate_id") == "replicate-0" and row["event"] == "finalized"
+    )
+    finalized["status"] = "failed"
+    finalized["reason"] = "child_timeout"
+    for sequence, row in enumerate(rows):
+        row["sequence"] = sequence
+    ledger.write_text(
+        "".join(real_mlx_module._json_line(row) for row in rows),
+        encoding="ascii",
+    )
+    with pytest.raises(RealMLXExperimentError, match="not-started terminal"):
+        real_mlx_module._verify_run_ledger(ledger)
+
+    rows = [json.loads(line) for line in original.splitlines()]
+    finalized = next(
+        row
+        for row in rows
+        if row.get("replicate_id") == "replicate-0" and row["event"] == "finalized"
+    )
+    finalized["status"] = "failed"
+    finalized["reason"] = "source_validation_failed"
+    ledger.write_text(
+        "".join(real_mlx_module._json_line(row) for row in rows),
+        encoding="ascii",
+    )
+    with pytest.raises(RealMLXExperimentError, match="continued after an aborting"):
+        real_mlx_module._verify_run_ledger(ledger)
+
+
 def test_capacity_eviction_gate_requires_both_lane_treatments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1471,22 +1768,8 @@ def test_run_all_uses_fresh_offline_sandboxed_children(
     )
     monkeypatch.setattr(
         real_mlx_module,
-        "_replicate_child_command",
-        lambda **kwargs: [
-            "child",
-            "--workload",
-            str(kwargs["workload"]),
-            "--model-dir",
-            str(kwargs["model_dir"]),
-            "--conversion-summary",
-            str(kwargs["conversion_summary"]),
-            "--replicate-id",
-            str(kwargs["replicate_id"]),
-            "--output-dir",
-            str(kwargs["output_dir"]),
-            "--expected-commit",
-            str(kwargs["expected_commit"]),
-        ],
+        "_run_exact_sandbox_probe",
+        lambda **_kwargs: _runtime_packages(),
     )
     monkeypatch.setattr(
         real_mlx_module,
@@ -1529,8 +1812,11 @@ def test_run_all_uses_fresh_offline_sandboxed_children(
     assert len(observed_instances) == 6
     assert all(launch["start_new_session"] is True for launch in launches)
     assert all(launch["shell"] is False for launch in launches)
+    assert all(launch["cwd"] == tmp_path for launch in launches)
     assert all("OPENAI_API_KEY" not in launch["env"] for launch in launches)
     assert all(launch["env"]["HF_HUB_OFFLINE"] == "1" for launch in launches)
+    assert all(launch["env"]["PYTHONSAFEPATH"] == "1" for launch in launches)
+    assert all("-I" in launch["command"] for launch in launches)
     assert all(
         launch["env"][real_mlx_module.RUN_INSTANCE_ENV] in observed_instances
         for launch in launches
@@ -1571,7 +1857,7 @@ def test_run_all_uses_fresh_offline_sandboxed_children(
     assert not any("pid" in row or "path" in row for row in ledger)
 
 
-def test_run_all_marks_each_preflight_failure_once(
+def test_run_all_global_machine_failure_creates_no_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     blocked = {
@@ -1623,8 +1909,8 @@ def test_run_all_marks_each_preflight_failure_once(
     )
     monkeypatch.setattr(
         real_mlx_module,
-        "_replicate_child_command",
-        lambda **_kwargs: ["child"],
+        "_run_exact_sandbox_probe",
+        lambda **_kwargs: _runtime_packages(),
     )
     monkeypatch.setattr(
         real_mlx_module,
@@ -1633,27 +1919,103 @@ def test_run_all_marks_each_preflight_failure_once(
     )
 
     workspace = tmp_path / "blocked"
+    with pytest.raises(
+        RealMLXExperimentError,
+        match="NEEDS_CLEAN_BOOT:preflight_memory_below_floor",
+    ):
+        real_mlx_module.run_all_replicates(
+            workload=workload_path,
+            model_dir=model_dir,
+            conversion_summary=conversion_summary,
+            output_workspace=workspace,
+            expected_commit="a" * 40,
+        )
+
+    assert not workspace.exists()
+
+
+def test_run_all_bundle_source_failure_finalizes_every_planned_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workload_path = tmp_path / "workload.json"
+    workload_path.write_text("{}")
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    summary = tmp_path / "summary.json"
+    summary.write_text("{}")
+    workspace = tmp_path / "run"
+    workload = _calibrated_workload()
+    monkeypatch.setattr(
+        real_mlx_module,
+        "EXPECTED_CALIBRATED_WORKLOAD_DIGEST",
+        workload.to_dict()["workload_digest"],
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "EXPECTED_CALIBRATED_LANE_DIGESTS",
+        {lane.lane_id: lane.to_dict()["lane_digest"] for lane in workload.lanes},
+    )
+    safe_observation = {
+        "chip": "Apple M5 Pro",
+        "total_memory_bytes": 24 * 1024**3,
+        "vm_stat_available_ratio": 0.5,
+        "system_swap_used_bytes": 0,
+        "disk_free_bytes": 100 * 1024**3,
+        "heavy_process_count": 0,
+        "heavy_process_categories": [],
+        "scopes": {
+            "memory": "system_wide_vm_stat",
+            "swap": "system_wide",
+            "disk": "output_workspace_filesystem",
+            "processes": "host_process_table_excluding_supervisor_and_child_tree",
+        },
+    }
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_run_global_preflight",
+        lambda **_kwargs: real_mlx_module._RunPreflight(
+            workload_path=workload_path,
+            model_dir=model_dir,
+            conversion_summary=summary,
+            output_workspace=workspace,
+            package_digest="sha256:" + "b" * 64,
+            workload=workload,
+            runtime_packages=_runtime_packages(),
+            machine_observation=safe_observation,
+        ),
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_machine_observation",
+        lambda *_args, **_kwargs: safe_observation,
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_validate_supervisor_source",
+        lambda _commit: (_ for _ in ()).throw(
+            cache_bundle.CacheAuditBundleError("digest failed")
+        ),
+    )
+
     result = real_mlx_module.run_all_replicates(
         workload=workload_path,
         model_dir=model_dir,
-        conversion_summary=conversion_summary,
+        conversion_summary=summary,
         output_workspace=workspace,
         expected_commit="a" * 40,
     )
 
     assert result["complete_replicates"] == 0
-    for replicate_id in REPLICATE_IDS:
-        attempt = json.loads(
-            (workspace / "attempts" / replicate_id / "attempt.json").read_text()
-        )
-        assert attempt["status"] == "failed"
-        assert attempt["reason"] == "preflight_memory_below_floor"
     ledger = [
         json.loads(line)
         for line in (workspace / "run-ledger.jsonl").read_text().splitlines()
     ]
-    assert sum(row["event"] == "planned" for row in ledger) == 6
-    assert sum(row["event"] == "finalized" for row in ledger) == 6
+    finalized = [row for row in ledger if row["event"] == "finalized"]
+    assert len(finalized) == len(REPLICATE_IDS)
+    assert finalized[0]["reason"] == "source_validation_failed"
+    assert all(
+        row["reason"] == "supervisor_aborted_before_start" for row in finalized[1:]
+    )
 
 
 def test_run_all_rejects_symlinked_input_before_creating_workspace(
@@ -1697,13 +2059,103 @@ def test_replicate_child_uses_current_module_and_expected_commit(
         replicate_id="replicate-0",
         output_dir=(tmp_path / "attempt").resolve(),
         expected_commit="a" * 40,
+        runtime_packages_digest="sha256:" + "b" * 64,
     )
 
     module_index = command.index("-m")
-    assert command[module_index - 1] == real_mlx_module.sys.executable
+    assert command[module_index - 2] == real_mlx_module.sys.executable
+    assert command[module_index - 1] == "-I"
     assert command[module_index + 1] == "llmtracefx.cache_audit.real_mlx"
     assert command[command.index("--expected-commit") + 1] == "a" * 40
+    assert command[command.index("--runtime-packages-digest") + 1] == (
+        "sha256:" + "b" * 64
+    )
     assert real_mlx_module.SANDBOX_POLICY in command
+
+
+def test_sandbox_probe_is_isolated_and_uses_non_repository_cwd(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sandbox = Path("/usr/bin/sandbox-exec")
+    original_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda self: True if self == sandbox else original_is_file(self),
+    )
+    monkeypatch.setattr(real_mlx_module.os, "access", lambda *_args: True)
+    calls: list[dict[str, Any]] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append({"command": command, **kwargs})
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                {
+                    "sandbox_probe_passed": True,
+                    "runtime_packages": _runtime_packages(),
+                }
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(real_mlx_module.subprocess, "run", fake_run)
+    output_workspace = tmp_path / "run"
+    identity = real_mlx_module._run_exact_sandbox_probe(
+        output_workspace=output_workspace,
+        expected_commit="a" * 40,
+        expected_package_digest="sha256:" + "b" * 64,
+    )
+
+    assert identity == _runtime_packages()
+    assert len(calls) == 1
+    assert calls[0]["cwd"] == tmp_path
+    command = calls[0]["command"]
+    module_index = command.index("-m")
+    assert command[module_index - 2 : module_index + 2] == [
+        real_mlx_module.sys.executable,
+        "-I",
+        "-m",
+        "llmtracefx.cache_audit.real_mlx",
+    ]
+    assert real_mlx_module.SANDBOX_POLICY in command
+
+
+def test_preflight_refusal_writes_only_explicit_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_run_global_preflight",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RealMLXExperimentError("NEEDS_CLEAN_BOOT:preflight_heavy_process_present")
+        ),
+    )
+    output_workspace = tmp_path / "run"
+    receipt = tmp_path / "preflight.json"
+    result = real_mlx_module.run_preflight(
+        workload=tmp_path / "workload.json",
+        model_dir=tmp_path / "model",
+        conversion_summary=tmp_path / "summary.json",
+        output_workspace=output_workspace,
+        expected_commit="a" * 40,
+        output=receipt,
+    )
+
+    assert result == {
+        "preflight_passed": False,
+        "reason": "NEEDS_CLEAN_BOOT:preflight_heavy_process_present",
+    }
+    assert json.loads(receipt.read_text()) == {
+        "schema_version": "1",
+        "canonical_execution": False,
+        "status": "refused",
+        "reason": "NEEDS_CLEAN_BOOT:preflight_heavy_process_present",
+    }
+    assert not output_workspace.exists()
 
 
 def test_child_environment_is_a_minimal_explicit_allowlist(
@@ -1730,6 +2182,8 @@ def test_child_environment_is_a_minimal_explicit_allowlist(
         "HF_DATASETS_OFFLINE": "1",
         "WANDB_MODE": "offline",
         "WANDB_DISABLED": "true",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONSAFEPATH": "1",
         real_mlx_module.RUN_INSTANCE_ENV: instance_id,
     }
 
@@ -1772,12 +2226,8 @@ def test_cleanup_failure_preserves_partial_evidence_and_aborts_remaining(
     )
     monkeypatch.setattr(
         real_mlx_module,
-        "_replicate_child_command",
-        lambda **kwargs: [
-            "child",
-            "--output-dir",
-            str(kwargs["output_dir"]),
-        ],
+        "_run_exact_sandbox_probe",
+        lambda **_kwargs: _runtime_packages(),
     )
     safe_observation = {
         "chip": "Apple M5 Pro",

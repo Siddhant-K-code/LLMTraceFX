@@ -9,8 +9,11 @@ assemble and redact the six-attempt evidence envelope.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import gc
 import hashlib
+import importlib
+import importlib.util
 import json
 import math
 import os
@@ -22,6 +25,7 @@ import signal
 import stat
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 from collections import Counter
@@ -111,6 +115,9 @@ RUNTIME_MIN_DISK_BYTES = 12 * 1024**3
 HEAVY_PROCESS_RSS_BYTES = 1 * 1024**3
 REQUIRED_HOST_CHIP = "Apple M5 Pro"
 REQUIRED_HOST_MEMORY_BYTES = 24 * 1024**3
+REQUIRED_LLMTRACEFX_VERSION = "1.0.0"
+REQUIRED_TRANSFORMERS_VERSION = "5.16.1"
+REQUIRED_SAFETENSORS_VERSION = "0.8.0"
 CHILD_TIMEOUT_SECONDS = 12 * 60
 TOTAL_TIMEOUT_SECONDS = 90 * 60
 MONITOR_INTERVAL_SECONDS = 2.0
@@ -177,6 +184,55 @@ SANDBOX_POLICY = "(version 1) (allow default) (deny network*)"
 SANDBOX_POLICY_DIGEST = (
     "sha256:" + hashlib.sha256(SANDBOX_POLICY.encode("ascii")).hexdigest()
 )
+_RUNTIME_PACKAGE_VERSIONS = {
+    "mlx": REQUIRED_MLX_VERSION,
+    "mlx_lm": REQUIRED_MLX_LM_VERSION,
+    "transformers": REQUIRED_TRANSFORMERS_VERSION,
+    "safetensors": REQUIRED_SAFETENSORS_VERSION,
+}
+_RUNTIME_DISTRIBUTIONS = {
+    "mlx": "mlx",
+    "mlx_lm": "mlx-lm",
+    "transformers": "transformers",
+    "safetensors": "safetensors",
+}
+_IMPORT_SHADOW_CANDIDATES = (
+    "mlx.py",
+    "mlx",
+    "mlx_lm.py",
+    "mlx_lm",
+    "transformers.py",
+    "transformers",
+    "safetensors.py",
+    "safetensors",
+)
+_STARTED_TERMINAL_REASONS = {
+    "child_exit_nonzero",
+    "child_timeout",
+    "invalid_complete_artifact",
+    "orphaned_child_process",
+    "process_cleanup_failed",
+    "source_validation_failed",
+    "supervisor_aborted",
+    "total_timeout",
+}
+_NOT_STARTED_TERMINAL_REASONS = {
+    "child_launch_failed",
+    "source_validation_failed",
+    "supervisor_aborted_before_start",
+    "total_timeout_before_start",
+}
+_POLICY_SUPERSEDING_REASONS = {
+    "process_cleanup_failed",
+    "source_validation_failed",
+}
+_ABORT_LATER_REASONS = {
+    "orphaned_child_process",
+    "process_cleanup_failed",
+    "source_validation_failed",
+    "total_timeout",
+    "total_timeout_before_start",
+}
 _PRIVATE_REPLICATE_FILES = {
     "attempt.json",
     "environment.json",
@@ -1224,21 +1280,61 @@ class LifecycleMLXAdapter:
 
 
 def _current_rss_bytes() -> int | None:
-    result = subprocess.run(
-        ["ps", "-o", "rss=", "-p", str(os.getpid())],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-    try:
-        return int(result.stdout.strip()) * 1024 if result.returncode == 0 else None
-    except ValueError:
+    if platform.system() != "Darwin":
         return None
+
+    class _TimeValue(ctypes.Structure):
+        _pack_ = 4
+        _fields_ = [
+            ("seconds", ctypes.c_int32),
+            ("microseconds", ctypes.c_int32),
+        ]
+
+    class _MachTaskBasicInfo(ctypes.Structure):
+        _fields_ = [
+            ("virtual_size", ctypes.c_uint64),
+            ("resident_size", ctypes.c_uint64),
+            ("resident_size_max", ctypes.c_uint64),
+            ("user_time", _TimeValue),
+            ("system_time", _TimeValue),
+            ("policy", ctypes.c_int32),
+            ("suspend_count", ctypes.c_int32),
+        ]
+
+    try:
+        libsystem = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        mach_task_self = libsystem.mach_task_self
+        mach_task_self.argtypes = []
+        mach_task_self.restype = ctypes.c_uint32
+        task_info = libsystem.task_info
+        task_info.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_int32),
+            ctypes.POINTER(ctypes.c_uint32),
+        ]
+        task_info.restype = ctypes.c_int
+        info = _MachTaskBasicInfo()
+        count = ctypes.c_uint32(
+            ctypes.sizeof(_MachTaskBasicInfo) // ctypes.sizeof(ctypes.c_uint32)
+        )
+        status = task_info(
+            mach_task_self(),
+            20,  # MACH_TASK_BASIC_INFO.
+            ctypes.cast(ctypes.byref(info), ctypes.POINTER(ctypes.c_int32)),
+            ctypes.byref(count),
+        )
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    expected_count = ctypes.sizeof(_MachTaskBasicInfo) // ctypes.sizeof(ctypes.c_uint32)
+    if status != 0 or count.value != expected_count or info.resident_size <= 0:
+        return None
+    return int(info.resident_size)
 
 
 def _system_swap_used_bytes() -> int | None:
     result = subprocess.run(
-        ["sysctl", "-n", "vm.swapusage"],
+        ["/usr/sbin/sysctl", "-n", "vm.swapusage"],
         capture_output=True,
         check=False,
         text=True,
@@ -1395,6 +1491,128 @@ def _distribution_version(name: str) -> str | None:
         return metadata.version(name)
     except metadata.PackageNotFoundError:
         return None
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _sha256_regular_file(path: Path) -> str:
+    if path.is_symlink() or not path.is_file():
+        raise RealMLXExperimentError("runtime module origin is not a regular file")
+    before = path.stat()
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    after = path.stat()
+    if (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_size,
+        before.st_mtime_ns,
+    ) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_size,
+        after.st_mtime_ns,
+    ):
+        raise RealMLXExperimentError("runtime module changed while hashing")
+    return "sha256:" + digest.hexdigest()
+
+
+def _trusted_site_roots() -> tuple[Path, ...]:
+    roots: set[Path] = set()
+    for key in ("purelib", "platlib"):
+        raw = sysconfig.get_path(key)
+        try:
+            root = Path(raw).resolve(strict=True)
+        except OSError as exc:
+            raise RealMLXExperimentError(
+                "trusted site-packages is unavailable"
+            ) from exc
+        if root.is_dir():
+            roots.add(root)
+    if not roots:
+        raise RealMLXExperimentError("trusted site-packages is unavailable")
+    return tuple(sorted(roots))
+
+
+def _runtime_package_identity(output_workspace: Path) -> dict[str, dict[str, str]]:
+    site_roots = _trusted_site_roots()
+    shadow_roots = tuple(
+        root / name
+        for root in {_PROJECT_ROOT, output_workspace.parent}
+        for name in _IMPORT_SHADOW_CANDIDATES
+    )
+    identities: dict[str, dict[str, str]] = {}
+    for module_name, required_version in _RUNTIME_PACKAGE_VERSIONS.items():
+        try:
+            module = importlib.import_module(module_name)
+            origin_module = (
+                importlib.import_module("mlx.core") if module_name == "mlx" else module
+            )
+            raw_origin = getattr(origin_module, "__file__", None)
+            if not isinstance(raw_origin, str):
+                raise RealMLXExperimentError(
+                    f"{module_name} has no importable origin file"
+                )
+            origin = Path(raw_origin).resolve(strict=True)
+        except (ImportError, OSError) as exc:
+            raise RealMLXExperimentError(
+                f"{module_name} runtime package import failed"
+            ) from exc
+        version = _distribution_version(_RUNTIME_DISTRIBUTIONS[module_name])
+        if version != required_version:
+            raise RealMLXExperimentError(
+                f"{module_name} runtime package version mismatch"
+            )
+        trusted_root = next(
+            (root for root in site_roots if _is_relative_to(origin, root)),
+            None,
+        )
+        if (
+            trusted_root is None
+            or _is_relative_to(origin, output_workspace)
+            or any(_is_relative_to(origin, shadow_root) for shadow_root in shadow_roots)
+        ):
+            raise RealMLXExperimentError(
+                f"{module_name} runtime package origin is untrusted"
+            )
+        identities[module_name] = {
+            "version": required_version,
+            "origin": "site-packages/" + origin.relative_to(trusted_root).as_posix(),
+            "origin_sha256": _sha256_regular_file(origin),
+        }
+    return identities
+
+
+def _verify_runtime_package_identity(value: Any) -> None:
+    if not isinstance(value, dict) or set(value) != set(_RUNTIME_PACKAGE_VERSIONS):
+        raise RealMLXExperimentError("runtime package identity is invalid")
+    for name, required_version in _RUNTIME_PACKAGE_VERSIONS.items():
+        entry = value[name]
+        if not isinstance(entry, dict):
+            raise RealMLXExperimentError("runtime package identity is invalid")
+        _exact_keys(
+            entry,
+            {"version", "origin", "origin_sha256"},
+            "runtime package identity",
+        )
+        if (
+            entry["version"] != required_version
+            or not isinstance(entry["origin"], str)
+            or not entry["origin"].startswith("site-packages/")
+            or ".." in Path(entry["origin"]).parts
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", str(entry["origin_sha256"])) is None
+        ):
+            raise RealMLXExperimentError("runtime package identity is invalid")
 
 
 def _hash_regular_file(path: Path, expected_size: int, expected_digest: str) -> None:
@@ -1697,9 +1915,11 @@ def run_replicate(
     model_dir: Path,
     expected_commit: str,
     conversion_summary: Path = DEFAULT_CONVERSION_SUMMARY,
+    expected_runtime_packages_digest: str | None = None,
 ) -> dict[str, Any]:
     """Run one replicate. Parent-level timeout/process isolation stays external."""
 
+    _reject_import_shadows(output_dir)
     if output_dir.exists():
         raise RealMLXExperimentError("replicate output already exists")
     output_dir.mkdir(parents=True)
@@ -1707,7 +1927,17 @@ def run_replicate(
     observer: StageRecorder | None = None
     instance_id = _run_instance_id()
     try:
+        if os.environ.get(RUN_INSTANCE_ENV) is not None and sys.flags.isolated != 1:
+            raise RealMLXExperimentError("supervised replicate requires isolated mode")
         _validate_supervisor_source(expected_commit)
+        runtime_packages_digest = _digest_bytes(
+            _json_bytes(_runtime_package_identity(output_dir))
+        )
+        if (
+            expected_runtime_packages_digest is not None
+            and runtime_packages_digest != expected_runtime_packages_digest
+        ):
+            raise RealMLXExperimentError("runtime package identity changed")
         workload = load_workload(workload_path, calibrated=True)
         model, tokenizer, model_key, digest, snapshot_owner = _load_verified_model(
             model_dir, conversion_summary
@@ -1755,6 +1985,11 @@ def run_replicate(
         teardown = _teardown()
         snapshot_owner.cleanup()
         _validate_supervisor_source(expected_commit)
+        if (
+            _digest_bytes(_json_bytes(_runtime_package_identity(output_dir)))
+            != runtime_packages_digest
+        ):
+            raise RealMLXExperimentError("runtime package identity changed")
         _write_json(
             output_dir / "attempt.json",
             {
@@ -1780,6 +2015,7 @@ def run_replicate(
                 "runtime_identity_digest": _digest_bytes(
                     _json_bytes(_EXPECTED_RUNTIME_IDENTITY)
                 ),
+                "runtime_packages_digest": runtime_packages_digest,
                 "cache_config_digest": _digest_bytes(
                     _json_bytes(_experiment_cache_config().to_dict())
                 ),
@@ -2139,6 +2375,7 @@ def verify_replicate(
             "model_id",
             "tokenizer_id",
             "runtime_identity_digest",
+            "runtime_packages_digest",
             "cache_config_digest",
         },
         "complete attempt",
@@ -2160,6 +2397,11 @@ def verify_replicate(
         or attempt["model_artifact_digest"] != EXPECTED_MODEL_ARTIFACT_DIGEST
         or attempt["runtime_identity_digest"]
         != _digest_bytes(_json_bytes(_EXPECTED_RUNTIME_IDENTITY))
+        or re.fullmatch(
+            r"sha256:[0-9a-f]{64}",
+            str(attempt["runtime_packages_digest"]),
+        )
+        is None
         or attempt["cache_config_digest"]
         != _digest_bytes(_json_bytes(_experiment_cache_config().to_dict()))
     ):
@@ -2384,6 +2626,8 @@ def _replicate_index(
                 attempt["expected_commit"] != run_binding["expected_commit"]
                 or manifest.generator_package_digest
                 != run_binding["generator_package_digest"]
+                or attempt["runtime_packages_digest"]
+                != _digest_bytes(_json_bytes(run_binding["runtime_packages"]))
             ):
                 raise RealMLXExperimentError(
                     "replicate does not match aggregate ledger binding"
@@ -2480,6 +2724,9 @@ def _claim_matrix(index: Mapping[str, Any]) -> dict[str, Any]:
         "lane_request_observations": index["lane_request_counts"],
         "verdict_observations": index["verdict_counts"],
         "allocation_step_boundary_256_is_block_cache_claim": False,
+        "same_length_different_ids_interpretation": (
+            "early_divergence_same_length_case_without_zero_reuse_guarantee"
+        ),
         "namespace_isolation_scope": "harness_enforced_cache_key_separation",
         "native_mlx_tenancy_claim": False,
         "process_and_system_memory_rule": (
@@ -3425,7 +3672,9 @@ def _experiment_contract(
             "authenticity_anchor": "git_commit_containing_final_public_evidence",
         },
         "execution": "six independent fresh child processes; sequential",
+        "performance_dry_run_used": False,
         "parent_timeout_minutes": 90,
+        "child_timeout_minutes": 12,
         "max_output_tokens_per_request": MAX_OUTPUT_TOKENS,
         "max_cache_entries_per_lifecycle": MAX_CACHE_ENTRIES,
         "lanes": {
@@ -3935,51 +4184,50 @@ def _host_identity() -> tuple[str | None, int | None]:
     return chip, int(memory) if memory is not None and memory.isdigit() else None
 
 
-def _process_inventory() -> list[tuple[int, int, int, str]] | None:
-    output = _command_text(("/bin/ps", "-axo", "pid=,ppid=,rss=,comm="))
+def _process_inventory() -> list[tuple[int, int, int]] | None:
+    output = _command_text(("/bin/ps", "-axo", "pid=,ppid=,rss="))
     if output is None:
         return None
-    rows: list[tuple[int, int, int, str]] = []
+    rows: list[tuple[int, int, int]] = []
     for line in output.splitlines():
-        parts = line.strip().split(maxsplit=3)
-        if len(parts) != 4:
+        parts = line.strip().split()
+        if len(parts) != 3:
             return None
         try:
-            pid, parent, rss_kib = map(int, parts[:3])
+            pid, parent, rss_kib = map(int, parts)
         except ValueError:
             return None
-        rows.append((pid, parent, rss_kib * 1024, parts[3]))
+        rows.append((pid, parent, rss_kib * 1024))
     return rows
 
 
 def _excluded_process_tree(
-    rows: Sequence[tuple[int, int, int, str]], roots: set[int]
+    rows: Sequence[tuple[int, int, int]], roots: set[int]
 ) -> set[int]:
     excluded = set(roots)
     changed = True
     while changed:
         changed = False
-        for pid, parent, _, _ in rows:
+        for pid, parent, _ in rows:
             if parent in excluded and pid not in excluded:
                 excluded.add(pid)
                 changed = True
     return excluded
 
 
-def _heavy_process_categories(excluded_roots: set[int]) -> tuple[str, ...] | None:
+def _heavy_process_summary(
+    excluded_roots: set[int],
+) -> tuple[int, tuple[str, ...]] | None:
     rows = _process_inventory()
     if rows is None:
         return None
     excluded = _excluded_process_tree(rows, excluded_roots)
-    categories: set[str] = set()
-    for pid, _, rss_bytes, command in rows:
+    count = 0
+    for pid, _, rss_bytes in rows:
         if pid in excluded or rss_bytes < HEAVY_PROCESS_RSS_BYTES:
             continue
-        folded = Path(command).name.casefold()
-        for category in ("python", "mlx", "ollama", "llama"):
-            if category in folded:
-                categories.add(category)
-    return tuple(sorted(categories))
+        count += 1
+    return count, (() if count == 0 else ("other_large_process",))
 
 
 def _machine_observation(
@@ -3988,7 +4236,7 @@ def _machine_observation(
     excluded_roots: set[int],
 ) -> dict[str, Any]:
     chip, total_memory = _host_identity()
-    categories = _heavy_process_categories(excluded_roots)
+    process_summary = _heavy_process_summary(excluded_roots)
     try:
         disk_free = shutil.disk_usage(workspace).free
     except OSError:
@@ -3999,8 +4247,12 @@ def _machine_observation(
         "vm_stat_available_ratio": _vm_stat_available_ratio(),
         "system_swap_used_bytes": _system_swap_used_bytes(),
         "disk_free_bytes": disk_free,
-        "heavy_process_count": None if categories is None else len(categories),
-        "heavy_process_categories": (None if categories is None else list(categories)),
+        "heavy_process_count": (
+            None if process_summary is None else process_summary[0]
+        ),
+        "heavy_process_categories": (
+            None if process_summary is None else list(process_summary[1])
+        ),
         "scopes": {
             "memory": "system_wide_vm_stat",
             "swap": "system_wide",
@@ -4077,6 +4329,8 @@ def _offline_child_environment(instance_id: str) -> dict[str, str]:
         "HF_DATASETS_OFFLINE": "1",
         "WANDB_MODE": "offline",
         "WANDB_DISABLED": "true",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONSAFEPATH": "1",
         RUN_INSTANCE_ENV: instance_id,
     }
     return environment
@@ -4090,6 +4344,7 @@ def _replicate_child_command(
     replicate_id: str,
     output_dir: Path,
     expected_commit: str,
+    runtime_packages_digest: str,
 ) -> list[str]:
     sandbox = Path("/usr/bin/sandbox-exec")
     if not sandbox.is_file() or not os.access(sandbox, os.X_OK):
@@ -4099,6 +4354,7 @@ def _replicate_child_command(
         "-p",
         SANDBOX_POLICY,
         sys.executable,
+        "-I",
         "-m",
         "llmtracefx.cache_audit.real_mlx",
         "replicate",
@@ -4114,12 +4370,181 @@ def _replicate_child_command(
         str(conversion_summary),
         "--expected-commit",
         expected_commit,
+        "--runtime-packages-digest",
+        runtime_packages_digest,
     ]
+
+
+def _git_path_is_tracked(path: Path) -> bool:
+    try:
+        relative = path.relative_to(_PROJECT_ROOT).as_posix()
+    except ValueError:
+        return False
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(_PROJECT_ROOT),
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            relative,
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def _reject_import_shadows(output_workspace: Path) -> None:
+    roots = (_PROJECT_ROOT, output_workspace.parent)
+    checked: set[Path] = set()
+    for root in roots:
+        for name in _IMPORT_SHADOW_CANDIDATES:
+            candidate = root / name
+            if candidate in checked:
+                continue
+            checked.add(candidate)
+            if not (candidate.exists() or candidate.is_symlink()):
+                continue
+            if root == _PROJECT_ROOT and _git_path_is_tracked(candidate):
+                continue
+            raise RealMLXExperimentError("unsafe top-level import shadow candidate")
+
+
+def _validate_probe_module_origin(output_workspace: Path) -> None:
+    spec = importlib.util.find_spec("llmtracefx.cache_audit.real_mlx")
+    if spec is None or spec.origin is None:
+        raise RealMLXExperimentError("real_mlx module origin is unavailable")
+    try:
+        origin = Path(spec.origin).resolve(strict=True)
+        expected = Path(__file__).resolve(strict=True)
+    except OSError as exc:
+        raise RealMLXExperimentError("real_mlx module origin is unavailable") from exc
+    if (
+        origin != expected
+        or not _is_relative_to(origin, _PROJECT_ROOT)
+        or _is_relative_to(origin, output_workspace)
+        or _distribution_version("llmtracefx") != REQUIRED_LLMTRACEFX_VERSION
+    ):
+        raise RealMLXExperimentError("real_mlx module origin is untrusted")
+
+
+def _ensure_non_repository_cwd(path: Path) -> None:
+    if not path.is_dir() or _is_relative_to(path, _PROJECT_ROOT):
+        raise RealMLXExperimentError(
+            "isolated child cwd must be outside the repository"
+        )
+    if any((candidate / ".git").exists() for candidate in (path, *path.parents)):
+        raise RealMLXExperimentError("isolated child cwd must be non-repository")
+
+
+def _sandbox_probe_command(
+    *,
+    output_workspace: Path,
+    expected_commit: str,
+    expected_package_digest: str,
+) -> list[str]:
+    sandbox = Path("/usr/bin/sandbox-exec")
+    if not sandbox.is_file() or not os.access(sandbox, os.X_OK):
+        raise RealMLXExperimentError("macOS sandbox-exec is unavailable")
+    return [
+        str(sandbox),
+        "-p",
+        SANDBOX_POLICY,
+        sys.executable,
+        "-I",
+        "-m",
+        "llmtracefx.cache_audit.real_mlx",
+        "sandbox-probe",
+        "--output-workspace",
+        str(output_workspace),
+        "--expected-commit",
+        expected_commit,
+        "--expected-package-digest",
+        expected_package_digest,
+    ]
+
+
+def _sandbox_probe(
+    *,
+    output_workspace: Path,
+    expected_commit: str,
+    expected_package_digest: str,
+) -> dict[str, Any]:
+    if sys.flags.isolated != 1:
+        raise RealMLXExperimentError("sandbox probe requires isolated Python mode")
+    _reject_import_shadows(output_workspace)
+    _validate_probe_module_origin(output_workspace)
+    runtime_packages = _runtime_package_identity(output_workspace)
+    package_digest = _validate_supervisor_source(expected_commit)
+    if package_digest != expected_package_digest:
+        raise RealMLXExperimentError("sandbox probe package source digest mismatch")
+    if _current_rss_bytes() is None:
+        raise RealMLXExperimentError("sandbox probe current RSS query failed")
+    if _system_swap_used_bytes() is None:
+        raise RealMLXExperimentError("sandbox probe sysctl query failed")
+    if _system_memory_free_percent() is None:
+        raise RealMLXExperimentError("sandbox probe memory-pressure query failed")
+    return {
+        "sandbox_probe_passed": True,
+        "runtime_packages": runtime_packages,
+    }
+
+
+def _run_exact_sandbox_probe(
+    *,
+    output_workspace: Path,
+    expected_commit: str,
+    expected_package_digest: str,
+) -> dict[str, dict[str, str]]:
+    cwd = output_workspace.parent
+    _ensure_non_repository_cwd(cwd)
+    command = _sandbox_probe_command(
+        output_workspace=output_workspace,
+        expected_commit=expected_commit,
+        expected_package_digest=expected_package_digest,
+    )
+    try:
+        result = subprocess.run(
+            command,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=60,
+            env=_offline_child_environment(secrets.token_hex(16)),
+            cwd=cwd,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RealMLXExperimentError("exact sandbox probe failed") from exc
+    if result.returncode != 0 or len(result.stdout) > MAX_CHILD_LOG_BYTES:
+        raise RealMLXExperimentError("exact sandbox probe failed")
+    try:
+        payload = json.loads(result.stdout)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise RealMLXExperimentError(
+            "exact sandbox probe returned invalid output"
+        ) from exc
+    if not isinstance(payload, dict) or set(payload) != {
+        "runtime_packages",
+        "sandbox_probe_passed",
+    }:
+        raise RealMLXExperimentError("exact sandbox probe returned invalid output")
+    if payload["sandbox_probe_passed"] is not True:
+        raise RealMLXExperimentError("exact sandbox probe failed")
+    _verify_runtime_package_identity(payload["runtime_packages"])
+    return {
+        str(name): {str(key): str(value) for key, value in entry.items()}
+        for name, entry in payload["runtime_packages"].items()
+    }
 
 
 def _validate_supervisor_source(expected_commit: str) -> str:
     if re.fullmatch(r"[0-9a-f]{40}", expected_commit) is None:
         raise RealMLXExperimentError("expected commit must be a full lowercase SHA")
+    _reject_import_shadows(_PROJECT_ROOT / ".source-validation-output")
     commit, commit_at = source_commit()
     if commit != expected_commit or commit_at is None:
         raise RealMLXExperimentError("current Git HEAD does not match expected commit")
@@ -4189,6 +4614,19 @@ def _resolve_new_directory(path: Path, label: str) -> Path:
     return parent / expanded.name
 
 
+def _resolve_new_file(path: Path, label: str) -> Path:
+    expanded = path.expanduser()
+    if expanded.exists() or expanded.is_symlink():
+        raise RealMLXExperimentError(f"{label} already exists")
+    try:
+        parent = expanded.parent.resolve(strict=True)
+    except OSError as exc:
+        raise RealMLXExperimentError(f"{label} parent must exist") from exc
+    if not parent.is_dir():
+        raise RealMLXExperimentError(f"{label} parent must be a directory")
+    return parent / expanded.name
+
+
 def _resolve_run_all_paths(
     *,
     workload: Path,
@@ -4204,17 +4642,148 @@ def _resolve_run_all_paths(
     )
 
 
+@dataclass(frozen=True)
+class _RunPreflight:
+    workload_path: Path
+    model_dir: Path
+    conversion_summary: Path
+    output_workspace: Path
+    package_digest: str
+    workload: FrozenMLXWorkload
+    runtime_packages: Mapping[str, Mapping[str, str]]
+    machine_observation: Mapping[str, Any]
+
+
+def _run_global_preflight(
+    *,
+    workload: Path,
+    model_dir: Path,
+    conversion_summary: Path,
+    output_workspace: Path,
+    expected_commit: str,
+) -> _RunPreflight:
+    (
+        workload_path,
+        resolved_model_dir,
+        resolved_conversion_summary,
+        resolved_output_workspace,
+    ) = _resolve_run_all_paths(
+        workload=workload,
+        model_dir=model_dir,
+        conversion_summary=conversion_summary,
+        output_workspace=output_workspace,
+    )
+    _ensure_non_repository_cwd(resolved_output_workspace.parent)
+    _reject_import_shadows(resolved_output_workspace)
+    package_digest = _validate_supervisor_source(expected_commit)
+    calibrated_workload = load_workload(workload_path, calibrated=True)
+    model_digest = verify_model_contract(
+        resolved_model_dir,
+        resolved_conversion_summary,
+    )
+    if model_digest != EXPECTED_MODEL_ARTIFACT_DIGEST:
+        raise RealMLXExperimentError("run-all model artifact digest mismatch")
+    runtime_packages = _run_exact_sandbox_probe(
+        output_workspace=resolved_output_workspace,
+        expected_commit=expected_commit,
+        expected_package_digest=package_digest,
+    )
+    observation = _machine_observation(
+        resolved_output_workspace.parent,
+        excluded_roots={os.getpid()},
+    )
+    reason = _machine_policy_reason(observation, preflight=True)
+    if reason is not None:
+        raise RealMLXExperimentError(f"NEEDS_CLEAN_BOOT:{reason}")
+    return _RunPreflight(
+        workload_path=workload_path,
+        model_dir=resolved_model_dir,
+        conversion_summary=resolved_conversion_summary,
+        output_workspace=resolved_output_workspace,
+        package_digest=package_digest,
+        workload=calibrated_workload,
+        runtime_packages=runtime_packages,
+        machine_observation=observation,
+    )
+
+
+def run_preflight(
+    *,
+    workload: Path,
+    model_dir: Path,
+    conversion_summary: Path,
+    output_workspace: Path,
+    expected_commit: str,
+    output: Path,
+) -> dict[str, Any]:
+    """Perform canonical pre-creation gates and write one noncanonical receipt."""
+
+    receipt_path = _resolve_new_file(output, "preflight output")
+    try:
+        state = _run_global_preflight(
+            workload=workload,
+            model_dir=model_dir,
+            conversion_summary=conversion_summary,
+            output_workspace=output_workspace,
+            expected_commit=expected_commit,
+        )
+    except (
+        CacheAuditBundleError,
+        OSError,
+        RealMLXExperimentError,
+        RuntimeError,
+        ValueError,
+    ) as exc:
+        message = str(exc)
+        reason = (
+            message
+            if message.startswith("NEEDS_CLEAN_BOOT:")
+            else "PREFLIGHT_VALIDATION_FAILED"
+        )
+        receipt = {
+            "schema_version": "1",
+            "canonical_execution": False,
+            "status": "refused",
+            "reason": reason,
+        }
+    else:
+        receipt = {
+            "schema_version": "1",
+            "canonical_execution": False,
+            "status": "passed",
+            "reason": None,
+            "checks": {
+                "source": True,
+                "model": True,
+                "workload": True,
+                "sandbox": True,
+                "global_machine": True,
+            },
+            "machine_observation": dict(state.machine_observation),
+        }
+    _write_json(receipt_path, receipt)
+    return {
+        "preflight_passed": receipt["status"] == "passed",
+        "reason": receipt["reason"],
+    }
+
+
 def _run_binding(
     *,
     expected_commit: str,
     package_digest: str,
     workload: FrozenMLXWorkload,
+    runtime_packages: Mapping[str, Any],
 ) -> dict[str, Any]:
     if re.fullmatch(r"sha256:[0-9a-f]{64}", package_digest) is None:
         raise RealMLXExperimentError("package source digest is invalid")
+    _verify_runtime_package_identity(runtime_packages)
     return {
         "expected_commit": expected_commit,
         "generator_package_digest": package_digest,
+        "runtime_packages": {
+            name: dict(entry) for name, entry in runtime_packages.items()
+        },
         "frozen_workload_digest": workload.to_dict()["workload_digest"],
         "frozen_lane_digests": {
             lane.lane_id: lane.to_dict()["lane_digest"] for lane in workload.lanes
@@ -4349,7 +4918,12 @@ def _verify_machine_observation(
         not isinstance(categories, list)
         or any(not isinstance(item, str) or not item for item in categories)
         or categories != sorted(set(categories))
-        or count != len(categories)
+        or (count == 0 and categories)
+        or (
+            isinstance(count, int)
+            and count > 0
+            and categories != ["other_large_process"]
+        )
     ):
         raise RealMLXExperimentError("run ledger process observation is invalid")
     if (categories is None) != (count is None):
@@ -4434,6 +5008,7 @@ def _verify_run_ledger(
     binding_keys = {
         "expected_commit",
         "generator_package_digest",
+        "runtime_packages",
         "frozen_workload_digest",
         "frozen_lane_digests",
         "model_artifact_digest",
@@ -4476,6 +5051,7 @@ def _verify_run_ledger(
         or binding["planned_replicate_ids"] != list(REPLICATE_IDS)
     ):
         raise RealMLXExperimentError("run ledger binding is invalid")
+    _verify_runtime_package_identity(binding["runtime_packages"])
     if expected_binding is not None and binding != dict(expected_binding):
         raise RealMLXExperimentError("run ledger binding does not match run inputs")
     planned = rows[1 : len(REPLICATE_IDS) + 1]
@@ -4627,6 +5203,7 @@ def _verify_run_ledger(
                 )
             previous_elapsed = 0.0
             failed_monitors = 0
+            failed_monitor_reason: str | None = None
             for index, monitor in enumerate(monitor_rows):
                 _exact_keys(
                     monitor,
@@ -4663,6 +5240,7 @@ def _verify_run_ledger(
                 )
                 if monitor["status"] == "failed":
                     failed_monitors += 1
+                    failed_monitor_reason = str(monitor["reason"])
                     if index != len(monitor_rows) - 1:
                         raise RealMLXExperimentError(
                             "run ledger has events after a failed monitor"
@@ -4707,6 +5285,9 @@ def _verify_run_ledger(
                 raise RealMLXExperimentError(
                     "run ledger finalization elapsed time regressed"
                 )
+            causal_policy_reason = failed_monitor_reason or (
+                str(postflight["reason"]) if postflight["status"] == "failed" else None
+            )
             if finalized["status"] == "complete" and (
                 any(row["status"] != "passed" for row in monitor_rows)
                 or postflight["status"] != "passed"
@@ -4714,6 +5295,20 @@ def _verify_run_ledger(
                 raise RealMLXExperimentError(
                     "complete run ledger lifecycle contains a failed gate"
                 )
+            if finalized["status"] == "failed":
+                finalized_reason = finalized["reason"]
+                if causal_policy_reason is not None:
+                    if finalized_reason not in {
+                        causal_policy_reason,
+                        *_POLICY_SUPERSEDING_REASONS,
+                    }:
+                        raise RealMLXExperimentError(
+                            "run ledger final reason contradicts failed policy gate"
+                        )
+                elif finalized_reason not in _STARTED_TERMINAL_REASONS:
+                    raise RealMLXExperimentError(
+                        "run ledger started terminal reason is invalid"
+                    )
         else:
             if monitor_rows or events != [
                 "planned",
@@ -4745,12 +5340,7 @@ def _verify_run_ledger(
                 or postflight["reason"] != finalized["reason"]
                 or (
                     preflight["status"] == "passed"
-                    and postflight["reason"]
-                    not in {
-                        "source_validation_failed",
-                        "child_launch_failed",
-                        "supervisor_aborted",
-                    }
+                    and postflight["reason"] not in _NOT_STARTED_TERMINAL_REASONS
                 )
                 or (
                     preflight["status"] == "failed"
@@ -4821,6 +5411,23 @@ def _verify_run_ledger(
                     raise RealMLXExperimentError(
                         "run ledger child instance does not match attempt"
                     )
+    for index, replicate_id in enumerate(REPLICATE_IDS):
+        finalized = final_rows[replicate_id]
+        if finalized["reason"] not in _ABORT_LATER_REASONS:
+            continue
+        for later_id in REPLICATE_IDS[index + 1 :]:
+            later_lifecycle = [
+                row for row in rows if row.get("replicate_id") == later_id
+            ]
+            later_finalized = final_rows[later_id]
+            if (
+                any(row.get("event") == "started" for row in later_lifecycle)
+                or later_finalized["status"] != "failed"
+                or later_finalized["reason"] != "supervisor_aborted_before_start"
+            ):
+                raise RealMLXExperimentError(
+                    "run ledger continued after an aborting terminal reason"
+                )
     finalized_elapsed_values = [
         _finite_elapsed(row["elapsed_seconds"], "finalized")
         for row in rows
@@ -5086,29 +5693,23 @@ def run_all_replicates(
 ) -> dict[str, Any]:
     """Run the six fixed replicate IDs once under a fail-closed supervisor."""
 
-    workload, model_dir, conversion_summary, output_workspace = _resolve_run_all_paths(
+    preflight_state = _run_global_preflight(
         workload=workload,
         model_dir=model_dir,
         conversion_summary=conversion_summary,
         output_workspace=output_workspace,
+        expected_commit=expected_commit,
     )
-    package_digest = _validate_supervisor_source(expected_commit)
-    calibrated_workload = load_workload(workload, calibrated=True)
-    model_digest = verify_model_contract(model_dir, conversion_summary)
-    if model_digest != EXPECTED_MODEL_ARTIFACT_DIGEST:
-        raise RealMLXExperimentError("run-all model artifact digest mismatch")
+    workload = preflight_state.workload_path
+    model_dir = preflight_state.model_dir
+    conversion_summary = preflight_state.conversion_summary
+    output_workspace = preflight_state.output_workspace
+    package_digest = preflight_state.package_digest
     binding = _run_binding(
         expected_commit=expected_commit,
         package_digest=package_digest,
-        workload=calibrated_workload,
-    )
-    _replicate_child_command(
-        workload=workload,
-        model_dir=model_dir,
-        conversion_summary=conversion_summary,
-        replicate_id=REPLICATE_IDS[0],
-        output_dir=output_workspace / ".probe",
-        expected_commit=expected_commit,
+        workload=preflight_state.workload,
+        runtime_packages=preflight_state.runtime_packages,
     )
     output_workspace.mkdir(parents=True)
     attempts = output_workspace / "attempts"
@@ -5138,6 +5739,7 @@ def run_all_replicates(
             reason = "supervisor_aborted_before_start"
         elif time.monotonic() - supervisor_started >= TOTAL_TIMEOUT_SECONDS:
             reason = "total_timeout_before_start"
+            abort_remaining = True
         else:
             reason = _machine_policy_reason(preflight, preflight=True)
         _ledger_event(
@@ -5153,9 +5755,10 @@ def run_all_replicates(
 
         if reason is None:
             try:
+                _reject_import_shadows(output_workspace)
                 if _validate_supervisor_source(expected_commit) != package_digest:
                     raise RealMLXExperimentError("package source digest changed")
-            except (OSError, RealMLXExperimentError):
+            except (CacheAuditBundleError, OSError, RealMLXExperimentError):
                 reason = "source_validation_failed"
                 abort_remaining = True
 
@@ -5171,6 +5774,9 @@ def run_all_replicates(
                 replicate_id=replicate_id,
                 output_dir=staging,
                 expected_commit=expected_commit,
+                runtime_packages_digest=_digest_bytes(
+                    _json_bytes(binding["runtime_packages"])
+                ),
             )
             child_started = time.monotonic()
             with (
@@ -5178,6 +5784,8 @@ def run_all_replicates(
                 tempfile.TemporaryFile(mode="w+b") as stderr,
             ):
                 process: subprocess.Popen[bytes] | None = None
+                failed_monitor_reason: str | None = None
+                started_recorded = False
                 try:
                     process = subprocess.Popen(
                         command,
@@ -5185,7 +5793,7 @@ def run_all_replicates(
                         stdout=stdout,
                         stderr=stderr,
                         env=_offline_child_environment(instance_id),
-                        cwd=_PROJECT_ROOT,
+                        cwd=output_workspace.parent,
                         shell=False,
                         start_new_session=True,
                     )
@@ -5201,6 +5809,7 @@ def run_all_replicates(
                         ),
                     )
                     ledger_sequence += 1
+                    started_recorded = True
                     next_monitor = time.monotonic() + MONITOR_INTERVAL_SECONDS
                     while process.poll() is None:
                         now = time.monotonic()
@@ -5233,6 +5842,7 @@ def run_all_replicates(
                             )
                             ledger_sequence += 1
                             if monitor_reason is not None:
+                                failed_monitor_reason = monitor_reason
                                 reason = monitor_reason
                                 break
                             next_monitor = now + MONITOR_INTERVAL_SECONDS
@@ -5246,6 +5856,7 @@ def run_all_replicates(
                         if returncode != 0:
                             reason = "child_exit_nonzero"
                             if _group_exists(process.pid):
+                                reason = "orphaned_child_process"
                                 abort_remaining = True
                             if not _terminate_process_group(process):
                                 reason = "process_cleanup_failed"
@@ -5258,7 +5869,11 @@ def run_all_replicates(
                                 abort_remaining = True
                 except KeyboardInterrupt:
                     abort_remaining = True
-                    reason = "supervisor_aborted"
+                    reason = (
+                        "supervisor_aborted"
+                        if started_recorded
+                        else "supervisor_aborted_before_start"
+                    )
                     if process is not None and not _terminate_process_group(process):
                         reason = "process_cleanup_failed"
                         abort_remaining = True
@@ -5269,9 +5884,10 @@ def run_all_replicates(
                         abort_remaining = True
 
                 try:
+                    _reject_import_shadows(output_workspace)
                     if _validate_supervisor_source(expected_commit) != package_digest:
                         raise RealMLXExperimentError("package source digest changed")
-                except RealMLXExperimentError:
+                except (CacheAuditBundleError, OSError, RealMLXExperimentError):
                     reason = "source_validation_failed"
                     abort_remaining = True
 
@@ -5282,7 +5898,11 @@ def run_all_replicates(
                     ),
                 )
                 postflight_reason = _machine_policy_reason(postflight, preflight=False)
-                if reason is None and postflight_reason is not None:
+                if (
+                    postflight_reason is not None
+                    and failed_monitor_reason is None
+                    and reason not in _POLICY_SUPERSEDING_REASONS
+                ):
                     reason = postflight_reason
                 _ledger_event(
                     ledger,
@@ -5291,13 +5911,15 @@ def run_all_replicates(
                     event="postflight",
                     status=(
                         "not_started"
-                        if process is None
+                        if not started_recorded
                         else "passed" if postflight_reason is None else "failed"
                     ),
-                    reason=reason if process is None else postflight_reason,
+                    reason=reason if not started_recorded else postflight_reason,
                     observation=postflight,
                     elapsed_seconds=(
-                        None if process is None else time.monotonic() - child_started
+                        None
+                        if not started_recorded
+                        else time.monotonic() - child_started
                     ),
                 )
                 ledger_sequence += 1
@@ -5419,6 +6041,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     replicate_parser.add_argument("--output-dir", type=Path, required=True)
     replicate_parser.add_argument("--expected-commit", required=True)
+    replicate_parser.add_argument("--runtime-packages-digest")
     replicate_parser.add_argument(
         "--conversion-summary", type=Path, default=DEFAULT_CONVERSION_SUMMARY
     )
@@ -5430,6 +6053,19 @@ def _parser() -> argparse.ArgumentParser:
     run_all_parser.add_argument(
         "--conversion-summary", type=Path, default=DEFAULT_CONVERSION_SUMMARY
     )
+    preflight_parser = commands.add_parser("preflight")
+    preflight_parser.add_argument("--workload", type=Path, required=True)
+    preflight_parser.add_argument("--model-dir", type=Path, required=True)
+    preflight_parser.add_argument("--output-workspace", type=Path, required=True)
+    preflight_parser.add_argument("--expected-commit", required=True)
+    preflight_parser.add_argument("--output", type=Path, required=True)
+    preflight_parser.add_argument(
+        "--conversion-summary", type=Path, default=DEFAULT_CONVERSION_SUMMARY
+    )
+    probe_parser = commands.add_parser("sandbox-probe", help=argparse.SUPPRESS)
+    probe_parser.add_argument("--output-workspace", type=Path, required=True)
+    probe_parser.add_argument("--expected-commit", required=True)
+    probe_parser.add_argument("--expected-package-digest", required=True)
     failed_parser = commands.add_parser("record-failure")
     failed_parser.add_argument("--replicate-id", choices=REPLICATE_IDS, required=True)
     failed_parser.add_argument("--output-dir", type=Path, required=True)
@@ -5486,6 +6122,7 @@ def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
             model_dir=args.model_dir,
             expected_commit=args.expected_commit,
             conversion_summary=args.conversion_summary,
+            expected_runtime_packages_digest=args.runtime_packages_digest,
         )
     if args.command == "run-all":
         return run_all_replicates(
@@ -5494,6 +6131,21 @@ def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
             conversion_summary=args.conversion_summary,
             output_workspace=args.output_workspace,
             expected_commit=args.expected_commit,
+        )
+    if args.command == "preflight":
+        return run_preflight(
+            workload=args.workload,
+            model_dir=args.model_dir,
+            conversion_summary=args.conversion_summary,
+            output_workspace=args.output_workspace,
+            expected_commit=args.expected_commit,
+            output=args.output,
+        )
+    if args.command == "sandbox-probe":
+        return _sandbox_probe(
+            output_workspace=args.output_workspace,
+            expected_commit=args.expected_commit,
+            expected_package_digest=args.expected_package_digest,
         )
     if args.command == "record-failure":
         record_failed_attempt(
@@ -5524,7 +6176,14 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(2) from exc
     print(json.dumps(result, indent=2, sort_keys=True))
     exit_code = (
-        1 if args.command == "run-all" and result["complete_replicates"] < 5 else 0
+        1
+        if (
+            args.command == "run-all"
+            and result["complete_replicates"] < 5
+            or args.command == "preflight"
+            and not result["preflight_passed"]
+        )
+        else 0
     )
     raise SystemExit(exit_code)
 

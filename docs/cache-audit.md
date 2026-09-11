@@ -264,11 +264,13 @@ temporary snapshot, loads only its tokenizer, and freezes both lanes:
 Each lane contains exactly seven cases: cold/exact/duplicate,
 interior mutation at index 137, allocation-step mutation at index 256,
 same-length different IDs, suffix-only change, namespace isolation, and
-capacity eviction. Index 256 is an allocation-step boundary probe, not a block
-cache claim. The suffix case mutates tokens `len-32:len-16` while preserving the
-final 16 generation-template tokens. No directional shorter/longer prompt claim
-is made. Namespace isolation means harness-enforced cache-key separation; it is
-not a claim that MLX provides native tenant isolation.
+capacity eviction. The same-length different-ID case is an early-divergence
+same-length case; it does not promise zero reuse. Index 256 is an allocation-step
+boundary probe, not a block cache claim. The suffix case mutates tokens
+`len-32:len-16` while preserving the final 16 generation-template tokens. No
+directional shorter/longer prompt claim is made. Namespace isolation means
+harness-enforced cache-key separation; it is not a claim that MLX provides
+native tenant isolation.
 
 `calibrate` runs each lane's eight distinct valid arrays (`base`,
 `different_ids`, both mutation arrays, `suffix_change`, and eviction A/B/C)
@@ -293,21 +295,39 @@ uv run llmtracefx-real-mlx-cache-audit run-all --model-dir MODEL \
 
 `run-all` resolves all input and output paths before creating anything and
 refuses missing, non-regular, or symlinked inputs, a mismatched Git HEAD,
-tracked changes, package-source drift, an existing output workspace, or an
-unavailable macOS network sandbox. It creates a workspace containing exactly
+tracked changes, package-source drift, top-level import-shadow candidates, an
+existing output workspace, or an unavailable macOS network sandbox. Before
+creating the workspace, it runs an isolated (`python -I`) model-free probe from
+a resolved non-repository directory under the exact network-denied sandbox.
+The probe verifies installed MLX, MLX-LM, Transformers, and safetensors
+versions and origin hashes, source/package identity, current process RSS,
+system swap, and system memory pressure. It then applies one global machine
+gate. A failure returns `NEEDS_CLEAN_BOOT:<reason>` without creating a ledger
+or consuming a replicate ID. The same checks can be recorded without canonical
+execution by writing an explicitly new receipt:
+
+```console
+uv run llmtracefx-real-mlx-cache-audit preflight --model-dir MODEL \
+  --workload calibrated.json --expected-commit FULL_40_CHARACTER_GIT_SHA \
+  --output-workspace real-mlx-run --output preflight.json
+```
+
+`run-all` repeats this gate rather than trusting a prior receipt. After it
+passes, `run-all` creates a workspace containing exactly
 `attempts/`, `private-artifacts/`, and `run-ledger.jsonl`. The append-only
-ledger binds the expected commit, package-source digest, calibrated workload
-and lane digests, model digest, conversion-summary digest, exact sandbox-policy
-digest, and all six immutable replicate IDs. Every replicate must follow one
+ledger binds the expected commit, package-source digest, installed runtime
+versions and origin hashes, calibrated workload and lane digests, model digest,
+conversion-summary digest, exact sandbox-policy digest, and all six immutable
+replicate IDs. Every replicate must follow one
 canonical lifecycle: planned, preflight, optional started plus passed monitors,
 postflight, then finalized. Complete replicates have exactly one started row
 with a distinct privacy-safe child-instance digest. Failed-before-start and
 failed-after-start transitions have separate schemas and reason rules. Every
 finalized row binds the status, safe reason code, and deterministic digest of
 its final attempt directory. Each child receives the expected commit and
-revalidates the clean source/package tree before loading the model and
-immediately before finalizing evidence. The parent repeats that validation
-before and after every child.
+revalidates the clean source/package tree and trusted runtime-package origins
+before loading the model and immediately before finalizing evidence. The parent
+repeats source validation before and after every child.
 
 Each replicate loads the model once, then performs exactly one untimed,
 discarded, direct runtime generation against a fresh cache per lane. Warm-ups
@@ -322,9 +342,12 @@ a fixed system `PATH`, offline flags, and a fresh instance ID. Parent `HOME`,
 `PYTHONPATH`, `DYLD*`, cloud/auth/token-file variables, and unknown variables
 are never inherited. Preflight requires the Apple M5 Pro/24 GiB host contract,
 at least 25% `vm_stat` availability, no more than 12 GiB swap, at least 20 GiB
-free disk, and no other Python, MLX, Ollama, or llama process using at least
-1 GiB RSS. The two-second runtime monitor uses 15%, 14 GiB, and 12 GiB limits
-respectively, with 12-minute per-child and 90-minute total monotonic deadlines.
+free disk, and no non-excluded process using at least 1 GiB RSS. Process
+observations retain only a count and the generic `other_large_process`
+category, never names or PIDs. The two-second runtime monitor uses 15%, 14 GiB,
+and 12 GiB limits respectively. Timing margin is bounded by a 12-minute
+per-child deadline and a 90-minute total monotonic deadline; no performance
+dry-run was used. The only preliminary child is the model-free sandbox probe.
 Failed IDs retain bounded private logs and
 partial artifacts in `private-artifacts/`, receive exactly one failed marker,
 and are never replaced. Failed process-group cleanup or a surviving orphan
