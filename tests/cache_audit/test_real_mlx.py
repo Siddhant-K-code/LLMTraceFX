@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+import llmtracefx.cache_audit.bundle as cache_bundle
 import llmtracefx.cache_audit.real_mlx as real_mlx_module
 import llmtracefx.cache_audit.runner as cache_runner
 from llmtracefx.cache_audit.adapters.base import (
@@ -22,6 +23,7 @@ from llmtracefx.cache_audit.adapters.mlx import (
 )
 from llmtracefx.cache_audit.adapters.reference import ReferenceCacheAdapter
 from llmtracefx.cache_audit.real_mlx import (
+    CALIBRATION_ARRAY_NAMES,
     DEFAULT_CONVERSION_SUMMARY,
     EXPECTED_CONVERSION_SUMMARY_SHA256,
     EXPECTED_MODEL_ARTIFACT_DIGEST,
@@ -130,6 +132,25 @@ def _reference_output(tokens: tuple[int, ...]) -> tuple[int, ...]:
     return tuple(hashlib.sha256(payload).digest()[:3])
 
 
+def _calibration_outputs(
+    lane: real_mlx_module.FrozenMLXLane,
+) -> dict[str, tuple[int, ...]]:
+    return {
+        name: _reference_output(getattr(lane, name)) for name in CALIBRATION_ARRAY_NAMES
+    }
+
+
+def _calibrated_workload() -> FrozenMLXWorkload:
+    workload = compile_workload(FakeTokenizer())
+    return replace(
+        workload,
+        lanes=tuple(
+            replace(lane, calibration_outputs=_calibration_outputs(lane))
+            for lane in workload.lanes
+        ),
+    )
+
+
 def test_workload_invariants_and_counterbalanced_schedule() -> None:
     workload = compile_workload(FakeTokenizer())
     expected_lengths = {
@@ -149,7 +170,7 @@ def test_workload_invariants_and_counterbalanced_schedule() -> None:
             "eviction_a",
             "eviction_b",
             "eviction_c",
-            "calibration_output",
+            "calibration_outputs",
         }
         assert {len(lane.eviction_a), len(lane.eviction_b), len(lane.eviction_c)} == {
             eviction
@@ -182,16 +203,7 @@ def test_workload_invariants_and_counterbalanced_schedule() -> None:
         )
         assert lane.base[-1] == lane.different_ids[-1] == lane.suffix_change[-1] == 3
         assert lane.eviction_a[-1] == lane.eviction_b[-1] == lane.eviction_c[-1] == 3
-    calibrated_source = replace(
-        workload,
-        lanes=tuple(
-            replace(
-                lane,
-                calibration_output=_reference_output(lane.base),
-            )
-            for lane in workload.lanes
-        ),
-    )
+    calibrated_source = _calibrated_workload()
     payload = calibrated_source.to_dict()
     assert all(
         set(payload["lanes"][lane_id]["arrays"])
@@ -204,7 +216,7 @@ def test_workload_invariants_and_counterbalanced_schedule() -> None:
             "eviction_a",
             "eviction_b",
             "eviction_c",
-            "calibration_output",
+            "calibration_outputs",
         }
         for lane_id in LANE_IDS
     )
@@ -215,6 +227,7 @@ def test_workload_invariants_and_counterbalanced_schedule() -> None:
         FrozenMLXWorkload.from_dict(tampered_payload)
     schedules = [block_schedule(item) for item in REPLICATE_IDS]
     assert len(set(schedules)) == len(REPLICATE_IDS)
+    assert len({schedule[0] for schedule in schedules}) == len(REPLICATE_IDS)
     assert SCHEDULE_AFFINE_PERMUTATIONS == (
         (0, 1),
         (1, 3),
@@ -232,6 +245,15 @@ def test_workload_invariants_and_counterbalanced_schedule() -> None:
         for schedule in schedules
     }
     assert len(adjacency_sets) == len(REPLICATE_IDS)
+    for lane_id in LANE_IDS:
+        interior = f"{lane_id}:interior-mutation"
+        boundary = f"{lane_id}:allocation-step-mutation"
+        positions = [
+            (schedule.index(interior), schedule.index(boundary))
+            for schedule in schedules
+        ]
+        assert all(abs(left - right) != 1 for left, right in positions)
+        assert {left < right for left, right in positions} == {False, True}
     for replicate_id, schedule in zip(REPLICATE_IDS, schedules, strict=True):
         assert len(schedule) == 14
         assert set(schedule) == {
@@ -328,17 +350,7 @@ def test_qwen3_4b_conversion_metadata_is_exact() -> None:
 
 
 def test_calibrated_workload_refuses_unpinned_digests(tmp_path: Path) -> None:
-    workload = compile_workload(FakeTokenizer())
-    calibrated = replace(
-        workload,
-        lanes=tuple(
-            replace(
-                lane,
-                calibration_output=_reference_output(lane.base),
-            )
-            for lane in workload.lanes
-        ),
-    )
+    calibrated = _calibrated_workload()
     path = tmp_path / "calibrated.json"
     _write_json(path, calibrated.to_dict())
 
@@ -421,8 +433,7 @@ def test_request_stage_memory_excludes_fresh_baseline_observation(
 def test_calibration_repeats_base_with_fresh_adapters() -> None:
     workload = compile_workload(FakeTokenizer())
     creations = 0
-    input_lengths: list[int] = []
-    outputs = {len(lane.base): _reference_output(lane.base) for lane in workload.lanes}
+    observed_inputs: list[tuple[int, ...]] = []
 
     def factory() -> Any:
         nonlocal creations
@@ -431,14 +442,21 @@ def test_calibration_repeats_base_with_fresh_adapters() -> None:
         original = adapter.run
 
         def run(requests: tuple[RequestSpec, ...]) -> list[Any]:
-            input_lengths.extend(request.input_token_count for request in requests)
+            observed_inputs.extend(
+                request.input_token_ids or () for request in requests
+            )
             records = original(requests)
             return [
                 replace(
                     record,
                     output=replace(
                         record.output,
-                        output_token_ids=outputs[record.spec.input_token_count],
+                        output_token_ids=_reference_output(
+                            record.spec.input_token_ids or ()
+                        ),
+                        baseline_token_ids=_reference_output(
+                            record.spec.input_token_ids or ()
+                        ),
                     ),
                 )
                 for record in records
@@ -448,40 +466,34 @@ def test_calibration_repeats_base_with_fresh_adapters() -> None:
         return adapter
 
     calibrated = calibrate_outputs(workload, factory)
-    assert creations == 4
-    assert input_lengths == [1025, 1025, 4097, 4097]
-    for lane in calibrated.lanes:
-        assert lane.calibration_output == outputs[len(lane.base)]
-        assert len(lane.calibration_output) == 3
-
-
-def test_cold_controls_must_match_lane_calibration_outputs() -> None:
-    workload = compile_workload(FakeTokenizer())
-    calibrated = replace(
-        workload,
-        lanes=tuple(
-            replace(lane, calibration_output=_reference_output(lane.base))
-            for lane in workload.lanes
-        ),
-    )
-    requests = tuple(
-        RequestSpec(
-            request_id=f"{lane.lane_id}:cold-exact-duplicate:cold",
-            scenario=real_mlx_module.ScenarioKind.COLD,
-            order=index,
-            input_token_ids=lane.base,
-            input_token_count=len(lane.base),
-            output_tokens=8,
+    assert creations == 18
+    assert observed_inputs == [
+        tokens
+        for lane in workload.lanes
+        for tokens in (
+            *(getattr(lane, name) for name in CALIBRATION_ARRAY_NAMES),
+            lane.base,
         )
-        for index, lane in enumerate(calibrated.lanes)
-    )
+    ]
+    for lane in calibrated.lanes:
+        assert lane.calibration_outputs == _calibration_outputs(lane)
+        assert all(
+            len(output) == 3 for output in (lane.calibration_outputs or {}).values()
+        )
+
+
+def test_each_request_must_match_its_source_array_calibration_output() -> None:
+    calibrated = _calibrated_workload()
+    requests = requests_for_replicate(calibrated, "replicate-0")
     records = MLXIdentityReference().run(requests)
     _require_private_output_gates(records, calibrated)
 
+    outputs = dict(calibrated.lanes[0].calibration_outputs or {})
+    outputs["mutation_137"] = (0, 0, 0)
     mismatched = replace(
         calibrated,
         lanes=(
-            replace(calibrated.lanes[0], calibration_output=(0, 0, 0)),
+            replace(calibrated.lanes[0], calibration_outputs=outputs),
             calibrated.lanes[1],
         ),
     )
@@ -491,9 +503,15 @@ def test_cold_controls_must_match_lane_calibration_outputs() -> None:
 
 def test_failed_replicate_finishes_with_one_valid_terminal_marker(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workload = tmp_path / "missing-workload.json"
     output = tmp_path / "replicate"
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_validate_supervisor_source",
+        lambda _expected: "sha256:" + "b" * 64,
+    )
 
     with pytest.raises(RealMLXExperimentError):
         real_mlx_module.run_replicate(
@@ -501,6 +519,7 @@ def test_failed_replicate_finishes_with_one_valid_terminal_marker(
             output,
             replicate_id="replicate-0",
             model_dir=tmp_path / "model",
+            expected_commit="a" * 40,
         )
 
     assert real_mlx_module.verify_replicate(
@@ -565,6 +584,40 @@ def test_lifecycle_adapter_batches_each_block_before_baselines(
     ]
 
 
+def test_replicate_warmup_uses_one_fresh_discarded_adapter_per_lane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workload = _calibrated_workload()
+    creations = 0
+    request_ids: list[str] = []
+    teardowns = 0
+
+    def factory() -> Any:
+        nonlocal creations
+        creations += 1
+        adapter = MLXIdentityReference()
+        original = adapter.run
+
+        def run(requests: tuple[RequestSpec, ...]) -> list[Any]:
+            request_ids.extend(request.request_id for request in requests)
+            return original(requests)
+
+        adapter.run = run  # type: ignore[method-assign]
+        return adapter
+
+    def teardown() -> dict[str, Any]:
+        nonlocal teardowns
+        teardowns += 1
+        return {}
+
+    monkeypatch.setattr(real_mlx_module, "_teardown", teardown)
+
+    assert real_mlx_module._run_warmup_lanes(workload, factory) == LANE_IDS
+    assert creations == 2
+    assert teardowns == 2
+    assert request_ids == ["1k:warmup", "4k:warmup"]
+
+
 def _request_spec(request_id: str, order: int) -> RequestSpec:
     return RequestSpec(
         request_id=request_id,
@@ -576,20 +629,23 @@ def _request_spec(request_id: str, order: int) -> RequestSpec:
 
 
 def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setattr(cache_runner, "source_commit", lambda: (None, None))
-    attempts = tmp_path / "attempts"
-    attempts.mkdir()
-    workload = compile_workload(FakeTokenizer())
-    workload = replace(
-        workload,
-        lanes=tuple(
-            replace(
-                lane,
-                calibration_output=_reference_output(lane.base),
-            )
-            for lane in workload.lanes
-        ),
+    expected_commit = "a" * 40
+    monkeypatch.setattr(
+        cache_runner,
+        "source_commit",
+        lambda: (expected_commit, "2026-01-01T00:00:00Z"),
     )
+    monkeypatch.setattr(
+        cache_bundle,
+        "_verify_manifest_chronology",
+        lambda *_args, **_kwargs: "verified",
+    )
+    workspace = tmp_path / "run-workspace"
+    workspace.mkdir()
+    attempts = workspace / "attempts"
+    attempts.mkdir()
+    (workspace / "private-artifacts").mkdir()
+    workload = _calibrated_workload()
     teardown = {
         "schema_version": "1",
         "cache_lifecycles_released": True,
@@ -656,7 +712,7 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         _write_json(
             replicate / "attempt.json",
             {
-                "schema_version": "1",
+                "schema_version": "2",
                 "replicate_id": replicate_id,
                 "status": "complete",
                 "rotation": list(block_schedule(replicate_id)),
@@ -664,6 +720,9 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 "lane_request_counts": {"1k": 18, "4k": 18},
                 "independent_unit": True,
                 "replacement": False,
+                "expected_commit": expected_commit,
+                "warmup_lanes": list(LANE_IDS),
+                "warmup_excluded": True,
                 "frozen_workload_digest": workload.to_dict()["workload_digest"],
                 "frozen_lane_digests": {
                     lane.lane_id: lane.to_dict()["lane_digest"]
@@ -743,15 +802,47 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 )
         recorder.write(replicate / "stages.jsonl")
         _write_json(replicate / "teardown.json", teardown)
-    return attempts
+    package_digest = real_mlx_module.package_source_digest()
+    binding = real_mlx_module._run_binding(
+        expected_commit=expected_commit,
+        package_digest=package_digest,
+        workload=workload,
+    )
+    ledger = workspace / "run-ledger.jsonl"
+    real_mlx_module._create_run_ledger(ledger, binding)
+    sequence = len(REPLICATE_IDS) + 1
+    for replicate_id in REPLICATE_IDS:
+        attempt = json.loads((attempts / replicate_id / "attempt.json").read_text())
+        real_mlx_module._ledger_event(
+            ledger,
+            sequence=sequence,
+            replicate_id=replicate_id,
+            event="finalized",
+            status=attempt["status"],
+            reason=attempt.get("reason"),
+            elapsed_seconds=float(sequence),
+            attempt_digest=real_mlx_module._directory_digest(attempts / replicate_id),
+        )
+        sequence += 1
+    results = real_mlx_module._public_results_from_private(attempts)
+    results_digest = _digest_bytes(_json_bytes(results))
+    real_mlx_module._finalize_run_ledger(
+        ledger,
+        sequence=sequence,
+        complete_replicates=5,
+        results_digest=results_digest,
+    )
+    return workspace
 
 
 def test_aggregate_regeneration_checksums_and_public_redaction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    attempts = _make_attempts(tmp_path, monkeypatch)
+    workspace = _make_attempts(tmp_path, monkeypatch)
     private = tmp_path / "private"
-    assert assemble_aggregate(attempts, private)["complete_replicates"] == 5
+    with pytest.raises(RealMLXExperimentError, match="run workspace allowlist"):
+        assemble_aggregate(workspace / "attempts", tmp_path / "bare-attempts")
+    assert assemble_aggregate(workspace, private)["complete_replicates"] == 5
     assert verify_aggregate(private)["verified"] is True
     private_index = json.loads((private / "replicate-index.json").read_text())
     assert private_index["lane_request_counts"] == {"1k": 90, "4k": 90}
@@ -774,7 +865,11 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
         sample["paired_latency_comparable"] is False
         and sample["client_ttft_ratio"] is None
         and sample["client_ttft_difference_seconds"] is None
-        and sample["process_rss_difference_bytes"] is None
+        and sample["control_generated_output_tokens"] == 3
+        and sample["treatment_generated_output_tokens"] == 3
+        and "process_rss_difference_bytes" not in sample
+        and "system_swap_difference_bytes" not in sample
+        and "system_memory_free_difference_percentage_points" not in sample
         for comparison in comparisons.values()
         for sample in comparison["samples"]
     )
@@ -782,7 +877,34 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     assert set(contract["lanes"]) == set(LANE_IDS)
     assert len(contract["combined_blocks"]) == 14
     assert set(contract["exact_block_schedules"]) == set(REPLICATE_IDS)
+    assert contract["evidence_binding"]["expected_commit"] == "a" * 40
+    assert (
+        contract["integrity_and_authenticity"]["sha256sums"] == "integrity_only_unkeyed"
+    )
+    assert "no causal process or system-memory deltas" in contract["limitations"]
+    assert (private / "results.json").is_file()
+    assert (private / "run-ledger.jsonl").is_file()
+    assert not (private / "private-artifacts").exists()
     assert not (private / "aggregate_verifier.py").exists()
+
+    ledger_tamper = tmp_path / "ledger-tamper"
+    shutil.copytree(private, ledger_tamper)
+    ledger_path = ledger_tamper / "run-ledger.jsonl"
+    ledger_rows = [json.loads(line) for line in ledger_path.read_text().splitlines()]
+    next(
+        row
+        for row in ledger_rows
+        if row.get("event") == "finalized" and row.get("replicate_id") == "replicate-0"
+    )["attempt_digest"] = ("sha256:" + "0" * 64)
+    ledger_path.write_text(
+        "".join(
+            json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
+            for row in ledger_rows
+        )
+    )
+    _write_recursive_checksums(ledger_tamper)
+    with pytest.raises(RealMLXExperimentError, match="does not match attempt"):
+        verify_aggregate(ledger_tamper)
 
     lane_tamper = tmp_path / "lane-tamper"
     shutil.copytree(private, lane_tamper)
@@ -791,7 +913,10 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     attempt_value["lane_request_counts"] = {"1k": 17, "4k": 19}
     _write_json(attempt, attempt_value)
     _write_recursive_checksums(lane_tamper)
-    with pytest.raises(RealMLXExperimentError, match="binding is invalid"):
+    with pytest.raises(
+        RealMLXExperimentError,
+        match="run ledger finalization does not match attempt",
+    ):
         verify_aggregate(lane_tamper)
 
     summary = private / "summary.json"
@@ -803,11 +928,37 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
         verify_aggregate(private)
 
     shutil.rmtree(private)
-    assemble_aggregate(attempts, private)
+    assemble_aggregate(workspace, private)
     public = tmp_path / "public"
     assert sanitize_aggregate(private, public)["publication_mode"] == "public_redacted"
     public_index = json.loads((public / "replicate-index.json").read_text())
     assert public_index["lane_request_counts"] == {"1k": 90, "4k": 90}
+    assert public_index["evidence_binding"]["expected_commit"] == "a" * 40
+    assert public_index["evidence_binding"]["generator_package_digest"].startswith(
+        "sha256:"
+    )
+    public_results = json.loads((public / "results.json").read_text())
+    assert public_results["source"] == "verified_private_records_before_redaction"
+    assert all(
+        sample["control_output_token_identity"] is True
+        and sample["treatment_output_token_identity"] is True
+        and sample["control_deterministic_correctness"] is True
+        and sample["treatment_deterministic_correctness"] is True
+        and sample["verdict"] is not None
+        for comparison in public_results["comparisons"].values()
+        for sample in comparison["samples"]
+    )
+    public_ledger = [
+        json.loads(line)
+        for line in (public / "run-ledger.jsonl").read_text().splitlines()
+    ]
+    assert {row["event"] for row in public_ledger} == {
+        "run-start",
+        "planned",
+        "finalized",
+        "run-finalized",
+    }
+    assert not any("observation" in row for row in public_ledger)
     assert not (public / "aggregate_verifier.py").exists()
     assert "run_instance_id" not in json.loads(
         (public / "environment.json").read_text()
@@ -825,6 +976,18 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     assert '"input_token_ids":[' not in text
     assert 'request-0"' not in text
 
+    results_tamper = tmp_path / "results-tamper"
+    shutil.copytree(public, results_tamper)
+    results_path = results_tamper / "results.json"
+    results_value = json.loads(results_path.read_text())
+    results_value["comparisons"]["1k:cold-exact"]["samples"][0][
+        "treatment_deterministic_correctness"
+    ] = False
+    _write_json(results_path, results_value)
+    _write_recursive_checksums(results_tamper)
+    with pytest.raises(RealMLXExperimentError, match="sample binding"):
+        verify_aggregate(results_tamper)
+
     stage_tamper = tmp_path / "stage-tamper"
     shutil.copytree(public, stage_tamper)
     stages = stage_tamper / "replicates" / "replicate-0" / "stages.jsonl"
@@ -832,22 +995,34 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     rows[0], rows[1] = rows[1], rows[0]
     stages.write_text("\n".join(rows) + "\n", encoding="ascii")
     _write_recursive_checksums(stage_tamper)
-    with pytest.raises(RealMLXExperimentError, match="stage boundary"):
+    with pytest.raises(
+        RealMLXExperimentError,
+        match="run ledger finalization does not match attempt",
+    ):
         verify_aggregate(stage_tamper)
+    rows[0], rows[1] = rows[1], rows[0]
+    stages.write_text("\n".join(rows) + "\n", encoding="ascii")
+    real_mlx_module._write_sanitized_run_ledger(
+        private / "run-ledger.jsonl",
+        stage_tamper / "run-ledger.jsonl",
+        attempts_dir=stage_tamper / "replicates",
+    )
+    _write_recursive_checksums(stage_tamper)
 
-    descriptive = public / "descriptive-summary.json"
+    descriptive = stage_tamper / "descriptive-summary.json"
     descriptive_value = json.loads(descriptive.read_text())
     descriptive_value["paired_comparisons"] = {}
     _write_json(descriptive, descriptive_value)
-    _write_recursive_checksums(public)
+    _write_recursive_checksums(stage_tamper)
     with pytest.raises(RealMLXExperimentError, match="derived aggregate"):
-        verify_aggregate(public)
+        verify_aggregate(stage_tamper)
 
 
 def test_capacity_eviction_gate_requires_both_lane_treatments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    attempts = _make_attempts(tmp_path, monkeypatch)
+    workspace = _make_attempts(tmp_path, monkeypatch)
+    attempts = workspace / "attempts"
     _, records = real_mlx_module.read_bundle(attempts / "replicate-0" / "bundle")
     real_mlx_module._require_capacity_eviction_verdicts(records)
     tampered = [
@@ -866,7 +1041,8 @@ def test_capacity_eviction_gate_requires_both_lane_treatments(
 def test_aggregate_requires_five_of_six_without_replacement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    attempts = _make_attempts(tmp_path, monkeypatch)
+    workspace = _make_attempts(tmp_path, monkeypatch)
+    attempts = workspace / "attempts"
     for replicate_id in ("replicate-3", "replicate-4"):
         shutil.rmtree(attempts / replicate_id)
         replicate = attempts / replicate_id
@@ -894,11 +1070,11 @@ def test_aggregate_requires_five_of_six_without_replacement(
             },
         )
     with pytest.raises(RealMLXExperimentError, match="at least 5"):
-        assemble_aggregate(attempts, tmp_path / "aggregate")
+        assemble_aggregate(workspace, tmp_path / "aggregate")
 
     (attempts / "replicate-5").rename(attempts / "replicate-6")
     with pytest.raises(RealMLXExperimentError, match="replicate-0..5 exactly"):
-        assemble_aggregate(attempts, tmp_path / "replacement")
+        assemble_aggregate(workspace, tmp_path / "replacement")
 
 
 def test_run_all_uses_fresh_offline_sandboxed_children(
@@ -911,8 +1087,9 @@ def test_run_all_uses_fresh_offline_sandboxed_children(
         def __init__(self, command: list[str], **kwargs: Any) -> None:
             self.pid = 10_000 + len(launches)
             self.returncode = 0
-            output = Path(command[-1])
+            output = Path(command[command.index("--output-dir") + 1])
             output.mkdir()
+            _write_json(output / "attempt.json", {"status": "complete"})
             instance = kwargs["env"][real_mlx_module.RUN_INSTANCE_ENV]
             assert instance not in observed_instances
             observed_instances.add(instance)
@@ -934,17 +1111,59 @@ def test_run_all_uses_fresh_offline_sandboxed_children(
         "heavy_process_categories": [],
         "scopes": {},
     }
+    workload_path = tmp_path / "workload.json"
+    workload_path.write_text("{}")
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    conversion_summary = tmp_path / "summary.json"
+    conversion_summary.write_text("{}")
+    calibrated = _calibrated_workload()
+    monkeypatch.setattr(
+        real_mlx_module,
+        "EXPECTED_CALIBRATED_WORKLOAD_DIGEST",
+        calibrated.to_dict()["workload_digest"],
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "EXPECTED_CALIBRATED_LANE_DIGESTS",
+        {lane.lane_id: lane.to_dict()["lane_digest"] for lane in calibrated.lanes},
+    )
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-child")
-    monkeypatch.setattr(real_mlx_module, "_validate_supervisor_source", lambda _: None)
+    source_checks = 0
+
+    def validate_source(_: str) -> str:
+        nonlocal source_checks
+        source_checks += 1
+        return "sha256:" + "b" * 64
+
+    monkeypatch.setattr(real_mlx_module, "_validate_supervisor_source", validate_source)
+    monkeypatch.setattr(
+        real_mlx_module,
+        "load_workload",
+        lambda *_args, **_kwargs: calibrated,
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "verify_model_contract",
+        lambda *_args, **_kwargs: EXPECTED_MODEL_ARTIFACT_DIGEST,
+    )
     monkeypatch.setattr(
         real_mlx_module,
         "_replicate_child_command",
         lambda **kwargs: [
             "child",
+            "--workload",
+            str(kwargs["workload"]),
+            "--model-dir",
+            str(kwargs["model_dir"]),
+            "--conversion-summary",
+            str(kwargs["conversion_summary"]),
             "--replicate-id",
             str(kwargs["replicate_id"]),
-            "--output",
+            "--output-dir",
             str(kwargs["output_dir"]),
+            "--expected-commit",
+            str(kwargs["expected_commit"]),
         ],
     )
     monkeypatch.setattr(
@@ -955,12 +1174,18 @@ def test_run_all_uses_fresh_offline_sandboxed_children(
     monkeypatch.setattr(real_mlx_module.subprocess, "Popen", FakeProcess)
     monkeypatch.setattr(real_mlx_module, "_group_exists", lambda _: False)
     monkeypatch.setattr(real_mlx_module, "verify_replicate", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_public_results_from_private",
+        lambda *_args: {"synthetic": True},
+    )
+    monkeypatch.setattr(real_mlx_module, "_verify_public_results", lambda *_args: None)
 
     workspace = tmp_path / "run"
     result = real_mlx_module.run_all_replicates(
-        workload=tmp_path / "workload.json",
-        model_dir=tmp_path / "model",
-        conversion_summary=tmp_path / "summary.json",
+        workload=workload_path,
+        model_dir=model_dir,
+        conversion_summary=conversion_summary,
         output_workspace=workspace,
         expected_commit="a" * 40,
     )
@@ -974,6 +1199,7 @@ def test_run_all_uses_fresh_offline_sandboxed_children(
         "sanitized": False,
     }
     assert len(launches) == 6
+    assert source_checks == 13
     assert len(observed_instances) == 6
     assert all(launch["start_new_session"] is True for launch in launches)
     assert all(launch["shell"] is False for launch in launches)
@@ -987,6 +1213,21 @@ def test_run_all_uses_fresh_offline_sandboxed_children(
         launch["command"][launch["command"].index("--replicate-id") + 1]
         for launch in launches
     ] == list(REPLICATE_IDS)
+    assert all(
+        launch["command"][launch["command"].index("--expected-commit") + 1] == "a" * 40
+        for launch in launches
+    )
+    assert all(
+        Path(
+            launch["command"][launch["command"].index("--output-dir") + 1]
+        ).is_absolute()
+        for launch in launches
+    )
+    assert all(
+        Path(launch["command"][launch["command"].index(flag) + 1]).is_absolute()
+        for launch in launches
+        for flag in ("--workload", "--model-dir", "--conversion-summary")
+    )
     assert {path.name for path in (workspace / "attempts").iterdir()} == set(
         REPLICATE_IDS
     )
@@ -994,8 +1235,10 @@ def test_run_all_uses_fresh_offline_sandboxed_children(
         json.loads(line)
         for line in (workspace / "run-ledger.jsonl").read_text().splitlines()
     ]
-    assert [row["replicate_id"] for row in ledger[:6]] == list(REPLICATE_IDS)
-    assert all(row["event"] == "planned" for row in ledger[:6])
+    assert ledger[0]["event"] == "run-start"
+    assert ledger[0]["expected_commit"] == "a" * 40
+    assert [row["replicate_id"] for row in ledger[1:7]] == list(REPLICATE_IDS)
+    assert all(row["event"] == "planned" for row in ledger[1:7])
     assert [
         row["replicate_id"] for row in ledger if row["event"] == "finalized"
     ] == list(REPLICATE_IDS)
@@ -1015,7 +1258,38 @@ def test_run_all_marks_each_preflight_failure_once(
         "heavy_process_categories": [],
         "scopes": {},
     }
-    monkeypatch.setattr(real_mlx_module, "_validate_supervisor_source", lambda _: None)
+    workload_path = tmp_path / "workload.json"
+    workload_path.write_text("{}")
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    conversion_summary = tmp_path / "summary.json"
+    conversion_summary.write_text("{}")
+    calibrated = _calibrated_workload()
+    monkeypatch.setattr(
+        real_mlx_module,
+        "EXPECTED_CALIBRATED_WORKLOAD_DIGEST",
+        calibrated.to_dict()["workload_digest"],
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "EXPECTED_CALIBRATED_LANE_DIGESTS",
+        {lane.lane_id: lane.to_dict()["lane_digest"] for lane in calibrated.lanes},
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_validate_supervisor_source",
+        lambda _: "sha256:" + "b" * 64,
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "load_workload",
+        lambda *_args, **_kwargs: calibrated,
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "verify_model_contract",
+        lambda *_args, **_kwargs: EXPECTED_MODEL_ARTIFACT_DIGEST,
+    )
     monkeypatch.setattr(
         real_mlx_module,
         "_replicate_child_command",
@@ -1029,9 +1303,9 @@ def test_run_all_marks_each_preflight_failure_once(
 
     workspace = tmp_path / "blocked"
     result = real_mlx_module.run_all_replicates(
-        workload=tmp_path / "workload.json",
-        model_dir=tmp_path / "model",
-        conversion_summary=tmp_path / "summary.json",
+        workload=workload_path,
+        model_dir=model_dir,
+        conversion_summary=conversion_summary,
         output_workspace=workspace,
         expected_commit="a" * 40,
     )
@@ -1048,4 +1322,179 @@ def test_run_all_marks_each_preflight_failure_once(
         for line in (workspace / "run-ledger.jsonl").read_text().splitlines()
     ]
     assert sum(row["event"] == "planned" for row in ledger) == 6
+    assert sum(row["event"] == "finalized" for row in ledger) == 6
+
+
+def test_run_all_rejects_symlinked_input_before_creating_workspace(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "workload-target.json"
+    target.write_text("{}")
+    workload = tmp_path / "workload.json"
+    workload.symlink_to(target)
+    output = tmp_path / "run"
+
+    with pytest.raises(RealMLXExperimentError, match="must not be a symlink"):
+        real_mlx_module.run_all_replicates(
+            workload=workload,
+            model_dir=tmp_path / "model",
+            conversion_summary=tmp_path / "summary.json",
+            output_workspace=output,
+            expected_commit="a" * 40,
+        )
+
+    assert not output.exists()
+
+
+def test_replicate_child_uses_current_module_and_expected_commit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sandbox = Path("/usr/bin/sandbox-exec")
+    original_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda self: True if self == sandbox else original_is_file(self),
+    )
+    monkeypatch.setattr(real_mlx_module.os, "access", lambda *_args: True)
+
+    command = real_mlx_module._replicate_child_command(
+        workload=(tmp_path / "workload.json").resolve(),
+        model_dir=(tmp_path / "model").resolve(),
+        conversion_summary=(tmp_path / "summary.json").resolve(),
+        replicate_id="replicate-0",
+        output_dir=(tmp_path / "attempt").resolve(),
+        expected_commit="a" * 40,
+    )
+
+    module_index = command.index("-m")
+    assert command[module_index - 1] == real_mlx_module.sys.executable
+    assert command[module_index + 1] == "llmtracefx.cache_audit.real_mlx"
+    assert command[command.index("--expected-commit") + 1] == "a" * 40
+    assert real_mlx_module.SANDBOX_POLICY in command
+
+
+def test_cleanup_failure_preserves_partial_evidence_and_aborts_remaining(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workload_path = tmp_path / "workload.json"
+    workload_path.write_text("{}")
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    conversion_summary = tmp_path / "summary.json"
+    conversion_summary.write_text("{}")
+    calibrated = _calibrated_workload()
+    monkeypatch.setattr(
+        real_mlx_module,
+        "EXPECTED_CALIBRATED_WORKLOAD_DIGEST",
+        calibrated.to_dict()["workload_digest"],
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "EXPECTED_CALIBRATED_LANE_DIGESTS",
+        {lane.lane_id: lane.to_dict()["lane_digest"] for lane in calibrated.lanes},
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_validate_supervisor_source",
+        lambda _: "sha256:" + "b" * 64,
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "load_workload",
+        lambda *_args, **_kwargs: calibrated,
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "verify_model_contract",
+        lambda *_args, **_kwargs: EXPECTED_MODEL_ARTIFACT_DIGEST,
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_replicate_child_command",
+        lambda **kwargs: [
+            "child",
+            "--output-dir",
+            str(kwargs["output_dir"]),
+        ],
+    )
+    safe_observation = {
+        "chip": "Apple M5 Pro",
+        "total_memory_bytes": 24 * 1024**3,
+        "vm_stat_available_ratio": 0.5,
+        "system_swap_used_bytes": 0,
+        "disk_free_bytes": 100 * 1024**3,
+        "heavy_process_count": 0,
+        "heavy_process_categories": [],
+        "scopes": {},
+    }
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_machine_observation",
+        lambda *_args, **_kwargs: safe_observation,
+    )
+    launches = 0
+
+    class OrphanedProcess:
+        def __init__(self, command: list[str], **_kwargs: Any) -> None:
+            nonlocal launches
+            launches += 1
+            self.pid = 20_000
+            self.returncode = 0
+            output = Path(command[command.index("--output-dir") + 1])
+            output.mkdir()
+            for name in ("bundle",):
+                (output / name).mkdir()
+            for name in ("stages.jsonl", "workload.json", "environment.json"):
+                (output / name).write_text("partial")
+            _write_json(output / "attempt.json", {"status": "complete"})
+
+        def poll(self) -> int:
+            return 0
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(real_mlx_module.subprocess, "Popen", OrphanedProcess)
+    monkeypatch.setattr(real_mlx_module, "_group_exists", lambda _pid: True)
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_terminate_process_group",
+        lambda *_args, **_kwargs: False,
+    )
+
+    workspace = tmp_path / "run"
+    result = real_mlx_module.run_all_replicates(
+        workload=workload_path,
+        model_dir=model_dir,
+        conversion_summary=conversion_summary,
+        output_workspace=workspace,
+        expected_commit="a" * 40,
+    )
+
+    assert result["complete_replicates"] == 0
+    assert launches == 1
+    partial = workspace / "private-artifacts" / "replicate-0" / "partial-output"
+    assert {
+        "bundle",
+        "stages.jsonl",
+        "workload.json",
+        "environment.json",
+        "stale-complete-attempt.json",
+    } <= {path.name for path in partial.iterdir()}
+    first = json.loads(
+        (workspace / "attempts" / "replicate-0" / "attempt.json").read_text()
+    )
+    assert first["reason"] == "process_cleanup_failed"
+    for replicate_id in REPLICATE_IDS[1:]:
+        attempt = json.loads(
+            (workspace / "attempts" / replicate_id / "attempt.json").read_text()
+        )
+        assert attempt["reason"] == "supervisor_aborted_before_start"
+    ledger = [
+        json.loads(line)
+        for line in (workspace / "run-ledger.jsonl").read_text().splitlines()
+    ]
     assert sum(row["event"] == "finalized" for row in ledger) == 6

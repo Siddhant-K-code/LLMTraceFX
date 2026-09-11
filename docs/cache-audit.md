@@ -267,14 +267,17 @@ same-length different IDs, suffix-only change, namespace isolation, and
 capacity eviction. Index 256 is an allocation-step boundary probe, not a block
 cache claim. The suffix case mutates tokens `len-32:len-16` while preserving the
 final 16 generation-template tokens. No directional shorter/longer prompt claim
-is made.
+is made. Namespace isolation means harness-enforced cache-key separation; it is
+not a claim that MLX provides native tenant isolation.
 
-`calibrate` runs each lane's valid complete base prompt twice, each time in a
-fresh cache (four adapters total). It requires exact repeated three-token output
-and exact `CACHE_OK` evaluator correctness, then freezes a separate
-`calibration_output` for each lane as provenance. Calibration output is never
-appended to a prompt. Every complete replicate must reproduce it for that
-lane's cold-exact control.
+`calibrate` runs each lane's eight distinct valid arrays (`base`,
+`different_ids`, both mutation arrays, `suffix_change`, and eviction A/B/C)
+once in separate fresh caches, plus a second fresh-cache base repeat. This is
+nine adapters per lane and 18 total. Every result must contain exactly three
+tokens, decode exactly to `CACHE_OK`, match its independent baseline, and the
+two base results must be byte-for-byte stable. The deterministic
+`calibration_outputs` mapping is frozen in each lane; calibration output is
+never appended to a prompt.
 
 After the calibrated workload digests have been reviewed and pinned, `run-all`
 is the canonical execution path:
@@ -288,49 +291,91 @@ uv run llmtracefx-real-mlx-cache-audit run-all --model-dir MODEL \
   --output-workspace real-mlx-run
 ```
 
-`run-all` refuses a mismatched Git HEAD, tracked changes, package-source drift,
-an existing output workspace, or an unavailable macOS network sandbox. It
-creates an append-only ledger for immutable IDs `replicate-0` through
-`replicate-5`, then launches each ID once in a fresh, sequential, network-denied
-child process. Provider credentials are removed and Hugging Face,
-Transformers, datasets, and W&B are forced offline. Preflight requires the
+`run-all` resolves all input and output paths before creating anything and
+refuses missing, non-regular, or symlinked inputs, a mismatched Git HEAD,
+tracked changes, package-source drift, an existing output workspace, or an
+unavailable macOS network sandbox. It creates a workspace containing exactly
+`attempts/`, `private-artifacts/`, and `run-ledger.jsonl`. The append-only
+ledger binds the expected commit, package-source digest, calibrated workload
+and lane digests, model digest, conversion-summary digest, exact sandbox-policy
+digest, and all six immutable replicate IDs. Every finalized row binds the
+status, safe reason code, and deterministic digest of its final attempt
+directory. Each child receives the expected commit and revalidates the clean
+source/package tree before loading the model and immediately before finalizing
+evidence. The parent repeats that validation before and after every child.
+
+Each replicate loads the model once, then performs exactly one untimed,
+discarded, fresh-cache base-prompt warm-up per lane. Warm-ups must reproduce
+the corresponding frozen calibration output and emit no request, stage, or
+bundle evidence; their adapters and caches are torn down before measured
+blocks. Six deterministic full 14-block permutations interleave the lanes,
+spread the six first positions, and avoid fixing the interior/allocation-step
+pair in one adjacent order. The supervisor launches each ID once in a fresh,
+sequential, network-denied child process. Provider credentials are removed and
+Hugging Face, Transformers, datasets, and W&B are forced offline. Preflight requires the
 Apple M5 Pro/24 GiB host contract, at least 25% `vm_stat` availability, no more
 than 12 GiB swap, at least 20 GiB free disk, and no other Python, MLX, Ollama,
 or llama process using at least 1 GiB RSS. The two-second runtime monitor uses
 15%, 14 GiB, and 12 GiB limits respectively, with 12-minute per-child and
 90-minute total monotonic deadlines. Failed IDs retain bounded private logs and
-partial artifacts outside `attempts/`, receive exactly one failed marker, and
-are never replaced. The command exits nonzero unless at least five of six
-replicates complete.
+partial artifacts in `private-artifacts/`, receive exactly one failed marker,
+and are never replaced. Failed process-group cleanup or a surviving orphan
+aborts all later launches while still finalizing every planned ID exactly once.
+The command exits nonzero unless at least five of six replicates complete.
 
 Aggregation and sanitization remain explicit:
 
 ```console
 PINNED_ENV/bin/llmtracefx-real-mlx-cache-audit aggregate \
-  --attempts-dir real-mlx-run/attempts --output-dir private-aggregate
+  --run-workspace real-mlx-run --output-dir private-aggregate
 PINNED_ENV/bin/llmtracefx-real-mlx-cache-audit verify private-aggregate
 PINNED_ENV/bin/llmtracefx-real-mlx-cache-audit sanitize private-aggregate \
   --output-dir public-aggregate
 PINNED_ENV/bin/llmtracefx-real-mlx-cache-audit verify public-aggregate
 ```
 
+Aggregation accepts only the complete three-entry run workspace. It copies the
+six attempt directories but never copies `private-artifacts/`. Both private and
+public aggregates contain a privacy-safe `run-ledger.jsonl` and a strict
+`results.json`; both files are covered by the recursive `SHA256SUMS`.
+`results.json` is derived from verified private records before nested bundle
+redaction and preserves per-lane/case paired reuse, engine verdict, timing,
+memory-level, output-count, identity, and correctness observations plus
+descriptive medians and ranges. It contains no token arrays, prompts, paths,
+host IDs, or secrets.
+
 Real-MLX aggregate bundles deliberately contain no executable verifier.
 Offline verification must invoke the independently installed, version-pinned
-`llmtracefx-real-mlx-cache-audit verify` command. `SHA256SUMS`, the generating
-Git commit, commit timestamp, and package-source digest bind the evidence to
-that trusted verifier implementation.
+`llmtracefx-real-mlx-cache-audit verify` command. The verifier checks the
+ledger against every attempt, reproduces `results.json` from private
+aggregates, strictly validates public result schemas and bounds, and verifies
+the result digest bound by the ledger and experiment contract. Unkeyed
+`SHA256SUMS` provides integrity only, not authenticity. The Git commit that
+contains the final public evidence is the external authenticity anchor; the
+measurement commit and package-source digest remain visible in public
+evidence even though standard public-redacted nested manifests omit the
+generator commit.
 
 Within each lifecycle, all cache-assisted requests finish before the independent
 fresh-cache correctness baselines run. Reported client timing sums only the
 runtime cache fetch and generation clocks. TTFT ends when the yielded response
 token reaches the client iterator; process-wide synchronization is retained
 only for total completion. Oracle work, stage collection, insertion, and
-baseline generation are excluded. Paired latency and memory deltas remain null
-unless both requests completed, both exact-output and evaluator checks passed,
-required timing exists, the treatment has a supported cache verdict, and
-unexpected recomputation is zero.
+baseline generation are excluded. Paired latency comparability additionally
+requires equal generated output-token counts in both arms. Process RSS, system
+swap, and system-memory pressure remain explicitly scoped control/treatment
+level observations only; these global or monotonic gauges are not interpreted
+as causal deltas.
 
 Article claims may use only a verified compatible claim-matrix cell and its raw
 paired observations. A hit alone never proves saved work or latency; missing
 facts remain null. Token index 256 is an MLX KV allocation-step boundary, not a
-block-cache claim. These gates do not alter any synthetic-control claim.
+block-cache claim. Public tables must use the verified `results.json`, not
+unavailable fields in generic redacted nested bundles, as proof of exact reuse
+or output agreement.
+
+The fixed interpretation limits are one observation per cell per replicate,
+descriptive medians and ranges only, possible schedule/order and thermal
+effects, no causal process/system-memory deltas, no block-cache interpretation
+of allocation step 256, token-granular MLX cache behavior, and no power,
+energy, kernel, or utilization claims.
