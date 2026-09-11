@@ -258,37 +258,77 @@ self-conversion of `Qwen/Qwen3-4B` revision
 and group size 64. `compile` copies and re-verifies that contract in a private
 temporary snapshot, loads only its tokenizer, and freezes both lanes:
 
-- `1k`: 1025-token base, 769-token complete-chat seed, and 513-token eviction
-  prompts;
-- `4k`: 4097-token base, 3073-token complete-chat seed, and 2049-token eviction
-  prompts.
+- `1k`: 1025-token base and 513-token eviction prompts;
+- `4k`: 4097-token base and 2049-token eviction prompts.
 
-Each base is a valid continuation of its lane's complete-chat seed. Both lanes
-include the same nine cases, 32 extension tokens, mutation indices 137 and 256,
-and a final-16-token suffix change. `calibrate` runs each lane's seed twice in
-fresh caches, requires exact repeatability and `CACHE_OK` evaluator correctness,
-and freezes separate output token IDs. `replicate` runs one independent
-child-process unit:
+Each lane contains exactly seven cases: cold/exact/duplicate,
+interior mutation at index 137, allocation-step mutation at index 256,
+same-length different IDs, suffix-only change, namespace isolation, and
+capacity eviction. Index 256 is an allocation-step boundary probe, not a block
+cache claim. The suffix case mutates tokens `len-32:len-16` while preserving the
+final 16 generation-template tokens. No directional shorter/longer prompt claim
+is made.
+
+`calibrate` runs each lane's valid complete base prompt twice, each time in a
+fresh cache (four adapters total). It requires exact repeated three-token output
+and exact `CACHE_OK` evaluator correctness, then freezes a separate
+`calibration_output` for each lane as provenance. Calibration output is never
+appended to a prompt. Every complete replicate must reproduce it for that
+lane's cold-exact control.
+
+After the calibrated workload digests have been reviewed and pinned, `run-all`
+is the canonical execution path:
 
 ```console
 uv run llmtracefx-real-mlx-cache-audit compile --model-dir MODEL --output workload.json
 uv run llmtracefx-real-mlx-cache-audit calibrate --model-dir MODEL \
   --workload workload.json --output calibrated.json
-uv run llmtracefx-real-mlx-cache-audit replicate --model-dir MODEL \
-  --workload calibrated.json --replicate-id replicate-0 --output-dir attempts/replicate-0
+uv run llmtracefx-real-mlx-cache-audit run-all --model-dir MODEL \
+  --workload calibrated.json --expected-commit FULL_40_CHARACTER_GIT_SHA \
+  --output-workspace real-mlx-run
 ```
 
-Run IDs `replicate-0` through `replicate-5` sequentially under an external
-90-minute parent-process boundary. Each is an independent unit; failed attempts
-are recorded with `record-failure`, never replaced. `aggregate` requires all six
-attempt directories and at least five complete runs. Verify the private
-aggregate first, then use `sanitize` to create the publishable
-`public_redacted` aggregate.
+`run-all` refuses a mismatched Git HEAD, tracked changes, package-source drift,
+an existing output workspace, or an unavailable macOS network sandbox. It
+creates an append-only ledger for immutable IDs `replicate-0` through
+`replicate-5`, then launches each ID once in a fresh, sequential, network-denied
+child process. Provider credentials are removed and Hugging Face,
+Transformers, datasets, and W&B are forced offline. Preflight requires the
+Apple M5 Pro/24 GiB host contract, at least 25% `vm_stat` availability, no more
+than 12 GiB swap, at least 20 GiB free disk, and no other Python, MLX, Ollama,
+or llama process using at least 1 GiB RSS. The two-second runtime monitor uses
+15%, 14 GiB, and 12 GiB limits respectively, with 12-minute per-child and
+90-minute total monotonic deadlines. Failed IDs retain bounded private logs and
+partial artifacts outside `attempts/`, receive exactly one failed marker, and
+are never replaced. The command exits nonzero unless at least five of six
+replicates complete.
+
+Aggregation and sanitization remain explicit:
+
+```console
+PINNED_ENV/bin/llmtracefx-real-mlx-cache-audit aggregate \
+  --attempts-dir real-mlx-run/attempts --output-dir private-aggregate
+PINNED_ENV/bin/llmtracefx-real-mlx-cache-audit verify private-aggregate
+PINNED_ENV/bin/llmtracefx-real-mlx-cache-audit sanitize private-aggregate \
+  --output-dir public-aggregate
+PINNED_ENV/bin/llmtracefx-real-mlx-cache-audit verify public-aggregate
+```
+
+Real-MLX aggregate bundles deliberately contain no executable verifier.
+Offline verification must invoke the independently installed, version-pinned
+`llmtracefx-real-mlx-cache-audit verify` command. `SHA256SUMS`, the generating
+Git commit, commit timestamp, and package-source digest bind the evidence to
+that trusted verifier implementation.
 
 Within each lifecycle, all cache-assisted requests finish before the independent
 fresh-cache correctness baselines run. Reported client timing sums only the
-runtime cache fetch and generation clocks; oracle work, stage collection,
-insertion, and baseline generation are excluded.
+runtime cache fetch and generation clocks. TTFT ends when the yielded response
+token reaches the client iterator; process-wide synchronization is retained
+only for total completion. Oracle work, stage collection, insertion, and
+baseline generation are excluded. Paired latency and memory deltas remain null
+unless both requests completed, both exact-output and evaluator checks passed,
+required timing exists, the treatment has a supported cache verdict, and
+unexpected recomputation is zero.
 
 Article claims may use only a verified compatible claim-matrix cell and its raw
 paired observations. A hit alone never proves saved work or latency; missing

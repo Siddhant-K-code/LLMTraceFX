@@ -15,13 +15,17 @@ import json
 import os
 import platform
 import re
+import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from itertools import groupby
 from pathlib import Path
 from typing import Any
@@ -44,14 +48,15 @@ from .adapters.mlx import (
     check_mlx_capabilities,
 )
 from .bundle import (
-    BUNDLE_FILES,
     CacheAuditBundleError,
+    _git_package_digest,
+    package_source_digest,
     read_bundle,
     sanitize_bundle_records,
     verify_bundle,
     write_bundle,
 )
-from .runner import run_audit
+from .runner import run_audit, source_commit
 from .schema import (
     CacheConfig,
     PairRole,
@@ -59,21 +64,44 @@ from .schema import (
     RequestEvidence,
     RequestSpec,
     ScenarioKind,
+    TerminalState,
+    Verdict,
 )
 
 WORKLOAD_SCHEMA_VERSION = "real-mlx-workload-v1"
 AGGREGATE_SCHEMA_VERSION = "real-mlx-aggregate-v1"
 REPLICATE_IDS = tuple(f"replicate-{index}" for index in range(6))
 LANE_IDS = ("1k", "4k")
-ROTATION_OFFSETS = (0, 3, 6, 9, 12, 15)
+SCHEDULE_AFFINE_PERMUTATIONS = (
+    (0, 1),
+    (1, 3),
+    (2, 5),
+    (3, 9),
+    (4, 11),
+    (5, 13),
+)
 MAX_CACHE_ENTRIES = 2
 MAX_CACHE_BYTES = 1 << 63
 MAX_OUTPUT_TOKENS = 8
 MAX_ALLOCATOR_PEAK_BYTES = 8 * 1024**3
 MAX_PROCESS_RSS_BYTES = 12 * 1024**3
 MAX_SWAP_BYTES = 14 * 1024**3
+PREFLIGHT_MAX_SWAP_BYTES = 12 * 1024**3
 MAX_SWAP_GROWTH_BYTES = 2 * 1024**3
 MIN_RUNTIME_MEMORY_FREE_PERCENT = 15.0
+PREFLIGHT_MIN_AVAILABLE_RATIO = 0.25
+RUNTIME_MIN_AVAILABLE_RATIO = 0.15
+PREFLIGHT_MIN_DISK_BYTES = 20 * 1024**3
+RUNTIME_MIN_DISK_BYTES = 12 * 1024**3
+HEAVY_PROCESS_RSS_BYTES = 1 * 1024**3
+REQUIRED_HOST_CHIP = "Apple M5 Pro"
+REQUIRED_HOST_MEMORY_BYTES = 24 * 1024**3
+CHILD_TIMEOUT_SECONDS = 12 * 60
+TOTAL_TIMEOUT_SECONDS = 90 * 60
+MONITOR_INTERVAL_SECONDS = 2.0
+PROCESS_GROUP_GRACE_SECONDS = 5.0
+MAX_CHILD_LOG_BYTES = 64 * 1024
+RUN_INSTANCE_ENV = "LLMTRACEFX_CACHE_AUDIT_INSTANCE_ID"
 EXPECTED_MODEL_FILE_COUNT = 8
 EXPECTED_CONVERSION_SUMMARY_SHA256 = (
     "9c87cad2a7de7bbc42bfd6a1d7f502c32422ba00b29df27a2363c07aa2a45c25"
@@ -82,13 +110,13 @@ EXPECTED_MODEL_ARTIFACT_DIGEST = (
     "sha256:057a37f4ebc76420f8ab2edb17bc8442e050c8d13f7334f829356e2f9cab6802"
 )
 EXPECTED_CALIBRATED_WORKLOAD_DIGEST = (
-    "sha256:c8b3dc8939c65af48987c3f0abd3aa89e5ed2d5113499a809b9cadb904f2923b"
+    "sha256:39b7f4547a5ce9669ee290a42ba9ea354dbd1247be02a6e53f7a7f44869370ce"
 )
 EXPECTED_CALIBRATED_LANE_DIGESTS = {
-    "1k": "sha256:692d85f271130c48f19d5157c043f94950439cdea8d7259d055e30a4fe8e74d6",
-    "4k": "sha256:ff5d9dca4b3edbf677df6e3093dbe60cf48ae3edaa95e74a3e80cc08357cc476",
+    "1k": "sha256:f36348c6a5a5140ca83fb1a03d519b8aaa33eceba9fd6caad7e1035bb7613151",
+    "4k": "sha256:ced9d07c8365da181c376a7f81fa0ef6bf1c903015437ad8ea3af590b9979fd1",
 }
-EXPECTED_SEED_OUTPUT_TOKENS = {"1k": 3, "4k": 3}
+EXPECTED_CALIBRATION_OUTPUT_TOKENS = {"1k": 3, "4k": 3}
 MODEL_ID = "local-self-converted/qwen3-4b-mlx-q4g64"
 TOKENIZER_ID = "Qwen/Qwen3-4B@1cfa9a7208912126459214e8b04321603b3df60c"
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -97,8 +125,6 @@ DEFAULT_CONVERSION_SUMMARY = (
 )
 _CASES = (
     "cold-exact-duplicate",
-    "longer-to-shorter",
-    "shorter-to-longer",
     "interior-mutation",
     "allocation-step-mutation",
     "same-length-different-ids",
@@ -108,8 +134,6 @@ _CASES = (
 )
 _CASE_REQUEST_COUNTS = {
     "cold-exact-duplicate": 3,
-    "longer-to-shorter": 2,
-    "shorter-to-longer": 2,
     "interior-mutation": 2,
     "allocation-step-mutation": 2,
     "same-length-different-ids": 2,
@@ -117,7 +141,7 @@ _CASE_REQUEST_COUNTS = {
     "namespace-isolation": 2,
     "capacity-eviction": 5,
 }
-_BLOCKS = tuple(f"{lane_id}:{case}" for lane_id in LANE_IDS for case in _CASES)
+_BLOCKS = tuple(f"{lane_id}:{case}" for case in _CASES for lane_id in LANE_IDS)
 _BLOCK_REQUEST_COUNTS = {
     f"{lane_id}:{case}": count
     for lane_id in LANE_IDS
@@ -125,8 +149,8 @@ _BLOCK_REQUEST_COUNTS = {
 }
 _REQUESTS_PER_LANE = sum(_CASE_REQUEST_COUNTS.values())
 _LANE_CONTRACTS = {
-    "1k": {"base": 1025, "shorter_seed": 769, "eviction": 513},
-    "4k": {"base": 4097, "shorter_seed": 3073, "eviction": 2049},
+    "1k": {"base": 1025, "eviction": 513},
+    "4k": {"base": 4097, "eviction": 2049},
 }
 _EXPECTED_RUNTIME_IDENTITY = {
     "mlx": REQUIRED_MLX_VERSION,
@@ -162,7 +186,6 @@ _AGGREGATE_FILES = {
     "reuse-alignment.svg",
     "timing-memory.svg",
     "teardown.json",
-    "aggregate_verifier.py",
     "replicates",
     "SHA256SUMS",
 }
@@ -244,31 +267,20 @@ class FrozenMLXLane:
     mutation_137: tuple[int, ...]
     mutation_256: tuple[int, ...]
     suffix_change: tuple[int, ...]
-    extension_32: tuple[int, ...]
     eviction_a: tuple[int, ...]
     eviction_b: tuple[int, ...]
     eviction_c: tuple[int, ...]
-    shorter_seed: tuple[int, ...]
-    seed_output: tuple[int, ...] | None = None
+    calibration_output: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
         contract = _LANE_CONTRACTS.get(self.lane_id)
         if contract is None:
             raise RealMLXExperimentError("lane ID must be one of 1k or 4k")
         base_tokens = contract["base"]
-        seed_tokens = contract["shorter_seed"]
         eviction_tokens = contract["eviction"]
         if len(self.base) != base_tokens:
             raise RealMLXExperimentError(
                 f"{self.lane_id} base must contain exactly {base_tokens} tokens"
-            )
-        if (
-            len(self.shorter_seed) != seed_tokens
-            or self.shorter_seed != self.base[:seed_tokens]
-        ):
-            raise RealMLXExperimentError(
-                f"{self.lane_id} shorter seed must be the "
-                f"{seed_tokens}-token base prefix"
             )
         for name in (
             "different_ids",
@@ -285,8 +297,6 @@ class FrozenMLXLane:
                 raise RealMLXExperimentError(
                     f"{self.lane_id} {name} must contain {eviction_tokens} tokens"
                 )
-        if len(self.extension_32) != 32:
-            raise RealMLXExperimentError("extension must contain exactly 32 tokens")
         if self.different_ids == self.base:
             raise RealMLXExperimentError(
                 "same-length different-ID control is identical"
@@ -309,15 +319,24 @@ class FrozenMLXLane:
             )
             if pair[0] != pair[1]
         ]
-        if differences != list(range(len(self.base) - 16, len(self.base))):
+        if differences != list(range(len(self.base) - 32, len(self.base) - 16)):
             raise RealMLXExperimentError(
-                "suffix change must replace exactly the final 16 tokens"
+                "suffix change must replace the 16 tokens immediately before "
+                "the final 16 generation-template tokens"
+            )
+        if self.suffix_change[-16:] != self.base[-16:]:
+            raise RealMLXExperimentError(
+                "suffix change must preserve the final generation-template tokens"
             )
         if len({self.eviction_a, self.eviction_b, self.eviction_c}) != 3:
             raise RealMLXExperimentError("eviction A/B/C arrays must be distinct")
-        if self.seed_output is not None and not 1 <= len(self.seed_output) <= 8:
+        if (
+            self.calibration_output is not None
+            and len(self.calibration_output)
+            != EXPECTED_CALIBRATION_OUTPUT_TOKENS[self.lane_id]
+        ):
             raise RealMLXExperimentError(
-                "calibrated seed output must contain 1-8 tokens"
+                "calibration output must contain exactly 3 tokens"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -329,15 +348,13 @@ class FrozenMLXLane:
                 "mutation_137",
                 "mutation_256",
                 "suffix_change",
-                "extension_32",
                 "eviction_a",
                 "eviction_b",
                 "eviction_c",
-                "shorter_seed",
             )
         }
-        arrays["seed_output"] = (
-            None if self.seed_output is None else list(self.seed_output)
+        arrays["calibration_output"] = (
+            None if self.calibration_output is None else list(self.calibration_output)
         )
         return {
             "lane_id": self.lane_id,
@@ -361,15 +378,13 @@ class FrozenMLXLane:
             "mutation_137",
             "mutation_256",
             "suffix_change",
-            "extension_32",
             "eviction_a",
             "eviction_b",
             "eviction_c",
-            "shorter_seed",
-            "seed_output",
+            "calibration_output",
         }
         _exact_keys(arrays, names, "workload arrays")
-        seed_raw = arrays["seed_output"]
+        calibration_raw = arrays["calibration_output"]
         lane = cls(
             lane_id=lane_id,
             base=_integer_array(arrays["base"], "arrays.base"),
@@ -381,15 +396,13 @@ class FrozenMLXLane:
             suffix_change=_integer_array(
                 arrays["suffix_change"], "arrays.suffix_change"
             ),
-            extension_32=_integer_array(arrays["extension_32"], "arrays.extension_32"),
             eviction_a=_integer_array(arrays["eviction_a"], "arrays.eviction_a"),
             eviction_b=_integer_array(arrays["eviction_b"], "arrays.eviction_b"),
             eviction_c=_integer_array(arrays["eviction_c"], "arrays.eviction_c"),
-            shorter_seed=_integer_array(arrays["shorter_seed"], "arrays.shorter_seed"),
-            seed_output=(
+            calibration_output=(
                 None
-                if seed_raw is None
-                else _integer_array(seed_raw, "arrays.seed_output")
+                if calibration_raw is None
+                else _integer_array(calibration_raw, "arrays.calibration_output")
             ),
         )
         if value["lane_digest"] != lane.to_dict()["lane_digest"]:
@@ -468,20 +481,33 @@ class FrozenMLXWorkload:
 
 def load_workload(path: Path, *, calibrated: bool | None = None) -> FrozenMLXWorkload:
     workload = FrozenMLXWorkload.from_dict(_safe_object(path))
-    if calibrated is True and any(lane.seed_output is None for lane in workload.lanes):
+    if calibrated is True and any(
+        lane.calibration_output is None for lane in workload.lanes
+    ):
         raise RealMLXExperimentError("workload has not been calibrated")
+    if calibrated is True and (
+        EXPECTED_CALIBRATED_WORKLOAD_DIGEST == "RECALIBRATION_REQUIRED"
+        or any(
+            digest == "RECALIBRATION_REQUIRED"
+            for digest in EXPECTED_CALIBRATED_LANE_DIGESTS.values()
+        )
+    ):
+        raise RealMLXExperimentError(
+            "calibrated workload digest placeholders require recalibration"
+        )
     if calibrated is True and (
         workload.to_dict()["workload_digest"] != EXPECTED_CALIBRATED_WORKLOAD_DIGEST
         or any(
             lane.to_dict()["lane_digest"]
             != EXPECTED_CALIBRATED_LANE_DIGESTS[lane.lane_id]
-            or len(lane.seed_output or ()) != EXPECTED_SEED_OUTPUT_TOKENS[lane.lane_id]
+            or len(lane.calibration_output or ())
+            != EXPECTED_CALIBRATION_OUTPUT_TOKENS[lane.lane_id]
             for lane in workload.lanes
         )
     ):
         raise RealMLXExperimentError("calibrated workload contract mismatch")
     if calibrated is False and any(
-        lane.seed_output is not None for lane in workload.lanes
+        lane.calibration_output is not None for lane in workload.lanes
     ):
         raise RealMLXExperimentError("compile output is already calibrated")
     return workload
@@ -562,47 +588,6 @@ def _exact_prompt(
     )[0]
 
 
-def _continued_base_prompt(
-    tokenizer: Any,
-    shorter: tuple[int, ...],
-    first_body: str,
-    *,
-    target: int,
-    lane_id: str,
-) -> tuple[int, ...]:
-    for count in range(target * 2):
-        second_body = (
-            "LLMTraceFX public synthetic continuation. "
-            + (" audit" * count)
-            + " Answer exactly CACHE_OK."
-        )
-        tokens = _template_messages(
-            tokenizer,
-            (
-                {"role": "user", "content": first_body},
-                {"role": "assistant", "content": "CACHE_OK"},
-                {"role": "user", "content": second_body},
-            ),
-        )
-        divergence = next(
-            (
-                index
-                for index, pair in enumerate(zip(shorter, tokens, strict=False))
-                if pair[0] != pair[1]
-            ),
-            len(shorter),
-        )
-        continued = shorter + tokens[divergence:]
-        if len(continued) == target:
-            return continued
-        if len(continued) > target + 8 and count > target:
-            break
-    raise RealMLXExperimentError(
-        f"local tokenizer could not compile the {target}-token "
-        f"{lane_id} continued base prompt"
-    )
-
-
 def _replacement_token(tokenizer: Any, original: int) -> int:
     for text in (" X", " Y", " zero", " one", " cache", " audit"):
         try:
@@ -622,55 +607,34 @@ def _replacement_token(tokenizer: Any, original: int) -> int:
     raise RealMLXExperimentError("tokenizer supplied no safe mutation token")
 
 
-def _extension_tokens(tokenizer: Any) -> tuple[int, ...]:
-    for count in range(1, 100):
-        text = (" extension" * count) + " continue"
-        try:
-            value = tokenizer.encode(text, add_special_tokens=False)
-        except TypeError:
-            value = tokenizer.encode(text)
-        if hasattr(value, "tolist"):
-            value = value.tolist()
-        if isinstance(value, list) and len(value) >= 32:
-            return _integer_array(value[:32], "extension")
-    raise RealMLXExperimentError("tokenizer could not compile a 32-token extension")
-
-
 def compile_workload(tokenizer: Any) -> FrozenMLXWorkload:
     """Compile the exact private workload without loading model weights."""
 
     lanes: list[FrozenMLXLane] = []
-    extension = _extension_tokens(tokenizer)
     for lane_id in LANE_IDS:
         contract = _LANE_CONTRACTS[lane_id]
-        shorter, first_body = _exact_prompt_with_body(
-            tokenizer,
-            target=contract["shorter_seed"],
-            label=f"{lane_id}-BASE-FIRST",
-        )
-        base = _continued_base_prompt(
-            tokenizer,
-            shorter,
-            first_body,
-            target=contract["base"],
-            lane_id=lane_id,
+        base = _exact_prompt(
+            tokenizer, target=contract["base"], label=f"{lane_id}-BASE"
         )
         different = _exact_prompt(
             tokenizer, target=contract["base"], label=f"{lane_id}-DIFFERENT"
         )
         if different == base:
             raise RealMLXExperimentError("different prompt tokenized identically")
-        if different[0] == base[0]:
-            changed = list(different)
-            changed[0] = _replacement_token(tokenizer, changed[0])
-            different = tuple(changed)
         mutations: dict[int, tuple[int, ...]] = {}
         for position in (137, 256):
             changed = list(base)
             changed[position] = _replacement_token(tokenizer, changed[position])
             mutations[position] = tuple(changed)
-        suffix = base[:-16] + tuple(
-            _replacement_token(tokenizer, token) for token in base[-16:]
+        suffix_start = len(base) - 32
+        suffix_end = len(base) - 16
+        suffix = (
+            base[:suffix_start]
+            + tuple(
+                _replacement_token(tokenizer, token)
+                for token in base[suffix_start:suffix_end]
+            )
+            + base[suffix_end:]
         )
         eviction = tuple(
             _exact_prompt(
@@ -688,11 +652,9 @@ def compile_workload(tokenizer: Any) -> FrozenMLXWorkload:
                 mutation_137=mutations[137],
                 mutation_256=mutations[256],
                 suffix_change=suffix,
-                extension_32=extension,
                 eviction_a=eviction[0],
                 eviction_b=eviction[1],
                 eviction_c=eviction[2],
-                shorter_seed=shorter,
             )
         )
     return FrozenMLXWorkload(
@@ -719,13 +681,13 @@ def output_is_cache_ok(tokenizer: Any, token_ids: Sequence[int]) -> bool:
     return isinstance(text, str) and text.strip() == "CACHE_OK"
 
 
-def calibrate_seed(
+def calibrate_outputs(
     workload: FrozenMLXWorkload,
     adapter_factory: Callable[[], MLXLocalCacheAdapter],
 ) -> FrozenMLXWorkload:
-    """Run each lane's seed twice in fresh caches and freeze exact output IDs."""
+    """Run each lane's base twice in fresh caches and freeze exact output IDs."""
 
-    if any(lane.seed_output is not None for lane in workload.lanes):
+    if any(lane.calibration_output is not None for lane in workload.lanes):
         raise RealMLXExperimentError("workload is already calibrated")
     calibrated: list[FrozenMLXLane] = []
     for lane in workload.lanes:
@@ -735,34 +697,34 @@ def calibrate_seed(
                 request_id=f"{lane.lane_id}:calibration-{index}",
                 scenario=ScenarioKind.COLD,
                 order=0,
-                input_token_ids=lane.shorter_seed,
-                input_token_count=len(lane.shorter_seed),
+                input_token_ids=lane.base,
+                input_token_count=len(lane.base),
                 output_tokens=MAX_OUTPUT_TOKENS,
                 replicate_id="calibration",
             )
             records = adapter_factory().run((request,))
             if len(records) != 1:
                 raise RealMLXExperimentError(
-                    f"{lane.lane_id} seed calibration returned invalid record count"
+                    f"{lane.lane_id} calibration returned invalid record count"
                 )
             record = records[0]
             output = record.output.output_token_ids
             if (
                 output is None
-                or not output
+                or len(output) != EXPECTED_CALIBRATION_OUTPUT_TOKENS[lane.lane_id]
                 or record.output.correctness.value is not True
                 or record.terminal_state.value != "completed"
             ):
                 raise RealMLXExperimentError(
-                    f"{lane.lane_id} seed calibration failed exact "
+                    f"{lane.lane_id} calibration failed exact "
                     "CACHE_OK correctness gate"
                 )
             outputs.append(output)
         if outputs[0] != outputs[1]:
             raise RealMLXExperimentError(
-                f"{lane.lane_id} seed calibration is not exactly repeatable"
+                f"{lane.lane_id} calibration is not exactly repeatable"
             )
-        calibrated.append(replace(lane, seed_output=outputs[0]))
+        calibrated.append(replace(lane, calibration_output=outputs[0]))
     return replace(workload, lanes=tuple(calibrated))
 
 
@@ -801,8 +763,13 @@ def _request(
 def block_schedule(replicate_id: str) -> tuple[str, ...]:
     if replicate_id not in REPLICATE_IDS:
         raise RealMLXExperimentError("replicate ID must be one of replicate-0..5")
-    offset = ROTATION_OFFSETS[REPLICATE_IDS.index(replicate_id)]
-    return _BLOCKS[offset:] + _BLOCKS[:offset]
+    offset, step = SCHEDULE_AFFINE_PERMUTATIONS[REPLICATE_IDS.index(replicate_id)]
+    schedule = tuple(
+        _BLOCKS[(offset + step * index) % len(_BLOCKS)] for index in range(len(_BLOCKS))
+    )
+    if len(schedule) != len(_BLOCKS) or set(schedule) != set(_BLOCKS):
+        raise RealMLXExperimentError("replicate schedule is not a full permutation")
+    return schedule
 
 
 def _request_block_id(request_id: str) -> str:
@@ -836,8 +803,8 @@ def requests_for_replicate(
 ) -> tuple[RequestSpec, ...]:
     """Build exact requests in the fixed counterbalanced block rotation."""
 
-    if any(lane.seed_output is None for lane in workload.lanes):
-        raise RealMLXExperimentError("measurement requires calibrated seed output")
+    if any(lane.calibration_output is None for lane in workload.lanes):
+        raise RealMLXExperimentError("measurement requires calibration output")
     by_block: dict[str, list[RequestSpec]] = {}
     for block in _BLOCKS:
         lane_id, case = block.split(":", 1)
@@ -875,51 +842,6 @@ def requests_for_replicate(
                 replicate_id=replicate_id,
                 predecessors=(f"{block}:exact",),
             )
-        elif case == "longer-to-shorter":
-            _request(
-                items,
-                block=block,
-                name="longer",
-                scenario=ScenarioKind.COLD,
-                tokens=lane.base,
-                replicate_id=replicate_id,
-                pair_id=pair,
-                pair_role=PairRole.CONTROL,
-            )
-            _request(
-                items,
-                block=block,
-                name="shorter",
-                scenario=ScenarioKind.IDENTICAL_PREFIX,
-                tokens=lane.shorter_seed,
-                replicate_id=replicate_id,
-                predecessors=(f"{block}:longer",),
-                pair_id=pair,
-                pair_role=PairRole.TREATMENT,
-            )
-        elif case == "shorter-to-longer":
-            extension = lane.shorter_seed + (lane.seed_output or ()) + lane.extension_32
-            _request(
-                items,
-                block=block,
-                name="shorter",
-                scenario=ScenarioKind.COLD,
-                tokens=lane.shorter_seed,
-                replicate_id=replicate_id,
-                pair_id=pair,
-                pair_role=PairRole.CONTROL,
-            )
-            _request(
-                items,
-                block=block,
-                name="longer",
-                scenario=ScenarioKind.SUFFIX_CHANGE,
-                tokens=extension,
-                replicate_id=replicate_id,
-                predecessors=(f"{block}:shorter",),
-                pair_id=pair,
-                pair_role=PairRole.TREATMENT,
-            )
         elif case in {
             "interior-mutation",
             "allocation-step-mutation",
@@ -945,7 +867,7 @@ def requests_for_replicate(
                 "suffix-only-change": (
                     ScenarioKind.SUFFIX_CHANGE,
                     lane.suffix_change,
-                    len(lane.base) - 16,
+                    len(lane.base) - 32,
                 ),
             }
             scenario, variant, position = variants[case]
@@ -996,11 +918,12 @@ def requests_for_replicate(
                 pair_role=PairRole.TREATMENT,
             )
         else:
-            for name, scenario, tokens, predecessors, role in (
+            for name, scenario, tokens, namespace, predecessors, role in (
                 (
                     "a-seed",
                     ScenarioKind.COLD,
                     lane.eviction_a,
+                    f"{lane_id}-eviction-a",
                     (),
                     PairRole.CONTROL,
                 ),
@@ -1008,15 +931,31 @@ def requests_for_replicate(
                     "a-hit",
                     ScenarioKind.IDENTICAL_PREFIX,
                     lane.eviction_a,
+                    f"{lane_id}-eviction-a",
                     (f"{block}:a-seed",),
                     PairRole.SINGLE,
                 ),
-                ("b", ScenarioKind.COLD, lane.eviction_b, (), PairRole.SINGLE),
-                ("c", ScenarioKind.COLD, lane.eviction_c, (), PairRole.SINGLE),
+                (
+                    "b",
+                    ScenarioKind.COLD,
+                    lane.eviction_b,
+                    f"{lane_id}-eviction-b",
+                    (),
+                    PairRole.SINGLE,
+                ),
+                (
+                    "c",
+                    ScenarioKind.COLD,
+                    lane.eviction_c,
+                    f"{lane_id}-eviction-c",
+                    (),
+                    PairRole.SINGLE,
+                ),
                 (
                     "a-miss",
                     ScenarioKind.EVICTION_COUNT,
                     lane.eviction_a,
+                    f"{lane_id}-eviction-a",
                     (f"{block}:a-hit",),
                     PairRole.TREATMENT,
                 ),
@@ -1028,6 +967,7 @@ def requests_for_replicate(
                     scenario=scenario,
                     tokens=tokens,
                     replicate_id=replicate_id,
+                    namespace=namespace,
                     predecessors=predecessors,
                     pair_id=pair if role is not PairRole.SINGLE else None,
                     pair_role=role,
@@ -1038,7 +978,54 @@ def requests_for_replicate(
     for block in block_schedule(replicate_id):
         for request in by_block[block]:
             ordered.append(replace(request, order=len(ordered)))
-    return tuple(ordered)
+    requests = tuple(ordered)
+    _verify_request_schedule(requests, workload, replicate_id)
+    return requests
+
+
+def _verify_request_schedule(
+    requests: Sequence[RequestSpec],
+    workload: FrozenMLXWorkload,
+    replicate_id: str,
+) -> None:
+    schedule = block_schedule(replicate_id)
+    if (
+        len(requests) != sum(_BLOCK_REQUEST_COUNTS.values())
+        or tuple(request.order for request in requests) != tuple(range(len(requests)))
+        or tuple(
+            dict.fromkeys(_request_block_id(request.request_id) for request in requests)
+        )
+        != schedule
+        or any(request.replicate_id != replicate_id for request in requests)
+        or _lane_request_counts(requests) != dict.fromkeys(LANE_IDS, _REQUESTS_PER_LANE)
+    ):
+        raise RealMLXExperimentError("replicate request schedule invariant failed")
+    for lane_id in LANE_IDS:
+        lane = workload.lane(lane_id)
+        by_id = {request.request_id: request for request in requests}
+        suffix = by_id[f"{lane_id}:suffix-only-change:variant"]
+        if (
+            suffix.input_token_ids != lane.suffix_change
+            or suffix.mutation_position != len(lane.base) - 32
+        ):
+            raise RealMLXExperimentError("suffix mutation schedule invariant failed")
+        eviction = {
+            name: by_id[f"{lane_id}:capacity-eviction:{name}"]
+            for name in ("a-seed", "a-hit", "b", "c", "a-miss")
+        }
+        if (
+            len(
+                {
+                    eviction["a-seed"].namespace_id,
+                    eviction["b"].namespace_id,
+                    eviction["c"].namespace_id,
+                }
+            )
+            != 3
+            or eviction["a-seed"].namespace_id != eviction["a-hit"].namespace_id
+            or eviction["a-seed"].namespace_id != eviction["a-miss"].namespace_id
+        ):
+            raise RealMLXExperimentError("eviction namespace schedule invariant failed")
 
 
 def _schedule_shape_specs(replicate_id: str, *, public: bool) -> list[dict[str, Any]]:
@@ -1049,7 +1036,7 @@ def _schedule_shape_specs(replicate_id: str, *, public: bool) -> list[dict[str, 
         different = (2,) + base[1:]
         mutation_137 = base[:137] + (2,) + base[138:]
         mutation_256 = base[:256] + (2,) + base[257:]
-        suffix = base[:-16] + (2,) * 16
+        suffix = base[:-32] + (2,) * 16 + base[-16:]
         lanes.append(
             FrozenMLXLane(
                 lane_id=lane_id,
@@ -1058,12 +1045,10 @@ def _schedule_shape_specs(replicate_id: str, *, public: bool) -> list[dict[str, 
                 mutation_137=mutation_137,
                 mutation_256=mutation_256,
                 suffix_change=suffix,
-                extension_32=(6,) * 32,
                 eviction_a=(3,) * contract["eviction"],
                 eviction_b=(4,) * contract["eviction"],
                 eviction_c=(5,) * contract["eviction"],
-                shorter_seed=base[: contract["shorter_seed"]],
-                seed_output=(7,) * EXPECTED_SEED_OUTPUT_TOKENS[lane_id],
+                calibration_output=(6,) * EXPECTED_CALIBRATION_OUTPUT_TOKENS[lane_id],
             )
         )
     workload = FrozenMLXWorkload(
@@ -1296,8 +1281,23 @@ class StageRecorder:
         atomic_write_text(path, text)
 
 
-def _safe_environment() -> dict[str, Any]:
-    return {
+def _utc_now() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def _run_instance_id() -> str:
+    instance_id = os.environ.get(RUN_INSTANCE_ENV) or secrets.token_hex(16)
+    if re.fullmatch(r"[0-9a-f]{32}", instance_id) is None:
+        raise RealMLXExperimentError("run instance ID is invalid")
+    return instance_id
+
+
+def _safe_environment(*, instance_id: str | None = None) -> dict[str, Any]:
+    environment = {
         "schema_version": "1",
         "platform_system": platform.system(),
         "platform_machine": platform.machine(),
@@ -1306,6 +1306,15 @@ def _safe_environment() -> dict[str, Any]:
         "mlx": _distribution_version("mlx"),
         "mlx_lm": _distribution_version("mlx-lm"),
         "process_scope": "one_fresh_replicate_child",
+    }
+    if instance_id is not None:
+        environment["run_instance_id"] = instance_id
+    return environment
+
+
+def _common_environment_value(environment: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: value for key, value in environment.items() if key != "run_instance_id"
     }
 
 
@@ -1523,7 +1532,7 @@ def calibrate_workload_file(
         model_dir, conversion_summary
     )
     try:
-        calibrated = calibrate_seed(
+        calibrated = calibrate_outputs(
             workload,
             _adapter_factory(
                 model=model,
@@ -1581,6 +1590,7 @@ def run_replicate(
         raise RealMLXExperimentError("replicate output already exists")
     output_dir.mkdir(parents=True)
     snapshot_owner: tempfile.TemporaryDirectory[str] | None = None
+    instance_id = _run_instance_id()
     try:
         workload = load_workload(workload_path, calibrated=True)
         model, tokenizer, model_key, digest, snapshot_owner = _load_verified_model(
@@ -1614,7 +1624,10 @@ def run_replicate(
         )
         verify_bundle(output_dir / "bundle")
         observer.write(output_dir / "stages.jsonl")
-        _write_json(output_dir / "environment.json", _safe_environment())
+        _write_json(
+            output_dir / "environment.json",
+            _safe_environment(instance_id=instance_id),
+        )
         _write_json(output_dir / "workload.json", workload.to_dict())
         _write_json(
             output_dir / "attempt.json",
@@ -1665,19 +1678,29 @@ def run_replicate(
                 "replicate_id": replicate_id,
                 "status": "failed",
                 "replacement": False,
+                "reason": "replicate_execution_failed",
+                "failed_at": _utc_now(),
             },
         )
         _write_json(output_dir / "teardown.json", _teardown())
         raise
 
 
-def record_failed_attempt(output_dir: Path, replicate_id: str) -> None:
+def record_failed_attempt(
+    output_dir: Path,
+    replicate_id: str,
+    *,
+    reason: str = "externally_terminated",
+    failed_at: str | None = None,
+) -> None:
     """Create a path-free failed-attempt marker for an externally timed-out child."""
 
     if output_dir.exists():
         raise RealMLXExperimentError("attempt output already exists")
     if replicate_id not in REPLICATE_IDS:
         raise RealMLXExperimentError("invalid replicate ID")
+    if re.fullmatch(r"[a-z][a-z0-9_]{2,63}", reason) is None:
+        raise RealMLXExperimentError("failed attempt reason must be a safe reason code")
     output_dir.mkdir(parents=True)
     _write_json(
         output_dir / "attempt.json",
@@ -1686,6 +1709,8 @@ def record_failed_attempt(output_dir: Path, replicate_id: str) -> None:
             "replicate_id": replicate_id,
             "status": "failed",
             "replacement": False,
+            "reason": reason,
+            "failed_at": failed_at or _utc_now(),
         },
     )
     _write_json(
@@ -1854,6 +1879,43 @@ def _verify_stage_rows(
             raise RealMLXExperimentError("public stage request ID is not redacted")
 
 
+def _require_capacity_eviction_verdicts(
+    records: Sequence[RequestEvidence],
+) -> None:
+    records_by_id = {record.spec.request_id: record for record in records}
+    for lane_id in LANE_IDS:
+        treatment = records_by_id.get(f"{lane_id}:capacity-eviction:a-miss")
+        if treatment is None or treatment.verdict is not Verdict.EVICTED:
+            raise RealMLXExperimentError(
+                f"{lane_id} capacity-eviction treatment is not evicted"
+            )
+
+
+def _require_private_output_gates(
+    records: Sequence[RequestEvidence],
+    workload: FrozenMLXWorkload,
+) -> None:
+    if any(
+        record.terminal_state is not TerminalState.COMPLETED
+        or record.output.token_identity.value is not True
+        or record.output.correctness.value is not True
+        for record in records
+    ):
+        raise RealMLXExperimentError(
+            "complete replicate output identity/correctness gate failed"
+        )
+    records_by_id = {record.spec.request_id: record for record in records}
+    for lane in workload.lanes:
+        control = records_by_id.get(f"{lane.lane_id}:cold-exact-duplicate:cold")
+        if (
+            control is None
+            or control.output.output_token_ids != lane.calibration_output
+        ):
+            raise RealMLXExperimentError(
+                f"{lane.lane_id} cold-exact control differs from calibration"
+            )
+
+
 def verify_replicate(
     directory: Path, *, replicate_id: str, public: bool
 ) -> dict[str, Any]:
@@ -1878,9 +1940,20 @@ def verify_replicate(
     if status == "failed":
         _exact_keys(
             attempt,
-            {"schema_version", "replicate_id", "status", "replacement"},
+            {
+                "schema_version",
+                "replicate_id",
+                "status",
+                "replacement",
+                "reason",
+                "failed_at",
+            },
             "failed attempt",
         )
+        if re.fullmatch(
+            r"[a-z][a-z0-9_]{2,63}", str(attempt["reason"])
+        ) is None or not _valid_utc_timestamp(attempt["failed_at"]):
+            raise RealMLXExperimentError("failed attempt reason/timestamp is invalid")
         _verify_teardown(_safe_object(directory / "teardown.json"), complete=False)
         return {"replicate_id": replicate_id, "status": status}
 
@@ -1954,6 +2027,8 @@ def verify_replicate(
         != tuple(record.spec.request_id for record in records)
     ):
         raise RealMLXExperimentError("replicate standard bundle contract mismatch")
+    if not public:
+        _require_capacity_eviction_verdicts(records)
 
     if public:
         binding = _safe_object(directory / "workload-binding.json")
@@ -1989,6 +2064,7 @@ def verify_replicate(
             != attempt["lane_request_counts"]
         ):
             raise RealMLXExperimentError("replicate lane request count drifted")
+        _require_private_output_gates(records, workload)
 
     environment = _safe_object(directory / "environment.json")
     _exact_keys(
@@ -2002,6 +2078,7 @@ def verify_replicate(
             "mlx",
             "mlx_lm",
             "process_scope",
+            *(() if public else ("run_instance_id",)),
         },
         "environment",
     )
@@ -2014,6 +2091,11 @@ def verify_replicate(
         or environment["process_scope"] != "one_fresh_replicate_child"
     ):
         raise RealMLXExperimentError("replicate environment binding is invalid")
+    if (
+        not public
+        and re.fullmatch(r"[0-9a-f]{32}", str(environment["run_instance_id"])) is None
+    ):
+        raise RealMLXExperimentError("replicate run instance ID is invalid")
     _verify_stage_rows(
         _parse_jsonl(directory / "stages.jsonl"),
         public=public,
@@ -2085,6 +2167,7 @@ def _replicate_index(root: Path, *, public: bool) -> dict[str, Any]:
     total_requests = 0
     complete = 0
     compatible_bindings: set[tuple[str, ...]] = set()
+    run_instance_ids: set[str] = set()
     for replicate_id in REPLICATE_IDS:
         directory = root / "replicates" / replicate_id
         state = verify_replicate(directory, replicate_id=replicate_id, public=public)
@@ -2094,6 +2177,13 @@ def _replicate_index(root: Path, *, public: bool) -> dict[str, Any]:
             manifest, records = read_bundle(directory / "bundle")
             attempt = _safe_object(directory / "attempt.json")
             environment = _safe_object(directory / "environment.json")
+            if not public:
+                instance_id = str(environment["run_instance_id"])
+                if instance_id in run_instance_ids:
+                    raise RealMLXExperimentError(
+                        "complete replicates must have distinct run instance IDs"
+                    )
+                run_instance_ids.add(instance_id)
             compatible_bindings.add(
                 (
                     str(attempt["frozen_workload_digest"]),
@@ -2105,7 +2195,7 @@ def _replicate_index(root: Path, *, public: bool) -> dict[str, Any]:
                     str(attempt["cache_config_digest"]),
                     str(manifest.generator_commit),
                     str(manifest.generator_package_digest),
-                    _digest_bytes(_json_bytes(environment)),
+                    _digest_bytes(_json_bytes(_common_environment_value(environment))),
                 )
             )
             counts = Counter(
@@ -2189,17 +2279,9 @@ def _comparison_name(
 ) -> str:
     scenario: ScenarioKind = treatment.spec.scenario
     if scenario is ScenarioKind.IDENTICAL_PREFIX:
-        if treatment.spec.input_token_count < control.spec.input_token_count:
-            case = "longer-to-shorter"
-        else:
-            case = "cold-exact"
-        return f"{lane_id}:{case}"
+        return f"{lane_id}:cold-exact"
     if scenario is ScenarioKind.SUFFIX_CHANGE:
-        if treatment.spec.input_token_count > control.spec.input_token_count:
-            case = "shorter-to-longer"
-        else:
-            case = "suffix-only-change"
-        return f"{lane_id}:{case}"
+        return f"{lane_id}:suffix-only-change"
     names: dict[ScenarioKind, str] = {
         ScenarioKind.WITHIN_BLOCK_MUTATION: "interior-mutation",
         ScenarioKind.BLOCK_BOUNDARY_MUTATION: "allocation-step-mutation",
@@ -2240,7 +2322,7 @@ def _request_stage_memory(path: Path) -> dict[str, dict[str, int | float]]:
     observations: dict[str, dict[str, list[int | float]]] = {}
     for row in _parse_jsonl(path):
         request_id = row["request_id"]
-        if request_id is None:
+        if request_id is None or row["stage"] == "request_after_baseline":
             continue
         values = observations.setdefault(
             request_id,
@@ -2315,6 +2397,40 @@ def _paired_sample(
     treatment_swap = treatment_stage["system_swap_used_bytes"]
     control_memory_free = control_stage["system_memory_free_percent"]
     treatment_memory_free = treatment_stage["system_memory_free_percent"]
+    control_recomputed = _fact_number(control.reuse.unexpected_recomputed_tokens)
+    treatment_recomputed = _fact_number(treatment.reuse.unexpected_recomputed_tokens)
+    supported_treatment_verdicts = {
+        Verdict.VERIFIED_HIT,
+        Verdict.PARTIAL_REUSE,
+        Verdict.VERIFIED_MISS,
+        Verdict.EVICTED,
+    }
+    paired_latency_comparable = (
+        control.terminal_state is TerminalState.COMPLETED
+        and treatment.terminal_state is TerminalState.COMPLETED
+        and control.output.token_identity.value is True
+        and treatment.output.token_identity.value is True
+        and control.output.correctness.value is True
+        and treatment.output.correctness.value is True
+        and control_ttft is not None
+        and treatment_ttft is not None
+        and control_total is not None
+        and treatment_total is not None
+        and treatment.verdict in supported_treatment_verdicts
+        and control_recomputed == 0
+        and treatment_recomputed == 0
+    )
+
+    def comparable_delta(
+        left: int | float | None, right: int | float | None
+    ) -> float | None:
+        return _delta(left, right) if paired_latency_comparable else None
+
+    def comparable_ratio(
+        left: int | float | None, right: int | float | None
+    ) -> float | None:
+        return _ratio(left, right) if paired_latency_comparable else None
+
     return {
         "replicate_id": replicate_id,
         "lane_id": lane_id,
@@ -2326,33 +2442,38 @@ def _paired_sample(
         "engine_cached_tokens": _fact_number(treatment.reuse.engine_cached_tokens),
         "engine_created_tokens": _fact_number(treatment.reuse.engine_created_tokens),
         "observed_prompt_tokens": _fact_number(treatment.reuse.observed_prompt_tokens),
-        "unexpected_recomputed_tokens": _fact_number(
-            treatment.reuse.unexpected_recomputed_tokens
-        ),
+        "unexpected_recomputed_tokens": treatment_recomputed,
+        "paired_latency_comparable": paired_latency_comparable,
         "control_client_ttft_seconds": control_ttft,
         "treatment_client_ttft_seconds": treatment_ttft,
-        "client_ttft_difference_seconds": _delta(control_ttft, treatment_ttft),
-        "client_ttft_ratio": _ratio(control_ttft, treatment_ttft),
+        "client_ttft_difference_seconds": comparable_delta(
+            control_ttft, treatment_ttft
+        ),
+        "client_ttft_ratio": comparable_ratio(control_ttft, treatment_ttft),
         "control_total_seconds": control_total,
         "treatment_total_seconds": treatment_total,
-        "total_difference_seconds": _delta(control_total, treatment_total),
-        "total_ratio": _ratio(control_total, treatment_total),
+        "total_difference_seconds": comparable_delta(control_total, treatment_total),
+        "total_ratio": comparable_ratio(control_total, treatment_total),
         "control_allocator_peak_bytes": control_peak,
         "treatment_allocator_peak_bytes": treatment_peak,
-        "allocator_peak_difference_bytes": _delta(control_peak, treatment_peak),
-        "allocator_active_difference_bytes": _delta(control_active, treatment_active),
-        "allocator_cache_difference_bytes": _delta(
+        "allocator_peak_difference_bytes": comparable_delta(
+            control_peak, treatment_peak
+        ),
+        "allocator_active_difference_bytes": comparable_delta(
+            control_active, treatment_active
+        ),
+        "allocator_cache_difference_bytes": comparable_delta(
             control_allocator_cache, treatment_allocator_cache
         ),
         "control_process_rss_bytes": control_rss,
         "treatment_process_rss_bytes": treatment_rss,
-        "process_rss_difference_bytes": _delta(control_rss, treatment_rss),
+        "process_rss_difference_bytes": comparable_delta(control_rss, treatment_rss),
         "control_system_swap_used_bytes": control_swap,
         "treatment_system_swap_used_bytes": treatment_swap,
-        "system_swap_difference_bytes": _delta(control_swap, treatment_swap),
+        "system_swap_difference_bytes": comparable_delta(control_swap, treatment_swap),
         "control_system_memory_free_percent": control_memory_free,
         "treatment_system_memory_free_percent": treatment_memory_free,
-        "system_memory_free_difference_percentage_points": _delta(
+        "system_memory_free_difference_percentage_points": comparable_delta(
             control_memory_free,
             treatment_memory_free,
         ),
@@ -2411,8 +2532,6 @@ def _descriptive_summary(root: Path, *, public: bool) -> dict[str, Any]:
         for lane_id in LANE_IDS
         for case in (
             "cold-exact",
-            "longer-to-shorter",
-            "shorter-to-longer",
             "interior-mutation",
             "allocation-step-mutation",
             "same-length-different-ids",
@@ -2532,7 +2651,6 @@ def _experiment_contract(public: bool) -> dict[str, Any]:
         "lanes": {
             lane_id: {
                 "base_tokens": _LANE_CONTRACTS[lane_id]["base"],
-                "shorter_seed_tokens": _LANE_CONTRACTS[lane_id]["shorter_seed"],
                 "eviction_prompt_tokens": _LANE_CONTRACTS[lane_id]["eviction"],
                 "cases": list(_CASES),
                 "requests_per_replicate": _REQUESTS_PER_LANE,
@@ -2540,500 +2658,17 @@ def _experiment_contract(public: bool) -> dict[str, Any]:
             for lane_id in LANE_IDS
         },
         "combined_blocks": list(_BLOCKS),
-        "rotation_offsets": list(ROTATION_OFFSETS),
+        "schedule_affine_permutations": [
+            {"offset": offset, "step": step}
+            for offset, step in SCHEDULE_AFFINE_PERMUTATIONS
+        ],
+        "exact_block_schedules": {
+            replicate_id: list(block_schedule(replicate_id))
+            for replicate_id in REPLICATE_IDS
+        },
         "model_contract_file_count": EXPECTED_MODEL_FILE_COUNT,
         "network_allowed": False,
     }
-
-
-def _replicate_tree_digest(root: Path) -> str:
-    digest = hashlib.sha256()
-    for path in sorted((root / "replicates").rglob("*")):
-        if path.is_symlink():
-            raise RealMLXExperimentError("replicate evidence contains a symlink")
-        if not path.is_file():
-            continue
-        relative = path.relative_to(root).as_posix().encode("ascii")
-        digest.update(len(relative).to_bytes(4, "big"))
-        digest.update(relative)
-        content = path.read_bytes()
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return digest.hexdigest()
-
-
-def _aggregate_verifier_source(
-    public: bool,
-    descriptive_summary_digest: str,
-    replicate_tree_digest: str,
-) -> str:
-    expected_specs = {
-        replicate_id: _schedule_shape_specs(replicate_id, public=public)
-        for replicate_id in REPLICATE_IDS
-    }
-    expected_record_lanes = {
-        replicate_id: _scheduled_record_lanes(replicate_id)
-        for replicate_id in REPLICATE_IDS
-    }
-    return f'''"""Portable standard-library verifier for one real MLX aggregate."""
-import hashlib
-import json
-import re
-import sys
-from pathlib import Path
-
-PUBLIC = {public!r}
-ROOT_FILES = {sorted(_AGGREGATE_FILES)!r}
-REPLICATES = {list(REPLICATE_IDS)!r}
-LANES = {list(LANE_IDS)!r}
-BUNDLE_FILES = {list(BUNDLE_FILES)!r}
-DESCRIPTIVE_SUMMARY_SHA256 = {descriptive_summary_digest!r}
-REPLICATE_TREE_SHA256 = {replicate_tree_digest!r}
-EXPECTED_SPECS = {expected_specs!r}
-EXPECTED_ROTATIONS = {{replicate_id: rotation for replicate_id, rotation in {dict(zip(REPLICATE_IDS, (block_schedule(item) for item in REPLICATE_IDS), strict=True))!r}.items()}}
-EXPECTED_RECORD_LANES = {expected_record_lanes!r}
-BLOCK_COUNTS = {_BLOCK_REQUEST_COUNTS!r}
-EXPECTED_LANE_REQUEST_COUNTS = {{lane_id: {_REQUESTS_PER_LANE} for lane_id in LANES}}
-EXPECTED_WORKLOAD_DIGEST = {EXPECTED_CALIBRATED_WORKLOAD_DIGEST!r}
-EXPECTED_LANE_DIGESTS = {EXPECTED_CALIBRATED_LANE_DIGESTS!r}
-EXPECTED_MODEL_ARTIFACT_DIGEST = {EXPECTED_MODEL_ARTIFACT_DIGEST!r}
-EXPECTED_MODEL_ID = {MODEL_ID!r}
-EXPECTED_TOKENIZER_ID = {TOKENIZER_ID!r}
-EXPECTED_RUNTIME_DIGEST = {_digest_bytes(_json_bytes(_EXPECTED_RUNTIME_IDENTITY))!r}
-EXPECTED_CACHE_CONFIG_DIGEST = {_digest_bytes(_json_bytes(_experiment_cache_config().to_dict()))!r}
-PRIVATE_RUNTIME = {_EXPECTED_RUNTIME_IDENTITY!r}
-PRIVATE_CACHE_CONFIG = {_experiment_cache_config().to_dict()!r}
-MAX_ALLOCATOR_PEAK_BYTES = {MAX_ALLOCATOR_PEAK_BYTES}
-MAX_PROCESS_RSS_BYTES = {MAX_PROCESS_RSS_BYTES}
-MAX_SWAP_BYTES = {MAX_SWAP_BYTES}
-MIN_RUNTIME_MEMORY_FREE_PERCENT = {MIN_RUNTIME_MEMORY_FREE_PERCENT!r}
-
-def fail(message):
-    raise SystemExit(message)
-
-def read(path):
-    if path.is_symlink() or not path.is_file():
-        fail("non-regular artifact")
-    return path.read_bytes()
-
-def canonical(value):
-    return (json.dumps(value, indent=2, sort_keys=True,
-                       ensure_ascii=True, allow_nan=False) + "\\n").encode("ascii")
-
-def replicate_tree_digest(root):
-    digest = hashlib.sha256()
-    for path in sorted((root / "replicates").rglob("*")):
-        if path.is_symlink():
-            fail("replicate evidence contains a symlink")
-        if not path.is_file():
-            continue
-        relative = path.relative_to(root).as_posix().encode("ascii")
-        digest.update(len(relative).to_bytes(4, "big"))
-        digest.update(relative)
-        content = read(path)
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return digest.hexdigest()
-
-def claim(index):
-    return {{
-        "schema_version": "1",
-        "claim_rule": "A hit alone does not prove saved work or latency; article claims require the compatible verified aggregate cell and its raw paired samples.",
-        "complete_replicates": index["complete_replicates"],
-        "scenario_observations": index["scenario_counts"],
-        "lane_scenario_observations": index["lane_scenario_counts"],
-        "lane_request_observations": index["lane_request_counts"],
-        "verdict_observations": index["verdict_counts"],
-        "allocation_step_boundary_256_is_block_cache_claim": False,
-        "mlx_fetch_refreshes_lru": False,
-        "mlx_insertion_refreshes_lru": True,
-        "exact_repeat_policy": "N-1",
-    }}
-
-def summary(index):
-    return {{
-        "schema_version": "1",
-        "publication_mode": "public_redacted" if PUBLIC else "private",
-        "attempted_replicates": 6,
-        "complete_replicates": index["complete_replicates"],
-        "failed_replicates": 6 - int(index["complete_replicates"]),
-        "request_count": index["request_count"],
-        "lane_request_counts": index["lane_request_counts"],
-        "no_replacement": True,
-        "sequential_boundary_minutes": 90,
-        "missing_facts": "null",
-    }}
-
-def html(value):
-    return ('<!doctype html><meta charset="utf-8"><title>Real MLX cache audit</title>'
-            '<h1>Real Apple Silicon MLX KV-cache experiment</h1>'
-            f'<p>Complete replicates: {{value["complete_replicates"]}}/6; '
-            f'requests: {{value["request_count"]}}.</p>'
-            '<p>A cache hit alone does not prove saved work or latency.</p>\\n').encode()
-
-def reuse(index):
-    complete = int(index["complete_replicates"])
-    return ('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="120" '
-            'role="img" aria-label="complete replicate count">'
-            '<rect width="640" height="120" fill="#fff"/>'
-            f'<rect x="20" y="50" width="{{complete * 90}}" height="30" fill="#2867b2"/>'
-            f'<text x="20" y="30">Complete replicates: {{complete}}/6</text></svg>\\n').encode()
-
-def timing(index):
-    requests = int(index["request_count"])
-    return ('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="120" '
-            'role="img" aria-label="timing and memory evidence scope">'
-            '<rect width="640" height="120" fill="#fff"/>'
-            f'<text x="20" y="35">Requests with preserved observations: {{requests}}</text>'
-            '<text x="20" y="70">Timing and memory remain separate claim dimensions.</text>'
-            '</svg>\\n').encode()
-
-def verify_schedule_and_stages(directory, replicate_id, attempt, records):
-    specs = []
-    for record in records:
-        spec = dict(record["spec"])
-        spec["input_token_ids"] = None
-        specs.append(spec)
-    if specs != EXPECTED_SPECS[replicate_id]:
-        fail("replicate request schedule drifted")
-    if PUBLIC:
-        binding = json.loads(read(directory / "workload-binding.json"))
-        expected_digest = "sha256:" + hashlib.sha256(canonical(specs)).hexdigest()
-        if binding != {{
-            "schema_version": "1",
-            "frozen_workload_digest": attempt["frozen_workload_digest"],
-            "frozen_lane_digests": attempt["frozen_lane_digests"],
-            "lane_request_counts": attempt["lane_request_counts"],
-            "request_specs_digest": expected_digest,
-        }}:
-            fail("public workload binding mismatch")
-    rows = [
-        json.loads(line)
-        for line in read(directory / "stages.jsonl").splitlines()
-    ]
-    expected = []
-    record_index = 0
-    for block in attempt["rotation"]:
-        expected.append((None, "lifecycle_ready"))
-        count = BLOCK_COUNTS.get(block)
-        if count is None:
-            fail("unknown lifecycle block")
-        block_records = records[record_index:record_index + count]
-        for record in block_records:
-            expected.extend(
-                (record["spec"]["request_id"], stage)
-                for stage in (
-                    "request_before_lookup",
-                    "request_after_lookup",
-                    "request_after_generation",
-                    "request_after_insertion",
-                )
-            )
-        expected.extend(
-            (record["spec"]["request_id"], "request_after_baseline")
-            for record in block_records
-        )
-        record_index += count
-    if record_index != len(records) or len(rows) != len(expected):
-        fail("stage sequence does not cover every request")
-    row_keys = {{
-        "schema_version", "replicate_id", "request_id", "stage", "allocator",
-        "logical_cache", "process_rss", "system_swap", "system_memory",
-        "thermal_power",
-    }}
-    for row, boundary in zip(rows, expected):
-        if set(row) != row_keys or (row["request_id"], row["stage"]) != boundary:
-            fail("stage boundary sequence mismatch")
-        if row["schema_version"] != "1" or row["replicate_id"] != replicate_id:
-            fail("stage replicate binding mismatch")
-        allocator = row["allocator"]
-        if (set(allocator) != {{"active_bytes", "cache_bytes", "peak_bytes", "scope"}}
-                or allocator["scope"] != "mlx_process_global_allocator"):
-            fail("allocator stage contract mismatch")
-        values = (allocator["active_bytes"], allocator["cache_bytes"], allocator["peak_bytes"])
-        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in values):
-            fail("allocator stage value is invalid")
-        if allocator["peak_bytes"] > MAX_ALLOCATOR_PEAK_BYTES:
-            fail("allocator safety limit exceeded")
-        logical = row["logical_cache"]
-        if (set(logical) != {{"bytes", "scope"}}
-                or logical["scope"] != "current_lru_entry_when_observable"
-                or (logical["bytes"] is not None and (
-                    isinstance(logical["bytes"], bool)
-                    or not isinstance(logical["bytes"], int)
-                    or logical["bytes"] < 0
-                ))):
-            fail("logical cache stage contract mismatch")
-        rss = row["process_rss"]
-        swap = row["system_swap"]
-        if (set(rss) != {{"bytes", "scope"}}
-                or rss["scope"] != "current_replicate_child_process_only"
-                or isinstance(rss["bytes"], bool)
-                or not isinstance(rss["bytes"], int)
-                or not 0 <= rss["bytes"] <= MAX_PROCESS_RSS_BYTES):
-            fail("RSS stage contract mismatch")
-        if (set(swap) != {{"used_bytes", "scope"}}
-                or swap["scope"] != "system_wide"
-                or isinstance(swap["used_bytes"], bool)
-                or not isinstance(swap["used_bytes"], int)
-                or not 0 <= swap["used_bytes"] <= MAX_SWAP_BYTES):
-            fail("swap stage contract mismatch")
-        memory = row["system_memory"]
-        if (set(memory) != {{"free_percent", "scope"}}
-                or memory["scope"] != "system_wide_memory_pressure"
-                or isinstance(memory["free_percent"], bool)
-                or not isinstance(memory["free_percent"], (int, float))
-                or not MIN_RUNTIME_MEMORY_FREE_PERCENT <= memory["free_percent"] <= 100):
-            fail("system memory stage contract mismatch")
-        if row["thermal_power"] != {{
-            "thermal_state": None,
-            "power_watts": None,
-            "scope": "unavailable_without_safe_collector",
-        }}:
-            fail("thermal and power contract mismatch")
-
-def rebuild_index(root):
-    entries = []
-    verdicts = {{}}
-    scenarios = {{}}
-    lane_requests = {{lane_id: 0 for lane_id in LANES}}
-    lane_scenarios = {{lane_id: {{}} for lane_id in LANES}}
-    request_count = 0
-    complete = 0
-    environments = []
-    bindings = []
-    for replicate_id in REPLICATES:
-        directory = root / "replicates" / replicate_id
-        attempt = json.loads(read(directory / "attempt.json"))
-        entry = {{"replicate_id": replicate_id, "status": attempt["status"]}}
-        if attempt["status"] == "complete":
-            complete += 1
-            environments.append(json.loads(read(directory / "environment.json")))
-            bundle = directory / "bundle"
-            checksum_lines = read(bundle / "SHA256SUMS").decode("ascii").splitlines()
-            nested = {{}}
-            for line in checksum_lines:
-                digest, name = line.split("  ")
-                if name in nested:
-                    fail("duplicate standard bundle checksum")
-                nested[name] = digest
-            if set(nested) != set(BUNDLE_FILES) - {{"SHA256SUMS"}}:
-                fail("standard bundle checksum allowlist mismatch")
-            for name, digest in nested.items():
-                if hashlib.sha256(read(bundle / name)).hexdigest() != digest:
-                    fail("standard bundle checksum mismatch")
-            manifest = json.loads(read(bundle / "audit-manifest.json"))
-            expected_cache = dict(PRIVATE_CACHE_CONFIG)
-            if PUBLIC:
-                expected_cache["namespace_id"] = "redacted-namespace"
-                expected_cache["cache_type"] = "redacted-cache"
-            if (manifest["backend"] != "mlx_lm_local"
-                    or manifest["backend_version"] != ("redacted" if PUBLIC else "0.31.3")
-                    or manifest["model_id"] != ("redacted-model" if PUBLIC else EXPECTED_MODEL_ID)
-                    or manifest["tokenizer_id"] != ("redacted-tokenizer" if PUBLIC else EXPECTED_TOKENIZER_ID)
-                    or manifest["model_artifact_digest"] != (None if PUBLIC else EXPECTED_MODEL_ARTIFACT_DIGEST)
-                    or manifest["runtime_identity"] != ({{"redaction": "public"}} if PUBLIC else PRIVATE_RUNTIME)
-                    or manifest["cache_config"] != expected_cache):
-                fail("standard bundle identity mismatch")
-            bindings.append({{
-                "frozen_workload_digest": attempt["frozen_workload_digest"],
-                "frozen_lane_digests": attempt["frozen_lane_digests"],
-                "model_artifact_digest": attempt["model_artifact_digest"],
-                "model_id": attempt["model_id"],
-                "tokenizer_id": attempt["tokenizer_id"],
-                "runtime_identity_digest": attempt["runtime_identity_digest"],
-                "cache_config_digest": attempt["cache_config_digest"],
-                "generator_commit": str(manifest["generator_commit"]),
-                "generator_package_digest": str(manifest["generator_package_digest"]),
-                "environment_digest": "sha256:" + hashlib.sha256(
-                    canonical(environments[-1])
-                ).hexdigest(),
-            }})
-            records = [
-                json.loads(line)
-                for line in read(bundle / "request-evidence.jsonl").splitlines()
-            ]
-            verify_schedule_and_stages(directory, replicate_id, attempt, records)
-            counts = {{}}
-            record_lanes = EXPECTED_RECORD_LANES[replicate_id]
-            if len(record_lanes) != len(records):
-                fail("lane schedule request count mismatch")
-            for record, lane_id in zip(records, record_lanes):
-                verdict = record["verdict"] or "unclassified"
-                counts[verdict] = counts.get(verdict, 0) + 1
-                scenario = record["spec"]["scenario"]
-                scenarios[scenario] = scenarios.get(scenario, 0) + 1
-                lane_requests[lane_id] += 1
-                lane_counts = lane_scenarios[lane_id]
-                lane_counts[scenario] = lane_counts.get(scenario, 0) + 1
-            for verdict, count in counts.items():
-                verdicts[verdict] = verdicts.get(verdict, 0) + count
-            request_count += len(records)
-            entry.update({{
-                "request_count": len(records),
-                "run_id": manifest["run_id"],
-                "verdict_counts": dict(sorted(counts.items())),
-            }})
-        entries.append(entry)
-    if complete < 5:
-        fail("minimum replicate gate failed")
-    if not environments or any(value != environments[0] for value in environments[1:]):
-        fail("environment mismatch")
-    if not bindings or any(value != bindings[0] for value in bindings[1:]):
-        fail("evidence binding mismatch")
-    return ({{
-        "schema_version": "1",
-        "replicates": entries,
-        "complete_replicates": complete,
-        "attempted_replicates": 6,
-        "request_count": request_count,
-        "lane_request_counts": dict(sorted(lane_requests.items())),
-        "verdict_counts": dict(sorted(verdicts.items())),
-        "scenario_counts": dict(sorted(scenarios.items())),
-        "lane_scenario_counts": {{
-            lane_id: dict(sorted(lane_scenarios[lane_id].items()))
-            for lane_id in LANES
-        }},
-        "evidence_binding": bindings[0],
-    }}, environments[0])
-
-def main():
-    root = Path(__file__).resolve().parent
-    if {{item.name for item in root.iterdir()}} != set(ROOT_FILES):
-        fail("aggregate root allowlist mismatch")
-    lines = read(root / "SHA256SUMS").decode("ascii").splitlines()
-    found = {{}}
-    for line in lines:
-        if not re.fullmatch(r"[0-9a-f]{{64}}  [A-Za-z0-9._/-]+", line):
-            fail("invalid recursive checksum")
-        digest, name = line.split("  ")
-        if name in found or name == "SHA256SUMS" or ".." in Path(name).parts:
-            fail("invalid checksum path")
-        found[name] = digest
-    actual = {{
-        path.relative_to(root).as_posix()
-        for path in root.rglob("*")
-        if path.is_file() and not path.is_symlink() and path != root / "SHA256SUMS"
-    }}
-    if set(found) != actual:
-        fail("recursive checksum allowlist mismatch")
-    for name, digest in found.items():
-        if hashlib.sha256(read(root / name)).hexdigest() != digest:
-            fail("checksum mismatch: " + name)
-    if hashlib.sha256(read(root / "descriptive-summary.json")).hexdigest() != DESCRIPTIVE_SUMMARY_SHA256:
-        fail("descriptive summary digest mismatch")
-    if replicate_tree_digest(root) != REPLICATE_TREE_SHA256:
-        fail("raw replicate evidence digest mismatch")
-    index, environment = rebuild_index(root)
-    if read(root / "replicate-index.json") != canonical(index):
-        fail("replicate index is not derived")
-    if index["attempted_replicates"] != 6 or index["complete_replicates"] < 5:
-        fail("minimum replicate gate failed")
-    if [item["replicate_id"] for item in index["replicates"]] != REPLICATES:
-        fail("replicate set permits replacement")
-    for replicate_id in REPLICATES:
-        directory = root / "replicates" / replicate_id
-        if directory.is_symlink() or not directory.is_dir():
-            fail("replicate directory mismatch")
-        attempt = json.loads(read(directory / "attempt.json"))
-        if (attempt.get("replicate_id") != replicate_id
-                or attempt.get("replacement") is not False
-                or attempt.get("status") not in {{"complete", "failed"}}):
-            fail("replicate attempt contract mismatch")
-        if attempt["status"] == "complete":
-            complete_keys = {{
-                "schema_version", "replicate_id", "status", "rotation",
-                "request_count", "independent_unit", "replacement",
-                "lane_request_counts", "frozen_workload_digest",
-                "frozen_lane_digests", "model_artifact_digest", "model_id",
-                "tokenizer_id", "runtime_identity_digest", "cache_config_digest",
-            }}
-            if (set(attempt) != complete_keys
-                    or tuple(attempt["rotation"]) != tuple(EXPECTED_ROTATIONS[replicate_id])
-                    or attempt["request_count"] != sum(BLOCK_COUNTS.values())
-                    or attempt["lane_request_counts"] != EXPECTED_LANE_REQUEST_COUNTS
-                    or attempt["independent_unit"] is not True
-                    or attempt["frozen_workload_digest"] != EXPECTED_WORKLOAD_DIGEST
-                    or attempt["frozen_lane_digests"] != EXPECTED_LANE_DIGESTS
-                    or attempt["model_artifact_digest"] != EXPECTED_MODEL_ARTIFACT_DIGEST
-                    or attempt["model_id"] != EXPECTED_MODEL_ID
-                    or attempt["tokenizer_id"] != EXPECTED_TOKENIZER_ID
-                    or attempt["runtime_identity_digest"] != EXPECTED_RUNTIME_DIGEST
-                    or attempt["cache_config_digest"] != EXPECTED_CACHE_CONFIG_DIGEST):
-                fail("complete attempt binding mismatch")
-        elif set(attempt) != {{"schema_version", "replicate_id", "status", "replacement"}}:
-            fail("failed attempt field mismatch")
-        names = {{item.name for item in directory.iterdir()}}
-        expected_names = (
-            {sorted(_PUBLIC_REPLICATE_FILES if public else _PRIVATE_REPLICATE_FILES)!r}
-            if attempt["status"] == "complete"
-            else {sorted(_FAILED_REPLICATE_FILES)!r}
-        )
-        if names != set(expected_names):
-            fail("replicate file allowlist mismatch")
-        if attempt["status"] == "complete":
-            bundle = directory / "bundle"
-            if bundle.is_symlink() or {{item.name for item in bundle.iterdir()}} != set(BUNDLE_FILES):
-                fail("standard bundle allowlist mismatch")
-    expected = {{
-        "experiment-contract.json": canonical({_experiment_contract(public)!r}),
-        "environment.json": canonical(environment),
-        "claim-matrix.json": canonical(claim(index)),
-        "summary.json": canonical(summary(index)),
-        "report.html": html(summary(index)),
-        "reuse-alignment.svg": reuse(index),
-        "timing-memory.svg": timing(index),
-        "teardown.json": canonical({{
-            "schema_version": "1",
-            "replicate_records_verified": 6,
-            "complete_teardown_records": index["complete_replicates"],
-            "scope": "aggregate_of_child_teardown_records",
-        }}),
-    }}
-    for name, content in expected.items():
-        if read(root / name) != content:
-            fail("derived artifact mismatch: " + name)
-    if PUBLIC:
-        private_markers = ("/Us" + "ers/", "/ho" + "me/", ":\\\\Us" + "ers\\\\")
-        private_keys = {{
-            "absolute_path", "account_id", "account_identifier", "api_key",
-            "cache_path", "cookie", "email", "home", "host_name", "hostname",
-            "local_path", "model_path", "pid", "process_id", "raw_prompt",
-            "raw_response", "reasoning_text", "user_id", "user_name", "username",
-        }}
-        def scan(value):
-            if isinstance(value, dict):
-                for key, item in value.items():
-                    if key.casefold() in private_keys:
-                        fail("public aggregate contains private JSON field")
-                    if key in {{"input_token_ids", "output_token_ids", "baseline_token_ids"}} and isinstance(item, list):
-                        fail("public aggregate contains exact token arrays")
-                    scan(item)
-            elif isinstance(value, list):
-                for item in value:
-                    scan(item)
-        for name in found:
-            text = read(root / name).decode("utf-8", "ignore")
-            if any(marker in text for marker in private_markers):
-                fail("public aggregate contains private path")
-            if ('"input_token_' + 'ids":[') in text or ('"output_token_' + 'ids":[') in text:
-                fail("public aggregate contains exact token arrays")
-            if (re.search(r"\\b[\\w.+-]+@[\\w.-]+\\.[A-Za-z]{{2,}}\\b", text)
-                    or re.search(r"\\b(?:gh[pousr]_|github_pat_|sk-|hf[_-]|wk-|ws-)[A-Za-z0-9_-]{{8,}}\\b", text)
-                    or re.search(r"\\b[0-9a-f]{{8}}-(?:[0-9a-f]{{4}}-){{3}}[0-9a-f]{{12}}\\b", text, re.I)
-                    or ("-----BEGIN " + "PRIVATE KEY-----") in text):
-                fail("public aggregate contains sensitive text")
-            path = root / name
-            if path.suffix == ".json":
-                scan(json.loads(text))
-            elif path.suffix == ".jsonl":
-                for line in text.splitlines():
-                    scan(json.loads(line))
-    print(json.dumps({{"verified": True, "complete_replicates": index["complete_replicates"]}}, sort_keys=True))
-
-if __name__ == "__main__":
-    main()
-'''
 
 
 def _write_recursive_checksums(root: Path) -> None:
@@ -3052,7 +2687,9 @@ def _write_recursive_checksums(root: Path) -> None:
 
 def _common_environment(replicates: Path) -> dict[str, Any]:
     values = [
-        _safe_object(replicates / replicate_id / "environment.json")
+        _common_environment_value(
+            _safe_object(replicates / replicate_id / "environment.json")
+        )
         for replicate_id in REPLICATE_IDS
         if _safe_object(replicates / replicate_id / "attempt.json").get("status")
         == "complete"
@@ -3085,16 +2722,6 @@ def _write_derived(root: Path, *, public: bool) -> None:
             "complete_teardown_records": index["complete_replicates"],
             "scope": "aggregate_of_child_teardown_records",
         },
-    )
-    atomic_write_text(
-        root / "aggregate_verifier.py",
-        _aggregate_verifier_source(
-            public,
-            hashlib.sha256(
-                canonical_json(descriptive_summary).encode("ascii")
-            ).hexdigest(),
-            _replicate_tree_digest(root),
-        ),
     )
     _write_recursive_checksums(root)
 
@@ -3190,8 +2817,11 @@ def sanitize_aggregate(source: Path, destination: Path) -> dict[str, Any]:
                     ),
                 },
             )
-            shutil.copyfile(
-                source_rep / "environment.json", target_rep / "environment.json"
+            _write_json(
+                target_rep / "environment.json",
+                _common_environment_value(
+                    _safe_object(source_rep / "environment.json")
+                ),
             )
             shutil.copyfile(source_rep / "teardown.json", target_rep / "teardown.json")
             _sanitize_stages(
@@ -3292,13 +2922,6 @@ def verify_aggregate(root: Path, *, public: bool | None = None) -> dict[str, Any
                 "scope": "aggregate_of_child_teardown_records",
             }
         ),
-        "aggregate_verifier.py": _aggregate_verifier_source(
-            inferred_public,
-            hashlib.sha256(
-                canonical_json(descriptive_summary).encode("ascii")
-            ).hexdigest(),
-            _replicate_tree_digest(root),
-        ),
     }
     for name, expected in expected_files.items():
         if (root / name).read_text(encoding="utf-8") != expected:
@@ -3310,6 +2933,721 @@ def verify_aggregate(root: Path, *, public: bool | None = None) -> dict[str, Any
         "publication_mode": mode,
         "attempted_replicates": 6,
         "complete_replicates": index["complete_replicates"],
+    }
+
+
+def _command_text(argv: Sequence[str]) -> str | None:
+    try:
+        result = subprocess.run(
+            list(argv),
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _vm_stat_available_ratio() -> float | None:
+    output = _command_text(("/usr/bin/vm_stat",))
+    total_text = _command_text(("/usr/sbin/sysctl", "-n", "hw.memsize"))
+    if output is None or total_text is None or not total_text.isdigit():
+        return None
+    page_match = re.search(r"page size of ([0-9]+) bytes", output)
+    if page_match is None:
+        return None
+    pages: dict[str, int] = {}
+    for label, raw in re.findall(
+        r"^Pages ([^:]+):\s*([0-9]+)\.$", output, re.MULTILINE
+    ):
+        pages[label] = int(raw)
+    required = ("free", "inactive", "speculative")
+    if any(label not in pages for label in required):
+        return None
+    available_bytes = sum(pages[label] for label in required) * int(page_match.group(1))
+    total_bytes = int(total_text)
+    if total_bytes <= 0:
+        return None
+    return min(1.0, available_bytes / total_bytes)
+
+
+def _host_identity() -> tuple[str | None, int | None]:
+    chip = _command_text(("/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"))
+    memory = _command_text(("/usr/sbin/sysctl", "-n", "hw.memsize"))
+    return chip, int(memory) if memory is not None and memory.isdigit() else None
+
+
+def _process_inventory() -> list[tuple[int, int, int, str]] | None:
+    output = _command_text(("/bin/ps", "-axo", "pid=,ppid=,rss=,comm="))
+    if output is None:
+        return None
+    rows: list[tuple[int, int, int, str]] = []
+    for line in output.splitlines():
+        parts = line.strip().split(maxsplit=3)
+        if len(parts) != 4:
+            return None
+        try:
+            pid, parent, rss_kib = map(int, parts[:3])
+        except ValueError:
+            return None
+        rows.append((pid, parent, rss_kib * 1024, parts[3]))
+    return rows
+
+
+def _excluded_process_tree(
+    rows: Sequence[tuple[int, int, int, str]], roots: set[int]
+) -> set[int]:
+    excluded = set(roots)
+    changed = True
+    while changed:
+        changed = False
+        for pid, parent, _, _ in rows:
+            if parent in excluded and pid not in excluded:
+                excluded.add(pid)
+                changed = True
+    return excluded
+
+
+def _heavy_process_categories(excluded_roots: set[int]) -> tuple[str, ...] | None:
+    rows = _process_inventory()
+    if rows is None:
+        return None
+    excluded = _excluded_process_tree(rows, excluded_roots)
+    categories: set[str] = set()
+    for pid, _, rss_bytes, command in rows:
+        if pid in excluded or rss_bytes < HEAVY_PROCESS_RSS_BYTES:
+            continue
+        folded = Path(command).name.casefold()
+        for category in ("python", "mlx", "ollama", "llama"):
+            if category in folded:
+                categories.add(category)
+    return tuple(sorted(categories))
+
+
+def _machine_observation(
+    workspace: Path,
+    *,
+    excluded_roots: set[int],
+) -> dict[str, Any]:
+    chip, total_memory = _host_identity()
+    categories = _heavy_process_categories(excluded_roots)
+    try:
+        disk_free = shutil.disk_usage(workspace).free
+    except OSError:
+        disk_free = None
+    return {
+        "chip": chip,
+        "total_memory_bytes": total_memory,
+        "vm_stat_available_ratio": _vm_stat_available_ratio(),
+        "system_swap_used_bytes": _system_swap_used_bytes(),
+        "disk_free_bytes": disk_free,
+        "heavy_process_count": None if categories is None else len(categories),
+        "heavy_process_categories": (None if categories is None else list(categories)),
+        "scopes": {
+            "memory": "system_wide_vm_stat",
+            "swap": "system_wide",
+            "disk": "output_workspace_filesystem",
+            "processes": "host_process_table_excluding_supervisor_and_child_tree",
+        },
+    }
+
+
+def _machine_policy_reason(
+    observation: Mapping[str, Any], *, preflight: bool
+) -> str | None:
+    chip = observation["chip"]
+    total_memory = observation["total_memory_bytes"]
+    available = observation["vm_stat_available_ratio"]
+    swap = observation["system_swap_used_bytes"]
+    disk = observation["disk_free_bytes"]
+    heavy = observation["heavy_process_count"]
+    if preflight and chip != REQUIRED_HOST_CHIP:
+        return "preflight_host_chip_mismatch"
+    if preflight and total_memory != REQUIRED_HOST_MEMORY_BYTES:
+        return "preflight_host_memory_mismatch"
+    if not isinstance(available, (int, float)) or isinstance(available, bool):
+        return (
+            "preflight_memory_unavailable"
+            if preflight
+            else "runtime_memory_unavailable"
+        )
+    minimum_available = (
+        PREFLIGHT_MIN_AVAILABLE_RATIO if preflight else RUNTIME_MIN_AVAILABLE_RATIO
+    )
+    if available < minimum_available:
+        return (
+            "preflight_memory_below_floor"
+            if preflight
+            else "runtime_memory_below_floor"
+        )
+    if isinstance(swap, bool) or not isinstance(swap, int):
+        return "preflight_swap_unavailable" if preflight else "runtime_swap_unavailable"
+    maximum_swap = PREFLIGHT_MAX_SWAP_BYTES if preflight else MAX_SWAP_BYTES
+    if swap > maximum_swap:
+        return (
+            "preflight_swap_above_ceiling"
+            if preflight
+            else "runtime_swap_above_ceiling"
+        )
+    if isinstance(disk, bool) or not isinstance(disk, int):
+        return "preflight_disk_unavailable" if preflight else "runtime_disk_unavailable"
+    minimum_disk = PREFLIGHT_MIN_DISK_BYTES if preflight else RUNTIME_MIN_DISK_BYTES
+    if disk < minimum_disk:
+        return "preflight_disk_below_floor" if preflight else "runtime_disk_below_floor"
+    if isinstance(heavy, bool) or not isinstance(heavy, int):
+        return (
+            "preflight_process_inventory_unavailable"
+            if preflight
+            else "runtime_process_inventory_unavailable"
+        )
+    if heavy:
+        return (
+            "preflight_heavy_process_present"
+            if preflight
+            else "runtime_heavy_process_present"
+        )
+    return None
+
+
+_PROVIDER_CREDENTIAL_VARIABLES = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "AZURE_API_KEY",
+        "AZURE_OPENAI_API_KEY",
+        "COHERE_API_KEY",
+        "DATABRICKS_TOKEN",
+        "DEEPSEEK_API_KEY",
+        "FIREWORKS_API_KEY",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "GOOGLE_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GROQ_API_KEY",
+        "HF_TOKEN",
+        "HUGGINGFACE_HUB_TOKEN",
+        "MISTRAL_API_KEY",
+        "OPENAI_API_KEY",
+        "REPLICATE_API_TOKEN",
+        "TOGETHER_API_KEY",
+        "WANDB_API_KEY",
+    }
+)
+
+
+def _offline_child_environment(instance_id: str) -> dict[str, str]:
+    if re.fullmatch(r"[0-9a-f]{32}", instance_id) is None:
+        raise RealMLXExperimentError("run instance ID is invalid")
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in _PROVIDER_CREDENTIAL_VARIABLES
+    }
+    environment.update(
+        {
+            "HF_HUB_OFFLINE": "1",
+            "TRANSFORMERS_OFFLINE": "1",
+            "HF_DATASETS_OFFLINE": "1",
+            "WANDB_MODE": "offline",
+            "WANDB_DISABLED": "true",
+            RUN_INSTANCE_ENV: instance_id,
+        }
+    )
+    return environment
+
+
+def _replicate_child_command(
+    *,
+    workload: Path,
+    model_dir: Path,
+    conversion_summary: Path,
+    replicate_id: str,
+    output_dir: Path,
+) -> list[str]:
+    sandbox = Path("/usr/bin/sandbox-exec")
+    if not sandbox.is_file() or not os.access(sandbox, os.X_OK):
+        raise RealMLXExperimentError("macOS sandbox-exec is unavailable")
+    profile = "(version 1) (allow default) (deny network*)"
+    return [
+        str(sandbox),
+        "-p",
+        profile,
+        sys.executable,
+        "-m",
+        "llmtracefx.cache_audit.real_mlx",
+        "replicate",
+        "--workload",
+        str(workload),
+        "--model-dir",
+        str(model_dir),
+        "--replicate-id",
+        replicate_id,
+        "--output-dir",
+        str(output_dir),
+        "--conversion-summary",
+        str(conversion_summary),
+    ]
+
+
+def _validate_supervisor_source(expected_commit: str) -> None:
+    if re.fullmatch(r"[0-9a-f]{40}", expected_commit) is None:
+        raise RealMLXExperimentError("expected commit must be a full lowercase SHA")
+    commit, commit_at = source_commit()
+    if commit != expected_commit or commit_at is None:
+        raise RealMLXExperimentError("current Git HEAD does not match expected commit")
+    status = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(_PROJECT_ROOT),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=no",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if status.returncode != 0 or status.stdout:
+        raise RealMLXExperimentError("tracked worktree must be clean")
+    if _git_package_digest(_PROJECT_ROOT, expected_commit) != package_source_digest():
+        raise RealMLXExperimentError(
+            "installed package source digest does not match expected commit tree"
+        )
+    try:
+        commit_time = datetime.fromisoformat(commit_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RealMLXExperimentError("expected commit timestamp is invalid") from exc
+    if commit_time.tzinfo is None or commit_time > datetime.now(timezone.utc):
+        raise RealMLXExperimentError("expected commit chronology is invalid")
+
+
+def _create_run_ledger(path: Path) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        for sequence, replicate_id in enumerate(REPLICATE_IDS):
+            row = {
+                "schema_version": "1",
+                "sequence": sequence,
+                "timestamp": _utc_now(),
+                "replicate_id": replicate_id,
+                "event": "planned",
+                "status": "planned",
+                "reason": None,
+            }
+            os.write(descriptor, _json_line(row).encode("ascii"))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _append_run_ledger(path: Path, row: Mapping[str, Any]) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise RealMLXExperimentError("run ledger must be a regular file")
+    flags = os.O_WRONLY | os.O_APPEND
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    try:
+        os.write(descriptor, _json_line(dict(row)).encode("ascii"))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _valid_utc_timestamp(value: Any) -> bool:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def _verify_run_ledger(path: Path) -> None:
+    text = path.read_text(encoding="ascii")
+    for pattern, label in PRIVACY_PATTERNS:
+        if pattern.search(text):
+            raise RealMLXExperimentError(f"run ledger contains {label}")
+    rows = _parse_jsonl(path)
+    if len(rows) < len(REPLICATE_IDS):
+        raise RealMLXExperimentError("run ledger is incomplete")
+    if [row.get("sequence") for row in rows] != list(range(len(rows))):
+        raise RealMLXExperimentError("run ledger sequence is not append-only")
+    planned = rows[: len(REPLICATE_IDS)]
+    if [
+        (row.get("replicate_id"), row.get("event"), row.get("status"))
+        for row in planned
+    ] != [(replicate_id, "planned", "planned") for replicate_id in REPLICATE_IDS]:
+        raise RealMLXExperimentError("run ledger planned ID set is invalid")
+    finalized = Counter(
+        row.get("replicate_id") for row in rows if row.get("event") == "finalized"
+    )
+    if finalized != Counter(dict.fromkeys(REPLICATE_IDS, 1)):
+        raise RealMLXExperimentError("run ledger must finalize every ID exactly once")
+    for row in rows:
+        _scan_private_keys(row, "run_ledger")
+        if not _valid_utc_timestamp(row.get("timestamp")):
+            raise RealMLXExperimentError("run ledger timestamp is invalid")
+        reason = row.get("reason")
+        if reason is not None and (
+            not isinstance(reason, str)
+            or re.fullmatch(r"[a-z][a-z0-9_]{2,63}", reason) is None
+        ):
+            raise RealMLXExperimentError("run ledger reason is invalid")
+
+
+def _ledger_event(
+    ledger: Path,
+    *,
+    sequence: int,
+    replicate_id: str,
+    event: str,
+    status: str,
+    reason: str | None,
+    observation: Mapping[str, Any] | None = None,
+    elapsed_seconds: float | None = None,
+) -> None:
+    row: dict[str, Any] = {
+        "schema_version": "1",
+        "sequence": sequence,
+        "timestamp": _utc_now(),
+        "replicate_id": replicate_id,
+        "event": event,
+        "status": status,
+        "reason": reason,
+    }
+    if observation is not None:
+        row["observation"] = dict(observation)
+    if elapsed_seconds is not None:
+        row["elapsed_seconds"] = round(elapsed_seconds, 6)
+    _append_run_ledger(ledger, row)
+
+
+def _group_exists(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _terminate_process_group(
+    process: subprocess.Popen[bytes],
+    *,
+    grace_seconds: float = PROCESS_GROUP_GRACE_SECONDS,
+) -> bool:
+    process_group = process.pid
+    if not _group_exists(process_group):
+        return True
+    try:
+        os.killpg(process_group, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline:
+        process.poll()
+        if not _group_exists(process_group):
+            return True
+        time.sleep(0.05)
+    try:
+        os.killpg(process_group, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline:
+        process.poll()
+        if not _group_exists(process_group):
+            return True
+        time.sleep(0.05)
+    return not _group_exists(process_group)
+
+
+def _write_bounded_child_log(path: Path, stream: Any) -> None:
+    stream.seek(0, os.SEEK_END)
+    size = stream.tell()
+    stream.seek(max(0, size - MAX_CHILD_LOG_BYTES))
+    content = stream.read(MAX_CHILD_LOG_BYTES)
+    if not isinstance(content, bytes):
+        content = bytes(content)
+    prefix = b"[earlier output truncated]\n" if size > MAX_CHILD_LOG_BYTES else b""
+    atomic_write_text(path, (prefix + content).decode("utf-8", errors="replace"))
+
+
+def _preserve_child_artifacts(
+    staging: Path,
+    artifact_dir: Path,
+    stdout: Any,
+    stderr: Any,
+) -> None:
+    artifact_dir.mkdir(parents=True)
+    _write_bounded_child_log(artifact_dir / "stdout.log", stdout)
+    _write_bounded_child_log(artifact_dir / "stderr.log", stderr)
+    if staging.exists():
+        os.replace(staging, artifact_dir / "partial-output")
+
+
+def run_all_replicates(
+    *,
+    workload: Path,
+    model_dir: Path,
+    conversion_summary: Path,
+    output_workspace: Path,
+    expected_commit: str,
+) -> dict[str, Any]:
+    """Run the six fixed replicate IDs once under a fail-closed supervisor."""
+
+    if output_workspace.exists():
+        raise RealMLXExperimentError("run-all output workspace already exists")
+    _validate_supervisor_source(expected_commit)
+    _replicate_child_command(
+        workload=workload,
+        model_dir=model_dir,
+        conversion_summary=conversion_summary,
+        replicate_id=REPLICATE_IDS[0],
+        output_dir=output_workspace / ".probe",
+    )
+    output_workspace.mkdir(parents=True)
+    attempts = output_workspace / "attempts"
+    artifacts = output_workspace / "private-artifacts"
+    attempts.mkdir()
+    artifacts.mkdir()
+    ledger = output_workspace / "run-ledger.jsonl"
+    _create_run_ledger(ledger)
+    ledger_sequence = len(REPLICATE_IDS)
+    completed = 0
+    supervisor_started = time.monotonic()
+    abort_remaining = False
+    instance_ids: set[str] = set()
+
+    for replicate_id in REPLICATE_IDS:
+        attempt_dir = attempts / replicate_id
+        staging = output_workspace / f".{replicate_id}.partial"
+        artifact_dir = artifacts / replicate_id
+        if attempt_dir.exists() or staging.exists() or artifact_dir.exists():
+            raise RealMLXExperimentError("replicate ID was already attempted")
+        reason: str | None = None
+        preflight = _machine_observation(
+            output_workspace,
+            excluded_roots={os.getpid()},
+        )
+        if abort_remaining:
+            reason = "supervisor_aborted_before_start"
+        elif time.monotonic() - supervisor_started >= TOTAL_TIMEOUT_SECONDS:
+            reason = "total_timeout_before_start"
+        else:
+            reason = _machine_policy_reason(preflight, preflight=True)
+        _ledger_event(
+            ledger,
+            sequence=ledger_sequence,
+            replicate_id=replicate_id,
+            event="preflight",
+            status="passed" if reason is None else "failed",
+            reason=reason,
+            observation=preflight,
+        )
+        ledger_sequence += 1
+
+        if reason is None:
+            instance_id = secrets.token_hex(16)
+            while instance_id in instance_ids:
+                instance_id = secrets.token_hex(16)
+            instance_ids.add(instance_id)
+            command = _replicate_child_command(
+                workload=workload,
+                model_dir=model_dir,
+                conversion_summary=conversion_summary,
+                replicate_id=replicate_id,
+                output_dir=staging,
+            )
+            child_started = time.monotonic()
+            with (
+                tempfile.TemporaryFile(mode="w+b") as stdout,
+                tempfile.TemporaryFile(mode="w+b") as stderr,
+            ):
+                process: subprocess.Popen[bytes] | None = None
+                try:
+                    process = subprocess.Popen(
+                        command,
+                        stdin=subprocess.DEVNULL,
+                        stdout=stdout,
+                        stderr=stderr,
+                        env=_offline_child_environment(instance_id),
+                        cwd=_PROJECT_ROOT,
+                        shell=False,
+                        start_new_session=True,
+                    )
+                    _ledger_event(
+                        ledger,
+                        sequence=ledger_sequence,
+                        replicate_id=replicate_id,
+                        event="started",
+                        status="running",
+                        reason=None,
+                    )
+                    ledger_sequence += 1
+                    next_monitor = time.monotonic() + MONITOR_INTERVAL_SECONDS
+                    while process.poll() is None:
+                        now = time.monotonic()
+                        if now - child_started >= CHILD_TIMEOUT_SECONDS:
+                            reason = "child_timeout"
+                            break
+                        if now - supervisor_started >= TOTAL_TIMEOUT_SECONDS:
+                            reason = "total_timeout"
+                            abort_remaining = True
+                            break
+                        if now >= next_monitor:
+                            observation = _machine_observation(
+                                output_workspace,
+                                excluded_roots={os.getpid(), process.pid},
+                            )
+                            monitor_reason = _machine_policy_reason(
+                                observation, preflight=False
+                            )
+                            _ledger_event(
+                                ledger,
+                                sequence=ledger_sequence,
+                                replicate_id=replicate_id,
+                                event="monitor",
+                                status=(
+                                    "passed" if monitor_reason is None else "failed"
+                                ),
+                                reason=monitor_reason,
+                                observation=observation,
+                                elapsed_seconds=now - child_started,
+                            )
+                            ledger_sequence += 1
+                            if monitor_reason is not None:
+                                reason = monitor_reason
+                                break
+                            next_monitor = now + MONITOR_INTERVAL_SECONDS
+                        time.sleep(0.1)
+                    if reason is not None:
+                        if not _terminate_process_group(process):
+                            reason = "process_cleanup_failed"
+                    else:
+                        returncode = process.wait()
+                        if returncode != 0:
+                            reason = "child_exit_nonzero"
+                            if not _terminate_process_group(process):
+                                reason = "process_cleanup_failed"
+                        elif _group_exists(process.pid):
+                            reason = "orphaned_child_process"
+                            if not _terminate_process_group(process):
+                                reason = "process_cleanup_failed"
+                except KeyboardInterrupt:
+                    abort_remaining = True
+                    reason = "supervisor_aborted"
+                    if process is not None and not _terminate_process_group(process):
+                        reason = "process_cleanup_failed"
+                except (OSError, subprocess.SubprocessError):
+                    reason = "child_launch_failed"
+                    if process is not None and not _terminate_process_group(process):
+                        reason = "process_cleanup_failed"
+
+                postflight = _machine_observation(
+                    output_workspace,
+                    excluded_roots=(
+                        {os.getpid()} if process is None else {os.getpid(), process.pid}
+                    ),
+                )
+                postflight_reason = _machine_policy_reason(postflight, preflight=False)
+                if reason is None and postflight_reason is not None:
+                    reason = postflight_reason
+                _ledger_event(
+                    ledger,
+                    sequence=ledger_sequence,
+                    replicate_id=replicate_id,
+                    event="postflight",
+                    status="passed" if postflight_reason is None else "failed",
+                    reason=postflight_reason,
+                    observation=postflight,
+                    elapsed_seconds=time.monotonic() - child_started,
+                )
+                ledger_sequence += 1
+                if reason is None:
+                    try:
+                        verify_replicate(
+                            staging,
+                            replicate_id=replicate_id,
+                            public=False,
+                        )
+                    except (
+                        CacheAuditBundleError,
+                        OSError,
+                        RealMLXExperimentError,
+                        RuntimeError,
+                        ValueError,
+                    ):
+                        reason = "invalid_complete_artifact"
+                if reason is None:
+                    os.replace(staging, attempt_dir)
+                    _write_bounded_child_log(artifact_dir / "stdout.log", stdout)
+                    _write_bounded_child_log(artifact_dir / "stderr.log", stderr)
+                    completed += 1
+                else:
+                    _preserve_child_artifacts(
+                        staging,
+                        artifact_dir,
+                        stdout,
+                        stderr,
+                    )
+        else:
+            postflight = _machine_observation(
+                output_workspace,
+                excluded_roots={os.getpid()},
+            )
+            _ledger_event(
+                ledger,
+                sequence=ledger_sequence,
+                replicate_id=replicate_id,
+                event="postflight",
+                status="not_started",
+                reason=reason,
+                observation=postflight,
+            )
+            ledger_sequence += 1
+
+        if reason is not None:
+            record_failed_attempt(
+                attempt_dir,
+                replicate_id,
+                reason=reason,
+                failed_at=_utc_now(),
+            )
+        _ledger_event(
+            ledger,
+            sequence=ledger_sequence,
+            replicate_id=replicate_id,
+            event="finalized",
+            status="complete" if reason is None else "failed",
+            reason=reason,
+            elapsed_seconds=time.monotonic() - supervisor_started,
+        )
+        ledger_sequence += 1
+
+    _verify_run_ledger(ledger)
+    return {
+        "run_all_complete": completed >= 5,
+        "attempted_replicates": len(REPLICATE_IDS),
+        "complete_replicates": completed,
+        "failed_replicates": len(REPLICATE_IDS) - completed,
+        "aggregate_created": False,
+        "sanitized": False,
     }
 
 
@@ -3339,9 +3677,18 @@ def _parser() -> argparse.ArgumentParser:
     replicate_parser.add_argument(
         "--conversion-summary", type=Path, default=DEFAULT_CONVERSION_SUMMARY
     )
+    run_all_parser = commands.add_parser("run-all")
+    run_all_parser.add_argument("--workload", type=Path, required=True)
+    run_all_parser.add_argument("--model-dir", type=Path, required=True)
+    run_all_parser.add_argument("--output-workspace", type=Path, required=True)
+    run_all_parser.add_argument("--expected-commit", required=True)
+    run_all_parser.add_argument(
+        "--conversion-summary", type=Path, default=DEFAULT_CONVERSION_SUMMARY
+    )
     failed_parser = commands.add_parser("record-failure")
     failed_parser.add_argument("--replicate-id", choices=REPLICATE_IDS, required=True)
     failed_parser.add_argument("--output-dir", type=Path, required=True)
+    failed_parser.add_argument("--reason", default="externally_terminated")
     aggregate_parser = commands.add_parser("aggregate")
     aggregate_parser.add_argument("--attempts-dir", type=Path, required=True)
     aggregate_parser.add_argument("--output-dir", type=Path, required=True)
@@ -3378,8 +3725,9 @@ def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
         )
         return {
             "calibrated": True,
-            "seed_output_tokens": {
-                lane.lane_id: len(lane.seed_output or ()) for lane in workload.lanes
+            "calibration_output_tokens": {
+                lane.lane_id: len(lane.calibration_output or ())
+                for lane in workload.lanes
             },
         }
     if args.command == "replicate":
@@ -3390,8 +3738,20 @@ def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
             model_dir=args.model_dir,
             conversion_summary=args.conversion_summary,
         )
+    if args.command == "run-all":
+        return run_all_replicates(
+            workload=args.workload,
+            model_dir=args.model_dir,
+            conversion_summary=args.conversion_summary,
+            output_workspace=args.output_workspace,
+            expected_commit=args.expected_commit,
+        )
     if args.command == "record-failure":
-        record_failed_attempt(args.output_dir, args.replicate_id)
+        record_failed_attempt(
+            args.output_dir,
+            args.replicate_id,
+            reason=args.reason,
+        )
         return {"recorded": True, "status": "failed"}
     if args.command == "aggregate":
         return assemble_aggregate(args.attempts_dir, args.output_dir)
@@ -3414,7 +3774,10 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
         raise SystemExit(2) from exc
     print(json.dumps(result, indent=2, sort_keys=True))
-    raise SystemExit(0)
+    exit_code = (
+        1 if args.command == "run-all" and result["complete_replicates"] < 5 else 0
+    )
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

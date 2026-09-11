@@ -1274,7 +1274,6 @@ class MLXLocalCacheAdapter:
             prompt_progress_callback=_progress,
         ):
             if first_token_seconds is None:
-                self._runtime.synchronize()
                 first_token_seconds = time.perf_counter() - wall_start
                 client_first_token_seconds = fetch_seconds + first_token_seconds
             if (

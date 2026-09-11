@@ -580,7 +580,8 @@ def test_run_requires_exact_token_ids() -> None:
 
 
 def test_memory_and_timing_evidence_are_observed_and_wall_clock() -> None:
-    adapter = _adapter()
+    runtime = FakeMLXRuntime()
+    adapter = _adapter(runtime)
     record = adapter.run([_spec("cold", (41, 42, 43), order=0)])[0]
 
     assert record.memory.runtime_active_bytes.value is not None
@@ -608,6 +609,7 @@ def test_memory_and_timing_evidence_are_observed_and_wall_clock() -> None:
     assert record.timing.in_process_first_token.value >= 0
     assert record.timing.client_ttft is not None
     assert record.timing.client_ttft.value >= record.timing.in_process_first_token.value
+    assert runtime.synchronize_calls == 2
     assert record.timing.prefill is not None
     assert record.timing.prefill.value == pytest.approx(0.03)
     assert record.timing.decode is not None
