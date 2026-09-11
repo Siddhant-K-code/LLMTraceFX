@@ -103,6 +103,7 @@ class FakeMLXRuntime:
         self._peak_bytes = 0
         self.synchronize_calls = 0
         self.reset_peak_calls = 0
+        self.memory_boundary_events: list[str] = []
         self.loaded_model_path: Path | None = None
         self.loaded_model_config: bytes | None = None
 
@@ -137,6 +138,7 @@ class FakeMLXRuntime:
 
     def reset_peak_memory(self) -> None:
         self.reset_peak_calls += 1
+        self.memory_boundary_events.append("reset")
         self._peak_bytes = self._active_bytes
 
     def active_memory(self) -> int:
@@ -155,6 +157,7 @@ class FakeMLXRuntime:
     def fetch(
         self, model_key: Hashable, tokens: Sequence[int]
     ) -> tuple[_FakeCacheHandle | None, tuple[int, ...]]:
+        self.memory_boundary_events.append("fetch")
         expectation = self._oracle.lookup(model_key, "_runtime_", tokens)
         request = tuple(tokens)
         if expectation.matched_entry_id is None:
@@ -592,7 +595,11 @@ def test_memory_and_timing_evidence_are_observed_and_wall_clock() -> None:
     assert record.memory.runtime_peak_bytes.value is not None
     assert (
         record.memory.runtime_peak_bytes.scope
-        == "process_global_allocator_gauge_since_reset"
+        == "process_global_allocator_peak_from_cache_fetch_through_generation"
+    )
+    assert (
+        record.memory.runtime_peak_bytes.source
+        == "mlx.get_peak_memory_after_reset_before_cache_fetch"
     )
     assert record.memory.allocator_cache_bytes.value is not None
     assert record.memory.logical_cache_bytes.value is not None
@@ -623,6 +630,20 @@ def test_memory_and_timing_evidence_are_observed_and_wall_clock() -> None:
         record.reuse.engine_created_tokens.basis is EvidenceBasis.INDEPENDENTLY_DERIVED
     )
     assert record.reuse.eviction_observed.value is None
+    assert runtime.memory_boundary_events == ["reset", "fetch"]
+
+
+def test_peak_boundary_is_equivalent_for_cold_and_hit_requests() -> None:
+    runtime = FakeMLXRuntime()
+    adapter = _adapter(runtime)
+    adapter.run(
+        [
+            _spec("cold", (1, 2, 3), order=0),
+            _spec("hit", (1, 2, 3, 4), order=1),
+        ]
+    )
+
+    assert runtime.memory_boundary_events == ["reset", "fetch", "reset", "fetch"]
 
 
 def test_pair_timing_exclusions_are_fixed_and_summary_compatible() -> None:

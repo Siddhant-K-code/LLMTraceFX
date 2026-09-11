@@ -732,11 +732,21 @@ implement a side-effect-free `--help` path.
   no direct CUDA collector; NVIDIA llama.cpp evidence is imported from captured
   output.
 - The canonical real-MLX audit is scoped to one host, model, and conversion.
-  Its constant-target `CACHE_OK` identity/correctness check is a low-power
-  guard that cannot rule out all KV corruption. All six preregistered
+  Its constant-target `CACHE_OK` output identity cannot distinguish workload
+  arrays and provides no evidence against cross-prefix or cross-namespace
+  contamination; it confirms only that cached and fresh paths produced the
+  same fixed answer. It is a mechanical timing-comparability gate, not
+  independent corroboration of reuse. All six preregistered
   replicates must complete and validate; every failure disqualifies the run,
-  with no replacement. The global preflight gate runs before workspace
-  creation, so an initial refusal consumes no replicate. Within each pair the
+  with no replacement. `preflight` and `run-all` require `--run-attempt 1` and
+  bind an empty prior-invalidated-ledger list. The global preflight gate runs
+  before workspace creation, so an initial refusal consumes no replicate and
+  can be retried only after explicit clean-reboot confirmation. Once attempt 1
+  starts, any invalidation permanently invalidates the canonical result under
+  this preregistration; no new-workspace retry is canonical. MLX allocator
+  peaks reset immediately before each cache fetch, covering lookup/copy/trim
+  plus generation from an equivalent cold/hit boundary; stage instrumentation
+  remains outside client clocks. Within each pair the
   cold control always precedes the warm treatment, so monotone drift can
   inflate an apparent latency benefit; deltas are descriptive, not causal
   speedups. Before

@@ -158,8 +158,10 @@ class MLXIdentityReference:
                         record.memory.runtime_peak_bytes,
                         value=200 + record.spec.order,
                         basis=EvidenceBasis.OBSERVED,
-                        source="mlx.get_peak_memory",
-                        scope="process_global_allocator_gauge_since_reset",
+                        source="mlx.get_peak_memory_after_reset_before_cache_fetch",
+                        scope=(
+                            "process_global_allocator_peak_from_cache_fetch_through_generation"
+                        ),
                         limitations=(),
                     ),
                     allocator_cache_bytes=replace(
@@ -1365,6 +1367,7 @@ def _make_attempts(
         package_digest=package_digest,
         workload=workload,
         runtime_packages=_runtime_packages(),
+        run_attempt=1,
     )
     ledger = workspace / "run-ledger.jsonl"
     real_mlx_module._create_run_ledger(ledger, binding)
@@ -1491,6 +1494,21 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
         "1k": 108,
         "4k": 108,
     }
+    assert private_claims["constant_target_distinguishes_workload_arrays"] is False
+    assert (
+        private_claims[
+            "constant_target_evidence_against_cross_prefix_or_namespace_contamination"
+        ]
+        is False
+    )
+    assert (
+        "not_independent_reuse_corroboration" in private_claims["constant_target_role"]
+    )
+    assert (
+        private_claims["allocator_peak_scope"]
+        == "process_global_allocator_peak_from_cache_fetch_through_generation"
+    )
+    assert private_claims["stage_instrumentation_in_client_clocks"] is False
     comparisons = json.loads((private / "descriptive-summary.json").read_text())[
         "comparisons"
     ]
@@ -1534,7 +1552,11 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     assert set(contract["lanes"]) == set(LANE_IDS)
     assert len(contract["combined_blocks"]) == 14
     assert set(contract["exact_block_schedules"]) == set(REPLICATE_IDS)
+    assert contract["run_attempt"] == 1
+    assert contract["prior_invalidated_run_ledger_digests"] == []
     assert contract["evidence_binding"]["expected_commit"] == "a" * 40
+    assert contract["evidence_binding"]["run_attempt"] == 1
+    assert contract["evidence_binding"]["prior_invalidated_run_ledger_digests"] == []
     assert contract["replicate_eligibility"] == {
         "attempted_replicates": 6,
         "required_complete_replicates": 6,
@@ -1613,6 +1635,10 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     public_index = json.loads((public / "replicate-index.json").read_text())
     assert public_index["lane_request_counts"] == {"1k": 108, "4k": 108}
     assert public_index["evidence_binding"]["expected_commit"] == "a" * 40
+    assert public_index["evidence_binding"]["run_attempt"] == 1
+    assert (
+        public_index["evidence_binding"]["prior_invalidated_run_ledger_digests"] == []
+    )
     assert public_index["evidence_binding"]["generator_package_digest"].startswith(
         "sha256:"
     )
@@ -1641,6 +1667,14 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
         "run-finalized",
     }
     assert any("observation" in row for row in public_ledger)
+    public_run_start = next(row for row in public_ledger if row["event"] == "run-start")
+    assert public_run_start["run_attempt"] == 1
+    assert public_run_start["prior_invalidated_run_ledger_digests"] == []
+    public_workload_binding = json.loads(
+        (public / "replicates" / "replicate-0" / "workload-binding.json").read_text()
+    )
+    assert public_workload_binding["run_attempt"] == 1
+    assert public_workload_binding["prior_invalidated_run_ledger_digests"] == []
     assert not (public / "aggregate_verifier.py").exists()
     assert not list(public.rglob("*.py"))
     assert all(
@@ -1830,6 +1864,34 @@ def test_run_ledger_rejects_lifecycle_schema_and_instance_tampering(
         encoding="ascii",
     )
     with pytest.raises(RealMLXExperimentError, match="field allowlist"):
+        real_mlx_module._verify_run_ledger(ledger)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("run_attempt", 2),
+        ("prior_invalidated_run_ledger_digests", ["sha256:" + "0" * 64]),
+    ],
+)
+def test_run_ledger_rejects_whole_run_retry_binding_tampering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    workspace = _make_attempts(tmp_path, monkeypatch)
+    ledger = workspace / "run-ledger.jsonl"
+    rows = [
+        json.loads(line) for line in ledger.read_text(encoding="ascii").splitlines()
+    ]
+    rows[0][field] = value
+    ledger.write_text(
+        "".join(real_mlx_module._json_line(row) for row in rows),
+        encoding="ascii",
+    )
+
+    with pytest.raises(RealMLXExperimentError, match="run ledger binding"):
         real_mlx_module._verify_run_ledger(ledger)
 
 
@@ -2289,6 +2351,7 @@ def test_run_all_uses_fresh_offline_sandboxed_children(
         conversion_summary=conversion_summary,
         output_workspace=workspace,
         expected_commit="a" * 40,
+        run_attempt=1,
     )
 
     assert result == {
@@ -2436,6 +2499,7 @@ def test_run_all_global_machine_failure_creates_no_workspace(
             conversion_summary=conversion_summary,
             output_workspace=workspace,
             expected_commit="a" * 40,
+            run_attempt=1,
         )
 
     assert not workspace.exists()
@@ -2561,6 +2625,7 @@ def test_run_all_bundle_source_failure_finalizes_every_planned_id(
         conversion_summary=summary,
         output_workspace=workspace,
         expected_commit="a" * 40,
+        run_attempt=1,
     )
 
     assert result["complete_replicates"] == 0
@@ -2652,6 +2717,7 @@ def test_run_all_preserves_terminal_reason_when_postflight_policy_fails(
         conversion_summary=conversion_summary,
         output_workspace=workspace,
         expected_commit="a" * 40,
+        run_attempt=1,
     )
 
     assert result["run_all_complete"] is False
@@ -2692,10 +2758,59 @@ def test_run_all_cli_exits_nonzero_when_results_derivation_fails(
                 "run",
                 "--expected-commit",
                 "a" * 40,
+                "--run-attempt",
+                "1",
             ]
         )
 
     assert raised.value.code == 1
+
+
+@pytest.mark.parametrize("command", ["preflight", "run-all"])
+@pytest.mark.parametrize("attempt", [None, "0", "2", "1.0"])
+def test_canonical_entrypoints_accept_only_explicit_integer_attempt_one(
+    command: str,
+    attempt: str | None,
+) -> None:
+    arguments = [
+        command,
+        "--workload",
+        "workload.json",
+        "--model-dir",
+        "model",
+        "--output-workspace",
+        "run",
+        "--expected-commit",
+        "a" * 40,
+    ]
+    if command == "preflight":
+        arguments.extend(("--output", "preflight.json"))
+    if attempt is not None:
+        arguments.extend(("--run-attempt", attempt))
+
+    with pytest.raises(SystemExit) as raised:
+        real_mlx_module._parser().parse_args(arguments)
+
+    assert raised.value.code == 2
+
+
+@pytest.mark.parametrize("attempt", [2, 1.0, True])
+def test_direct_preflight_rejects_noncanonical_attempt_before_writing(
+    tmp_path: Path, attempt: object
+) -> None:
+    receipt = tmp_path / "preflight.json"
+    with pytest.raises(RealMLXExperimentError, match="accepts only run attempt 1"):
+        real_mlx_module.run_preflight(
+            workload=tmp_path / "workload.json",
+            model_dir=tmp_path / "model",
+            conversion_summary=tmp_path / "summary.json",
+            output_workspace=tmp_path / "run",
+            expected_commit="a" * 40,
+            output=receipt,
+            run_attempt=attempt,  # type: ignore[arg-type]
+        )
+
+    assert not receipt.exists()
 
 
 def test_run_all_rejects_symlinked_input_before_creating_workspace(
@@ -2714,6 +2829,7 @@ def test_run_all_rejects_symlinked_input_before_creating_workspace(
             conversion_summary=tmp_path / "summary.json",
             output_workspace=output,
             expected_commit="a" * 40,
+            run_attempt=1,
         )
 
     assert not output.exists()
@@ -2850,6 +2966,7 @@ def test_preflight_refusal_writes_only_explicit_receipt(
         output_workspace=output_workspace,
         expected_commit="a" * 40,
         output=receipt,
+        run_attempt=1,
     )
 
     assert result == {
@@ -2859,6 +2976,8 @@ def test_preflight_refusal_writes_only_explicit_receipt(
     assert json.loads(receipt.read_text()) == {
         "schema_version": "1",
         "canonical_execution": False,
+        "run_attempt": 1,
+        "prior_invalidated_run_ledger_digests": [],
         "status": "refused",
         "reason": "NEEDS_CLEAN_BOOT:preflight_heavy_process_present",
     }
@@ -2998,6 +3117,7 @@ def test_cleanup_failure_preserves_partial_evidence_and_aborts_remaining(
         conversion_summary=conversion_summary,
         output_workspace=workspace,
         expected_commit="a" * 40,
+        run_attempt=1,
     )
 
     assert result["complete_replicates"] == 0

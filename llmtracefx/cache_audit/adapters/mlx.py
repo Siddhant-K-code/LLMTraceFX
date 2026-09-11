@@ -1092,6 +1092,7 @@ class MLXLocalCacheAdapter:
                 request, code="non_trimmable_cache_reuse_unsupported"
             )
         runtime_key = self._runtime_key(request.namespace_id)
+        self._runtime.reset_peak_memory()
         request_start = time.perf_counter()
         cache, rest = self._runtime.fetch(runtime_key, request.input_token_ids)
         fetch_seconds = time.perf_counter() - request_start
@@ -1196,8 +1197,10 @@ class MLXLocalCacheAdapter:
                 runtime_peak_bytes=_fact(
                     self._runtime.peak_memory(),
                     EvidenceBasis.OBSERVED,
-                    "mlx.get_peak_memory",
-                    scope="process_global_allocator_gauge_since_reset",
+                    "mlx.get_peak_memory_after_reset_before_cache_fetch",
+                    scope=(
+                        "process_global_allocator_peak_from_cache_fetch_through_request_refusal"
+                    ),
                 ),
                 allocator_cache_bytes=_fact(
                     self._runtime.cache_memory(),
@@ -1258,7 +1261,6 @@ class MLXLocalCacheAdapter:
             progress["actual"] = processed
             progress["total"] = total
 
-        self._runtime.reset_peak_memory()
         wall_start = time.perf_counter()
         first_token_seconds: float | None = None
         output_tokens: list[int] = []
@@ -1452,8 +1454,10 @@ class MLXLocalCacheAdapter:
                 runtime_peak_bytes=_fact(
                     peak_after,
                     EvidenceBasis.OBSERVED,
-                    "mlx.get_peak_memory",
-                    scope="process_global_allocator_gauge_since_reset",
+                    "mlx.get_peak_memory_after_reset_before_cache_fetch",
+                    scope=(
+                        "process_global_allocator_peak_from_cache_fetch_through_generation"
+                    ),
                 ),
                 allocator_cache_bytes=_fact(
                     cache_after,

@@ -165,6 +165,8 @@ def test_canonical_commands_refuse_direct_console_execution(
             "run",
             "--expected-commit",
             "a" * 40,
+            "--run-attempt",
+            "1",
         ]
     )
     with pytest.raises(real_mlx.RealMLXExperimentError, match="trusted Python -I -S"):

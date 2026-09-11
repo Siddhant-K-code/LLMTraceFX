@@ -290,10 +290,12 @@ native tenant isolation.
 `different_ids`, both mutation arrays, `suffix_change`, and eviction A/B/C)
 once in separate fresh caches, plus a second fresh-cache base repeat. This is
 nine adapters per lane and 18 total. Every result must contain exactly three
-tokens, decode exactly to `CACHE_OK`, match its independent baseline, and the
+tokens, decode exactly to `CACHE_OK`, match its fresh-cache baseline, and the
 two base results must be byte-for-byte stable. The deterministic
 `calibration_outputs` mapping is frozen in each lane; calibration output is
-never appended to a prompt.
+never appended to a prompt. Because every workload array has the same fixed
+target, this output agreement does not distinguish arrays and is not
+independent corroboration of cache reuse.
 
 After the calibrated workload digests have been reviewed and pinned, `run-all`
 is the canonical execution path:
@@ -309,7 +311,7 @@ EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-t
 EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py \
   run-all --model-dir MODEL \
   --workload calibrated.json --expected-commit FULL_40_CHARACTER_GIT_SHA \
-  --output-workspace real-mlx-run
+  --output-workspace real-mlx-run --run-attempt 1
 ```
 
 `run-all` resolves all input and output paths before creating anything and
@@ -347,7 +349,7 @@ writing an explicitly new receipt:
 EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py \
   preflight --model-dir MODEL \
   --workload calibrated.json --expected-commit FULL_40_CHARACTER_GIT_SHA \
-  --output-workspace real-mlx-run --output preflight.json
+  --output-workspace real-mlx-run --output preflight.json --run-attempt 1
 ```
 
 `run-all` repeats this gate rather than trusting a prior receipt. After it
@@ -400,6 +402,15 @@ preflight, launch, started, runtime, timeout, source, cleanup, or
 `supervisor_aborted_before_start` failure is preserved but invalidates the
 full run; failed IDs are never replaced. The global gate runs before workspace
 creation, so an initial refusal consumes no replicate.
+Both `preflight` and `run-all` require the literal integer
+`--run-attempt 1`; the receipt and canonical ledger bind
+`run_attempt: 1` and `prior_invalidated_run_ledger_digests: []`; those fields
+also propagate into the verified experiment contract and public bindings. A
+preflight refusal before workspace creation remains zero consumed and may be
+retried only after the already-required explicit clean-reboot confirmation.
+Once attempt 1 creates its workspace and starts, any invalidation permanently
+invalidates the canonical result under this preregistration: no later attempt
+and no new-workspace retry may masquerade as canonical.
 After the replicates finish, a terminal ledger row is appended even if public
 results derivation or verification fails; that state is recorded as
 `results_derivation_failed` with no results digest. The command exits nonzero
@@ -455,9 +466,13 @@ arms. Eviction control/revisit pairs are always incomparable because pressure
 requests intervene, while reuse and eviction facts remain reportable.
 Allocator active/cache, process RSS, system swap, and system-memory pressure
 remain explicitly scoped control/treatment level observations only and are not
-causal deltas. Only the per-request-reset allocator peak has a paired
-difference. The two-second monitoring and stage-observation subprocesses can
-perturb host scheduling, but remain outside client timing clocks.
+causal deltas. The MLX allocator peak is reset immediately before each cache
+fetch and read after generation, so cold and hit requests share the same
+boundary and the peak includes cache lookup/copy/trim plus generation. Only
+this per-request peak has a paired difference. It is still a process-global
+allocator observation, so intervening allocator activity may contribute.
+The two-second monitoring and stage-observation subprocesses can perturb host
+scheduling, but stage instrumentation remains outside client timing clocks.
 
 Article claims may use only a verified compatible claim-matrix cell and its raw
 paired observations. A hit alone never proves saved work or latency; missing
@@ -472,8 +487,11 @@ effects, and non-causal allocator-active/cache, RSS, swap, and pressure levels,
 monitoring/stage-observation scheduling perturbation, no block-cache
 interpretation of allocation step 256, token-granular MLX cache behavior, and
 no power, energy, kernel, or utilization claims. The constant-target
-`CACHE_OK` identity/correctness check is a low-power guard and cannot rule out
-all KV corruption. Evidence is scoped to one host, model, and conversion.
+`CACHE_OK` output identity cannot distinguish workload arrays and provides no
+evidence against cross-prefix or cross-namespace contamination. It confirms
+only that cached and fresh paths produced the same fixed answer. It may serve
+as a mechanical timing-comparability gate, but it is not independent
+corroboration of reuse. Evidence is scoped to one host, model, and conversion.
 Within every pair the cold control always precedes the warm treatment, so
 monotone drift can inflate an apparent latency benefit; reported deltas are
 descriptive and are not causal speedups. The

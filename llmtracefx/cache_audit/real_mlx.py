@@ -336,6 +336,8 @@ _AGGREGATE_FILES = {
     "replicates",
     "SHA256SUMS",
 }
+CANONICAL_RUN_ATTEMPT = 1
+PRIOR_INVALIDATED_RUN_LEDGER_DIGESTS: tuple[str, ...] = ()
 
 
 class RealMLXExperimentError(RuntimeError):
@@ -348,6 +350,11 @@ def _json_bytes(value: Any) -> bytes:
 
 def _digest_bytes(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
+
+
+def _require_canonical_run_attempt(run_attempt: Any) -> None:
+    if type(run_attempt) is not int or run_attempt != CANONICAL_RUN_ATTEMPT:
+        raise RealMLXExperimentError("frozen protocol accepts only run attempt 1")
 
 
 def _experiment_cache_config() -> CacheConfig:
@@ -2824,6 +2831,10 @@ def verify_replicate(
         request_specs_digest = _digest_bytes(_json_bytes(expected_specs))
         expected_binding = {
             "schema_version": "1",
+            "run_attempt": CANONICAL_RUN_ATTEMPT,
+            "prior_invalidated_run_ledger_digests": list(
+                PRIOR_INVALIDATED_RUN_LEDGER_DIGESTS
+            ),
             "frozen_workload_digest": attempt["frozen_workload_digest"],
             "frozen_lane_digests": attempt["frozen_lane_digests"],
             "lane_request_counts": attempt["lane_request_counts"],
@@ -3098,11 +3109,29 @@ def _claim_matrix(index: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "namespace_isolation_scope": "harness_enforced_cache_key_separation",
         "native_mlx_tenancy_claim": False,
+        "constant_target_output_identity_scope": (
+            "cached_and_fresh_paths_produced_the_same_fixed_answer_only"
+        ),
+        "constant_target_distinguishes_workload_arrays": False,
+        "constant_target_evidence_against_cross_prefix_or_namespace_contamination": (
+            False
+        ),
+        "constant_target_role": (
+            "mechanical_timing_comparability_gate_not_independent_reuse_corroboration"
+        ),
         "process_and_system_memory_rule": (
             "Allocator active/cache, process RSS, system swap, and system memory "
             "pressure are scoped level observations only and are not causal deltas; "
-            "only the per-request-reset allocator peak supports a paired difference."
+            "only the allocator peak reset immediately before each cache fetch supports "
+            "a paired difference."
         ),
+        "allocator_peak_scope": (
+            "process_global_allocator_peak_from_cache_fetch_through_generation"
+        ),
+        "allocator_peak_reset_boundary": (
+            "immediately_before_cache_fetch_for_both_cold_and_hit_requests"
+        ),
+        "stage_instrumentation_in_client_clocks": False,
         "mlx_fetch_refreshes_lru": False,
         "mlx_insertion_refreshes_lru": True,
         "exact_repeat_policy": "N-1",
@@ -4039,6 +4068,10 @@ def _experiment_contract(
             "required_complete_replicates": 6,
             "maximum_failed_replicates": 0,
         },
+        "run_attempt": binding["run_attempt"],
+        "prior_invalidated_run_ledger_digests": binding[
+            "prior_invalidated_run_ledger_digests"
+        ],
         "evidence_binding": dict(binding),
         "results_digest": results_digest,
         "integrity_and_authenticity": {
@@ -4082,8 +4115,14 @@ def _experiment_contract(
             "scheduling but are excluded from client clocks",
             "allocation step 256 is not block-cache behavior",
             "MLX cache reuse is token-granular",
-            "constant-target CACHE_OK identity/correctness is a low-power guard "
-            "that cannot rule out all KV corruption",
+            "constant-target CACHE_OK identity cannot distinguish workload arrays, "
+            "provides no evidence against cross-prefix or cross-namespace contamination, "
+            "and confirms only that cached and fresh paths produced the same fixed answer",
+            "constant-target output identity is only a mechanical timing-comparability "
+            "gate, not independent corroboration of reuse",
+            "allocator peak is reset immediately before cache fetch and covers cache "
+            "lookup/copy/trim plus generation; intervening stage instrumentation remains "
+            "outside client clocks",
             "evidence is scoped to one host, model, and conversion",
             "all six preregistered replicates must complete; failures are preserved "
             "but invalidate the run and no replacements are allowed",
@@ -4309,6 +4348,10 @@ def sanitize_aggregate(source: Path, destination: Path) -> dict[str, Any]:
                 target_rep / "workload-binding.json",
                 {
                     "schema_version": "1",
+                    "run_attempt": CANONICAL_RUN_ATTEMPT,
+                    "prior_invalidated_run_ledger_digests": list(
+                        PRIOR_INVALIDATED_RUN_LEDGER_DIGESTS
+                    ),
                     "frozen_workload_digest": attempt["frozen_workload_digest"],
                     "frozen_lane_digests": attempt["frozen_lane_digests"],
                     "lane_request_counts": attempt["lane_request_counts"],
@@ -5147,9 +5190,11 @@ def run_preflight(
     output_workspace: Path,
     expected_commit: str,
     output: Path,
+    run_attempt: int,
 ) -> dict[str, Any]:
     """Perform canonical pre-creation gates and write one noncanonical receipt."""
 
+    _require_canonical_run_attempt(run_attempt)
     receipt_path = _resolve_new_file(output, "preflight output")
     try:
         state = _run_global_preflight(
@@ -5175,6 +5220,10 @@ def run_preflight(
         receipt = {
             "schema_version": "1",
             "canonical_execution": False,
+            "run_attempt": CANONICAL_RUN_ATTEMPT,
+            "prior_invalidated_run_ledger_digests": list(
+                PRIOR_INVALIDATED_RUN_LEDGER_DIGESTS
+            ),
             "status": "refused",
             "reason": reason,
         }
@@ -5182,6 +5231,10 @@ def run_preflight(
         receipt = {
             "schema_version": "1",
             "canonical_execution": False,
+            "run_attempt": CANONICAL_RUN_ATTEMPT,
+            "prior_invalidated_run_ledger_digests": list(
+                PRIOR_INVALIDATED_RUN_LEDGER_DIGESTS
+            ),
             "status": "passed",
             "reason": None,
             "checks": {
@@ -5206,11 +5259,17 @@ def _run_binding(
     package_digest: str,
     workload: FrozenMLXWorkload,
     runtime_packages: Mapping[str, Any],
+    run_attempt: int,
 ) -> dict[str, Any]:
+    _require_canonical_run_attempt(run_attempt)
     if re.fullmatch(r"sha256:[0-9a-f]{64}", package_digest) is None:
         raise RealMLXExperimentError("package source digest is invalid")
     _verify_runtime_package_identity(runtime_packages)
     return {
+        "run_attempt": CANONICAL_RUN_ATTEMPT,
+        "prior_invalidated_run_ledger_digests": list(
+            PRIOR_INVALIDATED_RUN_LEDGER_DIGESTS
+        ),
         "expected_commit": expected_commit,
         "generator_package_digest": package_digest,
         "runtime_packages": {
@@ -5449,6 +5508,8 @@ def _verify_run_ledger(
     ):
         raise RealMLXExperimentError("run ledger timestamps are out of order")
     binding_keys = {
+        "run_attempt",
+        "prior_invalidated_run_ledger_digests",
         "expected_commit",
         "generator_package_digest",
         "runtime_packages",
@@ -5479,6 +5540,9 @@ def _verify_run_ledger(
         or run_start["event"] != "run-start"
         or run_start["status"] != "running"
         or run_start["reason"] is not None
+        or binding["run_attempt"] != CANONICAL_RUN_ATTEMPT
+        or binding["prior_invalidated_run_ledger_digests"]
+        != list(PRIOR_INVALIDATED_RUN_LEDGER_DIGESTS)
         or re.fullmatch(r"[0-9a-f]{40}", str(binding["expected_commit"])) is None
         or re.fullmatch(
             r"sha256:[0-9a-f]{64}",
@@ -6232,9 +6296,11 @@ def run_all_replicates(
     conversion_summary: Path,
     output_workspace: Path,
     expected_commit: str,
+    run_attempt: int,
 ) -> dict[str, Any]:
     """Run the six fixed replicate IDs once under a fail-closed supervisor."""
 
+    _require_canonical_run_attempt(run_attempt)
     preflight_state = _run_global_preflight(
         workload=workload,
         model_dir=model_dir,
@@ -6252,6 +6318,7 @@ def run_all_replicates(
         package_digest=package_digest,
         workload=preflight_state.workload,
         runtime_packages=preflight_state.runtime_packages,
+        run_attempt=run_attempt,
     )
     output_workspace.mkdir(parents=True)
     attempts = output_workspace / "attempts"
@@ -6623,6 +6690,9 @@ def _parser() -> argparse.ArgumentParser:
     run_all_parser.add_argument("--output-workspace", type=Path, required=True)
     run_all_parser.add_argument("--expected-commit", required=True)
     run_all_parser.add_argument(
+        "--run-attempt", type=int, choices=(CANONICAL_RUN_ATTEMPT,), required=True
+    )
+    run_all_parser.add_argument(
         "--conversion-summary", type=Path, default=DEFAULT_CONVERSION_SUMMARY
     )
     preflight_parser = commands.add_parser("preflight")
@@ -6631,6 +6701,9 @@ def _parser() -> argparse.ArgumentParser:
     preflight_parser.add_argument("--output-workspace", type=Path, required=True)
     preflight_parser.add_argument("--expected-commit", required=True)
     preflight_parser.add_argument("--output", type=Path, required=True)
+    preflight_parser.add_argument(
+        "--run-attempt", type=int, choices=(CANONICAL_RUN_ATTEMPT,), required=True
+    )
     preflight_parser.add_argument(
         "--conversion-summary", type=Path, default=DEFAULT_CONVERSION_SUMMARY
     )
@@ -6720,6 +6793,7 @@ def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
             conversion_summary=args.conversion_summary,
             output_workspace=args.output_workspace,
             expected_commit=args.expected_commit,
+            run_attempt=args.run_attempt,
         )
     if args.command == "preflight":
         return run_preflight(
@@ -6729,6 +6803,7 @@ def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
             output_workspace=args.output_workspace,
             expected_commit=args.expected_commit,
             output=args.output,
+            run_attempt=args.run_attempt,
         )
     if args.command == "sandbox-probe":
         return _sandbox_probe(
