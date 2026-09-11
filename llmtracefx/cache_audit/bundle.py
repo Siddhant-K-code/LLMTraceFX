@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import subprocess
 from collections import Counter
@@ -63,7 +62,16 @@ PUBLIC_REDACTED_FACT_SCOPE = "public_redacted_fact"
 PUBLIC_REDACTED_TIMING_SCOPE = "public_redacted_timing"
 PUBLIC_REDACTED_TIMING_EXCLUSIONS = ("timing_details_redacted",)
 PUBLIC_REDACTED_TIMING_UNIT = "s"
-_GIT_ENV = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
+_GIT_ENV = {
+    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "HOME": "/dev/null",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+}
 
 
 class CacheAuditBundleError(ValueError):
