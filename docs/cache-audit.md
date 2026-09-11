@@ -300,11 +300,15 @@ existing output workspace, or an unavailable macOS network sandbox. Before
 creating the workspace, it runs an isolated (`python -I`) model-free probe from
 a resolved non-repository directory under the exact network-denied sandbox.
 The probe verifies installed MLX, MLX-LM, Transformers, and safetensors
-versions and origin hashes, source/package identity, current process RSS,
-system swap, and system memory pressure. It then applies one global machine
-gate. A failure returns `NEEDS_CLEAN_BOOT:<reason>` without creating a ledger
-or consuming a replicate ID. The same checks can be recorded without canonical
-execution by writing an explicitly new receipt:
+versions and complete package-tree identities, including the trusted install
+root, import origin, regular-file count, total bytes, and deterministic tree
+digest. Bytecode and mutable cache directories are excluded from the identity;
+symlinks and other unsafe or missing package files are rejected. The probe
+also verifies source/package identity, current process RSS, system swap, and
+system memory pressure. It then applies one global machine gate. A failure returns
+`NEEDS_CLEAN_BOOT:<reason>` without creating a ledger or consuming a replicate
+ID. The same checks can be recorded without canonical execution by writing an
+explicitly new receipt:
 
 ```console
 uv run llmtracefx-real-mlx-cache-audit preflight --model-dir MODEL \
@@ -316,7 +320,7 @@ uv run llmtracefx-real-mlx-cache-audit preflight --model-dir MODEL \
 passes, `run-all` creates a workspace containing exactly
 `attempts/`, `private-artifacts/`, and `run-ledger.jsonl`. The append-only
 ledger binds the expected commit, package-source digest, installed runtime
-versions and origin hashes, calibrated workload and lane digests, model digest,
+package-tree identities, calibrated workload and lane digests, model digest,
 conversion-summary digest, exact sandbox-policy digest, and all six immutable
 replicate IDs. Every replicate must follow one
 canonical lifecycle: planned, preflight, optional started plus passed monitors,
@@ -352,7 +356,11 @@ Failed IDs retain bounded private logs and
 partial artifacts in `private-artifacts/`, receive exactly one failed marker,
 and are never replaced. Failed process-group cleanup or a surviving orphan
 aborts all later launches while still finalizing every planned ID exactly once.
-The command exits nonzero unless at least five of six replicates complete.
+After the replicates finish, a terminal ledger row is appended even if public
+results derivation or verification fails; that state is recorded as
+`results_derivation_failed` with no results digest. The command exits nonzero
+unless at least five of six replicates complete and public results derivation
+succeeds.
 
 Aggregation and sanitization remain explicit:
 

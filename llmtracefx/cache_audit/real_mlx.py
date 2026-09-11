@@ -32,6 +32,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from importlib import metadata
 from itertools import groupby
 from pathlib import Path
 from types import MappingProxyType
@@ -206,6 +207,15 @@ _IMPORT_SHADOW_CANDIDATES = (
     "safetensors.py",
     "safetensors",
 )
+_RUNTIME_TREE_IGNORED_DIRECTORIES = {
+    "__pycache__",
+    ".cache",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+}
+_RUNTIME_TREE_IGNORED_FILES = {".DS_Store"}
+_RUNTIME_TREE_IGNORED_SUFFIXES = {".pyc", ".pyo"}
 _STARTED_TERMINAL_REASONS = {
     "child_exit_nonzero",
     "child_timeout",
@@ -1485,8 +1495,6 @@ def _common_environment_value(environment: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _distribution_version(name: str) -> str | None:
-    from importlib import metadata
-
     try:
         return metadata.version(name)
     except metadata.PackageNotFoundError:
@@ -1501,15 +1509,42 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
     return True
 
 
-def _sha256_regular_file(path: Path) -> str:
+def _runtime_distribution(name: str) -> metadata.Distribution:
+    try:
+        return metadata.distribution(name)
+    except metadata.PackageNotFoundError as exc:
+        raise RealMLXExperimentError(
+            f"{name} runtime package distribution is unavailable"
+        ) from exc
+
+
+def _runtime_module_origin(module_name: str) -> Path:
+    try:
+        module = importlib.import_module(module_name)
+        origin_module = (
+            importlib.import_module("mlx.core") if module_name == "mlx" else module
+        )
+        raw_origin = getattr(origin_module, "__file__", None)
+        if not isinstance(raw_origin, str):
+            raise RealMLXExperimentError(f"{module_name} has no importable origin file")
+        return Path(raw_origin).resolve(strict=True)
+    except (ImportError, OSError) as exc:
+        raise RealMLXExperimentError(
+            f"{module_name} runtime package import failed"
+        ) from exc
+
+
+def _regular_file_identity(path: Path) -> tuple[int, str]:
     if path.is_symlink() or not path.is_file():
-        raise RealMLXExperimentError("runtime module origin is not a regular file")
-    before = path.stat()
+        raise RealMLXExperimentError("runtime package tree contains an unsafe file")
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise RealMLXExperimentError("runtime package tree contains an unsafe file")
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
-    after = path.stat()
+    after = path.lstat()
     if (
         before.st_dev,
         before.st_ino,
@@ -1523,12 +1558,12 @@ def _sha256_regular_file(path: Path) -> str:
         after.st_size,
         after.st_mtime_ns,
     ):
-        raise RealMLXExperimentError("runtime module changed while hashing")
-    return "sha256:" + digest.hexdigest()
+        raise RealMLXExperimentError("runtime package file changed while hashing")
+    return before.st_size, "sha256:" + digest.hexdigest()
 
 
-def _trusted_site_roots() -> tuple[Path, ...]:
-    roots: set[Path] = set()
+def _trusted_site_roots() -> tuple[tuple[str, Path], ...]:
+    roots: dict[Path, str] = {}
     for key in ("purelib", "platlib"):
         raw = sysconfig.get_path(key)
         try:
@@ -1538,57 +1573,186 @@ def _trusted_site_roots() -> tuple[Path, ...]:
                 "trusted site-packages is unavailable"
             ) from exc
         if root.is_dir():
-            roots.add(root)
+            roots.setdefault(root, key)
     if not roots:
         raise RealMLXExperimentError("trusted site-packages is unavailable")
-    return tuple(sorted(roots))
+    return tuple(
+        sorted(
+            ((label, root) for root, label in roots.items()),
+            key=lambda item: (item[0], item[1].as_posix()),
+        )
+    )
 
 
-def _runtime_package_identity(output_workspace: Path) -> dict[str, dict[str, str]]:
+def _runtime_tree_ignored(path: Path) -> bool:
+    return (
+        path.name in _RUNTIME_TREE_IGNORED_FILES
+        or path.suffix in _RUNTIME_TREE_IGNORED_SUFFIXES
+        or any(part in _RUNTIME_TREE_IGNORED_DIRECTORIES for part in path.parts)
+    )
+
+
+def _runtime_package_tree_identity(
+    package_root: Path,
+    *,
+    trusted_root: Path,
+    output_workspace: Path,
+    declared_files: set[Path],
+) -> tuple[int, int, str]:
+    if (
+        package_root.is_symlink()
+        or not package_root.is_dir()
+        or not _is_relative_to(package_root, trusted_root)
+        or _is_relative_to(package_root, _PROJECT_ROOT)
+        or _is_relative_to(package_root, output_workspace.parent)
+    ):
+        raise RealMLXExperimentError("runtime package tree root is untrusted")
+
+    def reject_walk_error(error: OSError) -> None:
+        raise RealMLXExperimentError("runtime package tree cannot be read") from error
+
+    files: list[tuple[Path, Path]] = []
+    for current, directory_names, file_names in os.walk(
+        package_root,
+        topdown=True,
+        onerror=reject_walk_error,
+        followlinks=False,
+    ):
+        current_path = Path(current)
+        retained_directories: list[str] = []
+        for directory_name in sorted(directory_names):
+            relative = (current_path / directory_name).relative_to(package_root)
+            if _runtime_tree_ignored(relative):
+                continue
+            directory = current_path / directory_name
+            if directory.is_symlink() or not directory.is_dir():
+                raise RealMLXExperimentError(
+                    "runtime package tree contains an unsafe directory"
+                )
+            retained_directories.append(directory_name)
+        directory_names[:] = retained_directories
+        for file_name in sorted(file_names):
+            relative = (current_path / file_name).relative_to(package_root)
+            if _runtime_tree_ignored(relative):
+                continue
+            path = current_path / file_name
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or path.resolve(strict=True) != path
+                or not _is_relative_to(path, trusted_root)
+                or _is_relative_to(path, _PROJECT_ROOT)
+                or _is_relative_to(path, output_workspace.parent)
+            ):
+                raise RealMLXExperimentError(
+                    "runtime package tree contains an unsafe file"
+                )
+            files.append((relative, path))
+
+    if not files:
+        raise RealMLXExperimentError("runtime package tree is empty")
+    discovered = {relative for relative, _ in files}
+    missing = {
+        relative
+        for relative in declared_files
+        if not _runtime_tree_ignored(relative) and relative not in discovered
+    }
+    if missing:
+        raise RealMLXExperimentError(
+            "runtime package distribution contains a missing file"
+        )
+
+    tree_digest = hashlib.sha256()
+    total_bytes = 0
+    for relative, path in sorted(files, key=lambda item: item[0].as_posix()):
+        size, digest = _regular_file_identity(path)
+        total_bytes += size
+        tree_digest.update(
+            _json_bytes(
+                {
+                    "path": relative.as_posix(),
+                    "size": size,
+                    "sha256": digest,
+                }
+            )
+        )
+        tree_digest.update(b"\n")
+    return len(files), total_bytes, "sha256:" + tree_digest.hexdigest()
+
+
+def _runtime_package_identity(
+    output_workspace: Path,
+) -> dict[str, dict[str, str | int]]:
     site_roots = _trusted_site_roots()
     shadow_roots = tuple(
         root / name
         for root in {_PROJECT_ROOT, output_workspace.parent}
         for name in _IMPORT_SHADOW_CANDIDATES
     )
-    identities: dict[str, dict[str, str]] = {}
+    identities: dict[str, dict[str, str | int]] = {}
     for module_name, required_version in _RUNTIME_PACKAGE_VERSIONS.items():
-        try:
-            module = importlib.import_module(module_name)
-            origin_module = (
-                importlib.import_module("mlx.core") if module_name == "mlx" else module
-            )
-            raw_origin = getattr(origin_module, "__file__", None)
-            if not isinstance(raw_origin, str):
-                raise RealMLXExperimentError(
-                    f"{module_name} has no importable origin file"
-                )
-            origin = Path(raw_origin).resolve(strict=True)
-        except (ImportError, OSError) as exc:
-            raise RealMLXExperimentError(
-                f"{module_name} runtime package import failed"
-            ) from exc
-        version = _distribution_version(_RUNTIME_DISTRIBUTIONS[module_name])
-        if version != required_version:
+        distribution = _runtime_distribution(_RUNTIME_DISTRIBUTIONS[module_name])
+        if distribution.version != required_version:
             raise RealMLXExperimentError(
                 f"{module_name} runtime package version mismatch"
             )
-        trusted_root = next(
-            (root for root in site_roots if _is_relative_to(origin, root)),
+        origin = _runtime_module_origin(module_name)
+        trusted = next(
+            (
+                (label, root)
+                for label, root in site_roots
+                if _is_relative_to(origin, root)
+            ),
             None,
         )
+        files = distribution.files
+        if files is None:
+            raise RealMLXExperimentError(
+                f"{module_name} runtime package file metadata is unavailable"
+            )
+        declared_files: set[Path] = set()
+        for item in files:
+            relative = Path(str(item))
+            if (
+                not relative.is_absolute()
+                and relative.parts
+                and relative.parts[0] == module_name
+                and ".." not in relative.parts
+            ):
+                declared_files.add(Path(*relative.parts[1:]))
+        if not declared_files:
+            raise RealMLXExperimentError(
+                f"{module_name} runtime package tree is undeclared"
+            )
+        if trusted is None:
+            raise RealMLXExperimentError(
+                f"{module_name} runtime package origin is untrusted"
+            )
+        trusted_label, trusted_root = trusted
+        package_root = trusted_root / module_name
         if (
-            trusted_root is None
+            package_root.is_symlink()
+            or not package_root.is_dir()
+            or not _is_relative_to(origin, package_root)
             or _is_relative_to(origin, output_workspace)
             or any(_is_relative_to(origin, shadow_root) for shadow_root in shadow_roots)
         ):
             raise RealMLXExperimentError(
                 f"{module_name} runtime package origin is untrusted"
             )
+        file_count, total_bytes, tree_sha256 = _runtime_package_tree_identity(
+            package_root,
+            trusted_root=trusted_root,
+            output_workspace=output_workspace,
+            declared_files=declared_files,
+        )
         identities[module_name] = {
             "version": required_version,
+            "trusted_root": trusted_label,
             "origin": "site-packages/" + origin.relative_to(trusted_root).as_posix(),
-            "origin_sha256": _sha256_regular_file(origin),
+            "file_count": file_count,
+            "total_bytes": total_bytes,
+            "tree_sha256": tree_sha256,
         }
     return identities
 
@@ -1602,15 +1766,33 @@ def _verify_runtime_package_identity(value: Any) -> None:
             raise RealMLXExperimentError("runtime package identity is invalid")
         _exact_keys(
             entry,
-            {"version", "origin", "origin_sha256"},
+            {
+                "version",
+                "trusted_root",
+                "origin",
+                "file_count",
+                "total_bytes",
+                "tree_sha256",
+            },
             "runtime package identity",
         )
+        origin = Path(str(entry["origin"]))
         if (
             entry["version"] != required_version
+            or entry["trusted_root"] not in {"purelib", "platlib"}
             or not isinstance(entry["origin"], str)
             or not entry["origin"].startswith("site-packages/")
-            or ".." in Path(entry["origin"]).parts
-            or re.fullmatch(r"sha256:[0-9a-f]{64}", str(entry["origin_sha256"])) is None
+            or origin.is_absolute()
+            or ".." in origin.parts
+            or len(origin.parts) < 3
+            or origin.parts[1] != name
+            or isinstance(entry["file_count"], bool)
+            or not isinstance(entry["file_count"], int)
+            or entry["file_count"] <= 0
+            or isinstance(entry["total_bytes"], bool)
+            or not isinstance(entry["total_bytes"], int)
+            or entry["total_bytes"] <= 0
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", str(entry["tree_sha256"])) is None
         ):
             raise RealMLXExperimentError("runtime package identity is invalid")
 
@@ -4498,7 +4680,7 @@ def _run_exact_sandbox_probe(
     output_workspace: Path,
     expected_commit: str,
     expected_package_digest: str,
-) -> dict[str, dict[str, str]]:
+) -> dict[str, dict[str, str | int]]:
     cwd = output_workspace.parent
     _ensure_non_repository_cwd(cwd)
     command = _sandbox_probe_command(
@@ -4536,7 +4718,7 @@ def _run_exact_sandbox_probe(
         raise RealMLXExperimentError("exact sandbox probe failed")
     _verify_runtime_package_identity(payload["runtime_packages"])
     return {
-        str(name): {str(key): str(value) for key, value in entry.items()}
+        str(name): {str(key): value for key, value in entry.items()}
         for name, entry in payload["runtime_packages"].items()
     }
 
@@ -4650,7 +4832,7 @@ class _RunPreflight:
     output_workspace: Path
     package_digest: str
     workload: FrozenMLXWorkload
-    runtime_packages: Mapping[str, Mapping[str, str]]
+    runtime_packages: Mapping[str, Mapping[str, str | int]]
     machine_observation: Mapping[str, Any]
 
 
@@ -4683,11 +4865,16 @@ def _run_global_preflight(
     )
     if model_digest != EXPECTED_MODEL_ARTIFACT_DIGEST:
         raise RealMLXExperimentError("run-all model artifact digest mismatch")
-    runtime_packages = _run_exact_sandbox_probe(
+    runtime_packages = _runtime_package_identity(resolved_output_workspace)
+    sandbox_runtime_packages = _run_exact_sandbox_probe(
         output_workspace=resolved_output_workspace,
         expected_commit=expected_commit,
         expected_package_digest=package_digest,
     )
+    if sandbox_runtime_packages != runtime_packages:
+        raise RealMLXExperimentError(
+            "sandbox runtime package identity does not match parent"
+        )
     observation = _machine_observation(
         resolved_output_workspace.parent,
         excluded_roots={os.getpid()},
@@ -5285,9 +5472,6 @@ def _verify_run_ledger(
                 raise RealMLXExperimentError(
                     "run ledger finalization elapsed time regressed"
                 )
-            causal_policy_reason = failed_monitor_reason or (
-                str(postflight["reason"]) if postflight["status"] == "failed" else None
-            )
             if finalized["status"] == "complete" and (
                 any(row["status"] != "passed" for row in monitor_rows)
                 or postflight["status"] != "passed"
@@ -5297,9 +5481,18 @@ def _verify_run_ledger(
                 )
             if finalized["status"] == "failed":
                 finalized_reason = finalized["reason"]
-                if causal_policy_reason is not None:
+                if failed_monitor_reason is not None:
                     if finalized_reason not in {
-                        causal_policy_reason,
+                        failed_monitor_reason,
+                        *_POLICY_SUPERSEDING_REASONS,
+                    }:
+                        raise RealMLXExperimentError(
+                            "run ledger final reason contradicts failed policy gate"
+                        )
+                elif postflight["status"] == "failed":
+                    if finalized_reason not in {
+                        postflight["reason"],
+                        *_STARTED_TERMINAL_REASONS,
                         *_POLICY_SUPERSEDING_REASONS,
                     }:
                         raise RealMLXExperimentError(
@@ -5333,29 +5526,44 @@ def _verify_run_ledger(
                 },
                 "not-started postflight ledger row",
             )
-            if (
-                finalized["status"] != "failed"
-                or postflight["status"] != "not_started"
-                or not isinstance(postflight["reason"], str)
-                or postflight["reason"] != finalized["reason"]
-                or (
-                    preflight["status"] == "passed"
-                    and postflight["reason"] not in _NOT_STARTED_TERMINAL_REASONS
-                )
-                or (
-                    preflight["status"] == "failed"
-                    and postflight["reason"] != preflight["reason"]
-                )
-            ):
+            if finalized["status"] != "failed":
                 raise RealMLXExperimentError(
                     "run ledger not-started terminal state is invalid"
                 )
-            _verify_machine_observation(
-                postflight["observation"],
-                preflight=False,
-                status="not_started",
-                reason=postflight["reason"],
-            )
+            if preflight["status"] == "passed":
+                if finalized["reason"] not in _NOT_STARTED_TERMINAL_REASONS:
+                    raise RealMLXExperimentError(
+                        "run ledger not-started terminal state is invalid"
+                    )
+            elif finalized["reason"] != preflight["reason"]:
+                raise RealMLXExperimentError(
+                    "run ledger not-started terminal state is invalid"
+                )
+            if postflight["status"] == "not_started":
+                if (
+                    not isinstance(postflight["reason"], str)
+                    or postflight["reason"] != finalized["reason"]
+                ):
+                    raise RealMLXExperimentError(
+                        "run ledger not-started terminal state is invalid"
+                    )
+                _verify_machine_observation(
+                    postflight["observation"],
+                    preflight=False,
+                    status="not_started",
+                    reason=postflight["reason"],
+                )
+            elif postflight["status"] == "failed":
+                _verify_machine_observation(
+                    postflight["observation"],
+                    preflight=False,
+                    status="failed",
+                    reason=postflight["reason"],
+                )
+            else:
+                raise RealMLXExperimentError(
+                    "run ledger not-started terminal state is invalid"
+                )
         if finalized["status"] == "complete" and len(started_rows) != 1:
             raise RealMLXExperimentError(
                 "complete replicate must have exactly one started event"
@@ -5428,6 +5636,18 @@ def _verify_run_ledger(
                 raise RealMLXExperimentError(
                     "run ledger continued after an aborting terminal reason"
                 )
+    aborting_finalization_seen = False
+    for replicate_id in REPLICATE_IDS:
+        reason = final_rows[replicate_id]["reason"]
+        if (
+            reason == "supervisor_aborted_before_start"
+            and not aborting_finalization_seen
+        ):
+            raise RealMLXExperimentError(
+                "run ledger supervisor abort lacks an earlier aborting finalization"
+            )
+        if reason in _ABORT_LATER_REASONS:
+            aborting_finalization_seen = True
     finalized_elapsed_values = [
         _finite_elapsed(row["elapsed_seconds"], "finalized")
         for row in rows
@@ -5462,23 +5682,38 @@ def _verify_run_ledger(
     )
     complete = sum(row["status"] == "complete" for row in final_rows.values())
     eligible = complete >= 5
+    results_derivation_failed = (
+        run_finalized["status"] == "results_derivation_failed"
+        and run_finalized["reason"] == "results_derivation_failed"
+        and run_finalized["results_digest"] is None
+    )
     if (
         run_finalized["schema_version"] != "2"
         or run_finalized["event"] != "run-finalized"
-        or run_finalized["status"]
-        != ("aggregate_eligible" if eligible else "insufficient_complete_replicates")
-        or run_finalized["reason"]
-        != (None if eligible else "insufficient_complete_replicates")
         or run_finalized["complete_replicates"] != complete
+        or (results_derivation_failed and not eligible)
         or (
-            eligible
-            and re.fullmatch(
-                r"sha256:[0-9a-f]{64}",
-                str(run_finalized["results_digest"]),
+            not results_derivation_failed
+            and (
+                run_finalized["status"]
+                != (
+                    "aggregate_eligible"
+                    if eligible
+                    else "insufficient_complete_replicates"
+                )
+                or run_finalized["reason"]
+                != (None if eligible else "insufficient_complete_replicates")
+                or (
+                    eligible
+                    and re.fullmatch(
+                        r"sha256:[0-9a-f]{64}",
+                        str(run_finalized["results_digest"]),
+                    )
+                    is None
+                )
+                or (not eligible and run_finalized["results_digest"] is not None)
             )
-            is None
         )
-        or (not eligible and run_finalized["results_digest"] is not None)
     ):
         raise RealMLXExperimentError("run ledger completion is invalid")
     if (
@@ -5571,8 +5806,14 @@ def _finalize_run_ledger(
     sequence: int,
     complete_replicates: int,
     results_digest: str | None,
+    results_derivation_failed: bool = False,
 ) -> None:
     eligible = complete_replicates >= 5
+    status = (
+        "results_derivation_failed"
+        if results_derivation_failed
+        else "aggregate_eligible" if eligible else "insufficient_complete_replicates"
+    )
     _append_run_ledger(
         ledger,
         {
@@ -5580,10 +5821,12 @@ def _finalize_run_ledger(
             "sequence": sequence,
             "timestamp": _utc_now(),
             "event": "run-finalized",
-            "status": (
-                "aggregate_eligible" if eligible else "insufficient_complete_replicates"
+            "status": status,
+            "reason": (
+                "results_derivation_failed"
+                if results_derivation_failed
+                else None if eligible else "insufficient_complete_replicates"
             ),
-            "reason": None if eligible else "insufficient_complete_replicates",
             "complete_replicates": complete_replicates,
             "results_digest": results_digest,
         },
@@ -5784,7 +6027,6 @@ def run_all_replicates(
                 tempfile.TemporaryFile(mode="w+b") as stderr,
             ):
                 process: subprocess.Popen[bytes] | None = None
-                failed_monitor_reason: str | None = None
                 started_recorded = False
                 try:
                     process = subprocess.Popen(
@@ -5842,7 +6084,6 @@ def run_all_replicates(
                             )
                             ledger_sequence += 1
                             if monitor_reason is not None:
-                                failed_monitor_reason = monitor_reason
                                 reason = monitor_reason
                                 break
                             next_monitor = now + MONITOR_INTERVAL_SECONDS
@@ -5898,23 +6139,24 @@ def run_all_replicates(
                     ),
                 )
                 postflight_reason = _machine_policy_reason(postflight, preflight=False)
-                if (
-                    postflight_reason is not None
-                    and failed_monitor_reason is None
-                    and reason not in _POLICY_SUPERSEDING_REASONS
-                ):
+                if postflight_reason is not None and reason is None:
                     reason = postflight_reason
+                postflight_status = (
+                    "failed"
+                    if postflight_reason is not None
+                    else "not_started" if not started_recorded else "passed"
+                )
                 _ledger_event(
                     ledger,
                     sequence=ledger_sequence,
                     replicate_id=replicate_id,
                     event="postflight",
-                    status=(
-                        "not_started"
-                        if not started_recorded
-                        else "passed" if postflight_reason is None else "failed"
+                    status=postflight_status,
+                    reason=(
+                        postflight_reason
+                        if postflight_reason is not None
+                        else reason if not started_recorded else None
                     ),
-                    reason=reason if not started_recorded else postflight_reason,
                     observation=postflight,
                     elapsed_seconds=(
                         None
@@ -5932,9 +6174,12 @@ def run_all_replicates(
                         )
                     except (
                         CacheAuditBundleError,
+                        IndexError,
+                        KeyError,
                         OSError,
                         RealMLXExperimentError,
                         RuntimeError,
+                        TypeError,
                         ValueError,
                     ):
                         reason = "invalid_complete_artifact"
@@ -5956,13 +6201,14 @@ def run_all_replicates(
                 output_workspace,
                 excluded_roots={os.getpid()},
             )
+            postflight_reason = _machine_policy_reason(postflight, preflight=False)
             _ledger_event(
                 ledger,
                 sequence=ledger_sequence,
                 replicate_id=replicate_id,
                 event="postflight",
-                status="not_started",
-                reason=reason,
+                status="failed" if postflight_reason is not None else "not_started",
+                reason=postflight_reason if postflight_reason is not None else reason,
                 observation=postflight,
             )
             ledger_sequence += 1
@@ -5988,18 +6234,29 @@ def run_all_replicates(
         ledger_sequence += 1
 
     results_digest = None
+    results_derivation_failed = False
     if completed >= 5:
-        results = _public_results_from_private(attempts)
-        _verify_public_results(
-            results,
-            complete_replicate_ids=_complete_attempt_ids(attempts),
-        )
-        results_digest = _digest_bytes(_json_bytes(results))
+        try:
+            results = _public_results_from_private(attempts)
+            _verify_public_results(
+                results,
+                complete_replicate_ids=_complete_attempt_ids(attempts),
+            )
+            results_digest = _digest_bytes(_json_bytes(results))
+        except (
+            CacheAuditBundleError,
+            OSError,
+            RealMLXExperimentError,
+            RuntimeError,
+            ValueError,
+        ):
+            results_derivation_failed = True
     _finalize_run_ledger(
         ledger,
         sequence=ledger_sequence,
         complete_replicates=completed,
         results_digest=results_digest,
+        results_derivation_failed=results_derivation_failed,
     )
     _verify_run_ledger(
         ledger,
@@ -6008,7 +6265,7 @@ def run_all_replicates(
         expected_results_digest=results_digest,
     )
     return {
-        "run_all_complete": completed >= 5,
+        "run_all_complete": completed >= 5 and not results_derivation_failed,
         "attempted_replicates": len(REPLICATE_IDS),
         "complete_replicates": completed,
         "failed_replicates": len(REPLICATE_IDS) - completed,
@@ -6179,7 +6436,7 @@ def main(argv: list[str] | None = None) -> None:
         1
         if (
             args.command == "run-all"
-            and result["complete_replicates"] < 5
+            and not result["run_all_complete"]
             or args.command == "preflight"
             and not result["preflight_passed"]
         )
