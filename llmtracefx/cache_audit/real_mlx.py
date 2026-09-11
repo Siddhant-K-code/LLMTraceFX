@@ -12,7 +12,6 @@ import argparse
 import ctypes
 import gc
 import hashlib
-import importlib.util
 import json
 import math
 import os
@@ -114,7 +113,6 @@ RUNTIME_MIN_DISK_BYTES = 12 * 1024**3
 HEAVY_PROCESS_RSS_BYTES = 1 * 1024**3
 REQUIRED_HOST_CHIP = "Apple M5 Pro"
 REQUIRED_HOST_MEMORY_BYTES = 24 * 1024**3
-REQUIRED_LLMTRACEFX_VERSION = "1.0.0"
 REQUIRED_TRANSFORMERS_VERSION = "5.16.1"
 REQUIRED_SAFETENSORS_VERSION = "0.8.0"
 REQUIRED_NUMPY_VERSION = "2.2.6"
@@ -149,12 +147,17 @@ _INSTALLED_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _PROJECT_ROOT = Path(
     os.environ.get("LLMTRACEFX_TRUSTED_REPO_ROOT", str(_INSTALLED_PROJECT_ROOT))
 ).resolve()
+_TRUSTED_COMMIT = os.environ.get("LLMTRACEFX_TRUSTED_COMMIT")
+_TRUSTED_SNAPSHOT_ROOT = Path(
+    os.environ.get("LLMTRACEFX_TRUSTED_SNAPSHOT_ROOT", str(_INSTALLED_PROJECT_ROOT))
+).resolve()
 _TRUSTED_BOOTSTRAP = _PROJECT_ROOT / "scripts" / "run-real-mlx-cache-audit-trusted.py"
 DEFAULT_CONVERSION_SUMMARY = (
-    _PROJECT_ROOT / "llmtracefx/cache_audit/data/qwen3-4b-conversion-summary.json"
+    _TRUSTED_SNAPSHOT_ROOT
+    / "llmtracefx/cache_audit/data/qwen3-4b-conversion-summary.json"
 )
 EXPECTED_RUNTIME_PACKAGE_IDENTITIES = (
-    _PROJECT_ROOT
+    _TRUSTED_SNAPSHOT_ROOT
     / "llmtracefx/cache_audit/data/apple-silicon-python313-mlx-lm-runtime-v1.json"
 )
 _CASES = (
@@ -1642,6 +1645,15 @@ def _normalized_distribution_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
+def _runtime_identity_record_bytes(logical_path: str, size: int, digest: str) -> bytes:
+    return json.dumps(
+        {"path": logical_path, "sha256": digest, "size": size},
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+
+
 def _reject_site_startup_artifacts(trusted_root: Path) -> None:
     for path in trusted_root.rglob("*"):
         if path.is_symlink():
@@ -1658,18 +1670,27 @@ def _reject_site_startup_artifacts(trusted_root: Path) -> None:
             )
 
 
-def _validate_expected_distribution_uniqueness(trusted_root: Path) -> None:
-    counts: Counter[str] = Counter()
+def _validate_expected_distribution_uniqueness(
+    trusted_root: Path,
+) -> dict[str, metadata.Distribution]:
+    discovered: dict[str, list[metadata.Distribution]] = {}
     for distribution in metadata.distributions(path=[str(trusted_root)]):
         installed_name = distribution.metadata["Name"]
-        if isinstance(installed_name, str):
-            normalized = _normalized_distribution_name(installed_name)
-            if normalized in _RUNTIME_DISTRIBUTION_VERSIONS:
-                counts[normalized] += 1
-    if any(counts[name] != 1 for name in _RUNTIME_DISTRIBUTION_VERSIONS):
+        if not isinstance(installed_name, str):
+            raise RealMLXExperimentError(
+                "runtime package closure contains an unnamed distribution"
+            )
+        normalized = _normalized_distribution_name(installed_name)
+        discovered.setdefault(normalized, []).append(distribution)
+    if set(discovered) != set(_RUNTIME_DISTRIBUTION_VERSIONS):
         raise RealMLXExperimentError(
-            "runtime package closure has missing or duplicate distributions"
+            "runtime package closure has missing or unexpected distributions"
         )
+    if any(len(discovered[name]) != 1 for name in _RUNTIME_DISTRIBUTION_VERSIONS):
+        raise RealMLXExperimentError(
+            "runtime package closure has duplicate distributions"
+        )
+    return {name: discovered[name][0] for name in _RUNTIME_DISTRIBUTION_VERSIONS}
 
 
 def _distribution_tree_identity(
@@ -1679,13 +1700,15 @@ def _distribution_tree_identity(
     trusted_root: Path,
     trusted_scripts_root: Path,
     output_workspace: Path,
-) -> tuple[int, int, str]:
+) -> tuple[int, int, str, set[str], set[str]]:
     declared = distribution.files
     if declared is None or not declared:
         raise RealMLXExperimentError(
             f"{distribution_name} runtime distribution files are unavailable"
         )
     files: list[tuple[str, Path]] = []
+    owned_files: set[str] = set()
+    generated_records: set[str] = set()
     seen: set[str] = set()
     for item in declared:
         declared_path = Path(str(item))
@@ -1707,6 +1730,12 @@ def _distribution_tree_identity(
             )
         relative = located.relative_to(trusted_root)
         if relative.name == "RECORD" and relative.parent.name.endswith(".dist-info"):
+            relative_name = relative.as_posix()
+            if relative_name in generated_records:
+                raise RealMLXExperimentError(
+                    f"{distribution_name} runtime distribution declares duplicate RECORD"
+                )
+            generated_records.add(relative_name)
             continue
         try:
             resolved = located.resolve(strict=True)
@@ -1722,12 +1751,14 @@ def _distribution_tree_identity(
             raise RealMLXExperimentError(
                 f"{distribution_name} runtime distribution file is out of root"
             )
-        logical_path = "site-packages/" + resolved.relative_to(trusted_root).as_posix()
-        if logical_path in seen or _is_relative_to(resolved, output_workspace.parent):
+        relative_name = resolved.relative_to(trusted_root).as_posix()
+        logical_path = "site-packages/" + relative_name
+        if logical_path in seen or _is_relative_to(resolved, output_workspace):
             raise RealMLXExperimentError(
                 f"{distribution_name} runtime distribution contains an unsafe file"
             )
         seen.add(logical_path)
+        owned_files.add(relative_name)
         files.append((logical_path, resolved))
 
     tree_digest = hashlib.sha256()
@@ -1735,29 +1766,63 @@ def _distribution_tree_identity(
     for logical_path, path in sorted(files):
         size, digest = _regular_file_identity(path)
         total_bytes += size
-        tree_digest.update(
-            _json_bytes(
-                {
-                    "path": logical_path,
-                    "size": size,
-                    "sha256": digest,
-                }
-            )
-        )
+        tree_digest.update(_runtime_identity_record_bytes(logical_path, size, digest))
         tree_digest.update(b"\n")
-    return len(files), total_bytes, "sha256:" + tree_digest.hexdigest()
+    return (
+        len(files),
+        total_bytes,
+        "sha256:" + tree_digest.hexdigest(),
+        owned_files,
+        generated_records,
+    )
+
+
+def _reject_unowned_site_files(
+    trusted_root: Path, owned_files: set[str], generated_records: set[str]
+) -> None:
+    allowed = owned_files | generated_records
+    for path in trusted_root.rglob("*"):
+        if path.is_symlink():
+            raise RealMLXExperimentError(
+                "runtime site-packages contains an unsafe symlink"
+            )
+        mode = path.lstat().st_mode
+        if stat.S_ISDIR(mode):
+            continue
+        if not stat.S_ISREG(mode):
+            raise RealMLXExperimentError(
+                "runtime site-packages contains a non-regular file"
+            )
+        relative = path.relative_to(trusted_root).as_posix()
+        if relative not in allowed:
+            raise RealMLXExperimentError(
+                f"runtime site-packages contains unowned regular file: {relative}"
+            )
 
 
 def _compute_runtime_package_identity(
     output_workspace: Path,
 ) -> dict[str, dict[str, str | int]]:
     site_roots = _trusted_site_roots()
+    distributions: dict[str, metadata.Distribution] = {}
     for _, root, _ in site_roots:
         _reject_site_startup_artifacts(root)
-        _validate_expected_distribution_uniqueness(root)
+        scripts_root = next(
+            scripts for _label, candidate, scripts in site_roots if candidate == root
+        )
+        venv_root = scripts_root.parent
+        if _is_relative_to(venv_root, output_workspace) or _is_relative_to(
+            output_workspace, venv_root
+        ):
+            raise RealMLXExperimentError(
+                "runtime environment and output workspace must not overlap"
+            )
+        distributions.update(_validate_expected_distribution_uniqueness(root))
     identities: dict[str, dict[str, str | int]] = {}
+    owned_by_root: dict[Path, set[str]] = {root: set() for _, root, _ in site_roots}
+    records_by_root: dict[Path, set[str]] = {root: set() for _, root, _ in site_roots}
     for distribution_name, required_version in _RUNTIME_DISTRIBUTION_VERSIONS.items():
-        distribution = _runtime_distribution(distribution_name)
+        distribution = distributions[distribution_name]
         installed_name = distribution.metadata["Name"]
         if (
             not isinstance(installed_name, str)
@@ -1788,13 +1853,29 @@ def _compute_runtime_package_identity(
                 f"{distribution_name} runtime distribution root is untrusted"
             )
         trusted_label, trusted_root, trusted_scripts_root = trusted
-        file_count, total_bytes, tree_sha256 = _distribution_tree_identity(
+        (
+            file_count,
+            total_bytes,
+            tree_sha256,
+            owned_files,
+            generated_records,
+        ) = _distribution_tree_identity(
             distribution,
             distribution_name=distribution_name,
             trusted_root=trusted_root,
             trusted_scripts_root=trusted_scripts_root,
             output_workspace=output_workspace,
         )
+        if owned_by_root[trusted_root].intersection(owned_files):
+            raise RealMLXExperimentError(
+                "runtime distributions claim the same package file"
+            )
+        if records_by_root[trusted_root].intersection(generated_records):
+            raise RealMLXExperimentError(
+                "runtime distributions claim the same RECORD file"
+            )
+        owned_by_root[trusted_root].update(owned_files)
+        records_by_root[trusted_root].update(generated_records)
         identities[distribution_name] = {
             "distribution": distribution_name,
             "version": required_version,
@@ -1803,6 +1884,8 @@ def _compute_runtime_package_identity(
             "total_bytes": total_bytes,
             "tree_sha256": tree_sha256,
         }
+    for _, root, _ in site_roots:
+        _reject_unowned_site_files(root, owned_by_root[root], records_by_root[root])
     return identities
 
 
@@ -4733,19 +4816,16 @@ def _reject_import_shadows(output_workspace: Path) -> None:
 
 
 def _validate_probe_module_origin(output_workspace: Path) -> None:
-    spec = importlib.util.find_spec("llmtracefx.cache_audit.real_mlx")
-    if spec is None or spec.origin is None:
-        raise RealMLXExperimentError("real_mlx module origin is unavailable")
     try:
-        origin = Path(spec.origin).resolve(strict=True)
-        expected = Path(__file__).resolve(strict=True)
+        origin = Path(__file__).resolve(strict=True)
+        snapshot_root = _TRUSTED_SNAPSHOT_ROOT.resolve(strict=True)
     except OSError as exc:
         raise RealMLXExperimentError("real_mlx module origin is unavailable") from exc
     if (
-        origin != expected
-        or not _is_relative_to(origin, _INSTALLED_PROJECT_ROOT)
+        not _is_relative_to(origin, snapshot_root)
         or _is_relative_to(origin, output_workspace)
-        or _distribution_version("llmtracefx") != REQUIRED_LLMTRACEFX_VERSION
+        or os.environ.get("LLMTRACEFX_TRUSTED_BOOTSTRAP") != "1"
+        or _TRUSTED_COMMIT is None
     ):
         raise RealMLXExperimentError("real_mlx module origin is untrusted")
 
@@ -4816,15 +4896,24 @@ def _run_exact_sandbox_probe(
 ) -> dict[str, dict[str, str | int]]:
     cwd = output_workspace.parent
     _ensure_non_repository_cwd(cwd)
+    private_temp_root = (
+        output_workspace.parent / f".{output_workspace.name}.preflight-tmp"
+    )
+    if private_temp_root.exists() or private_temp_root.is_symlink():
+        raise RealMLXExperimentError(
+            "PREFLIGHT_VALIDATION_FAILED: preflight temporary directory already exists"
+        )
     command = _sandbox_probe_command(
         output_workspace=output_workspace,
         expected_commit=expected_commit,
         expected_package_digest=expected_package_digest,
     )
-    private_temp_root = (
-        output_workspace.parent / f".{output_workspace.name}.preflight-tmp"
-    )
-    private_temp_root.mkdir(mode=0o700)
+    try:
+        private_temp_root.mkdir(mode=0o700)
+    except OSError as exc:
+        raise RealMLXExperimentError(
+            "PREFLIGHT_VALIDATION_FAILED: preflight temporary directory is unavailable"
+        ) from exc
     try:
         result = subprocess.run(
             command,
@@ -4867,31 +4956,13 @@ def _run_exact_sandbox_probe(
 def _validate_supervisor_source(expected_commit: str) -> str:
     if re.fullmatch(r"[0-9a-f]{40}", expected_commit) is None:
         raise RealMLXExperimentError("expected commit must be a full lowercase SHA")
+    if os.environ.get("LLMTRACEFX_TRUSTED_BOOTSTRAP") == "1" and (
+        _TRUSTED_COMMIT != expected_commit
+        or _TRUSTED_SNAPSHOT_ROOT != _INSTALLED_PROJECT_ROOT
+    ):
+        raise RealMLXExperimentError("trusted source snapshot binding is invalid")
     _reject_import_shadows(_PROJECT_ROOT / ".source-validation-output")
-    if _PROJECT_ROOT == _INSTALLED_PROJECT_ROOT:
-        commit, commit_at = source_commit()
-    else:
-        commit_result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(_PROJECT_ROOT),
-                "show",
-                "-s",
-                "--format=%H%n%cI",
-                "HEAD",
-            ],
-            capture_output=True,
-            check=False,
-            text=True,
-            env={**os.environ, "GIT_NO_LAZY_FETCH": "1"},
-        )
-        lines = commit_result.stdout.strip().splitlines()
-        commit, commit_at = (
-            (lines[0], lines[1])
-            if commit_result.returncode == 0 and len(lines) == 2
-            else (None, None)
-        )
+    commit, commit_at = source_commit()
     if commit != expected_commit or commit_at is None:
         raise RealMLXExperimentError("current Git HEAD does not match expected commit")
     status = subprocess.run(
@@ -4906,6 +4977,16 @@ def _validate_supervisor_source(expected_commit: str) -> str:
         capture_output=True,
         check=False,
         text=True,
+        env={
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "HOME": "/dev/null",
+            "LC_ALL": "C",
+            "LANG": "C",
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+        },
     )
     if status.returncode != 0 or status.stdout:
         raise RealMLXExperimentError("tracked worktree must be clean")
@@ -6512,6 +6593,7 @@ def _parser() -> argparse.ArgumentParser:
     compile_parser = commands.add_parser("compile")
     compile_parser.add_argument("--model-dir", type=Path, required=True)
     compile_parser.add_argument("--output", type=Path, required=True)
+    compile_parser.add_argument("--expected-commit", required=True)
     compile_parser.add_argument(
         "--conversion-summary", type=Path, default=DEFAULT_CONVERSION_SUMMARY
     )
@@ -6519,6 +6601,7 @@ def _parser() -> argparse.ArgumentParser:
     calibrate_parser.add_argument("--workload", type=Path, required=True)
     calibrate_parser.add_argument("--model-dir", type=Path, required=True)
     calibrate_parser.add_argument("--output", type=Path, required=True)
+    calibrate_parser.add_argument("--expected-commit", required=True)
     calibrate_parser.add_argument(
         "--conversion-summary", type=Path, default=DEFAULT_CONVERSION_SUMMARY
     )
@@ -6562,18 +6645,29 @@ def _parser() -> argparse.ArgumentParser:
     aggregate_parser = commands.add_parser("aggregate")
     aggregate_parser.add_argument("--run-workspace", type=Path, required=True)
     aggregate_parser.add_argument("--output-dir", type=Path, required=True)
+    aggregate_parser.add_argument("--expected-commit", required=True)
     sanitize_parser = commands.add_parser("sanitize")
     sanitize_parser.add_argument("aggregate", type=Path)
     sanitize_parser.add_argument("--output-dir", type=Path, required=True)
+    sanitize_parser.add_argument("--expected-commit", required=True)
     verify_parser = commands.add_parser("verify")
     verify_parser.add_argument("aggregate", type=Path)
+    verify_parser.add_argument("--expected-commit", required=True)
     return parser
 
 
 def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
-    if args.command in {"run-all", "preflight", "replicate", "sandbox-probe"} and (
-        os.environ.get("LLMTRACEFX_TRUSTED_BOOTSTRAP") != "1"
-    ):
+    if args.command in {
+        "aggregate",
+        "calibrate",
+        "compile",
+        "preflight",
+        "replicate",
+        "run-all",
+        "sandbox-probe",
+        "sanitize",
+        "verify",
+    } and (os.environ.get("LLMTRACEFX_TRUSTED_BOOTSTRAP") != "1"):
         raise RealMLXExperimentError(
             "canonical execution requires the trusted Python -I -S bootstrap"
         )

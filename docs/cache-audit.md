@@ -255,7 +255,15 @@ canonical command must instead use the committed standard-library bootstrap as
 /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py ...`. The bootstrap
 derives the one allowed `site-packages` root from that interpreter, verifies
 the complete frozen runtime identity before importing any runtime package, and
-keeps site startup disabled.
+keeps site startup disabled. `compile`, `calibrate`, `preflight`, `run-all`,
+`replicate`, `aggregate`, `sanitize`, and `verify` all require this wrapper and
+an exact `--expected-commit`; only capability inspection and help may use the
+console entry point directly.
+The wrapper verifies the original checkout, then imports project code only
+from a private, read-only `git archive` snapshot outside both the repository
+and output. The dependencies-only venv and output workspace must not contain
+one another. They may be siblings under a common parent; only package files
+actually beneath the output workspace are rejected.
 It never downloads a model. The pinned artifact is the eight-file local
 self-conversion of `Qwen/Qwen3-4B` revision
 `1cfa9a7208912126459214e8b04321603b3df60c` (Apache-2.0), produced with
@@ -292,10 +300,12 @@ is the canonical execution path:
 
 ```console
 EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py \
-  compile --model-dir MODEL --output workload.json
+  compile --model-dir MODEL --output workload.json \
+  --expected-commit FULL_40_CHARACTER_GIT_SHA
 EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py \
   calibrate --model-dir MODEL \
-  --workload workload.json --output calibrated.json
+  --workload workload.json --output calibrated.json \
+  --expected-commit FULL_40_CHARACTER_GIT_SHA
 EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py \
   run-all --model-dir MODEL \
   --workload calibrated.json --expected-commit FULL_40_CHARACTER_GIT_SHA \
@@ -318,8 +328,11 @@ allowlist shipped in `llmtracefx/cache_audit/data/`. The allowlist itself is
 bound by a SHA-256 constant in code and records only distribution, exact
 version, trusted-root label, regular-file count, total bytes, and deterministic
 tree digest—never absolute paths. Generated scripts outside site-packages are excluded, so
-the identity is portable across external-venv paths. Missing or symlinked
-package files, duplicate normalized expected distributions, `.pth`,
+the identity is portable across external-venv paths. The discovered normalized distribution names must equal the frozen closure
+exactly. The union of their declared regular files (plus only their generated
+`.dist-info/RECORD` files) must equal every regular file in `site-packages`.
+Missing, unowned, or symlinked package files, duplicate or unexpected
+distributions, `.pth`,
 `sitecustomize.py`, `usercustomize.py`, `__pycache__`, `.pyc`, and `.pyo` are
 rejected before import. The probe also verifies source/package identity, current
 process RSS, system swap, and system memory pressure. It then applies one global
@@ -396,11 +409,14 @@ Aggregation and sanitization remain explicit:
 
 ```console
 PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py aggregate \
-  --run-workspace real-mlx-run --output-dir private-aggregate
-PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py verify private-aggregate
+  --run-workspace real-mlx-run --output-dir private-aggregate \
+  --expected-commit FULL_40_CHARACTER_GIT_SHA
+PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py verify private-aggregate \
+  --expected-commit FULL_40_CHARACTER_GIT_SHA
 PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py sanitize private-aggregate \
-  --output-dir public-aggregate
-PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py verify public-aggregate
+  --output-dir public-aggregate --expected-commit FULL_40_CHARACTER_GIT_SHA
+PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py verify public-aggregate \
+  --expected-commit FULL_40_CHARACTER_GIT_SHA
 ```
 
 Aggregation accepts only the complete three-entry run workspace. It verifies

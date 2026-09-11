@@ -372,14 +372,14 @@ else:
     assert result.returncode == 0, result.stderr
 
 
-def test_runtime_package_identity_hashes_complete_safe_trees(
+def test_external_venv_output_siblings_hash_complete_safe_trees(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    site_packages = tmp_path / "site-packages"
-    scripts = tmp_path / "bin"
+    site_packages = tmp_path / "venv/lib/python3.13/site-packages"
+    scripts = tmp_path / "venv/bin"
     output_parent = tmp_path / "output"
-    site_packages.mkdir()
-    scripts.mkdir()
+    site_packages.mkdir(parents=True)
+    scripts.mkdir(parents=True)
     output_parent.mkdir()
     distributions: dict[str, Any] = {}
 
@@ -394,7 +394,7 @@ def test_runtime_package_identity_hashes_complete_safe_trees(
                 Path(package_name) / "data" / "runtime.json",
                 Path(f"{package_name}-1.dist-info") / "METADATA",
                 Path(f"{package_name}-1.dist-info") / "RECORD",
-                Path("../bin") / f"{package_name}-tool",
+                Path("../../../bin") / f"{package_name}-tool",
             ]
 
         def locate_file(self, item: object) -> Path:
@@ -432,11 +432,12 @@ def test_runtime_package_identity_hashes_complete_safe_trees(
     )
     monkeypatch.setattr(
         real_mlx_module,
-        "_runtime_distribution",
-        lambda name: distributions[name],
+        "_validate_expected_distribution_uniqueness",
+        lambda _root: distributions,
     )
 
     output_workspace = output_parent / "run"
+    assert output_workspace.parent.parent == scripts.parent.parent
     identity = real_mlx_module._compute_runtime_package_identity(output_workspace)
     assert all(
         entry["file_count"] == 4
@@ -445,6 +446,10 @@ def test_runtime_package_identity_hashes_complete_safe_trees(
         and str(entry["tree_sha256"]).startswith("sha256:")
         for entry in identity.values()
     )
+    with pytest.raises(RealMLXExperimentError, match="must not overlap"):
+        real_mlx_module._compute_runtime_package_identity(
+            scripts.parent / "nested-output"
+        )
     runtime_data = site_packages / "mlx_lm" / "data" / "runtime.json"
     runtime_data.write_text('{"runtime":false}\n', encoding="ascii")
     tampered = real_mlx_module._compute_runtime_package_identity(output_workspace)
@@ -462,6 +467,15 @@ def test_runtime_package_identity_hashes_complete_safe_trees(
     (duplicate / "METADATA").write_text(
         "Name: mlx_lm\nVersion: 0.31.3\n", encoding="ascii"
     )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_validate_expected_distribution_uniqueness",
+        lambda _root: (_ for _ in ()).throw(
+            RealMLXExperimentError(
+                "runtime package closure has duplicate distributions"
+            )
+        ),
+    )
     with pytest.raises(RealMLXExperimentError, match="duplicate distributions"):
         real_mlx_module._compute_runtime_package_identity(output_workspace)
 
@@ -469,8 +483,8 @@ def test_runtime_package_identity_hashes_complete_safe_trees(
 def test_runtime_package_identity_rejects_missing_and_symlinked_tree_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    site_packages = tmp_path / "site-packages"
-    scripts = tmp_path / "bin"
+    site_packages = tmp_path / "venv/lib/python3.13/site-packages"
+    scripts = tmp_path / "venv/bin"
     output_parent = tmp_path / "output"
     package = site_packages / "mlx"
     package.mkdir(parents=True)
@@ -494,18 +508,14 @@ def test_runtime_package_identity_rejects_missing_and_symlinked_tree_files(
     )
     monkeypatch.setattr(
         real_mlx_module,
-        "_runtime_distribution",
-        lambda _name: FakeDistribution(),
+        "_validate_expected_distribution_uniqueness",
+        lambda _root: {"mlx": FakeDistribution()},
     )
     monkeypatch.setattr(
         real_mlx_module,
         "_RUNTIME_DISTRIBUTION_VERSIONS",
         {"mlx": real_mlx_module.REQUIRED_MLX_VERSION},
     )
-    monkeypatch.setattr(
-        real_mlx_module, "_validate_expected_distribution_uniqueness", lambda _p: None
-    )
-
     with pytest.raises(RealMLXExperimentError, match="missing file"):
         real_mlx_module._compute_runtime_package_identity(output_parent / "run")
 
@@ -2796,6 +2806,28 @@ def test_sandbox_probe_is_isolated_and_uses_non_repository_cwd(
         "sandbox-probe",
     ]
     assert real_mlx_module.SANDBOX_POLICY in command
+
+
+def test_sandbox_probe_refuses_leftover_temp_without_deleting_it(
+    tmp_path: Path,
+) -> None:
+    output_workspace = tmp_path / "run"
+    leftover = tmp_path / ".run.preflight-tmp"
+    leftover.mkdir()
+    marker = leftover / "preserve.txt"
+    marker.write_text("preserve", encoding="ascii")
+
+    with pytest.raises(
+        RealMLXExperimentError,
+        match="PREFLIGHT_VALIDATION_FAILED.*already exists",
+    ):
+        real_mlx_module._run_exact_sandbox_probe(
+            output_workspace=output_workspace,
+            expected_commit="a" * 40,
+            expected_package_digest="sha256:" + "b" * 64,
+        )
+
+    assert marker.read_text(encoding="ascii") == "preserve"
 
 
 def test_preflight_refusal_writes_only_explicit_receipt(

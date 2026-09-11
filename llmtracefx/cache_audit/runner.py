@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from collections.abc import Sequence
 from dataclasses import replace
@@ -36,15 +37,45 @@ def _run_id(backend: str, requests: Sequence[RequestSpec], seed: int) -> str:
 def source_commit() -> tuple[str | None, str | None]:
     """Return the repository commit and its timestamp, when available."""
 
-    repository = Path(__file__).resolve().parents[2]
+    repository = Path(
+        os.environ.get(
+            "LLMTRACEFX_TRUSTED_REPO_ROOT",
+            str(Path(__file__).resolve().parents[2]),
+        )
+    ).resolve()
+    trusted_commit = os.environ.get("LLMTRACEFX_TRUSTED_COMMIT")
+    environment = {
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "HOME": "/dev/null",
+        "LC_ALL": "C",
+        "LANG": "C",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+    }
     result = subprocess.run(
-        ["git", "-C", str(repository), "show", "-s", "--format=%H%n%cI", "HEAD"],
+        [
+            "git",
+            "-C",
+            str(repository),
+            "show",
+            "-s",
+            "--format=%H%n%cI",
+            trusted_commit or "HEAD",
+        ],
         capture_output=True,
         check=False,
         text=True,
+        env=environment,
     )
     lines = result.stdout.splitlines()
-    if result.returncode != 0 or len(lines) != 2 or len(lines[0]) != 40:
+    if (
+        result.returncode != 0
+        or len(lines) != 2
+        or len(lines[0]) != 40
+        or (trusted_commit is not None and lines[0] != trusted_commit)
+    ):
         return None, None
     return lines[0], lines[1]
 
