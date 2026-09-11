@@ -33,10 +33,12 @@ from llmtracefx.cache_audit.adapters.mlx import (
     write_saved_cache_sidecar,
 )
 from llmtracefx.cache_audit.expected import MLXCacheOracle
+from llmtracefx.cache_audit.report import build_summary
 from llmtracefx.cache_audit.runner import run_audit
 from llmtracefx.cache_audit.schema import (
     CacheConfig,
     EvidenceBasis,
+    PairRole,
     RequestSpec,
     ScenarioKind,
     Verdict,
@@ -599,6 +601,7 @@ def test_memory_and_timing_evidence_are_observed_and_wall_clock() -> None:
     assert record.cache_before.entry_count.value == 0
     assert record.cache_after is not None
     assert record.cache_after.entry_count.value == 1
+    assert record.cache_after.cache_classes.value == ["FakeKVCache"]
     assert record.cache_after.complete is False
 
     assert record.timing.total is not None
@@ -620,6 +623,43 @@ def test_memory_and_timing_evidence_are_observed_and_wall_clock() -> None:
         record.reuse.engine_created_tokens.basis is EvidenceBasis.INDEPENDENTLY_DERIVED
     )
     assert record.reuse.eviction_observed.value is None
+
+
+def test_pair_timing_exclusions_are_fixed_and_summary_compatible() -> None:
+    adapter = _adapter()
+    control, treatment = adapter.run(
+        [
+            replace(
+                _spec("cold", (1, 2, 3), order=0),
+                pair_id="cold-exact",
+                pair_role=PairRole.CONTROL,
+            ),
+            replace(
+                _spec(
+                    "exact",
+                    (1, 2, 3),
+                    order=1,
+                    scenario=ScenarioKind.IDENTICAL_PREFIX,
+                ),
+                pair_id="cold-exact",
+                pair_role=PairRole.TREATMENT,
+            ),
+        ]
+    )
+
+    assert control.timing.exclusions == treatment.timing.exclusions
+    assert not any(
+        exclusion.startswith("in_process_generation_total=")
+        for exclusion in control.timing.exclusions
+    )
+    pair = build_summary(
+        [control, treatment],
+        Mock(run_id="run"),
+    )[
+        "paired_deltas"
+    ][0]
+    assert pair["compatible"] is True
+    assert "timing_exclusions_mismatch" not in pair["eligibility_reasons"]
 
 
 def test_stage_observer_receives_named_allocator_boundaries() -> None:

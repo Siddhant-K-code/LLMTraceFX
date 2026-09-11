@@ -298,26 +298,34 @@ unavailable macOS network sandbox. It creates a workspace containing exactly
 `attempts/`, `private-artifacts/`, and `run-ledger.jsonl`. The append-only
 ledger binds the expected commit, package-source digest, calibrated workload
 and lane digests, model digest, conversion-summary digest, exact sandbox-policy
-digest, and all six immutable replicate IDs. Every finalized row binds the
-status, safe reason code, and deterministic digest of its final attempt
-directory. Each child receives the expected commit and revalidates the clean
-source/package tree before loading the model and immediately before finalizing
-evidence. The parent repeats that validation before and after every child.
+digest, and all six immutable replicate IDs. Every replicate must follow one
+canonical lifecycle: planned, preflight, optional started plus passed monitors,
+postflight, then finalized. Complete replicates have exactly one started row
+with a distinct privacy-safe child-instance digest. Failed-before-start and
+failed-after-start transitions have separate schemas and reason rules. Every
+finalized row binds the status, safe reason code, and deterministic digest of
+its final attempt directory. Each child receives the expected commit and
+revalidates the clean source/package tree before loading the model and
+immediately before finalizing evidence. The parent repeats that validation
+before and after every child.
 
 Each replicate loads the model once, then performs exactly one untimed,
-discarded, fresh-cache base-prompt warm-up per lane. Warm-ups must reproduce
-the corresponding frozen calibration output and emit no request, stage, or
-bundle evidence; their adapters and caches are torn down before measured
-blocks. Six deterministic full 14-block permutations interleave the lanes,
+discarded, direct runtime generation against a fresh cache per lane. Warm-ups
+must reproduce the corresponding frozen calibration output, decode to
+`CACHE_OK`, and emit no baseline, insertion, request, stage, or bundle
+evidence; their caches and runtimes are torn down before measured blocks. Six
+deterministic full 14-block permutations interleave the lanes,
 spread the six first positions, and avoid fixing the interior/allocation-step
-pair in one adjacent order. The supervisor launches each ID once in a fresh,
-sequential, network-denied child process. Provider credentials are removed and
-Hugging Face, Transformers, datasets, and W&B are forced offline. Preflight requires the
-Apple M5 Pro/24 GiB host contract, at least 25% `vm_stat` availability, no more
-than 12 GiB swap, at least 20 GiB free disk, and no other Python, MLX, Ollama,
-or llama process using at least 1 GiB RSS. The two-second runtime monitor uses
-15%, 14 GiB, and 12 GiB limits respectively, with 12-minute per-child and
-90-minute total monotonic deadlines. Failed IDs retain bounded private logs and
+pair in one adjacent order. The supervisor launches each ID once in a fresh, sequential, network-denied
+child process. Its environment is rebuilt from a minimal explicit allowlist:
+a fixed system `PATH`, offline flags, and a fresh instance ID. Parent `HOME`,
+`PYTHONPATH`, `DYLD*`, cloud/auth/token-file variables, and unknown variables
+are never inherited. Preflight requires the Apple M5 Pro/24 GiB host contract,
+at least 25% `vm_stat` availability, no more than 12 GiB swap, at least 20 GiB
+free disk, and no other Python, MLX, Ollama, or llama process using at least
+1 GiB RSS. The two-second runtime monitor uses 15%, 14 GiB, and 12 GiB limits
+respectively, with 12-minute per-child and 90-minute total monotonic deadlines.
+Failed IDs retain bounded private logs and
 partial artifacts in `private-artifacts/`, receive exactly one failed marker,
 and are never replaced. Failed process-group cleanup or a surviving orphan
 aborts all later launches while still finalizing every planned ID exactly once.
@@ -334,10 +342,13 @@ PINNED_ENV/bin/llmtracefx-real-mlx-cache-audit sanitize private-aggregate \
 PINNED_ENV/bin/llmtracefx-real-mlx-cache-audit verify public-aggregate
 ```
 
-Aggregation accepts only the complete three-entry run workspace. It copies the
-six attempt directories but never copies `private-artifacts/`. Both private and
-public aggregates contain a privacy-safe `run-ledger.jsonl` and a strict
-`results.json`; both files are covered by the recursive `SHA256SUMS`.
+Aggregation accepts only the complete three-entry run workspace. It verifies
+each standard source bundle, then reproduces nested copies through the
+data-only bundle path without `evidence_bundle.py`; neither private nor public
+aggregates may contain scripts or executable files. It never copies
+`private-artifacts/`. Both aggregates retain every privacy-safe lifecycle row
+in `run-ledger.jsonl` and contain a strict `results.json`; both files are
+covered by the recursive `SHA256SUMS`.
 `results.json` is derived from verified private records before nested bundle
 redaction and preserves per-lane/case paired reuse, engine verdict, timing,
 memory-level, output-count, identity, and correctness observations plus
@@ -362,10 +373,14 @@ runtime cache fetch and generation clocks. TTFT ends when the yielded response
 token reaches the client iterator; process-wide synchronization is retained
 only for total completion. Oracle work, stage collection, insertion, and
 baseline generation are excluded. Paired latency comparability additionally
-requires equal generated output-token counts in both arms. Process RSS, system
-swap, and system-memory pressure remain explicitly scoped control/treatment
-level observations only; these global or monotonic gauges are not interpreted
-as causal deltas.
+requires adjacent requests and equal generated output-token counts in both
+arms. Eviction control/revisit pairs are always incomparable because pressure
+requests intervene, while reuse and eviction facts remain reportable.
+Allocator active/cache, process RSS, system swap, and system-memory pressure
+remain explicitly scoped control/treatment level observations only and are not
+causal deltas. Only the per-request-reset allocator peak has a paired
+difference. The two-second monitoring and stage-observation subprocesses can
+perturb host scheduling, but remain outside client timing clocks.
 
 Article claims may use only a verified compatible claim-matrix cell and its raw
 paired observations. A hit alone never proves saved work or latency; missing
@@ -376,6 +391,7 @@ or output agreement.
 
 The fixed interpretation limits are one observation per cell per replicate,
 descriptive medians and ranges only, possible schedule/order and thermal
-effects, no causal process/system-memory deltas, no block-cache interpretation
-of allocation step 256, token-granular MLX cache behavior, and no power,
-energy, kernel, or utilization claims.
+effects, non-causal allocator-active/cache, RSS, swap, and pressure levels,
+monitoring/stage-observation scheduling perturbation, no block-cache
+interpretation of allocation step 256, token-granular MLX cache behavior, and
+no power, energy, kernel, or utilization claims.

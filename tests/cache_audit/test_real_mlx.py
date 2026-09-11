@@ -56,12 +56,14 @@ from llmtracefx.cache_audit.real_mlx import (
 from llmtracefx.cache_audit.runner import run_audit
 from llmtracefx.cache_audit.schema import (
     CacheConfig,
+    EvidenceBasis,
     PublicationMode,
     RequestSpec,
     Verdict,
 )
 from llmtracefx.optimizer.lab.qwen3_8b.conversion import conversion_manifest_hash
 from llmtracefx.optimizer.lab.qwen3_8b.conversion_manifest import ConversionManifest
+from llmtracefx.optimizer.schema import Measurement, MetricProvenance
 
 
 class FakeTokenizer:
@@ -115,6 +117,57 @@ class MLXIdentityReference:
         return [
             replace(
                 record,
+                timing=replace(
+                    record.timing,
+                    client_ttft=Measurement(
+                        value=0.01,
+                        unit="s",
+                        provenance=MetricProvenance.MEASURED_WALL_CLOCK,
+                    ),
+                    in_process_first_token=Measurement(
+                        value=0.009,
+                        unit="s",
+                        provenance=MetricProvenance.MEASURED_WALL_CLOCK,
+                    ),
+                    total=Measurement(
+                        value=0.02,
+                        unit="s",
+                        provenance=MetricProvenance.MEASURED_WALL_CLOCK,
+                    ),
+                    scope="runtime_cache_fetch_and_mlx_lm_stream_generate",
+                    exclusions=(
+                        "prompt_cache_insertion",
+                        "no_cache_baseline",
+                        "harness_inspection_between_fetch_and_generation",
+                    ),
+                ),
+                memory=replace(
+                    record.memory,
+                    runtime_active_bytes=replace(
+                        record.memory.runtime_active_bytes,
+                        value=100 + record.spec.order,
+                        basis=EvidenceBasis.OBSERVED,
+                        source="mlx.get_active_memory",
+                        scope="process_global_allocator_gauge",
+                        limitations=(),
+                    ),
+                    runtime_peak_bytes=replace(
+                        record.memory.runtime_peak_bytes,
+                        value=200 + record.spec.order,
+                        basis=EvidenceBasis.OBSERVED,
+                        source="mlx.get_peak_memory",
+                        scope="process_global_allocator_gauge_since_reset",
+                        limitations=(),
+                    ),
+                    allocator_cache_bytes=replace(
+                        record.memory.allocator_cache_bytes,
+                        value=50 + record.spec.order,
+                        basis=EvidenceBasis.OBSERVED,
+                        source="mlx.get_cache_memory",
+                        scope="process_global_allocator_gauge",
+                        limitations=(),
+                    ),
+                ),
                 output=replace(
                     record.output,
                     output_token_ids=record.output.output_token_ids[:3],
@@ -584,38 +637,66 @@ def test_lifecycle_adapter_batches_each_block_before_baselines(
     ]
 
 
-def test_replicate_warmup_uses_one_fresh_discarded_adapter_per_lane(
+def test_replicate_warmup_uses_one_direct_generation_per_lane(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workload = _calibrated_workload()
     creations = 0
-    request_ids: list[str] = []
+    generated_inputs: list[tuple[int, ...]] = []
+    cache_creations = 0
     teardowns = 0
 
-    def factory() -> Any:
-        nonlocal creations
-        creations += 1
-        adapter = MLXIdentityReference()
-        original = adapter.run
+    class WarmupRuntime:
+        def __init__(self, **_kwargs: Any) -> None:
+            nonlocal creations
+            creations += 1
 
-        def run(requests: tuple[RequestSpec, ...]) -> list[Any]:
-            request_ids.extend(request.request_id for request in requests)
-            return original(requests)
+        def make_cache(self, _model: Any) -> object:
+            nonlocal cache_creations
+            cache_creations += 1
+            return object()
 
-        adapter.run = run  # type: ignore[method-assign]
-        return adapter
+        def generate(
+            self,
+            _model: Any,
+            _tokenizer: Any,
+            _cache: Any,
+            token_ids: tuple[int, ...],
+            *,
+            max_tokens: int,
+            prompt_progress_callback: Any,
+        ) -> Any:
+            assert max_tokens == real_mlx_module.MAX_OUTPUT_TOKENS
+            assert callable(prompt_progress_callback)
+            generated_inputs.append(token_ids)
+            lane = next(lane for lane in workload.lanes if lane.base == token_ids)
+            for token in (lane.calibration_outputs or {})["base"]:
+                yield type("Step", (), {"token": token})()
+
+        def synchronize(self) -> None:
+            pass
 
     def teardown() -> dict[str, Any]:
         nonlocal teardowns
         teardowns += 1
         return {}
 
+    monkeypatch.setattr(real_mlx_module, "ProductionMLXRuntime", WarmupRuntime)
+    monkeypatch.setattr(real_mlx_module, "output_is_cache_ok", lambda *_args: True)
     monkeypatch.setattr(real_mlx_module, "_teardown", teardown)
 
-    assert real_mlx_module._run_warmup_lanes(workload, factory) == LANE_IDS
+    assert (
+        real_mlx_module._run_warmup_lanes(
+            workload,
+            model="loaded-model",
+            tokenizer="loaded-tokenizer",
+        )
+        == LANE_IDS
+    )
     assert creations == 2
+    assert cache_creations == 2
     assert teardowns == 2
-    assert request_ids == ["1k:warmup", "4k:warmup"]
+    assert generated_inputs == [lane.base for lane in workload.lanes]
 
 
 def _request_spec(request_id: str, order: int) -> RequestSpec:
@@ -675,7 +756,7 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                     "replicate_id": replicate_id,
                     "status": "failed",
                     "replacement": False,
-                    "reason": "synthetic_failure",
+                    "reason": "child_launch_failed",
                     "failed_at": "2026-01-01T00:00:00.000000Z",
                 },
             )
@@ -811,8 +892,70 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     ledger = workspace / "run-ledger.jsonl"
     real_mlx_module._create_run_ledger(ledger, binding)
     sequence = len(REPLICATE_IDS) + 1
+    observation = {
+        "chip": "Apple M5 Pro",
+        "total_memory_bytes": 24 * 1024**3,
+        "vm_stat_available_ratio": 0.5,
+        "system_swap_used_bytes": 0,
+        "disk_free_bytes": 100 * 1024**3,
+        "heavy_process_count": 0,
+        "heavy_process_categories": [],
+        "scopes": {
+            "memory": "system_wide_vm_stat",
+            "swap": "system_wide",
+            "disk": "output_workspace_filesystem",
+            "processes": ("host_process_table_excluding_supervisor_and_child_tree"),
+        },
+    }
     for replicate_id in REPLICATE_IDS:
         attempt = json.loads((attempts / replicate_id / "attempt.json").read_text())
+        real_mlx_module._ledger_event(
+            ledger,
+            sequence=sequence,
+            replicate_id=replicate_id,
+            event="preflight",
+            status="passed",
+            reason=None,
+            observation=observation,
+        )
+        sequence += 1
+        if attempt["status"] == "complete":
+            real_mlx_module._ledger_event(
+                ledger,
+                sequence=sequence,
+                replicate_id=replicate_id,
+                event="started",
+                status="running",
+                reason=None,
+                child_instance_id_digest=(
+                    "sha256:"
+                    + hashlib.sha256(
+                        f"{REPLICATE_IDS.index(replicate_id) + 1:032x}".encode()
+                    ).hexdigest()
+                ),
+            )
+            sequence += 1
+            real_mlx_module._ledger_event(
+                ledger,
+                sequence=sequence,
+                replicate_id=replicate_id,
+                event="postflight",
+                status="passed",
+                reason=None,
+                observation=observation,
+                elapsed_seconds=0.5,
+            )
+        else:
+            real_mlx_module._ledger_event(
+                ledger,
+                sequence=sequence,
+                replicate_id=replicate_id,
+                event="postflight",
+                status="not_started",
+                reason=attempt["reason"],
+                observation=observation,
+            )
+        sequence += 1
         real_mlx_module._ledger_event(
             ledger,
             sequence=sequence,
@@ -840,10 +983,18 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
 ) -> None:
     workspace = _make_attempts(tmp_path, monkeypatch)
     private = tmp_path / "private"
+    assert all(
+        (
+            workspace / "attempts" / replicate_id / "bundle" / "evidence_bundle.py"
+        ).is_file()
+        for replicate_id in REPLICATE_IDS[:5]
+    )
     with pytest.raises(RealMLXExperimentError, match="run workspace allowlist"):
         assemble_aggregate(workspace / "attempts", tmp_path / "bare-attempts")
     assert assemble_aggregate(workspace, private)["complete_replicates"] == 5
     assert verify_aggregate(private)["verified"] is True
+    with pytest.raises(cache_bundle.CacheAuditBundleError, match="bundle files differ"):
+        cache_bundle.verify_bundle(private / "replicates" / "replicate-0" / "bundle")
     private_index = json.loads((private / "replicate-index.json").read_text())
     assert private_index["lane_request_counts"] == {"1k": 90, "4k": 90}
     assert set(private_index["lane_scenario_counts"]) == set(LANE_IDS)
@@ -862,15 +1013,33 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
         for sample in comparison["samples"]
     )
     assert all(
-        sample["paired_latency_comparable"] is False
-        and sample["client_ttft_ratio"] is None
-        and sample["client_ttft_difference_seconds"] is None
-        and sample["control_generated_output_tokens"] == 3
+        sample["control_generated_output_tokens"] == 3
         and sample["treatment_generated_output_tokens"] == 3
         and "process_rss_difference_bytes" not in sample
         and "system_swap_difference_bytes" not in sample
         and "system_memory_free_difference_percentage_points" not in sample
+        and "allocator_active_difference_bytes" not in sample
+        and "allocator_cache_difference_bytes" not in sample
         for comparison in comparisons.values()
+        for sample in comparison["samples"]
+    )
+    assert all(
+        sample["paired_latency_comparable"] is True
+        and sample["client_ttft_ratio"] == 1.0
+        and sample["client_ttft_difference_seconds"] == 0.0
+        for name, comparison in comparisons.items()
+        if not name.endswith(":capacity-eviction")
+        for sample in comparison["samples"]
+    )
+    assert all(
+        sample["paired_latency_comparable"] is False
+        and sample["client_ttft_difference_seconds"] is None
+        and sample["client_ttft_ratio"] is None
+        and sample["total_difference_seconds"] is None
+        and sample["total_ratio"] is None
+        and sample["allocator_peak_difference_bytes"] is None
+        for name, comparison in comparisons.items()
+        if name.endswith(":capacity-eviction")
         for sample in comparison["samples"]
     )
     contract = json.loads((private / "experiment-contract.json").read_text())
@@ -881,11 +1050,23 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     assert (
         contract["integrity_and_authenticity"]["sha256sums"] == "integrity_only_unkeyed"
     )
-    assert "no causal process or system-memory deltas" in contract["limitations"]
+    assert any(
+        "non-causal scoped levels" in limitation
+        for limitation in contract["limitations"]
+    )
+    assert any(
+        "2-second monitoring" in limitation for limitation in contract["limitations"]
+    )
     assert (private / "results.json").is_file()
     assert (private / "run-ledger.jsonl").is_file()
     assert not (private / "private-artifacts").exists()
     assert not (private / "aggregate_verifier.py").exists()
+    assert not list(private.rglob("*.py"))
+    assert all(
+        path.stat().st_mode & 0o111 == 0
+        for path in private.rglob("*")
+        if path.is_file()
+    )
 
     ledger_tamper = tmp_path / "ledger-tamper"
     shutil.copytree(private, ledger_tamper)
@@ -955,11 +1136,18 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     assert {row["event"] for row in public_ledger} == {
         "run-start",
         "planned",
+        "preflight",
+        "started",
+        "postflight",
         "finalized",
         "run-finalized",
     }
-    assert not any("observation" in row for row in public_ledger)
+    assert any("observation" in row for row in public_ledger)
     assert not (public / "aggregate_verifier.py").exists()
+    assert not list(public.rglob("*.py"))
+    assert all(
+        path.stat().st_mode & 0o111 == 0 for path in public.rglob("*") if path.is_file()
+    )
     assert "run_instance_id" not in json.loads(
         (public / "environment.json").read_text()
     )
@@ -987,6 +1175,74 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     _write_recursive_checksums(results_tamper)
     with pytest.raises(RealMLXExperimentError, match="sample binding"):
         verify_aggregate(results_tamper)
+
+    memory_tamper = tmp_path / "memory-tamper"
+    shutil.copytree(public, memory_tamper)
+    memory_results = memory_tamper / "results.json"
+    memory_value = json.loads(memory_results.read_text())
+    memory_value["comparisons"]["1k:cold-exact"]["samples"][0][
+        "treatment_system_memory"
+    ]["free_percent"] = 101.0
+    _write_json(memory_results, memory_value)
+    _write_recursive_checksums(memory_tamper)
+    with pytest.raises(RealMLXExperimentError, match="system-memory"):
+        verify_aggregate(memory_tamper)
+
+    control_memory_tamper = tmp_path / "control-memory-tamper"
+    shutil.copytree(public, control_memory_tamper)
+    control_memory_results = control_memory_tamper / "results.json"
+    control_memory_value = json.loads(control_memory_results.read_text())
+    control_memory_value["comparisons"]["1k:cold-exact"]["samples"][0][
+        "control_system_memory"
+    ]["free_percent"] = -1.0
+    _write_json(control_memory_results, control_memory_value)
+    _write_recursive_checksums(control_memory_tamper)
+    with pytest.raises(RealMLXExperimentError, match="system-memory"):
+        verify_aggregate(control_memory_tamper)
+
+    nested_tamper = tmp_path / "nested-tamper"
+    shutil.copytree(public, nested_tamper)
+    nested_results = nested_tamper / "results.json"
+    nested_value = json.loads(nested_results.read_text())
+    nested_value["comparisons"]["1k:cold-exact"]["samples"][0]["control_process_rss"][
+        "bytes"
+    ] += 1
+    _write_json(nested_results, nested_value)
+    nested_digest = _digest_bytes(_json_bytes(nested_value))
+    nested_ledger = nested_tamper / "run-ledger.jsonl"
+    nested_ledger_rows = [
+        json.loads(line) for line in nested_ledger.read_text().splitlines()
+    ]
+    nested_ledger_rows[-1]["results_digest"] = nested_digest
+    nested_ledger.write_text(
+        "".join(
+            json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
+            for row in nested_ledger_rows
+        ),
+        encoding="ascii",
+    )
+    nested_contract = nested_tamper / "experiment-contract.json"
+    nested_contract_value = json.loads(nested_contract.read_text())
+    nested_contract_value["results_digest"] = nested_digest
+    _write_json(nested_contract, nested_contract_value)
+    _write_recursive_checksums(nested_tamper)
+    with pytest.raises(RealMLXExperimentError, match="retained nested evidence"):
+        verify_aggregate(nested_tamper)
+
+    script_tamper = tmp_path / "script-tamper"
+    shutil.copytree(public, script_tamper)
+    script = script_tamper / "replicates" / "replicate-0" / "bundle" / "unexpected.py"
+    script.write_text("print('not data-only')\n", encoding="ascii")
+    _write_recursive_checksums(script_tamper)
+    with pytest.raises(RealMLXExperimentError, match="script-like"):
+        verify_aggregate(script_tamper)
+
+    executable_tamper = tmp_path / "executable-tamper"
+    shutil.copytree(public, executable_tamper)
+    executable = executable_tamper / "report.html"
+    executable.chmod(executable.stat().st_mode | 0o100)
+    with pytest.raises(RealMLXExperimentError, match="executable"):
+        verify_aggregate(executable_tamper)
 
     stage_tamper = tmp_path / "stage-tamper"
     shutil.copytree(public, stage_tamper)
@@ -1016,6 +1272,67 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     _write_recursive_checksums(stage_tamper)
     with pytest.raises(RealMLXExperimentError, match="derived aggregate"):
         verify_aggregate(stage_tamper)
+
+
+def test_run_ledger_rejects_minimal_finalization_only_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _make_attempts(tmp_path, monkeypatch)
+    ledger = workspace / "run-ledger.jsonl"
+    rows = [
+        row
+        for row in (json.loads(line) for line in ledger.read_text().splitlines())
+        if row["event"] in {"run-start", "planned", "finalized", "run-finalized"}
+    ]
+    for sequence, row in enumerate(rows):
+        row["sequence"] = sequence
+    ledger.write_text(
+        "".join(
+            json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
+            for row in rows
+        ),
+        encoding="ascii",
+    )
+
+    with pytest.raises(RealMLXExperimentError, match="incomplete"):
+        real_mlx_module._verify_run_ledger(
+            ledger,
+            attempts_dir=workspace / "attempts",
+        )
+
+
+def test_run_ledger_rejects_lifecycle_schema_and_instance_tampering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _make_attempts(tmp_path, monkeypatch)
+    ledger = workspace / "run-ledger.jsonl"
+    original = ledger.read_text(encoding="ascii")
+
+    rows = [json.loads(line) for line in original.splitlines()]
+    started = [row for row in rows if row["event"] == "started"]
+    started[1]["child_instance_id_digest"] = started[0]["child_instance_id_digest"]
+    ledger.write_text(
+        "".join(
+            json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
+            for row in rows
+        ),
+        encoding="ascii",
+    )
+    with pytest.raises(RealMLXExperimentError, match="child instance binding"):
+        real_mlx_module._verify_run_ledger(ledger)
+
+    rows = [json.loads(line) for line in original.splitlines()]
+    preflight = next(row for row in rows if row["event"] == "preflight")
+    preflight["observation"]["unexpected"] = True
+    ledger.write_text(
+        "".join(
+            json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
+            for row in rows
+        ),
+        encoding="ascii",
+    )
+    with pytest.raises(RealMLXExperimentError, match="field allowlist"):
+        real_mlx_module._verify_run_ledger(ledger)
 
 
 def test_capacity_eviction_gate_requires_both_lane_treatments(
@@ -1109,7 +1426,12 @@ def test_run_all_uses_fresh_offline_sandboxed_children(
         "disk_free_bytes": 100 * 1024**3,
         "heavy_process_count": 0,
         "heavy_process_categories": [],
-        "scopes": {},
+        "scopes": {
+            "memory": "system_wide_vm_stat",
+            "swap": "system_wide",
+            "disk": "output_workspace_filesystem",
+            "processes": "host_process_table_excluding_supervisor_and_child_tree",
+        },
     }
     workload_path = tmp_path / "workload.json"
     workload_path.write_text("{}")
@@ -1179,7 +1501,11 @@ def test_run_all_uses_fresh_offline_sandboxed_children(
         "_public_results_from_private",
         lambda *_args: {"synthetic": True},
     )
-    monkeypatch.setattr(real_mlx_module, "_verify_public_results", lambda *_args: None)
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_verify_public_results",
+        lambda *_args, **_kwargs: None,
+    )
 
     workspace = tmp_path / "run"
     result = real_mlx_module.run_all_replicates(
@@ -1256,7 +1582,12 @@ def test_run_all_marks_each_preflight_failure_once(
         "disk_free_bytes": 100 * 1024**3,
         "heavy_process_count": 0,
         "heavy_process_categories": [],
-        "scopes": {},
+        "scopes": {
+            "memory": "system_wide_vm_stat",
+            "swap": "system_wide",
+            "disk": "output_workspace_filesystem",
+            "processes": "host_process_table_excluding_supervisor_and_child_tree",
+        },
     }
     workload_path = tmp_path / "workload.json"
     workload_path.write_text("{}")
@@ -1375,6 +1706,34 @@ def test_replicate_child_uses_current_module_and_expected_commit(
     assert real_mlx_module.SANDBOX_POLICY in command
 
 
+def test_child_environment_is_a_minimal_explicit_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in (
+        "HOME",
+        "PYTHONPATH",
+        "DYLD_LIBRARY_PATH",
+        "AWS_WEB_IDENTITY_TOKEN_FILE",
+        "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+        "AZURE_FEDERATED_TOKEN_FILE",
+        "UNRECOGNIZED_FUTURE_SECRET",
+    ):
+        monkeypatch.setenv(name, f"sensitive-{name}")
+
+    instance_id = "a" * 32
+    environment = real_mlx_module._offline_child_environment(instance_id)
+
+    assert environment == {
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "HF_DATASETS_OFFLINE": "1",
+        "WANDB_MODE": "offline",
+        "WANDB_DISABLED": "true",
+        real_mlx_module.RUN_INSTANCE_ENV: instance_id,
+    }
+
+
 def test_cleanup_failure_preserves_partial_evidence_and_aborts_remaining(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1428,7 +1787,12 @@ def test_cleanup_failure_preserves_partial_evidence_and_aborts_remaining(
         "disk_free_bytes": 100 * 1024**3,
         "heavy_process_count": 0,
         "heavy_process_categories": [],
-        "scopes": {},
+        "scopes": {
+            "memory": "system_wide_vm_stat",
+            "swap": "system_wide",
+            "disk": "output_workspace_filesystem",
+            "processes": "host_process_table_excluding_supervisor_and_child_tree",
+        },
     }
     monkeypatch.setattr(
         real_mlx_module,

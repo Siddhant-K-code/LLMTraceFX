@@ -1250,6 +1250,7 @@ class MLXLocalCacheAdapter:
         assert request.input_token_ids is not None
         if cache is None:
             cache = self._runtime.make_cache(self._model)
+            self._cache_classes.update(self._runtime.cache_classes(cache))
 
         progress: dict[str, int] = {"actual": 0, "total": 0}
 
@@ -1439,7 +1440,6 @@ class MLXLocalCacheAdapter:
                     "prompt_cache_insertion",
                     "no_cache_baseline",
                     "harness_inspection_between_fetch_and_generation",
-                    f"in_process_generation_total={total_seconds:.9f}s",
                 ),
             ),
             memory=MemoryEvidence(

@@ -19,6 +19,7 @@ import re
 import secrets
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -52,6 +53,7 @@ from .adapters.mlx import (
 from .bundle import (
     CacheAuditBundleError,
     _git_package_digest,
+    copy_data_only_bundle,
     package_source_digest,
     read_bundle,
     sanitize_bundle_records,
@@ -1544,42 +1546,43 @@ def _adapter_factory(
 
 def _run_warmup_lanes(
     workload: FrozenMLXWorkload,
-    adapter_factory: Callable[[], MLXLocalCacheAdapter],
+    *,
+    model: Any,
+    tokenizer: Any,
 ) -> tuple[str, ...]:
     warmed: list[str] = []
     for lane in workload.lanes:
         calibration_outputs = lane.calibration_outputs
         if calibration_outputs is None:
             raise RealMLXExperimentError("warm-up requires calibrated lane outputs")
-        request = RequestSpec(
-            request_id=f"{lane.lane_id}:warmup",
-            scenario=ScenarioKind.COLD,
-            order=0,
-            input_token_ids=lane.base,
-            input_token_count=len(lane.base),
-            output_tokens=MAX_OUTPUT_TOKENS,
-            replicate_id="warmup",
+        runtime = ProductionMLXRuntime(
+            max_cache_entries=MAX_CACHE_ENTRIES,
+            max_cache_bytes=MAX_CACHE_BYTES,
         )
-        adapter = adapter_factory()
-        records = adapter.run((request,))
-        if len(records) != 1:
-            raise RealMLXExperimentError(
-                f"{lane.lane_id} warm-up returned invalid record count"
+        cache = runtime.make_cache(model)
+        try:
+            generated = tuple(
+                step.token
+                for step in runtime.generate(
+                    model,
+                    tokenizer,
+                    cache,
+                    lane.base,
+                    max_tokens=MAX_OUTPUT_TOKENS,
+                    prompt_progress_callback=lambda _processed, _total: None,
+                )
             )
-        record = records[0]
-        expected = calibration_outputs["base"]
-        if (
-            record.terminal_state is not TerminalState.COMPLETED
-            or record.output.output_token_ids != expected
-            or record.output.baseline_token_ids != expected
-            or record.output.token_identity.value is not True
-            or record.output.correctness.value is not True
-        ):
-            raise RealMLXExperimentError(
-                f"{lane.lane_id} warm-up failed frozen output gates"
-            )
-        del adapter
-        _teardown()
+            runtime.synchronize()
+            if generated != calibration_outputs["base"] or not output_is_cache_ok(
+                tokenizer, generated
+            ):
+                raise RealMLXExperimentError(
+                    f"{lane.lane_id} warm-up failed frozen output gates"
+                )
+        finally:
+            del cache
+            del runtime
+            _teardown()
         warmed.append(lane.lane_id)
     return tuple(warmed)
 
@@ -1716,12 +1719,8 @@ def run_replicate(
         _write_json(output_dir / "workload.json", workload.to_dict())
         warmup_lanes = _run_warmup_lanes(
             workload,
-            _adapter_factory(
-                model=model,
-                tokenizer=tokenizer,
-                model_key=model_key,
-                digest=digest,
-            ),
+            model=model,
+            tokenizer=tokenizer,
         )
         observer = StageRecorder(replicate_id)
         adapter = LifecycleMLXAdapter(
@@ -2074,7 +2073,11 @@ def _request_source_array(request_id: str) -> str:
 
 
 def verify_replicate(
-    directory: Path, *, replicate_id: str, public: bool
+    directory: Path,
+    *,
+    replicate_id: str,
+    public: bool,
+    data_only_bundle: bool = False,
 ) -> dict[str, Any]:
     if directory.is_symlink() or not directory.is_dir():
         raise RealMLXExperimentError("replicate must be a regular directory")
@@ -2162,8 +2165,8 @@ def verify_replicate(
     ):
         raise RealMLXExperimentError("complete attempt binding is invalid")
 
-    result = verify_bundle(directory / "bundle")
-    manifest, records = read_bundle(directory / "bundle")
+    result = verify_bundle(directory / "bundle", data_only=data_only_bundle)
+    manifest, records = read_bundle(directory / "bundle", data_only=data_only_bundle)
     expected_mode = (
         PublicationMode.PUBLIC_REDACTED if public else PublicationMode.PRIVATE
     )
@@ -2327,6 +2330,25 @@ def _copy_tree(source: Path, destination: Path) -> None:
             raise RealMLXExperimentError("copied evidence contains a symlink")
 
 
+def _copy_replicate_data_only(source: Path, destination: Path) -> None:
+    """Copy one verified replicate while rebuilding its bundle as data-only."""
+
+    if destination.exists():
+        raise RealMLXExperimentError("aggregate destination is not empty")
+    attempt = _safe_object(source / "attempt.json")
+    if attempt.get("status") == "failed":
+        _copy_tree(source, destination)
+        return
+    destination.mkdir()
+    for item in source.iterdir():
+        if item.name == "bundle":
+            continue
+        if item.is_symlink() or not item.is_file():
+            raise RealMLXExperimentError("replicate contains an unsafe entry")
+        shutil.copyfile(item, destination / item.name)
+    copy_data_only_bundle(source / "bundle", destination / "bundle")
+
+
 def _replicate_index(
     root: Path,
     *,
@@ -2346,11 +2368,16 @@ def _replicate_index(
     run_instance_ids: set[str] = set()
     for replicate_id in REPLICATE_IDS:
         directory = root / "replicates" / replicate_id
-        state = verify_replicate(directory, replicate_id=replicate_id, public=public)
+        state = verify_replicate(
+            directory,
+            replicate_id=replicate_id,
+            public=public,
+            data_only_bundle=True,
+        )
         entry: dict[str, Any] = dict(state)
         if state["status"] == "complete":
             complete += 1
-            manifest, records = read_bundle(directory / "bundle")
+            manifest, records = read_bundle(directory / "bundle", data_only=True)
             attempt = _safe_object(directory / "attempt.json")
             environment = _safe_object(directory / "environment.json")
             if (
@@ -2456,8 +2483,9 @@ def _claim_matrix(index: Mapping[str, Any]) -> dict[str, Any]:
         "namespace_isolation_scope": "harness_enforced_cache_key_separation",
         "native_mlx_tenancy_claim": False,
         "process_and_system_memory_rule": (
-            "Process RSS, system swap, and system memory pressure are scoped level "
-            "observations only; global or monotonic gauges are not causal deltas."
+            "Allocator active/cache, process RSS, system swap, and system memory "
+            "pressure are scoped level observations only and are not causal deltas; "
+            "only the per-request-reset allocator peak supports a paired difference."
         ),
         "mlx_fetch_refreshes_lru": False,
         "mlx_insertion_refreshes_lru": True,
@@ -2599,7 +2627,10 @@ def _paired_sample(
         Verdict.EVICTED,
     }
     paired_latency_comparable = (
-        control.terminal_state is TerminalState.COMPLETED
+        treatment.spec.scenario
+        not in {ScenarioKind.EVICTION_COUNT, ScenarioKind.EVICTION_BYTES}
+        and treatment.spec.order == control.spec.order + 1
+        and control.terminal_state is TerminalState.COMPLETED
         and treatment.terminal_state is TerminalState.COMPLETED
         and control.output.token_identity.value is True
         and treatment.output.token_identity.value is True
@@ -2665,12 +2696,6 @@ def _paired_sample(
         "allocator_peak_difference_bytes": comparable_delta(
             control_peak, treatment_peak
         ),
-        "allocator_active_difference_bytes": comparable_delta(
-            control_active, treatment_active
-        ),
-        "allocator_cache_difference_bytes": comparable_delta(
-            control_allocator_cache, treatment_allocator_cache
-        ),
         "control_process_rss": {
             "bytes": control_rss,
             "scope": "current_replicate_child_process_only",
@@ -2706,14 +2731,16 @@ def _paired_sample(
     }
 
 
-def _descriptive_summary(replicates: Path, *, public: bool) -> dict[str, Any]:
+def _descriptive_summary(
+    replicates: Path, *, public: bool, data_only_bundle: bool = True
+) -> dict[str, Any]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for replicate_id in REPLICATE_IDS:
         directory = replicates / replicate_id
         attempt = _safe_object(directory / "attempt.json")
         if attempt.get("status") != "complete":
             continue
-        _, records = read_bundle(directory / "bundle")
+        _, records = read_bundle(directory / "bundle", data_only=data_only_bundle)
         stage_memory = _request_stage_memory(directory / "stages.jsonl")
         scheduled_lanes = _scheduled_record_lanes(replicate_id)
         if len(scheduled_lanes) != len(records):
@@ -2775,8 +2802,6 @@ def _descriptive_summary(replicates: Path, *, public: bool) -> dict[str, Any]:
         "total_difference_seconds",
         "total_ratio",
         "allocator_peak_difference_bytes",
-        "allocator_active_difference_bytes",
-        "allocator_cache_difference_bytes",
     )
     comparisons: dict[str, Any] = {}
     for name in sorted(grouped):
@@ -2810,8 +2835,14 @@ def _descriptive_summary(replicates: Path, *, public: bool) -> dict[str, Any]:
     }
 
 
-def _public_results_from_private(replicates: Path) -> dict[str, Any]:
-    descriptive = _descriptive_summary(replicates, public=False)
+def _public_results_from_private(
+    replicates: Path, *, data_only_bundle: bool = False
+) -> dict[str, Any]:
+    descriptive = _descriptive_summary(
+        replicates,
+        public=False,
+        data_only_bundle=data_only_bundle,
+    )
     comparisons = json.loads(json.dumps(descriptive["comparisons"]))
     for comparison in comparisons.values():
         comparison.pop("identity_and_correctness_unavailable", None)
@@ -2825,7 +2856,11 @@ def _public_results_from_private(replicates: Path) -> dict[str, Any]:
     }
 
 
-def _verify_public_results(value: Any) -> None:
+def _verify_public_results(
+    value: Any,
+    *,
+    complete_replicate_ids: set[str] | None = None,
+) -> None:
     if not isinstance(value, dict):
         raise RealMLXExperimentError("results must be an object")
     text = canonical_json(value)
@@ -2885,8 +2920,6 @@ def _verify_public_results(value: Any) -> None:
         "total_difference_seconds",
         "total_ratio",
         "allocator_peak_difference_bytes",
-        "allocator_active_difference_bytes",
-        "allocator_cache_difference_bytes",
     }
     sample_keys = {
         "replicate_id",
@@ -2914,8 +2947,6 @@ def _verify_public_results(value: Any) -> None:
         "control_allocator",
         "treatment_allocator",
         "allocator_peak_difference_bytes",
-        "allocator_active_difference_bytes",
-        "allocator_cache_difference_bytes",
         "control_process_rss",
         "treatment_process_rss",
         "control_system_swap",
@@ -2931,6 +2962,7 @@ def _verify_public_results(value: Any) -> None:
         "output_eligibility",
         "quality_eligibility",
     }
+    expected_replicates: set[str] | None = None
     for name, comparison in comparisons.items():
         if not isinstance(comparison, dict):
             raise RealMLXExperimentError("public result comparison is invalid")
@@ -2971,28 +3003,30 @@ def _verify_public_results(value: Any) -> None:
                 or sample["lane_id"] != lane_id
                 or sample["control_input_tokens"] != expected_input_tokens
                 or sample["treatment_input_tokens"] != expected_input_tokens
-                or sample["control_generated_output_tokens"] != 3
-                or sample["treatment_generated_output_tokens"] != 3
                 or sample["control_output_token_identity"] is not True
                 or sample["treatment_output_token_identity"] is not True
                 or sample["control_deterministic_correctness"] is not True
                 or sample["treatment_deterministic_correctness"] is not True
                 or not isinstance(sample["paired_latency_comparable"], bool)
-                or sample["verdict"] not in {verdict.value for verdict in Verdict}
-                or any(
-                    sample[field] not in {status.value for status in EligibilityStatus}
-                    for field in (
-                        "performance_eligibility",
-                        "output_eligibility",
-                        "quality_eligibility",
-                    )
-                )
             ):
                 raise RealMLXExperimentError("public result sample binding is invalid")
             seen_replicates.add(replicate_id)
             for key in (
-                "control_input_tokens",
-                "treatment_input_tokens",
+                "control_generated_output_tokens",
+                "treatment_generated_output_tokens",
+            ):
+                count = sample[key]
+                if (
+                    isinstance(count, bool)
+                    or not isinstance(count, int)
+                    or count != EXPECTED_CALIBRATION_OUTPUT_TOKENS[lane_id]
+                    or count > MAX_OUTPUT_TOKENS
+                    or count > expected_input_tokens
+                ):
+                    raise RealMLXExperimentError(
+                        "public result output-token count is invalid"
+                    )
+            for key in (
                 "semantic_prefix_tokens",
                 "policy_reusable_tokens",
                 "policy_reusable_blocks",
@@ -3013,6 +3047,87 @@ def _verify_public_results(value: Any) -> None:
                     or number < 0
                 ):
                     raise RealMLXExperimentError("public result value is out of bounds")
+            semantic = sample["semantic_prefix_tokens"]
+            policy = sample["policy_reusable_tokens"]
+            reusable_blocks = sample["policy_reusable_blocks"]
+            engine_cached = sample["engine_cached_tokens"]
+            engine_created = sample["engine_created_tokens"]
+            observed = sample["observed_prompt_tokens"]
+            recomputed = sample["unexpected_recomputed_tokens"]
+            if (
+                any(
+                    isinstance(number, bool) or not isinstance(number, int)
+                    for number in (
+                        semantic,
+                        policy,
+                        engine_cached,
+                        engine_created,
+                        observed,
+                        recomputed,
+                    )
+                )
+                or reusable_blocks is not None
+                or not 0 <= semantic <= expected_input_tokens
+                or not 0 <= policy <= semantic
+                or not 0 <= engine_cached <= expected_input_tokens
+                or not 0 <= engine_created <= expected_input_tokens
+                or not 0 <= observed <= expected_input_tokens
+                or not 0 <= recomputed <= observed
+                or engine_cached + engine_created != expected_input_tokens
+                or observed != expected_input_tokens - policy
+                or recomputed != 0
+                or engine_cached != policy
+            ):
+                raise RealMLXExperimentError(
+                    "public result reuse counters are inconsistent"
+                )
+            verdict = sample["verdict"]
+            if verdict == Verdict.VERIFIED_HIT.value:
+                verdict_valid = policy > 0 and semantic == expected_input_tokens
+            elif verdict == Verdict.PARTIAL_REUSE.value:
+                verdict_valid = policy > 0 and semantic < expected_input_tokens
+            elif verdict == Verdict.VERIFIED_MISS.value:
+                verdict_valid = (
+                    policy == 0
+                    and engine_cached == 0
+                    and observed == expected_input_tokens
+                    and case != "capacity-eviction"
+                )
+            elif verdict == Verdict.EVICTED.value:
+                verdict_valid = (
+                    case == "capacity-eviction"
+                    and policy == 0
+                    and engine_cached == 0
+                    and observed == expected_input_tokens
+                )
+            else:
+                verdict_valid = False
+            if not verdict_valid or (
+                sample["performance_eligibility"] != EligibilityStatus.INELIGIBLE.value
+                or sample["output_eligibility"] != EligibilityStatus.ELIGIBLE.value
+                or sample["quality_eligibility"]
+                not in {
+                    EligibilityStatus.UNAVAILABLE.value,
+                    EligibilityStatus.NOT_APPLICABLE.value,
+                }
+            ):
+                raise RealMLXExperimentError(
+                    f"public result verdict relationship is invalid: {name}/"
+                    f"{replicate_id}"
+                )
+            for prefix in ("control", "treatment"):
+                ttft = sample[f"{prefix}_client_ttft_seconds"]
+                total = sample[f"{prefix}_total_seconds"]
+                if ttft is None or total is None:
+                    raise RealMLXExperimentError("public result timing is unavailable")
+                if ttft > total:
+                    raise RealMLXExperimentError(
+                        "public result TTFT exceeds total time"
+                    )
+            if case == "capacity-eviction" and sample["paired_latency_comparable"]:
+                raise RealMLXExperimentError(
+                    "eviction latency samples are not adjacent"
+                )
             if sample["paired_latency_comparable"]:
                 if any(
                     sample[key] is None
@@ -3034,8 +3149,6 @@ def _verify_public_results(value: Any) -> None:
                     "total_difference_seconds",
                     "total_ratio",
                     "allocator_peak_difference_bytes",
-                    "allocator_active_difference_bytes",
-                    "allocator_cache_difference_bytes",
                 )
             ):
                 raise RealMLXExperimentError(
@@ -3047,8 +3160,6 @@ def _verify_public_results(value: Any) -> None:
                 "total_difference_seconds",
                 "total_ratio",
                 "allocator_peak_difference_bytes",
-                "allocator_active_difference_bytes",
-                "allocator_cache_difference_bytes",
             ):
                 number = sample[key]
                 if number is not None and (
@@ -3072,15 +3183,17 @@ def _verify_public_results(value: Any) -> None:
                     raise RealMLXExperimentError("public allocator scope is invalid")
                 for field in ("active_bytes", "peak_bytes", "cache_bytes"):
                     number = allocator[field]
-                    if number is not None and (
+                    if (
                         isinstance(number, bool)
-                        or not isinstance(number, (int, float))
-                        or not math.isfinite(number)
+                        or not isinstance(number, int)
                         or number < 0
                     ):
                         raise RealMLXExperimentError(
                             "public allocator value is out of bounds"
                         )
+                peak = allocator["peak_bytes"]
+                if peak is not None and peak > MAX_ALLOCATOR_PEAK_BYTES:
+                    raise RealMLXExperimentError("public allocator peak exceeds policy")
             for key in ("control_process_rss", "treatment_process_rss"):
                 level = sample[key]
                 if (
@@ -3094,6 +3207,7 @@ def _verify_public_results(value: Any) -> None:
                         isinstance(level["bytes"], bool)
                         or not isinstance(level["bytes"], int)
                         or level["bytes"] < 0
+                        or level["bytes"] > MAX_PROCESS_RSS_BYTES
                     )
                 ):
                     raise RealMLXExperimentError("public RSS level is invalid")
@@ -3110,12 +3224,28 @@ def _verify_public_results(value: Any) -> None:
                         isinstance(level["used_bytes"], bool)
                         or not isinstance(level["used_bytes"], int)
                         or level["used_bytes"] < 0
+                        or level["used_bytes"] > MAX_SWAP_BYTES
                     )
                 ):
                     raise RealMLXExperimentError("public swap level is invalid")
             for key in ("control_system_memory", "treatment_system_memory"):
                 level = sample[key]
                 if not isinstance(level, dict):
+                    raise RealMLXExperimentError(
+                        "public system-memory level is invalid"
+                    )
+                free = level.get("free_percent")
+                if (
+                    level
+                    != {
+                        "free_percent": free,
+                        "scope": "system_wide_memory_pressure",
+                    }
+                    or isinstance(free, bool)
+                    or not isinstance(free, (int, float))
+                    or not math.isfinite(free)
+                    or not MIN_RUNTIME_MEMORY_FREE_PERCENT <= free <= 100
+                ):
                     raise RealMLXExperimentError(
                         "public system-memory level is invalid"
                     )
@@ -3140,14 +3270,6 @@ def _verify_public_results(value: Any) -> None:
                     sample["control_allocator"]["peak_bytes"],
                     sample["treatment_allocator"]["peak_bytes"],
                 ),
-                "allocator_active_difference_bytes": _delta(
-                    sample["control_allocator"]["active_bytes"],
-                    sample["treatment_allocator"]["active_bytes"],
-                ),
-                "allocator_cache_difference_bytes": _delta(
-                    sample["control_allocator"]["cache_bytes"],
-                    sample["treatment_allocator"]["cache_bytes"],
-                ),
             }
             for key, expected_delta in expected_deltas.items():
                 expected = (
@@ -3157,21 +3279,12 @@ def _verify_public_results(value: Any) -> None:
                     raise RealMLXExperimentError(
                         "public result delta does not match raw levels"
                     )
-                free = level.get("free_percent")
-                if (
-                    level
-                    != {
-                        "free_percent": free,
-                        "scope": "system_wide_memory_pressure",
-                    }
-                    or isinstance(free, bool)
-                    or not isinstance(free, (int, float))
-                    or not math.isfinite(free)
-                    or not 0 <= free <= 100
-                ):
-                    raise RealMLXExperimentError(
-                        "public system-memory level is invalid"
-                    )
+        if expected_replicates is None:
+            expected_replicates = seen_replicates
+        elif seen_replicates != expected_replicates:
+            raise RealMLXExperimentError(
+                "public result replicate coverage is inconsistent"
+            )
         statistics = comparison["statistics"]
         if not isinstance(statistics, dict) or set(statistics) != metric_names:
             raise RealMLXExperimentError("public result statistics are invalid")
@@ -3181,6 +3294,67 @@ def _verify_public_results(value: Any) -> None:
             ):
                 raise RealMLXExperimentError(
                     "public result statistic does not match raw samples"
+                )
+    if (
+        complete_replicate_ids is not None
+        and expected_replicates != complete_replicate_ids
+    ):
+        raise RealMLXExperimentError(
+            "public result replicate IDs do not match complete ledger attempts"
+        )
+
+
+def _complete_attempt_ids(attempts_dir: Path) -> set[str]:
+    return {
+        replicate_id
+        for replicate_id in REPLICATE_IDS
+        if _safe_object(attempts_dir / replicate_id / "attempt.json").get("status")
+        == "complete"
+    }
+
+
+def _verify_public_result_record_bindings(
+    results: Mapping[str, Any],
+    replicates: Path,
+    *,
+    public: bool,
+) -> None:
+    expected = _descriptive_summary(
+        replicates,
+        public=public,
+        data_only_bundle=True,
+    )
+    retained_fields = {
+        "replicate_id",
+        "lane_id",
+        "control_input_tokens",
+        "treatment_input_tokens",
+        "policy_reusable_blocks",
+        "engine_cached_tokens",
+        "engine_created_tokens",
+        "observed_prompt_tokens",
+        "control_client_ttft_seconds",
+        "treatment_client_ttft_seconds",
+        "control_total_seconds",
+        "treatment_total_seconds",
+        "control_allocator",
+        "treatment_allocator",
+        "control_process_rss",
+        "treatment_process_rss",
+        "control_system_swap",
+        "treatment_system_swap",
+        "control_system_memory",
+        "treatment_system_memory",
+    }
+    for name, comparison in results["comparisons"].items():
+        observed_samples = comparison["samples"]
+        expected_samples = expected["comparisons"][name]["samples"]
+        if len(observed_samples) != len(expected_samples):
+            raise RealMLXExperimentError("public result sample binding is incomplete")
+        for observed, retained in zip(observed_samples, expected_samples, strict=True):
+            if any(observed[field] != retained[field] for field in retained_fields):
+                raise RealMLXExperimentError(
+                    "public result sample does not match retained nested evidence"
                 )
 
 
@@ -3278,7 +3452,10 @@ def _experiment_contract(
             "one observation per cell per replicate",
             "descriptive medians and ranges only",
             "schedule, order, and thermal effects remain possible",
-            "no causal process or system-memory deltas",
+            "allocator active/cache, process RSS, system swap, and system-memory "
+            "pressure are non-causal scoped levels",
+            "2-second monitoring and stage-observation subprocesses can perturb host "
+            "scheduling but are excluded from client clocks",
             "allocation step 256 is not block-cache behavior",
             "MLX cache reuse is token-granular",
             "no power, energy, kernel, or utilization claims",
@@ -3320,7 +3497,9 @@ def _common_environment(replicates: Path) -> dict[str, Any]:
 def _write_derived(root: Path, *, public: bool) -> None:
     results = _safe_object(root / "results.json")
     _verify_public_results(results)
-    if not public and results != _public_results_from_private(root / "replicates"):
+    if not public and results != _public_results_from_private(
+        root / "replicates", data_only_bundle=True
+    ):
         raise RealMLXExperimentError(
             "public results do not reproduce verified private records"
         )
@@ -3329,6 +3508,13 @@ def _write_derived(root: Path, *, public: bool) -> None:
         root / "run-ledger.jsonl",
         attempts_dir=root / "replicates",
         expected_results_digest=results_digest,
+    )
+    complete_ids = _complete_attempt_ids(root / "replicates")
+    _verify_public_results(results, complete_replicate_ids=complete_ids)
+    _verify_public_result_record_bindings(
+        results,
+        root / "replicates",
+        public=public,
     )
     index = _replicate_index(root, public=public, run_binding=run_binding)
     summary = _summary(index, public=public)
@@ -3407,12 +3593,17 @@ def assemble_aggregate(run_workspace: Path, output_dir: Path) -> dict[str, Any]:
     (output_dir / "replicates").mkdir()
     try:
         for replicate_id in REPLICATE_IDS:
-            _copy_tree(
+            _copy_replicate_data_only(
                 attempts_dir / replicate_id,
                 output_dir / "replicates" / replicate_id,
             )
-        results = _public_results_from_private(output_dir / "replicates")
-        _verify_public_results(results)
+        results = _public_results_from_private(
+            output_dir / "replicates", data_only_bundle=True
+        )
+        _verify_public_results(
+            results,
+            complete_replicate_ids=_complete_attempt_ids(attempts_dir),
+        )
         results_digest = _digest_bytes(_json_bytes(results))
         _verify_run_ledger(
             ledger,
@@ -3469,12 +3660,17 @@ def sanitize_aggregate(source: Path, destination: Path) -> dict[str, Any]:
                     source_rep / "teardown.json", target_rep / "teardown.json"
                 )
                 continue
-            manifest, records = read_bundle(source_rep / "bundle")
+            manifest, records = read_bundle(source_rep / "bundle", data_only=True)
             redacted_manifest, redacted_records = sanitize_bundle_records(
                 manifest, records
             )
-            write_bundle(target_rep / "bundle", redacted_manifest, redacted_records)
-            verify_bundle(target_rep / "bundle")
+            write_bundle(
+                target_rep / "bundle",
+                redacted_manifest,
+                redacted_records,
+                data_only=True,
+            )
+            verify_bundle(target_rep / "bundle", data_only=True)
             _write_json(target_rep / "attempt.json", attempt)
             _write_json(
                 target_rep / "workload-binding.json",
@@ -3542,7 +3738,51 @@ def _verify_recursive_checksums(root: Path) -> None:
             raise RealMLXExperimentError(f"recursive checksum mismatch: {name}")
 
 
+_SCRIPT_SUFFIXES = {
+    ".bash",
+    ".bat",
+    ".cjs",
+    ".cmd",
+    ".command",
+    ".fish",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".pl",
+    ".ps1",
+    ".py",
+    ".pyc",
+    ".pyo",
+    ".rb",
+    ".sh",
+    ".ts",
+    ".tsx",
+    ".zsh",
+}
+
+
+def _verify_data_only_aggregate(root: Path) -> None:
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            raise RealMLXExperimentError("aggregate contains a symlink")
+        if not path.is_file():
+            continue
+        if path.suffix.casefold() in _SCRIPT_SUFFIXES:
+            raise RealMLXExperimentError(
+                f"aggregate contains a script-like file: {path.name}"
+            )
+        if path.stat().st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            raise RealMLXExperimentError(
+                f"aggregate contains an executable file: {path.name}"
+            )
+        if path.read_bytes()[:2] == b"#!":
+            raise RealMLXExperimentError(
+                f"aggregate contains a script-like file: {path.name}"
+            )
+
+
 def _verify_public_aggregate_privacy(root: Path) -> None:
+    _verify_data_only_aggregate(root)
     for path in root.rglob("*"):
         if not path.is_file() or path.name == "SHA256SUMS":
             continue
@@ -3573,6 +3813,7 @@ def verify_aggregate(root: Path, *, public: bool | None = None) -> dict[str, Any
         raise RealMLXExperimentError("aggregate root allowlist mismatch")
     if any(path.is_symlink() for path in root.rglob("*")):
         raise RealMLXExperimentError("aggregate contains a symlink")
+    _verify_data_only_aggregate(root)
     _verify_recursive_checksums(root)
     results = _safe_object(root / "results.json")
     _verify_public_results(results)
@@ -3582,6 +3823,8 @@ def verify_aggregate(root: Path, *, public: bool | None = None) -> dict[str, Any
         attempts_dir=root / "replicates",
         expected_results_digest=results_digest,
     )
+    complete_ids = _complete_attempt_ids(root / "replicates")
+    _verify_public_results(results, complete_replicate_ids=complete_ids)
     contract = _safe_object(root / "experiment-contract.json")
     mode = contract.get("publication_mode")
     inferred_public = mode == "public_redacted"
@@ -3602,11 +3845,16 @@ def verify_aggregate(root: Path, *, public: bool | None = None) -> dict[str, Any
         run_binding=run_binding,
     )
     if not inferred_public and results != _public_results_from_private(
-        root / "replicates"
+        root / "replicates", data_only_bundle=True
     ):
         raise RealMLXExperimentError(
             "public results do not reproduce verified private records"
         )
+    _verify_public_result_record_bindings(
+        results,
+        root / "replicates",
+        public=inferred_public,
+    )
     descriptive_summary = _descriptive_summary(
         root / "replicates",
         public=inferred_public,
@@ -3819,52 +4067,18 @@ def _machine_policy_reason(
     return None
 
 
-_PROVIDER_CREDENTIAL_VARIABLES = frozenset(
-    {
-        "ANTHROPIC_API_KEY",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_SESSION_TOKEN",
-        "AZURE_API_KEY",
-        "AZURE_OPENAI_API_KEY",
-        "COHERE_API_KEY",
-        "DATABRICKS_TOKEN",
-        "DEEPSEEK_API_KEY",
-        "FIREWORKS_API_KEY",
-        "GITHUB_TOKEN",
-        "GH_TOKEN",
-        "GOOGLE_API_KEY",
-        "GOOGLE_APPLICATION_CREDENTIALS",
-        "GROQ_API_KEY",
-        "HF_TOKEN",
-        "HUGGINGFACE_HUB_TOKEN",
-        "MISTRAL_API_KEY",
-        "OPENAI_API_KEY",
-        "REPLICATE_API_TOKEN",
-        "TOGETHER_API_KEY",
-        "WANDB_API_KEY",
-    }
-)
-
-
 def _offline_child_environment(instance_id: str) -> dict[str, str]:
     if re.fullmatch(r"[0-9a-f]{32}", instance_id) is None:
         raise RealMLXExperimentError("run instance ID is invalid")
     environment = {
-        key: value
-        for key, value in os.environ.items()
-        if key not in _PROVIDER_CREDENTIAL_VARIABLES
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "HF_DATASETS_OFFLINE": "1",
+        "WANDB_MODE": "offline",
+        "WANDB_DISABLED": "true",
+        RUN_INSTANCE_ENV: instance_id,
     }
-    environment.update(
-        {
-            "HF_HUB_OFFLINE": "1",
-            "TRANSFORMERS_OFFLINE": "1",
-            "HF_DATASETS_OFFLINE": "1",
-            "WANDB_MODE": "offline",
-            "WANDB_DISABLED": "true",
-            RUN_INSTANCE_ENV: instance_id,
-        }
-    )
     return environment
 
 
@@ -4085,6 +4299,99 @@ def _directory_digest(directory: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+def _verify_machine_observation(
+    value: Any,
+    *,
+    preflight: bool,
+    status: str,
+    reason: str | None,
+) -> None:
+    if not isinstance(value, dict):
+        raise RealMLXExperimentError("run ledger machine observation is invalid")
+    _exact_keys(
+        value,
+        {
+            "chip",
+            "total_memory_bytes",
+            "vm_stat_available_ratio",
+            "system_swap_used_bytes",
+            "disk_free_bytes",
+            "heavy_process_count",
+            "heavy_process_categories",
+            "scopes",
+        },
+        "run ledger machine observation",
+    )
+    if value["chip"] is not None and not isinstance(value["chip"], str):
+        raise RealMLXExperimentError("run ledger chip observation is invalid")
+    for key in (
+        "total_memory_bytes",
+        "system_swap_used_bytes",
+        "disk_free_bytes",
+        "heavy_process_count",
+    ):
+        observed = value[key]
+        if observed is not None and (
+            isinstance(observed, bool) or not isinstance(observed, int) or observed < 0
+        ):
+            raise RealMLXExperimentError("run ledger integer observation is invalid")
+    available = value["vm_stat_available_ratio"]
+    if available is not None and (
+        isinstance(available, bool)
+        or not isinstance(available, (int, float))
+        or not math.isfinite(available)
+        or not 0 <= available <= 1
+    ):
+        raise RealMLXExperimentError("run ledger memory-ratio observation is invalid")
+    categories = value["heavy_process_categories"]
+    count = value["heavy_process_count"]
+    if categories is not None and (
+        not isinstance(categories, list)
+        or any(not isinstance(item, str) or not item for item in categories)
+        or categories != sorted(set(categories))
+        or count != len(categories)
+    ):
+        raise RealMLXExperimentError("run ledger process observation is invalid")
+    if (categories is None) != (count is None):
+        raise RealMLXExperimentError("run ledger process observation is incomplete")
+    if value["scopes"] != {
+        "memory": "system_wide_vm_stat",
+        "swap": "system_wide",
+        "disk": "output_workspace_filesystem",
+        "processes": "host_process_table_excluding_supervisor_and_child_tree",
+    }:
+        raise RealMLXExperimentError("run ledger observation scopes are invalid")
+    policy_reason = _machine_policy_reason(value, preflight=preflight)
+    if status == "passed":
+        if reason is not None or policy_reason is not None:
+            raise RealMLXExperimentError(
+                "passed run ledger observation violates policy"
+            )
+    elif status == "failed":
+        if reason is None or reason != policy_reason:
+            raise RealMLXExperimentError(
+                "failed run ledger observation does not match policy"
+            )
+    elif status == "not_started":
+        if not isinstance(reason, str) or not reason:
+            raise RealMLXExperimentError(
+                "not-started run ledger observation lacks a reason"
+            )
+    else:
+        raise RealMLXExperimentError("run ledger observation status is invalid")
+
+
+def _finite_elapsed(value: Any, context: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise RealMLXExperimentError(f"{context} elapsed time is invalid")
+    return float(value)
+
+
 def _verify_run_ledger(
     path: Path,
     *,
@@ -4099,15 +4406,31 @@ def _verify_run_ledger(
         if pattern.search(text):
             raise RealMLXExperimentError(f"run ledger contains {label}")
     rows = _parse_jsonl(path)
-    if len(rows) < len(REPLICATE_IDS) + 2:
+    if len(rows) < len(REPLICATE_IDS) * 4 + 2:
         raise RealMLXExperimentError("run ledger is incomplete")
-    if [row.get("sequence") for row in rows] != list(range(len(rows))):
+    sequences = [row.get("sequence") for row in rows]
+    if any(isinstance(item, bool) or not isinstance(item, int) for item in sequences):
+        raise RealMLXExperimentError("run ledger sequence is invalid")
+    if sequences != list(range(len(rows))):
         raise RealMLXExperimentError("run ledger sequence is not append-only")
     if (
         sum(row.get("event") == "run-start" for row in rows) != 1
         or sum(row.get("event") == "run-finalized" for row in rows) != 1
+        or rows[0].get("event") != "run-start"
+        or rows[-1].get("event") != "run-finalized"
     ):
         raise RealMLXExperimentError("run ledger boundary events are invalid")
+    timestamps: list[datetime] = []
+    for row in rows:
+        timestamp = row.get("timestamp")
+        if not _valid_utc_timestamp(timestamp):
+            raise RealMLXExperimentError("run ledger timestamp is invalid")
+        assert isinstance(timestamp, str)
+        timestamps.append(datetime.fromisoformat(timestamp.replace("Z", "+00:00")))
+    if any(
+        right < left for left, right in zip(timestamps, timestamps[1:], strict=False)
+    ):
+        raise RealMLXExperimentError("run ledger timestamps are out of order")
     binding_keys = {
         "expected_commit",
         "generator_package_digest",
@@ -4165,15 +4488,290 @@ def _verify_run_ledger(
         for row in planned
     ] != [(replicate_id, "planned", "planned") for replicate_id in REPLICATE_IDS]:
         raise RealMLXExperimentError("run ledger planned ID set is invalid")
-    finalized = Counter(
-        row.get("replicate_id") for row in rows if row.get("event") == "finalized"
-    )
-    if finalized != Counter(dict.fromkeys(REPLICATE_IDS, 1)):
-        raise RealMLXExperimentError("run ledger must finalize every ID exactly once")
-    final_rows = {
-        row["replicate_id"]: row for row in rows if row.get("event") == "finalized"
-    }
-    for replicate_id, row in final_rows.items():
+    started_instance_ids: set[str] = set()
+    started_instances_by_replicate: dict[str, str] = {}
+    final_rows: dict[str, dict[str, Any]] = {}
+    for replicate_id in REPLICATE_IDS:
+        lifecycle = [row for row in rows if row.get("replicate_id") == replicate_id]
+        if not lifecycle or lifecycle[0].get("event") != "planned":
+            raise RealMLXExperimentError(
+                "run ledger lifecycle does not begin as planned"
+            )
+        events = [str(row.get("event")) for row in lifecycle]
+        if events.count("planned") != 1 or events.count("preflight") != 1:
+            raise RealMLXExperimentError(
+                "run ledger lifecycle planning/preflight count is invalid"
+            )
+        if events.count("postflight") != 1 or events.count("finalized") != 1:
+            raise RealMLXExperimentError(
+                "run ledger lifecycle terminal count is invalid"
+            )
+        if events[-1] != "finalized":
+            raise RealMLXExperimentError(
+                "run ledger contains an event after replicate finalization"
+            )
+        preflight = lifecycle[1]
+        _exact_keys(
+            preflight,
+            {
+                "schema_version",
+                "sequence",
+                "timestamp",
+                "replicate_id",
+                "event",
+                "status",
+                "reason",
+                "observation",
+            },
+            "preflight ledger row",
+        )
+        if preflight["event"] != "preflight":
+            raise RealMLXExperimentError("run ledger preflight order is invalid")
+        preflight_reason = preflight["reason"]
+        external_preflight_failure = preflight_reason in {
+            "supervisor_aborted_before_start",
+            "total_timeout_before_start",
+        }
+        if external_preflight_failure:
+            if preflight["status"] != "failed":
+                raise RealMLXExperimentError(
+                    "run ledger external preflight state is invalid"
+                )
+            _verify_machine_observation(
+                preflight["observation"],
+                preflight=True,
+                status="not_started",
+                reason=preflight_reason,
+            )
+        else:
+            _verify_machine_observation(
+                preflight["observation"],
+                preflight=True,
+                status=preflight["status"],
+                reason=preflight_reason,
+            )
+
+        started_rows = [row for row in lifecycle if row.get("event") == "started"]
+        monitor_rows = [row for row in lifecycle if row.get("event") == "monitor"]
+        postflight = lifecycle[-2]
+        finalized = lifecycle[-1]
+        if postflight.get("event") != "postflight":
+            raise RealMLXExperimentError("run ledger postflight order is invalid")
+        _exact_keys(
+            finalized,
+            {
+                "schema_version",
+                "sequence",
+                "timestamp",
+                "replicate_id",
+                "event",
+                "status",
+                "reason",
+                "elapsed_seconds",
+                "attempt_digest",
+            },
+            "finalized ledger row",
+        )
+        finalized_elapsed = _finite_elapsed(finalized["elapsed_seconds"], "finalized")
+        if (
+            finalized["schema_version"] != "2"
+            or finalized["event"] != "finalized"
+            or finalized["status"] not in {"complete", "failed"}
+            or (finalized["status"] == "complete") != (finalized["reason"] is None)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", str(finalized["attempt_digest"]))
+            is None
+        ):
+            raise RealMLXExperimentError("run ledger finalization is invalid")
+
+        if started_rows:
+            if len(started_rows) != 1 or preflight["status"] != "passed":
+                raise RealMLXExperimentError("run ledger started lifecycle is invalid")
+            started = started_rows[0]
+            _exact_keys(
+                started,
+                {
+                    "schema_version",
+                    "sequence",
+                    "timestamp",
+                    "replicate_id",
+                    "event",
+                    "status",
+                    "reason",
+                    "child_instance_id_digest",
+                },
+                "started ledger row",
+            )
+            child_instance_id = started["child_instance_id_digest"]
+            if (
+                started["status"] != "running"
+                or started["reason"] is not None
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", str(child_instance_id)) is None
+                or child_instance_id in started_instance_ids
+            ):
+                raise RealMLXExperimentError(
+                    "run ledger child instance binding is invalid"
+                )
+            started_instance_ids.add(str(child_instance_id))
+            started_instances_by_replicate[replicate_id] = str(child_instance_id)
+            expected_events = [
+                "planned",
+                "preflight",
+                "started",
+                *(["monitor"] * len(monitor_rows)),
+                "postflight",
+                "finalized",
+            ]
+            if events != expected_events:
+                raise RealMLXExperimentError(
+                    "run ledger started lifecycle order is invalid"
+                )
+            previous_elapsed = 0.0
+            failed_monitors = 0
+            for index, monitor in enumerate(monitor_rows):
+                _exact_keys(
+                    monitor,
+                    {
+                        "schema_version",
+                        "sequence",
+                        "timestamp",
+                        "replicate_id",
+                        "event",
+                        "status",
+                        "reason",
+                        "observation",
+                        "elapsed_seconds",
+                    },
+                    "monitor ledger row",
+                )
+                elapsed = _finite_elapsed(monitor["elapsed_seconds"], "monitor")
+                cadence = elapsed - previous_elapsed
+                if not (
+                    MONITOR_INTERVAL_SECONDS - 0.1
+                    <= cadence
+                    <= MONITOR_INTERVAL_SECONDS * 2 + 0.1
+                    and elapsed < CHILD_TIMEOUT_SECONDS
+                ):
+                    raise RealMLXExperimentError(
+                        "run ledger monitor cadence is invalid"
+                    )
+                previous_elapsed = elapsed
+                _verify_machine_observation(
+                    monitor["observation"],
+                    preflight=False,
+                    status=monitor["status"],
+                    reason=monitor["reason"],
+                )
+                if monitor["status"] == "failed":
+                    failed_monitors += 1
+                    if index != len(monitor_rows) - 1:
+                        raise RealMLXExperimentError(
+                            "run ledger has events after a failed monitor"
+                        )
+            if failed_monitors > 1:
+                raise RealMLXExperimentError(
+                    "run ledger contains multiple failed monitors"
+                )
+            _exact_keys(
+                postflight,
+                {
+                    "schema_version",
+                    "sequence",
+                    "timestamp",
+                    "replicate_id",
+                    "event",
+                    "status",
+                    "reason",
+                    "observation",
+                    "elapsed_seconds",
+                },
+                "postflight ledger row",
+            )
+            postflight_elapsed = _finite_elapsed(
+                postflight["elapsed_seconds"], "postflight"
+            )
+            if (
+                postflight_elapsed < previous_elapsed
+                or postflight_elapsed
+                > TOTAL_TIMEOUT_SECONDS + 2 * PROCESS_GROUP_GRACE_SECONDS
+            ):
+                raise RealMLXExperimentError(
+                    "run ledger postflight elapsed time is invalid"
+                )
+            _verify_machine_observation(
+                postflight["observation"],
+                preflight=False,
+                status=postflight["status"],
+                reason=postflight["reason"],
+            )
+            if finalized_elapsed < postflight_elapsed:
+                raise RealMLXExperimentError(
+                    "run ledger finalization elapsed time regressed"
+                )
+            if finalized["status"] == "complete" and (
+                any(row["status"] != "passed" for row in monitor_rows)
+                or postflight["status"] != "passed"
+            ):
+                raise RealMLXExperimentError(
+                    "complete run ledger lifecycle contains a failed gate"
+                )
+        else:
+            if monitor_rows or events != [
+                "planned",
+                "preflight",
+                "postflight",
+                "finalized",
+            ]:
+                raise RealMLXExperimentError(
+                    "run ledger not-started lifecycle order is invalid"
+                )
+            _exact_keys(
+                postflight,
+                {
+                    "schema_version",
+                    "sequence",
+                    "timestamp",
+                    "replicate_id",
+                    "event",
+                    "status",
+                    "reason",
+                    "observation",
+                },
+                "not-started postflight ledger row",
+            )
+            if (
+                finalized["status"] != "failed"
+                or postflight["status"] != "not_started"
+                or not isinstance(postflight["reason"], str)
+                or postflight["reason"] != finalized["reason"]
+                or (
+                    preflight["status"] == "passed"
+                    and postflight["reason"]
+                    not in {
+                        "source_validation_failed",
+                        "child_launch_failed",
+                        "supervisor_aborted",
+                    }
+                )
+                or (
+                    preflight["status"] == "failed"
+                    and postflight["reason"] != preflight["reason"]
+                )
+            ):
+                raise RealMLXExperimentError(
+                    "run ledger not-started terminal state is invalid"
+                )
+            _verify_machine_observation(
+                postflight["observation"],
+                preflight=False,
+                status="not_started",
+                reason=postflight["reason"],
+            )
+        if finalized["status"] == "complete" and len(started_rows) != 1:
+            raise RealMLXExperimentError(
+                "complete replicate must have exactly one started event"
+            )
+        final_rows[replicate_id] = finalized
+        row = finalized
         _exact_keys(
             row,
             {
@@ -4194,10 +4792,6 @@ def _verify_run_ledger(
             or row["status"] not in {"complete", "failed"}
             or (row["status"] == "complete") != (row["reason"] is None)
             or re.fullmatch(r"sha256:[0-9a-f]{64}", str(row["attempt_digest"])) is None
-            or isinstance(row["elapsed_seconds"], bool)
-            or not isinstance(row["elapsed_seconds"], (int, float))
-            or not math.isfinite(row["elapsed_seconds"])
-            or row["elapsed_seconds"] < 0
         ):
             raise RealMLXExperimentError("run ledger finalization is invalid")
         if attempts_dir is not None:
@@ -4214,6 +4808,36 @@ def _verify_run_ledger(
                 raise RealMLXExperimentError(
                     "run ledger finalization does not match attempt"
                 )
+            environment_path = attempt_dir / "environment.json"
+            if row["status"] == "complete" and environment_path.is_file():
+                environment = _safe_object(environment_path)
+                run_instance_id = environment.get("run_instance_id")
+                if run_instance_id is not None and (
+                    not isinstance(run_instance_id, str)
+                    or re.fullmatch(r"[0-9a-f]{32}", run_instance_id) is None
+                    or _digest_bytes(run_instance_id.encode("ascii"))
+                    != started_instances_by_replicate.get(replicate_id)
+                ):
+                    raise RealMLXExperimentError(
+                        "run ledger child instance does not match attempt"
+                    )
+    finalized_elapsed_values = [
+        _finite_elapsed(row["elapsed_seconds"], "finalized")
+        for row in rows
+        if row.get("event") == "finalized"
+    ]
+    if any(
+        right < left
+        for left, right in zip(
+            finalized_elapsed_values,
+            finalized_elapsed_values[1:],
+            strict=False,
+        )
+    ) or (
+        finalized_elapsed_values
+        and finalized_elapsed_values[-1] > TOTAL_TIMEOUT_SECONDS + 300
+    ):
+        raise RealMLXExperimentError("run ledger finalized elapsed times are invalid")
     run_finalized = rows[-1]
     _exact_keys(
         run_finalized,
@@ -4259,8 +4883,6 @@ def _verify_run_ledger(
         _scan_private_keys(row, "run_ledger")
         if row.get("schema_version") != "2":
             raise RealMLXExperimentError("run ledger schema is invalid")
-        if not _valid_utc_timestamp(row.get("timestamp")):
-            raise RealMLXExperimentError("run ledger timestamp is invalid")
         event = row.get("event")
         if event not in {
             "run-start",
@@ -4314,6 +4936,7 @@ def _ledger_event(
     observation: Mapping[str, Any] | None = None,
     elapsed_seconds: float | None = None,
     attempt_digest: str | None = None,
+    child_instance_id_digest: str | None = None,
 ) -> None:
     row: dict[str, Any] = {
         "schema_version": "2",
@@ -4330,6 +4953,8 @@ def _ledger_event(
         row["elapsed_seconds"] = round(elapsed_seconds, 6)
     if attempt_digest is not None:
         row["attempt_digest"] = attempt_digest
+    if child_instance_id_digest is not None:
+        row["child_instance_id_digest"] = child_instance_id_digest
     _append_run_ledger(ledger, row)
 
 
@@ -4365,13 +4990,8 @@ def _write_sanitized_run_ledger(
     attempts_dir: Path,
 ) -> None:
     rows = _parse_jsonl(source)
-    retained = [
-        dict(row)
-        for row in rows
-        if row.get("event") in {"run-start", "planned", "finalized", "run-finalized"}
-    ]
-    for sequence, row in enumerate(retained):
-        row["sequence"] = sequence
+    retained = [dict(row) for row in rows]
+    for row in retained:
         if row["event"] == "finalized":
             row["attempt_digest"] = _directory_digest(
                 attempts_dir / str(row["replicate_id"])
@@ -4576,6 +5196,9 @@ def run_all_replicates(
                         event="started",
                         status="running",
                         reason=None,
+                        child_instance_id_digest=_digest_bytes(
+                            instance_id.encode("ascii")
+                        ),
                     )
                     ledger_sequence += 1
                     next_monitor = time.monotonic() + MONITOR_INTERVAL_SECONDS
@@ -4666,10 +5289,16 @@ def run_all_replicates(
                     sequence=ledger_sequence,
                     replicate_id=replicate_id,
                     event="postflight",
-                    status="passed" if postflight_reason is None else "failed",
-                    reason=postflight_reason,
+                    status=(
+                        "not_started"
+                        if process is None
+                        else "passed" if postflight_reason is None else "failed"
+                    ),
+                    reason=reason if process is None else postflight_reason,
                     observation=postflight,
-                    elapsed_seconds=time.monotonic() - child_started,
+                    elapsed_seconds=(
+                        None if process is None else time.monotonic() - child_started
+                    ),
                 )
                 ledger_sequence += 1
                 if reason is None:
@@ -4739,7 +5368,10 @@ def run_all_replicates(
     results_digest = None
     if completed >= 5:
         results = _public_results_from_private(attempts)
-        _verify_public_results(results)
+        _verify_public_results(
+            results,
+            complete_replicate_ids=_complete_attempt_ids(attempts),
+        )
         results_digest = _digest_bytes(_json_bytes(results))
     _finalize_run_ledger(
         ledger,

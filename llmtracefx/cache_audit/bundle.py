@@ -54,6 +54,10 @@ BUNDLE_DATA_FILES = (
     "evidence_bundle.py",
 )
 BUNDLE_FILES = (*BUNDLE_DATA_FILES, "SHA256SUMS")
+DATA_ONLY_BUNDLE_DATA_FILES = tuple(
+    name for name in BUNDLE_DATA_FILES if name != "evidence_bundle.py"
+)
+DATA_ONLY_BUNDLE_FILES = (*DATA_ONLY_BUNDLE_DATA_FILES, "SHA256SUMS")
 _CHECKSUM = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]*)$")
 PUBLIC_REDACTED_FACT_SCOPE = "public_redacted_fact"
 PUBLIC_REDACTED_TIMING_SCOPE = "public_redacted_timing"
@@ -974,6 +978,8 @@ def write_bundle(
     output_dir: Path,
     manifest: AuditManifest,
     records: Sequence[RequestEvidence],
+    *,
+    data_only: bool = False,
 ) -> None:
     """Write one complete bundle atomically at file granularity."""
 
@@ -1022,14 +1028,24 @@ def write_bundle(
         render_reuse_alignment_svg(records),
     )
     atomic_write_text(output_dir / "report.html", render_html(manifest, records))
-    atomic_write_text(
-        output_dir / "evidence_bundle.py",
-        _portable_verifier(manifest),
-    )
+    if not data_only:
+        atomic_write_text(
+            output_dir / "evidence_bundle.py",
+            _portable_verifier(manifest),
+        )
+    checksum_files = DATA_ONLY_BUNDLE_DATA_FILES if data_only else BUNDLE_DATA_FILES
     checksums = "".join(
-        f"{_sha256(output_dir / name)}  {name}\n" for name in BUNDLE_DATA_FILES
+        f"{_sha256(output_dir / name)}  {name}\n" for name in checksum_files
     )
     atomic_write_text(output_dir / "SHA256SUMS", checksums)
+
+
+def copy_data_only_bundle(source_dir: Path, output_dir: Path) -> None:
+    """Verify a standard bundle and reproduce it without executable content."""
+
+    manifest, records = read_bundle(source_dir)
+    write_bundle(output_dir, manifest, records, data_only=True)
+    verify_bundle(output_dir, data_only=True)
 
 
 def _load_json(path: Path) -> Any:
@@ -1064,7 +1080,7 @@ def _load_records(path: Path) -> list[RequestEvidence]:
     return records
 
 
-def _verify_checksums(bundle_dir: Path) -> None:
+def _verify_checksums(bundle_dir: Path, *, data_only: bool = False) -> None:
     text = read_bounded_regular_text(
         bundle_dir / "SHA256SUMS",
         max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
@@ -1078,15 +1094,17 @@ def _verify_checksums(bundle_dir: Path) -> None:
         if name in found:
             raise CacheAuditBundleError(f"duplicate checksum entry: {name}")
         found[name] = digest
-    if set(found) != set(BUNDLE_DATA_FILES):
+    expected_files = DATA_ONLY_BUNDLE_DATA_FILES if data_only else BUNDLE_DATA_FILES
+    if set(found) != set(expected_files):
         raise CacheAuditBundleError("checksum file list is incomplete or unexpected")
     for name, expected in found.items():
         if _sha256(bundle_dir / name) != expected:
             raise CacheAuditBundleError(f"checksum mismatch: {name}")
 
 
-def _verify_public_privacy(bundle_dir: Path) -> None:
-    for name in BUNDLE_FILES:
+def _verify_public_privacy(bundle_dir: Path, *, data_only: bool = False) -> None:
+    bundle_files = DATA_ONLY_BUNDLE_FILES if data_only else BUNDLE_FILES
+    for name in bundle_files:
         text = read_bounded_regular_text(
             bundle_dir / name,
             max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
@@ -1298,22 +1316,23 @@ def _verify_reference_oracle(
             )
 
 
-def verify_bundle(bundle_dir: Path) -> dict[str, Any]:
+def verify_bundle(bundle_dir: Path, *, data_only: bool = False) -> dict[str, Any]:
     """Verify checksums, schema, request order, verdicts, reports, and privacy."""
 
     if not bundle_dir.is_dir() or bundle_dir.is_symlink():
         raise CacheAuditBundleError("bundle must be a regular directory")
+    bundle_files = DATA_ONLY_BUNDLE_FILES if data_only else BUNDLE_FILES
     actual = {item.name for item in bundle_dir.iterdir()}
-    if actual != set(BUNDLE_FILES):
+    if actual != set(bundle_files):
         raise CacheAuditBundleError(
-            f"bundle files differ: missing={sorted(set(BUNDLE_FILES) - actual)}, "
-            f"extra={sorted(actual - set(BUNDLE_FILES))}"
+            f"bundle files differ: missing={sorted(set(bundle_files) - actual)}, "
+            f"extra={sorted(actual - set(bundle_files))}"
         )
-    for name in BUNDLE_FILES:
+    for name in bundle_files:
         path = bundle_dir / name
         if path.is_symlink() or not path.is_file():
             raise CacheAuditBundleError(f"{name} must be a regular non-symlink file")
-    _verify_checksums(bundle_dir)
+    _verify_checksums(bundle_dir, data_only=data_only)
     manifest = AuditManifest.from_dict(_load_json(bundle_dir / "audit-manifest.json"))
     current_package_matches = (
         manifest.generator_package_digest == package_source_digest()
@@ -1407,13 +1426,13 @@ def verify_bundle(bundle_dir: Path) -> dict[str, Any]:
         max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
     ) != render_html(manifest, records):
         raise CacheAuditBundleError("HTML report is not deterministic")
-    if read_bounded_regular_text(
+    if not data_only and read_bounded_regular_text(
         bundle_dir / "evidence_bundle.py",
         max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
     ) != _portable_verifier(manifest):
         raise CacheAuditBundleError("portable verifier wrapper is not deterministic")
     if manifest.publication_mode is not PublicationMode.PRIVATE:
-        _verify_public_privacy(bundle_dir)
+        _verify_public_privacy(bundle_dir, data_only=data_only)
     return {
         "run_id": manifest.run_id,
         "backend": manifest.backend,
@@ -1433,10 +1452,12 @@ def verify_bundle(bundle_dir: Path) -> dict[str, Any]:
     }
 
 
-def read_bundle(bundle_dir: Path) -> tuple[AuditManifest, list[RequestEvidence]]:
+def read_bundle(
+    bundle_dir: Path, *, data_only: bool = False
+) -> tuple[AuditManifest, list[RequestEvidence]]:
     """Load a checksummed bundle after full verification."""
 
-    verify_bundle(bundle_dir)
+    verify_bundle(bundle_dir, data_only=data_only)
     return (
         AuditManifest.from_dict(_load_json(bundle_dir / "audit-manifest.json")),
         _load_records(bundle_dir / "request-evidence.jsonl"),
