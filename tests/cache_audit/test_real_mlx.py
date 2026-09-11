@@ -454,6 +454,14 @@ def test_import_shadow_scan_is_narrow_and_fail_closed(
     (repository / "mlx_lm").mkdir()
     with pytest.raises(RealMLXExperimentError, match="import shadow"):
         real_mlx_module._reject_import_shadows(output_workspace)
+    (repository / "mlx_lm").rmdir()
+    (output_parent / "numpy.py").write_text("raise RuntimeError('shadowed')\n")
+    with pytest.raises(RealMLXExperimentError, match="import shadow"):
+        real_mlx_module._reject_import_shadows(output_workspace)
+    (output_parent / "numpy.py").unlink()
+    (repository / "tokenizers").mkdir()
+    with pytest.raises(RealMLXExperimentError, match="import shadow"):
+        real_mlx_module._reject_import_shadows(output_workspace)
 
 
 def test_source_validation_rejects_tracked_dirt_and_package_drift(
@@ -869,7 +877,11 @@ def test_failed_replicate_finishes_with_one_valid_terminal_marker(
         output,
         replicate_id="replicate-0",
         public=False,
-    ) == {"replicate_id": "replicate-0", "status": "failed"}
+    ) == {
+        "replicate_id": "replicate-0",
+        "status": "failed",
+        "reason": "replicate_execution_failed",
+    }
     attempt = json.loads((output / "attempt.json").read_text())
     assert attempt["reason"] == "replicate_execution_failed"
 
@@ -1046,7 +1058,7 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                     "replicate_id": replicate_id,
                     "status": "failed",
                     "replacement": False,
-                    "reason": "child_launch_failed",
+                    "reason": "preflight_heavy_process_present",
                     "failed_at": "2026-01-01T00:00:00.000000Z",
                 },
             )
@@ -1203,14 +1215,24 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     }
     for replicate_id in REPLICATE_IDS:
         attempt = json.loads((attempts / replicate_id / "attempt.json").read_text())
+        preflight_failed = attempt["status"] == "failed"
+        preflight_observation = (
+            {
+                **observation,
+                "heavy_process_count": 1,
+                "heavy_process_categories": ["other_large_process"],
+            }
+            if preflight_failed
+            else observation
+        )
         real_mlx_module._ledger_event(
             ledger,
             sequence=sequence,
             replicate_id=replicate_id,
             event="preflight",
-            status="passed",
-            reason=None,
-            observation=observation,
+            status="failed" if preflight_failed else "passed",
+            reason=attempt.get("reason") if preflight_failed else None,
+            observation=preflight_observation,
         )
         sequence += 1
         if attempt["status"] == "complete":
@@ -1292,6 +1314,11 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     private_index = json.loads((private / "replicate-index.json").read_text())
     assert private_index["lane_request_counts"] == {"1k": 90, "4k": 90}
     assert set(private_index["lane_scenario_counts"]) == set(LANE_IDS)
+    assert private_index["replicates"][-1] == {
+        "replicate_id": "replicate-5",
+        "status": "failed",
+        "reason": "preflight_heavy_process_present",
+    }
     private_claims = json.loads((private / "claim-matrix.json").read_text())
     assert private_claims["lane_request_observations"] == {
         "1k": 90,
@@ -1341,6 +1368,16 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     assert len(contract["combined_blocks"]) == 14
     assert set(contract["exact_block_schedules"]) == set(REPLICATE_IDS)
     assert contract["evidence_binding"]["expected_commit"] == "a" * 40
+    assert contract["replicate_eligibility"] == {
+        "attempted_replicates": 6,
+        "maximum_failed_replicates": 1,
+        "failed_replicate_must_be_never_started": True,
+        "allowed_failed_reasons": sorted(
+            real_mlx_module._ALLOWED_PREFLIGHT_MACHINE_POLICY_REASONS
+        ),
+        "started_failure_disqualifies": True,
+        "supervisor_aborted_before_start_disqualifies": True,
+    }
     assert (
         contract["integrity_and_authenticity"]["sha256sums"] == "integrity_only_unkeyed"
     )
@@ -1768,6 +1805,7 @@ def test_run_ledger_rejects_supervisor_abort_without_earlier_aborting_reason(
     ]
     for row in rows:
         if row.get("replicate_id") == "replicate-5" and row["event"] in {
+            "preflight",
             "postflight",
             "finalized",
         }:
@@ -1779,6 +1817,126 @@ def test_run_ledger_rejects_supervisor_abort_without_earlier_aborting_reason(
 
     with pytest.raises(RealMLXExperimentError, match="lacks an earlier aborting"):
         real_mlx_module._verify_run_ledger(ledger)
+
+
+def test_five_of_six_eligibility_rejects_non_preflight_and_started_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _make_attempts(tmp_path, monkeypatch)
+    ledger = workspace / "run-ledger.jsonl"
+    original = [
+        json.loads(line) for line in ledger.read_text(encoding="ascii").splitlines()
+    ]
+
+    def write_rows(rows: list[dict[str, Any]]) -> None:
+        for sequence, row in enumerate(rows):
+            row["sequence"] = sequence
+        ledger.write_text(
+            "".join(real_mlx_module._json_line(row) for row in rows),
+            encoding="ascii",
+        )
+
+    non_preflight = [dict(row) for row in original[:-1]]
+    preflight = next(
+        row
+        for row in non_preflight
+        if row.get("replicate_id") == "replicate-5" and row["event"] == "preflight"
+    )
+    preflight["status"] = "passed"
+    preflight["reason"] = None
+    preflight["observation"] = {
+        **preflight["observation"],
+        "heavy_process_count": 0,
+        "heavy_process_categories": [],
+    }
+    for row in non_preflight:
+        if row.get("replicate_id") == "replicate-5" and row["event"] in {
+            "postflight",
+            "finalized",
+        }:
+            row["reason"] = "child_launch_failed"
+    write_rows(non_preflight)
+    real_mlx_module._finalize_run_ledger(
+        ledger,
+        sequence=len(non_preflight),
+        complete_replicates=5,
+        results_digest=None,
+    )
+    finalized = json.loads(ledger.read_text(encoding="ascii").splitlines()[-1])
+    assert finalized["status"] == "aggregate_ineligible"
+    assert finalized["reason"] == "ineligible_replicate_failure"
+    real_mlx_module._verify_run_ledger(ledger)
+
+    rows = [dict(row) for row in original[:-1]]
+    preflight = next(
+        row
+        for row in rows
+        if row.get("replicate_id") == "replicate-5" and row["event"] == "preflight"
+    )
+    preflight["status"] = "passed"
+    preflight["reason"] = None
+    preflight["observation"] = {
+        **preflight["observation"],
+        "heavy_process_count": 0,
+        "heavy_process_categories": [],
+    }
+    postflight_index = next(
+        index
+        for index, row in enumerate(rows)
+        if row.get("replicate_id") == "replicate-5" and row["event"] == "postflight"
+    )
+    rows.insert(
+        postflight_index,
+        {
+            "schema_version": "2",
+            "sequence": -1,
+            "timestamp": rows[postflight_index]["timestamp"],
+            "replicate_id": "replicate-5",
+            "event": "started",
+            "status": "running",
+            "reason": None,
+            "child_instance_id_digest": "sha256:" + "f" * 64,
+        },
+    )
+    postflight = rows[postflight_index + 1]
+    postflight["status"] = "passed"
+    postflight["reason"] = None
+    postflight["elapsed_seconds"] = 0.5
+    failed = next(
+        row
+        for row in rows
+        if row.get("replicate_id") == "replicate-5" and row["event"] == "finalized"
+    )
+    failed["reason"] = "child_exit_nonzero"
+    write_rows(rows)
+    real_mlx_module._finalize_run_ledger(
+        ledger,
+        sequence=len(rows),
+        complete_replicates=5,
+        results_digest=None,
+    )
+    finalized = json.loads(ledger.read_text(encoding="ascii").splitlines()[-1])
+    assert finalized["status"] == "aggregate_ineligible"
+    real_mlx_module._verify_run_ledger(ledger)
+
+    synthetic = [
+        {
+            "event": "finalized",
+            "replicate_id": replicate_id,
+            "status": "complete",
+            "reason": None,
+        }
+        for replicate_id in REPLICATE_IDS[:5]
+    ]
+    synthetic.append(
+        {
+            "event": "finalized",
+            "replicate_id": "replicate-5",
+            "status": "failed",
+            "reason": "supervisor_aborted_before_start",
+        }
+    )
+    assert not real_mlx_module._aggregate_eligibility_from_rows(synthetic)
 
 
 def test_capacity_eviction_gate_requires_both_lane_treatments(

@@ -299,7 +299,7 @@ tracked changes, package-source drift, top-level import-shadow candidates, an
 existing output workspace, or an unavailable macOS network sandbox. Before
 creating the workspace, it runs an isolated (`python -I`) model-free probe from
 a resolved non-repository directory under the exact network-denied sandbox.
-The probe verifies installed MLX, MLX-LM, Transformers, and safetensors
+The probe verifies installed MLX, MLX-LM, NumPy, Tokenizers, Transformers, and safetensors
 versions and complete package-tree identities, including the trusted install
 root, import origin, regular-file count, total bytes, and deterministic tree
 digest. Bytecode and mutable cache directories are excluded from the identity;
@@ -356,6 +356,11 @@ Failed IDs retain bounded private logs and
 partial artifacts in `private-artifacts/`, receive exactly one failed marker,
 and are never replaced. Failed process-group cleanup or a surviving orphan
 aborts all later launches while still finalizing every planned ID exactly once.
+Five-of-six eligibility permits at most one failed replicate, and only when it
+never started and its finalized reason is an explicit preflight machine-policy
+refusal. A started failure, launch failure, timeout, source failure, or
+`supervisor_aborted_before_start` cascade disqualifies the full run even when
+five replicates completed; failed IDs are never replaced.
 After the replicates finish, a terminal ledger row is appended even if public
 results derivation or verification fails; that state is recorded as
 `results_derivation_failed` with no results digest. The command exits nonzero
@@ -425,4 +430,8 @@ descriptive medians and ranges only, possible schedule/order and thermal
 effects, non-causal allocator-active/cache, RSS, swap, and pressure levels,
 monitoring/stage-observation scheduling perturbation, no block-cache
 interpretation of allocation step 256, token-granular MLX cache behavior, and
-no power, energy, kernel, or utilization claims.
+no power, energy, kernel, or utilization claims. The constant-target
+`CACHE_OK` identity/correctness check is a low-power guard and cannot rule out
+all KV corruption. Evidence is scoped to one host, model, and conversion. The
+output workspace must be outside every repository and free of top-level import
+shadows for every runtime-tree package.

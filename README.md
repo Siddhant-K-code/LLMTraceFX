@@ -731,6 +731,13 @@ implement a side-effect-free `--help` path.
 - MLX collection requires Apple silicon and an existing local model. There is
   no direct CUDA collector; NVIDIA llama.cpp evidence is imported from captured
   output.
+- The canonical real-MLX audit is scoped to one host, model, and conversion.
+  Its constant-target `CACHE_OK` identity/correctness check is a low-power
+  guard that cannot rule out all KV corruption. Five-of-six eligibility allows
+  only one excluded, never-started replicate with an explicit preflight
+  machine-policy refusal; started failures and supervisor-abort cascades
+  disqualify the run, with no replacement. Its output workspace must be
+  outside every repository and free of runtime-package import shadows.
 - API timing is observed at the client. It cannot expose provider queueing,
   prefill, kernel execution, or server-side clocks.
 - Native Qwen MTP execution is not supported by the current MLX-LM path.

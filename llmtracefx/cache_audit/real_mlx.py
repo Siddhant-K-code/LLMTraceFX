@@ -119,6 +119,8 @@ REQUIRED_HOST_MEMORY_BYTES = 24 * 1024**3
 REQUIRED_LLMTRACEFX_VERSION = "1.0.0"
 REQUIRED_TRANSFORMERS_VERSION = "5.16.1"
 REQUIRED_SAFETENSORS_VERSION = "0.8.0"
+REQUIRED_NUMPY_VERSION = "2.2.6"
+REQUIRED_TOKENIZERS_VERSION = "0.23.1"
 CHILD_TIMEOUT_SECONDS = 12 * 60
 TOTAL_TIMEOUT_SECONDS = 90 * 60
 MONITOR_INTERVAL_SECONDS = 2.0
@@ -188,12 +190,16 @@ SANDBOX_POLICY_DIGEST = (
 _RUNTIME_PACKAGE_VERSIONS = {
     "mlx": REQUIRED_MLX_VERSION,
     "mlx_lm": REQUIRED_MLX_LM_VERSION,
+    "numpy": REQUIRED_NUMPY_VERSION,
+    "tokenizers": REQUIRED_TOKENIZERS_VERSION,
     "transformers": REQUIRED_TRANSFORMERS_VERSION,
     "safetensors": REQUIRED_SAFETENSORS_VERSION,
 }
 _RUNTIME_DISTRIBUTIONS = {
     "mlx": "mlx",
     "mlx_lm": "mlx-lm",
+    "numpy": "numpy",
+    "tokenizers": "tokenizers",
     "transformers": "transformers",
     "safetensors": "safetensors",
 }
@@ -202,6 +208,10 @@ _IMPORT_SHADOW_CANDIDATES = (
     "mlx",
     "mlx_lm.py",
     "mlx_lm",
+    "numpy.py",
+    "numpy",
+    "tokenizers.py",
+    "tokenizers",
     "transformers.py",
     "transformers",
     "safetensors.py",
@@ -242,6 +252,18 @@ _ABORT_LATER_REASONS = {
     "source_validation_failed",
     "total_timeout",
     "total_timeout_before_start",
+}
+_ALLOWED_PREFLIGHT_MACHINE_POLICY_REASONS = {
+    "preflight_host_chip_mismatch",
+    "preflight_host_memory_mismatch",
+    "preflight_memory_unavailable",
+    "preflight_memory_below_floor",
+    "preflight_swap_unavailable",
+    "preflight_swap_above_ceiling",
+    "preflight_disk_unavailable",
+    "preflight_disk_below_floor",
+    "preflight_process_inventory_unavailable",
+    "preflight_heavy_process_present",
 }
 _PRIVATE_REPLICATE_FILES = {
     "attempt.json",
@@ -2535,7 +2557,11 @@ def verify_replicate(
         ):
             raise RealMLXExperimentError("failed attempt reason/timestamp is invalid")
         _verify_teardown(_safe_object(directory / "teardown.json"), complete=False)
-        return {"replicate_id": replicate_id, "status": status}
+        return {
+            "replicate_id": replicate_id,
+            "status": status,
+            "reason": attempt["reason"],
+        }
 
     _exact_keys(
         attempt,
@@ -2860,6 +2886,11 @@ def _replicate_index(
     if complete < 5:
         raise RealMLXExperimentError(
             "aggregate requires at least 5 complete of 6 attempts"
+        )
+    if not _aggregate_eligibility_from_rows(_parse_jsonl(root / "run-ledger.jsonl")):
+        raise RealMLXExperimentError(
+            "aggregate requires six complete attempts or five complete attempts "
+            "and one allowed never-started preflight refusal"
         )
     if len(compatible_bindings) != 1:
         raise RealMLXExperimentError("complete replicates have incompatible bindings")
@@ -3847,6 +3878,14 @@ def _experiment_contract(
         "replicate_ids": list(REPLICATE_IDS),
         "minimum_complete": 5,
         "replacement_allowed": False,
+        "replicate_eligibility": {
+            "attempted_replicates": 6,
+            "maximum_failed_replicates": 1,
+            "failed_replicate_must_be_never_started": True,
+            "allowed_failed_reasons": sorted(_ALLOWED_PREFLIGHT_MACHINE_POLICY_REASONS),
+            "started_failure_disqualifies": True,
+            "supervisor_aborted_before_start_disqualifies": True,
+        },
         "evidence_binding": dict(binding),
         "results_digest": results_digest,
         "integrity_and_authenticity": {
@@ -3889,6 +3928,11 @@ def _experiment_contract(
             "scheduling but are excluded from client clocks",
             "allocation step 256 is not block-cache behavior",
             "MLX cache reuse is token-granular",
+            "constant-target CACHE_OK identity/correctness is a low-power guard "
+            "that cannot rule out all KV corruption",
+            "evidence is scoped to one host, model, and conversion",
+            "at most one replicate may be excluded, only for an allowed "
+            "never-started preflight machine-policy refusal",
             "no power, energy, kernel, or utilization claims",
             "namespace isolation is harness-enforced key separation, not native MLX tenancy",
         ],
@@ -4019,6 +4063,12 @@ def assemble_aggregate(run_workspace: Path, output_dir: Path) -> dict[str, Any]:
     if sum(state["status"] == "complete" for state in states) < 5:
         raise RealMLXExperimentError(
             "aggregate requires at least 5 complete of 6 attempts"
+        )
+    _verify_run_ledger(ledger, attempts_dir=attempts_dir)
+    if not _aggregate_eligibility_from_rows(_parse_jsonl(ledger)):
+        raise RealMLXExperimentError(
+            "aggregate requires six complete attempts or five complete attempts "
+            "and one allowed never-started preflight refusal"
         )
     output_dir.mkdir(parents=True)
     (output_dir / "replicates").mkdir()
@@ -5153,6 +5203,35 @@ def _finite_elapsed(value: Any, context: str) -> float:
     return float(value)
 
 
+def _aggregate_eligibility_from_rows(rows: Sequence[Mapping[str, Any]]) -> bool:
+    finalized = {
+        str(row.get("replicate_id")): row
+        for row in rows
+        if row.get("event") == "finalized" and row.get("replicate_id") in REPLICATE_IDS
+    }
+    if set(finalized) != set(REPLICATE_IDS):
+        return False
+    failed = [
+        (replicate_id, row)
+        for replicate_id, row in finalized.items()
+        if row.get("status") != "complete"
+    ]
+    if not failed:
+        return True
+    if len(failed) != 1:
+        return False
+    replicate_id, row = failed[0]
+    started = any(
+        item.get("event") == "started" and item.get("replicate_id") == replicate_id
+        for item in rows
+    )
+    return (
+        not started
+        and row.get("status") == "failed"
+        and row.get("reason") in _ALLOWED_PREFLIGHT_MACHINE_POLICY_REASONS
+    )
+
+
 def _verify_run_ledger(
     path: Path,
     *,
@@ -5681,7 +5760,7 @@ def _verify_run_ledger(
         "run-finalized ledger row",
     )
     complete = sum(row["status"] == "complete" for row in final_rows.values())
-    eligible = complete >= 5
+    eligible = _aggregate_eligibility_from_rows(rows)
     results_derivation_failed = (
         run_finalized["status"] == "results_derivation_failed"
         and run_finalized["reason"] == "results_derivation_failed"
@@ -5699,10 +5778,22 @@ def _verify_run_ledger(
                 != (
                     "aggregate_eligible"
                     if eligible
-                    else "insufficient_complete_replicates"
+                    else (
+                        "insufficient_complete_replicates"
+                        if complete < 5
+                        else "aggregate_ineligible"
+                    )
                 )
                 or run_finalized["reason"]
-                != (None if eligible else "insufficient_complete_replicates")
+                != (
+                    None
+                    if eligible
+                    else (
+                        "insufficient_complete_replicates"
+                        if complete < 5
+                        else "ineligible_replicate_failure"
+                    )
+                )
                 or (
                     eligible
                     and re.fullmatch(
@@ -5808,11 +5899,34 @@ def _finalize_run_ledger(
     results_digest: str | None,
     results_derivation_failed: bool = False,
 ) -> None:
-    eligible = complete_replicates >= 5
+    rows = _parse_jsonl(ledger)
+    complete = sum(
+        row.get("event") == "finalized" and row.get("status") == "complete"
+        for row in rows
+    )
+    if complete != complete_replicates:
+        raise RealMLXExperimentError(
+            "run ledger complete replicate count does not match finalizations"
+        )
+    eligible = _aggregate_eligibility_from_rows(rows)
+    if results_derivation_failed and not eligible:
+        raise RealMLXExperimentError(
+            "ineligible run cannot have a results derivation failure"
+        )
+    if not eligible and results_digest is not None:
+        raise RealMLXExperimentError("ineligible run cannot bind results")
     status = (
         "results_derivation_failed"
         if results_derivation_failed
-        else "aggregate_eligible" if eligible else "insufficient_complete_replicates"
+        else (
+            "aggregate_eligible"
+            if eligible
+            else (
+                "insufficient_complete_replicates"
+                if complete_replicates < 5
+                else "aggregate_ineligible"
+            )
+        )
     )
     _append_run_ledger(
         ledger,
@@ -5825,7 +5939,15 @@ def _finalize_run_ledger(
             "reason": (
                 "results_derivation_failed"
                 if results_derivation_failed
-                else None if eligible else "insufficient_complete_replicates"
+                else (
+                    None
+                    if eligible
+                    else (
+                        "insufficient_complete_replicates"
+                        if complete_replicates < 5
+                        else "ineligible_replicate_failure"
+                    )
+                )
             ),
             "complete_replicates": complete_replicates,
             "results_digest": results_digest,
@@ -6233,9 +6355,10 @@ def run_all_replicates(
         )
         ledger_sequence += 1
 
+    eligible = _aggregate_eligibility_from_rows(_parse_jsonl(ledger))
     results_digest = None
     results_derivation_failed = False
-    if completed >= 5:
+    if eligible:
         try:
             results = _public_results_from_private(attempts)
             _verify_public_results(
@@ -6265,7 +6388,7 @@ def run_all_replicates(
         expected_results_digest=results_digest,
     )
     return {
-        "run_all_complete": completed >= 5 and not results_derivation_failed,
+        "run_all_complete": eligible and not results_derivation_failed,
         "attempted_replicates": len(REPLICATE_IDS),
         "complete_replicates": completed,
         "failed_replicates": len(REPLICATE_IDS) - completed,
