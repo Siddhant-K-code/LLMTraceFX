@@ -250,12 +250,25 @@ implementations.
 ## Private real-MLX experiment
 
 `llmtracefx-real-mlx-cache-audit` is the fail-closed Apple Silicon workflow.
-It never downloads a model. `compile` copies and re-verifies the pinned
-eight-file artifact in a private temporary snapshot, loads only its tokenizer,
-and privately freezes the exact 1025/769/513-token arrays.
-`calibrate` loads and verifies the committed eight-file conversion contract,
-requires two fresh-cache `CACHE_OK` outputs to match exactly, and writes a new
-calibrated workload. `replicate` runs one independent child-process unit:
+It never downloads a model. The pinned artifact is the eight-file local
+self-conversion of `Qwen/Qwen3-4B` revision
+`1cfa9a7208912126459214e8b04321603b3df60c` (Apache-2.0), produced with
+`mlx-lm==0.31.3` revision
+`ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd` using affine 4-bit quantization
+and group size 64. `compile` copies and re-verifies that contract in a private
+temporary snapshot, loads only its tokenizer, and freezes both lanes:
+
+- `1k`: 1025-token base, 769-token complete-chat seed, and 513-token eviction
+  prompts;
+- `4k`: 4097-token base, 3073-token complete-chat seed, and 2049-token eviction
+  prompts.
+
+Each base is a valid continuation of its lane's complete-chat seed. Both lanes
+include the same nine cases, 32 extension tokens, mutation indices 137 and 256,
+and a final-16-token suffix change. `calibrate` runs each lane's seed twice in
+fresh caches, requires exact repeatability and `CACHE_OK` evaluator correctness,
+and freezes separate output token IDs. `replicate` runs one independent
+child-process unit:
 
 ```console
 uv run llmtracefx-real-mlx-cache-audit compile --model-dir MODEL --output workload.json

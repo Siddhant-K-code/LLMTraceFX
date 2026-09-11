@@ -149,6 +149,7 @@ script-files = ["scripts/run-vllm-kv-truth-clean-env.py"]
 llmtracefx = [
     "test_traces/*.json",
     "*.md",
+    "cache_audit/data/*.json",
     "optimizer/lab/data/*.json",
     "optimizer/lab/qwen3_8b/data/*.json",
 ]

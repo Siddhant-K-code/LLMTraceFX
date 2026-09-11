@@ -23,7 +23,10 @@ from llmtracefx.cache_audit.adapters.mlx import (
 )
 from llmtracefx.cache_audit.adapters.reference import ReferenceCacheAdapter
 from llmtracefx.cache_audit.real_mlx import (
+    DEFAULT_CONVERSION_SUMMARY,
+    EXPECTED_CONVERSION_SUMMARY_SHA256,
     EXPECTED_MODEL_ARTIFACT_DIGEST,
+    LANE_IDS,
     MODEL_ID,
     REPLICATE_IDS,
     ROTATION_OFFSETS,
@@ -107,37 +110,136 @@ class MLXIdentityReference:
 
 def test_workload_invariants_and_counterbalanced_schedule() -> None:
     workload = compile_workload(FakeTokenizer())
-    assert len(workload.base) == 1025
-    assert len(workload.shorter_seed) == 769
-    assert len(workload.extension_32) == 32
-    assert workload.mutation_137[137] != workload.base[137]
-    assert workload.mutation_256[256] != workload.base[256]
-    assert workload.suffix_change[:-16] == workload.base[:-16]
-    assert workload.different_ids[0] != workload.base[0]
-    assert all(
-        left != right
-        for left, right in zip(
-            workload.suffix_change[-16:], workload.base[-16:], strict=True
+    expected_lengths = {
+        "1k": (1025, 769, 513),
+        "4k": (4097, 3073, 2049),
+    }
+    for lane in workload.lanes:
+        base, shorter, eviction = expected_lengths[lane.lane_id]
+        assert len(lane.base) == base
+        assert len(lane.shorter_seed) == shorter
+        assert lane.shorter_seed == lane.base[:shorter]
+        assert len(lane.extension_32) == 32
+        assert {len(lane.eviction_a), len(lane.eviction_b), len(lane.eviction_c)} == {
+            eviction
+        }
+        assert lane.mutation_137[137] != lane.base[137]
+        assert lane.mutation_256[256] != lane.base[256]
+        assert [
+            index
+            for index, (left, right) in enumerate(
+                zip(lane.base, lane.mutation_137, strict=True)
+            )
+            if left != right
+        ] == [137]
+        assert [
+            index
+            for index, (left, right) in enumerate(
+                zip(lane.base, lane.mutation_256, strict=True)
+            )
+            if left != right
+        ] == [256]
+        assert lane.suffix_change[:-16] == lane.base[:-16]
+        assert lane.different_ids[0] != lane.base[0]
+        assert all(
+            left != right
+            for left, right in zip(
+                lane.suffix_change[-16:], lane.base[-16:], strict=True
+            )
         )
+    calibrated_source = replace(
+        workload,
+        lanes=tuple(replace(lane, seed_output=(7, 8, 9)) for lane in workload.lanes),
     )
-    payload = workload.to_dict()
-    payload["arrays"]["seed_output"] = [7]
-    payload["workload_digest"] = FrozenMLXWorkload(
-        **{**workload.__dict__, "seed_output": (7,)}
-    ).to_dict()["workload_digest"]
+    payload = calibrated_source.to_dict()
     calibrated = FrozenMLXWorkload.from_dict(payload)
+    tampered_payload = json.loads(json.dumps(payload))
+    tampered_payload["lanes"]["1k"]["lane_id"] = "4k"
+    with pytest.raises(RealMLXExperimentError, match="lane identity"):
+        FrozenMLXWorkload.from_dict(tampered_payload)
     schedules = [block_schedule(item) for item in REPLICATE_IDS]
     assert [schedule[0] for schedule in schedules] == [
         schedule[offset % len(schedule)]
         for schedule, offset in zip([schedules[0]] * 6, ROTATION_OFFSETS, strict=True)
     ]
     for replicate_id, schedule in zip(REPLICATE_IDS, schedules, strict=True):
+        assert len(schedule) == 18
+        assert set(schedule) == {
+            f"{lane_id}:{case}"
+            for lane_id in LANE_IDS
+            for case in (
+                "cold-exact-duplicate",
+                "longer-to-shorter",
+                "shorter-to-longer",
+                "interior-mutation",
+                "allocation-step-mutation",
+                "same-length-different-ids",
+                "suffix-only-change",
+                "namespace-isolation",
+                "capacity-eviction",
+            )
+        }
         requests = requests_for_replicate(calibrated, replicate_id)
         observed = tuple(
-            dict.fromkeys(request.request_id.split(":", 1)[0] for request in requests)
+            dict.fromkeys(request.request_id.rsplit(":", 1)[0] for request in requests)
         )
         assert observed == schedule
+        assert len(requests) == 44
+        assert {
+            lane_id: sum(
+                request.request_id.startswith(f"{lane_id}:") for request in requests
+            )
+            for lane_id in LANE_IDS
+        } == {"1k": 22, "4k": 22}
         assert max(request.output_tokens for request in requests) == 8
+        for lane_id, seed_length in (("1k", 769), ("4k", 3073)):
+            extension = next(
+                request
+                for request in requests
+                if request.request_id == f"{lane_id}:shorter-to-longer:longer"
+            )
+            assert extension.input_token_count == seed_length + 3 + 32
+
+
+def test_qwen3_4b_conversion_metadata_is_exact() -> None:
+    summary_bytes = DEFAULT_CONVERSION_SUMMARY.read_bytes()
+    assert (
+        _digest_bytes(summary_bytes) == f"sha256:{EXPECTED_CONVERSION_SUMMARY_SHA256}"
+    )
+    summary = json.loads(summary_bytes)
+    assert summary["source"]["official_id"] == "Qwen/Qwen3-4B"
+    assert (
+        summary["source"]["official_revision"]
+        == "1cfa9a7208912126459214e8b04321603b3df60c"
+    )
+    assert summary["source"]["license"] == "Apache-2.0"
+    assert summary["converter"]["version"] == "0.31.3"
+    assert (
+        summary["converter"]["git_revision"]
+        == "ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd"
+    )
+    assert summary["parameters"]["q_group_size"] == 64
+    assert summary["parameters"]["q_bits"] == 4
+    assert summary["parameters"]["q_mode"] == "affine"
+    assert summary["output"]["repository_id"] == MODEL_ID
+    assert summary["output"]["total_bytes"] == 2_274_515_269
+    assert len(summary["output"]["files"]) == 8
+    assert EXPECTED_MODEL_ARTIFACT_DIGEST == (
+        "sha256:057a37f4ebc76420f8ab2edb17bc8442e050c8d13f7334f829356e2f9cab6802"
+    )
+    assert TOKENIZER_ID == ("Qwen/Qwen3-4B@1cfa9a7208912126459214e8b04321603b3df60c")
+    manifest = json.loads(
+        (
+            DEFAULT_CONVERSION_SUMMARY.parent / "qwen3-4b-conversion-manifest-v1.json"
+        ).read_text()
+    )
+    assert manifest["source"]["official_id"] == "Qwen/Qwen3-4B"
+    assert (
+        manifest["source"]["official_revision"]
+        == "1cfa9a7208912126459214e8b04321603b3df60c"
+    )
+    assert manifest["source"]["license"] == "Apache-2.0"
+    assert manifest["expected_output_bytes"] == 2_300_000_000
 
 
 def test_stage_records_have_explicit_nonconflated_scopes(tmp_path: Path) -> None:
@@ -145,6 +247,7 @@ def test_stage_records_have_explicit_nonconflated_scopes(tmp_path: Path) -> None
         "replicate-0",
         rss_reader=lambda: 123,
         swap_reader=lambda: 456,
+        memory_reader=lambda: 78.0,
     )
     recorder(
         MLXStageObservation(
@@ -166,6 +269,10 @@ def test_stage_records_have_explicit_nonconflated_scopes(tmp_path: Path) -> None
         "scope": "current_replicate_child_process_only",
     }
     assert row["system_swap"] == {"used_bytes": 456, "scope": "system_wide"}
+    assert row["system_memory"] == {
+        "free_percent": 78.0,
+        "scope": "system_wide_memory_pressure",
+    }
     assert row["thermal_power"] == {
         "thermal_state": None,
         "power_watts": None,
@@ -177,16 +284,27 @@ def test_stage_records_have_explicit_nonconflated_scopes(tmp_path: Path) -> None
 def test_calibration_repeats_seed_with_fresh_adapters() -> None:
     workload = compile_workload(FakeTokenizer())
     creations = 0
+    input_lengths: list[int] = []
 
     def factory() -> Any:
         nonlocal creations
         creations += 1
-        return ReferenceCacheAdapter()
+        adapter = ReferenceCacheAdapter()
+        original = adapter.run
+
+        def run(requests: tuple[RequestSpec, ...]) -> list[Any]:
+            input_lengths.extend(request.input_token_count for request in requests)
+            return original(requests)
+
+        adapter.run = run  # type: ignore[method-assign]
+        return adapter
 
     calibrated = calibrate_seed(workload, factory)
-    assert creations == 2
-    assert calibrated.seed_output is not None
-    assert 1 <= len(calibrated.seed_output) <= 8
+    assert creations == 4
+    assert input_lengths == [769, 769, 3073, 3073]
+    for lane in calibrated.lanes:
+        assert lane.seed_output is not None
+        assert 1 <= len(lane.seed_output) <= 8
 
 
 def test_lifecycle_adapter_batches_each_block_before_baselines(
@@ -227,15 +345,18 @@ def test_lifecycle_adapter_batches_each_block_before_baselines(
     )
     adapter.run(
         (
-            _request_spec("first:control", 0),
-            _request_spec("first:treatment", 1),
-            _request_spec("second:control", 2),
+            _request_spec("1k:cold-exact-duplicate:control", 0),
+            _request_spec("1k:cold-exact-duplicate:treatment", 1),
+            _request_spec("4k:cold-exact-duplicate:control", 2),
         )
     )
 
     assert grouped == [
-        ("first:control", "first:treatment"),
-        ("second:control",),
+        (
+            "1k:cold-exact-duplicate:control",
+            "1k:cold-exact-duplicate:treatment",
+        ),
+        ("4k:cold-exact-duplicate:control",),
     ]
 
 
@@ -253,8 +374,16 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(cache_runner, "source_commit", lambda: (None, None))
     attempts = tmp_path / "attempts"
     attempts.mkdir()
-    environment = _safe_environment()
-    workload = replace(compile_workload(FakeTokenizer()), seed_output=(7, 8, 9))
+    environment = {
+        **_safe_environment(),
+        "mlx": REQUIRED_MLX_VERSION,
+        "mlx_lm": REQUIRED_MLX_LM_VERSION,
+    }
+    workload = compile_workload(FakeTokenizer())
+    workload = replace(
+        workload,
+        lanes=tuple(replace(lane, seed_output=(7, 8, 9)) for lane in workload.lanes),
+    )
     teardown = {
         "schema_version": "1",
         "cache_lifecycles_released": True,
@@ -267,6 +396,11 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         real_mlx_module,
         "EXPECTED_CALIBRATED_WORKLOAD_DIGEST",
         workload.to_dict()["workload_digest"],
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "EXPECTED_CALIBRATED_LANE_DIGESTS",
+        {lane.lane_id: lane.to_dict()["lane_digest"] for lane in workload.lanes},
     )
     for index, replicate_id in enumerate(REPLICATE_IDS):
         replicate = attempts / replicate_id
@@ -319,9 +453,14 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 "status": "complete",
                 "rotation": list(block_schedule(replicate_id)),
                 "request_count": len(requests),
+                "lane_request_counts": {"1k": 22, "4k": 22},
                 "independent_unit": True,
                 "replacement": False,
                 "frozen_workload_digest": workload.to_dict()["workload_digest"],
+                "frozen_lane_digests": {
+                    lane.lane_id: lane.to_dict()["lane_digest"]
+                    for lane in workload.lanes
+                },
                 "model_artifact_digest": EXPECTED_MODEL_ARTIFACT_DIGEST,
                 "model_id": MODEL_ID,
                 "tokenizer_id": TOKENIZER_ID,
@@ -339,6 +478,7 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             replicate_id,
             rss_reader=lambda: 100,
             swap_reader=lambda: 200,
+            memory_reader=lambda: 80.0,
         )
         request_index = 0
         for block in block_schedule(replicate_id):
@@ -355,7 +495,7 @@ def _make_attempts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             )
             while (
                 request_index < len(requests)
-                and requests[request_index].request_id.split(":", 1)[0] == block
+                and requests[request_index].request_id.rsplit(":", 1)[0] == block
             ):
                 request_id = requests[request_index].request_id
                 for stage in (
@@ -398,6 +538,26 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     private = tmp_path / "private"
     assert assemble_aggregate(attempts, private)["complete_replicates"] == 5
     assert verify_aggregate(private)["verified"] is True
+    private_index = json.loads((private / "replicate-index.json").read_text())
+    assert private_index["lane_request_counts"] == {"1k": 110, "4k": 110}
+    assert set(private_index["lane_scenario_counts"]) == set(LANE_IDS)
+    private_claims = json.loads((private / "claim-matrix.json").read_text())
+    assert private_claims["lane_request_observations"] == {
+        "1k": 110,
+        "4k": 110,
+    }
+    comparisons = json.loads((private / "descriptive-summary.json").read_text())[
+        "comparisons"
+    ]
+    assert len(comparisons) == 18
+    assert all(
+        sample["lane_id"] == name.split(":", 1)[0]
+        for name, comparison in comparisons.items()
+        for sample in comparison["samples"]
+    )
+    contract = json.loads((private / "experiment-contract.json").read_text())
+    assert set(contract["lanes"]) == set(LANE_IDS)
+    assert len(contract["combined_blocks"]) == 18
     result = subprocess.run(
         [sys.executable, str(private / "aggregate_verifier.py")],
         capture_output=True,
@@ -405,6 +565,24 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+    lane_tamper = tmp_path / "lane-tamper"
+    shutil.copytree(private, lane_tamper)
+    attempt = lane_tamper / "replicates" / "replicate-0" / "attempt.json"
+    attempt_value = json.loads(attempt.read_text())
+    attempt_value["lane_request_counts"] = {"1k": 21, "4k": 23}
+    _write_json(attempt, attempt_value)
+    _write_recursive_checksums(lane_tamper)
+    with pytest.raises(RealMLXExperimentError, match="binding is invalid"):
+        verify_aggregate(lane_tamper)
+    result = subprocess.run(
+        [sys.executable, str(lane_tamper / "aggregate_verifier.py")],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "raw replicate evidence digest mismatch" in result.stderr
 
     summary = private / "summary.json"
     value = json.loads(summary.read_text())
@@ -418,6 +596,8 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     assemble_aggregate(attempts, private)
     public = tmp_path / "public"
     assert sanitize_aggregate(private, public)["publication_mode"] == "public_redacted"
+    public_index = json.loads((public / "replicate-index.json").read_text())
+    assert public_index["lane_request_counts"] == {"1k": 110, "4k": 110}
     result = subprocess.run(
         [sys.executable, str(public / "aggregate_verifier.py")],
         capture_output=True,

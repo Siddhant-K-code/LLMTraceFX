@@ -64,7 +64,8 @@ from .schema import (
 WORKLOAD_SCHEMA_VERSION = "real-mlx-workload-v1"
 AGGREGATE_SCHEMA_VERSION = "real-mlx-aggregate-v1"
 REPLICATE_IDS = tuple(f"replicate-{index}" for index in range(6))
-ROTATION_OFFSETS = (0, 3, 6, 1, 4, 7)
+LANE_IDS = ("1k", "4k")
+ROTATION_OFFSETS = (0, 3, 6, 9, 12, 15)
 MAX_CACHE_ENTRIES = 2
 MAX_CACHE_BYTES = 1 << 63
 MAX_OUTPUT_TOKENS = 8
@@ -72,24 +73,29 @@ MAX_ALLOCATOR_PEAK_BYTES = 8 * 1024**3
 MAX_PROCESS_RSS_BYTES = 12 * 1024**3
 MAX_SWAP_BYTES = 14 * 1024**3
 MAX_SWAP_GROWTH_BYTES = 2 * 1024**3
+MIN_RUNTIME_MEMORY_FREE_PERCENT = 15.0
 EXPECTED_MODEL_FILE_COUNT = 8
 EXPECTED_CONVERSION_SUMMARY_SHA256 = (
-    "efec72b01bd33736b8c752e366ef015ea348e8b952f3b1979d46094795ccb0c7"
+    "9c87cad2a7de7bbc42bfd6a1d7f502c32422ba00b29df27a2363c07aa2a45c25"
 )
 EXPECTED_MODEL_ARTIFACT_DIGEST = (
-    "sha256:3678d6a267e0f0862923d999f00088fb27a6edd14e0c3c7ffc220e1a8366fecc"
+    "sha256:057a37f4ebc76420f8ab2edb17bc8442e050c8d13f7334f829356e2f9cab6802"
 )
 EXPECTED_CALIBRATED_WORKLOAD_DIGEST = (
-    "sha256:71596b8b663095559b66b026eb149775128979dbcfbb1c9a4ae5f3b57571bbc2"
+    "sha256:c8b3dc8939c65af48987c3f0abd3aa89e5ed2d5113499a809b9cadb904f2923b"
 )
-EXPECTED_SEED_OUTPUT_TOKENS = 3
-MODEL_ID = "local-self-converted/qwen3-8b-mlx-q4g64"
-TOKENIZER_ID = "Qwen/Qwen3-8B@b968826d9c46"
+EXPECTED_CALIBRATED_LANE_DIGESTS = {
+    "1k": "sha256:692d85f271130c48f19d5157c043f94950439cdea8d7259d055e30a4fe8e74d6",
+    "4k": "sha256:ff5d9dca4b3edbf677df6e3093dbe60cf48ae3edaa95e74a3e80cc08357cc476",
+}
+EXPECTED_SEED_OUTPUT_TOKENS = {"1k": 3, "4k": 3}
+MODEL_ID = "local-self-converted/qwen3-4b-mlx-q4g64"
+TOKENIZER_ID = "Qwen/Qwen3-4B@1cfa9a7208912126459214e8b04321603b3df60c"
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONVERSION_SUMMARY = (
-    _PROJECT_ROOT / "examples/optimizer/qwen3-8b-m5-control/conversion-summary.json"
+    _PROJECT_ROOT / "llmtracefx/cache_audit/data/qwen3-4b-conversion-summary.json"
 )
-_BLOCKS = (
+_CASES = (
     "cold-exact-duplicate",
     "longer-to-shorter",
     "shorter-to-longer",
@@ -100,7 +106,7 @@ _BLOCKS = (
     "namespace-isolation",
     "capacity-eviction",
 )
-_BLOCK_REQUEST_COUNTS = {
+_CASE_REQUEST_COUNTS = {
     "cold-exact-duplicate": 3,
     "longer-to-shorter": 2,
     "shorter-to-longer": 2,
@@ -110,6 +116,17 @@ _BLOCK_REQUEST_COUNTS = {
     "suffix-only-change": 2,
     "namespace-isolation": 2,
     "capacity-eviction": 5,
+}
+_BLOCKS = tuple(f"{lane_id}:{case}" for lane_id in LANE_IDS for case in _CASES)
+_BLOCK_REQUEST_COUNTS = {
+    f"{lane_id}:{case}": count
+    for lane_id in LANE_IDS
+    for case, count in _CASE_REQUEST_COUNTS.items()
+}
+_REQUESTS_PER_LANE = sum(_CASE_REQUEST_COUNTS.values())
+_LANE_CONTRACTS = {
+    "1k": {"base": 1025, "shorter_seed": 769, "eviction": 513},
+    "4k": {"base": 4097, "shorter_seed": 3073, "eviction": 2049},
 }
 _EXPECTED_RUNTIME_IDENTITY = {
     "mlx": REQUIRED_MLX_VERSION,
@@ -218,9 +235,10 @@ def _integer_array(value: Any, context: str) -> tuple[int, ...]:
 
 
 @dataclass(frozen=True)
-class FrozenMLXWorkload:
-    """Exact private arrays used by every replicate."""
+class FrozenMLXLane:
+    """Exact private arrays for one explicitly identified workload lane."""
 
+    lane_id: str
     base: tuple[int, ...]
     different_ids: tuple[int, ...]
     mutation_137: tuple[int, ...]
@@ -231,15 +249,26 @@ class FrozenMLXWorkload:
     eviction_b: tuple[int, ...]
     eviction_c: tuple[int, ...]
     shorter_seed: tuple[int, ...]
-    model_artifact_digest: str = EXPECTED_MODEL_ARTIFACT_DIGEST
     seed_output: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
-        if len(self.base) != 1025:
-            raise RealMLXExperimentError("base must contain exactly 1025 tokens")
-        if len(self.shorter_seed) != 769 or self.shorter_seed != self.base[:769]:
+        contract = _LANE_CONTRACTS.get(self.lane_id)
+        if contract is None:
+            raise RealMLXExperimentError("lane ID must be one of 1k or 4k")
+        base_tokens = contract["base"]
+        seed_tokens = contract["shorter_seed"]
+        eviction_tokens = contract["eviction"]
+        if len(self.base) != base_tokens:
             raise RealMLXExperimentError(
-                "shorter seed must be the 769-token base prefix"
+                f"{self.lane_id} base must contain exactly {base_tokens} tokens"
+            )
+        if (
+            len(self.shorter_seed) != seed_tokens
+            or self.shorter_seed != self.base[:seed_tokens]
+        ):
+            raise RealMLXExperimentError(
+                f"{self.lane_id} shorter seed must be the "
+                f"{seed_tokens}-token base prefix"
             )
         for name in (
             "different_ids",
@@ -247,11 +276,15 @@ class FrozenMLXWorkload:
             "mutation_256",
             "suffix_change",
         ):
-            if len(getattr(self, name)) != 1025:
-                raise RealMLXExperimentError(f"{name} must contain 1025 tokens")
+            if len(getattr(self, name)) != base_tokens:
+                raise RealMLXExperimentError(
+                    f"{self.lane_id} {name} must contain {base_tokens} tokens"
+                )
         for name in ("eviction_a", "eviction_b", "eviction_c"):
-            if len(getattr(self, name)) != 513:
-                raise RealMLXExperimentError(f"{name} must contain 513 tokens")
+            if len(getattr(self, name)) != eviction_tokens:
+                raise RealMLXExperimentError(
+                    f"{self.lane_id} {name} must contain {eviction_tokens} tokens"
+                )
         if len(self.extension_32) != 32:
             raise RealMLXExperimentError("extension must contain exactly 32 tokens")
         if self.different_ids == self.base:
@@ -286,8 +319,6 @@ class FrozenMLXWorkload:
             raise RealMLXExperimentError(
                 "calibrated seed output must contain 1-8 tokens"
             )
-        if self.model_artifact_digest != EXPECTED_MODEL_ARTIFACT_DIGEST:
-            raise RealMLXExperimentError("workload model/tokenizer artifact mismatch")
 
     def to_dict(self) -> dict[str, Any]:
         arrays: dict[str, Any] = {
@@ -308,40 +339,19 @@ class FrozenMLXWorkload:
         arrays["seed_output"] = (
             None if self.seed_output is None else list(self.seed_output)
         )
-        digest_payload = dict(arrays)
         return {
-            "schema_version": WORKLOAD_SCHEMA_VERSION,
-            "tokenizer_contract": {
-                "chat_template": True,
-                "enable_thinking": False,
-                "content_encoding": "project-authored-ascii",
-                "final_instruction": "CACHE_OK",
-                "model_artifact_digest": self.model_artifact_digest,
-            },
+            "lane_id": self.lane_id,
             "arrays": arrays,
-            "workload_digest": _digest_bytes(_json_bytes(digest_payload)),
+            "lane_digest": _digest_bytes(_json_bytes(arrays)),
         }
 
     @classmethod
-    def from_dict(cls, value: Any) -> FrozenMLXWorkload:
+    def from_dict(cls, value: Any, *, lane_id: str) -> FrozenMLXLane:
         if not isinstance(value, dict):
-            raise RealMLXExperimentError("workload must be an object")
-        _exact_keys(
-            value,
-            {"schema_version", "tokenizer_contract", "arrays", "workload_digest"},
-            "workload",
-        )
-        if value["schema_version"] != WORKLOAD_SCHEMA_VERSION:
-            raise RealMLXExperimentError("unsupported real MLX workload schema")
-        contract = value["tokenizer_contract"]
-        if contract != {
-            "chat_template": True,
-            "enable_thinking": False,
-            "content_encoding": "project-authored-ascii",
-            "final_instruction": "CACHE_OK",
-            "model_artifact_digest": EXPECTED_MODEL_ARTIFACT_DIGEST,
-        }:
-            raise RealMLXExperimentError("workload tokenizer contract mismatch")
+            raise RealMLXExperimentError(f"{lane_id} lane must be an object")
+        _exact_keys(value, {"lane_id", "arrays", "lane_digest"}, f"{lane_id} lane")
+        if value["lane_id"] != lane_id:
+            raise RealMLXExperimentError("workload lane identity mismatch")
         arrays = value["arrays"]
         if not isinstance(arrays, dict):
             raise RealMLXExperimentError("workload arrays must be an object")
@@ -360,7 +370,8 @@ class FrozenMLXWorkload:
         }
         _exact_keys(arrays, names, "workload arrays")
         seed_raw = arrays["seed_output"]
-        workload = cls(
+        lane = cls(
+            lane_id=lane_id,
             base=_integer_array(arrays["base"], "arrays.base"),
             different_ids=_integer_array(
                 arrays["different_ids"], "arrays.different_ids"
@@ -381,22 +392,97 @@ class FrozenMLXWorkload:
                 else _integer_array(seed_raw, "arrays.seed_output")
             ),
         )
-        expected = workload.to_dict()["workload_digest"]
-        if value["workload_digest"] != expected:
+        if value["lane_digest"] != lane.to_dict()["lane_digest"]:
+            raise RealMLXExperimentError(f"{lane_id} lane digest mismatch")
+        return lane
+
+
+@dataclass(frozen=True)
+class FrozenMLXWorkload:
+    """Both exact private lanes used by every replicate."""
+
+    lanes: tuple[FrozenMLXLane, ...]
+    model_artifact_digest: str = EXPECTED_MODEL_ARTIFACT_DIGEST
+
+    def __post_init__(self) -> None:
+        if tuple(lane.lane_id for lane in self.lanes) != LANE_IDS:
+            raise RealMLXExperimentError(
+                "workload must contain ordered 1k and 4k lanes"
+            )
+        if self.model_artifact_digest != EXPECTED_MODEL_ARTIFACT_DIGEST:
+            raise RealMLXExperimentError("workload model/tokenizer artifact mismatch")
+
+    def lane(self, lane_id: str) -> FrozenMLXLane:
+        try:
+            return next(lane for lane in self.lanes if lane.lane_id == lane_id)
+        except StopIteration as exc:
+            raise RealMLXExperimentError(f"unknown workload lane: {lane_id}") from exc
+
+    def to_dict(self) -> dict[str, Any]:
+        lanes = {lane.lane_id: lane.to_dict() for lane in self.lanes}
+        return {
+            "schema_version": WORKLOAD_SCHEMA_VERSION,
+            "tokenizer_contract": {
+                "chat_template": True,
+                "enable_thinking": False,
+                "content_encoding": "project-authored-ascii",
+                "final_instruction": "CACHE_OK",
+                "model_artifact_digest": self.model_artifact_digest,
+            },
+            "lanes": lanes,
+            "workload_digest": _digest_bytes(_json_bytes(lanes)),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Any) -> FrozenMLXWorkload:
+        if not isinstance(value, dict):
+            raise RealMLXExperimentError("workload must be an object")
+        _exact_keys(
+            value,
+            {"schema_version", "tokenizer_contract", "lanes", "workload_digest"},
+            "workload",
+        )
+        if value["schema_version"] != WORKLOAD_SCHEMA_VERSION:
+            raise RealMLXExperimentError("unsupported real MLX workload schema")
+        if value["tokenizer_contract"] != {
+            "chat_template": True,
+            "enable_thinking": False,
+            "content_encoding": "project-authored-ascii",
+            "final_instruction": "CACHE_OK",
+            "model_artifact_digest": EXPECTED_MODEL_ARTIFACT_DIGEST,
+        }:
+            raise RealMLXExperimentError("workload tokenizer contract mismatch")
+        lanes = value["lanes"]
+        if not isinstance(lanes, dict) or tuple(lanes) != LANE_IDS:
+            raise RealMLXExperimentError("workload lane allowlist mismatch")
+        workload = cls(
+            lanes=tuple(
+                FrozenMLXLane.from_dict(lanes[lane_id], lane_id=lane_id)
+                for lane_id in LANE_IDS
+            )
+        )
+        if value["workload_digest"] != workload.to_dict()["workload_digest"]:
             raise RealMLXExperimentError("workload digest mismatch")
         return workload
 
 
 def load_workload(path: Path, *, calibrated: bool | None = None) -> FrozenMLXWorkload:
     workload = FrozenMLXWorkload.from_dict(_safe_object(path))
-    if calibrated is True and workload.seed_output is None:
+    if calibrated is True and any(lane.seed_output is None for lane in workload.lanes):
         raise RealMLXExperimentError("workload has not been calibrated")
     if calibrated is True and (
         workload.to_dict()["workload_digest"] != EXPECTED_CALIBRATED_WORKLOAD_DIGEST
-        or len(workload.seed_output or ()) != EXPECTED_SEED_OUTPUT_TOKENS
+        or any(
+            lane.to_dict()["lane_digest"]
+            != EXPECTED_CALIBRATED_LANE_DIGESTS[lane.lane_id]
+            or len(lane.seed_output or ()) != EXPECTED_SEED_OUTPUT_TOKENS[lane.lane_id]
+            for lane in workload.lanes
+        )
     ):
         raise RealMLXExperimentError("calibrated workload contract mismatch")
-    if calibrated is False and workload.seed_output is not None:
+    if calibrated is False and any(
+        lane.seed_output is not None for lane in workload.lanes
+    ):
         raise RealMLXExperimentError("compile output is already calibrated")
     return workload
 
@@ -480,8 +566,11 @@ def _continued_base_prompt(
     tokenizer: Any,
     shorter: tuple[int, ...],
     first_body: str,
+    *,
+    target: int,
+    lane_id: str,
 ) -> tuple[int, ...]:
-    for count in range(2048):
+    for count in range(target * 2):
         second_body = (
             "LLMTraceFX public synthetic continuation. "
             + (" audit" * count)
@@ -504,12 +593,13 @@ def _continued_base_prompt(
             len(shorter),
         )
         continued = shorter + tokens[divergence:]
-        if len(continued) == 1025:
+        if len(continued) == target:
             return continued
-        if len(continued) > 1033 and count > 1025:
+        if len(continued) > target + 8 and count > target:
             break
     raise RealMLXExperimentError(
-        "local tokenizer could not compile the 1025-token continued base prompt"
+        f"local tokenizer could not compile the {target}-token "
+        f"{lane_id} continued base prompt"
     )
 
 
@@ -549,42 +639,64 @@ def _extension_tokens(tokenizer: Any) -> tuple[int, ...]:
 def compile_workload(tokenizer: Any) -> FrozenMLXWorkload:
     """Compile the exact private workload without loading model weights."""
 
-    shorter, first_body = _exact_prompt_with_body(
-        tokenizer, target=769, label="BASE-FIRST"
-    )
-    base = _continued_base_prompt(tokenizer, shorter, first_body)
-    different = _exact_prompt(tokenizer, target=1025, label="DIFFERENT")
-    if different == base:
-        raise RealMLXExperimentError("different prompt tokenized identically")
-    if different[0] == base[0]:
-        changed = list(different)
-        changed[0] = _replacement_token(tokenizer, changed[0])
-        different = tuple(changed)
-    mutations: dict[int, tuple[int, ...]] = {}
-    for position in (137, 256):
-        changed = list(base)
-        changed[position] = _replacement_token(tokenizer, changed[position])
-        mutations[position] = tuple(changed)
-
-    suffix = base[:-16] + tuple(
-        _replacement_token(tokenizer, token) for token in base[-16:]
-    )
-
-    eviction = tuple(
-        _exact_prompt(tokenizer, target=513, label=f"EVICTION-{label}")
-        for label in ("A", "B", "C")
-    )
+    lanes: list[FrozenMLXLane] = []
+    extension = _extension_tokens(tokenizer)
+    for lane_id in LANE_IDS:
+        contract = _LANE_CONTRACTS[lane_id]
+        shorter, first_body = _exact_prompt_with_body(
+            tokenizer,
+            target=contract["shorter_seed"],
+            label=f"{lane_id}-BASE-FIRST",
+        )
+        base = _continued_base_prompt(
+            tokenizer,
+            shorter,
+            first_body,
+            target=contract["base"],
+            lane_id=lane_id,
+        )
+        different = _exact_prompt(
+            tokenizer, target=contract["base"], label=f"{lane_id}-DIFFERENT"
+        )
+        if different == base:
+            raise RealMLXExperimentError("different prompt tokenized identically")
+        if different[0] == base[0]:
+            changed = list(different)
+            changed[0] = _replacement_token(tokenizer, changed[0])
+            different = tuple(changed)
+        mutations: dict[int, tuple[int, ...]] = {}
+        for position in (137, 256):
+            changed = list(base)
+            changed[position] = _replacement_token(tokenizer, changed[position])
+            mutations[position] = tuple(changed)
+        suffix = base[:-16] + tuple(
+            _replacement_token(tokenizer, token) for token in base[-16:]
+        )
+        eviction = tuple(
+            _exact_prompt(
+                tokenizer,
+                target=contract["eviction"],
+                label=f"{lane_id}-EVICTION-{label}",
+            )
+            for label in ("A", "B", "C")
+        )
+        lanes.append(
+            FrozenMLXLane(
+                lane_id=lane_id,
+                base=base,
+                different_ids=different,
+                mutation_137=mutations[137],
+                mutation_256=mutations[256],
+                suffix_change=suffix,
+                extension_32=extension,
+                eviction_a=eviction[0],
+                eviction_b=eviction[1],
+                eviction_c=eviction[2],
+                shorter_seed=shorter,
+            )
+        )
     return FrozenMLXWorkload(
-        base=base,
-        different_ids=different,
-        mutation_137=mutations[137],
-        mutation_256=mutations[256],
-        suffix_change=suffix,
-        extension_32=_extension_tokens(tokenizer),
-        eviction_a=eviction[0],
-        eviction_b=eviction[1],
-        eviction_c=eviction[2],
-        shorter_seed=shorter,
+        lanes=tuple(lanes),
     )
 
 
@@ -611,36 +723,47 @@ def calibrate_seed(
     workload: FrozenMLXWorkload,
     adapter_factory: Callable[[], MLXLocalCacheAdapter],
 ) -> FrozenMLXWorkload:
-    """Run the 769-token seed twice in fresh caches and freeze exact output IDs."""
+    """Run each lane's seed twice in fresh caches and freeze exact output IDs."""
 
-    if workload.seed_output is not None:
+    if any(lane.seed_output is not None for lane in workload.lanes):
         raise RealMLXExperimentError("workload is already calibrated")
-    outputs: list[tuple[int, ...]] = []
-    for index in range(2):
-        request = RequestSpec(
-            request_id=f"calibration-{index}",
-            scenario=ScenarioKind.COLD,
-            order=0,
-            input_token_ids=workload.shorter_seed,
-            input_token_count=769,
-            output_tokens=MAX_OUTPUT_TOKENS,
-            replicate_id="calibration",
-        )
-        record = adapter_factory().run((request,))[0]
-        output = record.output.output_token_ids
-        if (
-            output is None
-            or not output
-            or record.output.correctness.value is not True
-            or record.terminal_state.value != "completed"
-        ):
-            raise RealMLXExperimentError(
-                "seed calibration failed exact CACHE_OK correctness gate"
+    calibrated: list[FrozenMLXLane] = []
+    for lane in workload.lanes:
+        outputs: list[tuple[int, ...]] = []
+        for index in range(2):
+            request = RequestSpec(
+                request_id=f"{lane.lane_id}:calibration-{index}",
+                scenario=ScenarioKind.COLD,
+                order=0,
+                input_token_ids=lane.shorter_seed,
+                input_token_count=len(lane.shorter_seed),
+                output_tokens=MAX_OUTPUT_TOKENS,
+                replicate_id="calibration",
             )
-        outputs.append(output)
-    if outputs[0] != outputs[1]:
-        raise RealMLXExperimentError("seed calibration is not exactly repeatable")
-    return replace(workload, seed_output=outputs[0])
+            records = adapter_factory().run((request,))
+            if len(records) != 1:
+                raise RealMLXExperimentError(
+                    f"{lane.lane_id} seed calibration returned invalid record count"
+                )
+            record = records[0]
+            output = record.output.output_token_ids
+            if (
+                output is None
+                or not output
+                or record.output.correctness.value is not True
+                or record.terminal_state.value != "completed"
+            ):
+                raise RealMLXExperimentError(
+                    f"{lane.lane_id} seed calibration failed exact "
+                    "CACHE_OK correctness gate"
+                )
+            outputs.append(output)
+        if outputs[0] != outputs[1]:
+            raise RealMLXExperimentError(
+                f"{lane.lane_id} seed calibration is not exactly repeatable"
+            )
+        calibrated.append(replace(lane, seed_output=outputs[0]))
+    return replace(workload, lanes=tuple(calibrated))
 
 
 def _request(
@@ -682,24 +805,52 @@ def block_schedule(replicate_id: str) -> tuple[str, ...]:
     return _BLOCKS[offset:] + _BLOCKS[:offset]
 
 
+def _request_block_id(request_id: str) -> str:
+    block, separator, _ = request_id.rpartition(":")
+    if not separator or block not in _BLOCK_REQUEST_COUNTS:
+        raise RealMLXExperimentError("request ID has no valid lane/block identity")
+    return block
+
+
+def _lane_request_counts(
+    records: Sequence[RequestEvidence | RequestSpec],
+) -> dict[str, int]:
+    counts = dict.fromkeys(LANE_IDS, 0)
+    for record in records:
+        spec = record.spec if isinstance(record, RequestEvidence) else record
+        lane_id = _request_block_id(spec.request_id).split(":", 1)[0]
+        counts[lane_id] += 1
+    return counts
+
+
+def _scheduled_record_lanes(replicate_id: str) -> tuple[str, ...]:
+    return tuple(
+        block.split(":", 1)[0]
+        for block in block_schedule(replicate_id)
+        for _ in range(_BLOCK_REQUEST_COUNTS[block])
+    )
+
+
 def requests_for_replicate(
     workload: FrozenMLXWorkload, replicate_id: str
 ) -> tuple[RequestSpec, ...]:
     """Build exact requests in the fixed counterbalanced block rotation."""
 
-    if workload.seed_output is None:
+    if any(lane.seed_output is None for lane in workload.lanes):
         raise RealMLXExperimentError("measurement requires calibrated seed output")
     by_block: dict[str, list[RequestSpec]] = {}
     for block in _BLOCKS:
+        lane_id, case = block.split(":", 1)
+        lane = workload.lane(lane_id)
         items: list[RequestSpec] = []
-        pair = f"{block}-pair"
-        if block == "cold-exact-duplicate":
+        pair = f"{block}:pair"
+        if case == "cold-exact-duplicate":
             _request(
                 items,
                 block=block,
                 name="cold",
                 scenario=ScenarioKind.COLD,
-                tokens=workload.base,
+                tokens=lane.base,
                 replicate_id=replicate_id,
                 pair_id=pair,
                 pair_role=PairRole.CONTROL,
@@ -709,7 +860,7 @@ def requests_for_replicate(
                 block=block,
                 name="exact",
                 scenario=ScenarioKind.IDENTICAL_PREFIX,
-                tokens=workload.base,
+                tokens=lane.base,
                 replicate_id=replicate_id,
                 predecessors=(f"{block}:cold",),
                 pair_id=pair,
@@ -720,17 +871,17 @@ def requests_for_replicate(
                 block=block,
                 name="duplicate",
                 scenario=ScenarioKind.DUPLICATE,
-                tokens=workload.base,
+                tokens=lane.base,
                 replicate_id=replicate_id,
                 predecessors=(f"{block}:exact",),
             )
-        elif block == "longer-to-shorter":
+        elif case == "longer-to-shorter":
             _request(
                 items,
                 block=block,
                 name="longer",
                 scenario=ScenarioKind.COLD,
-                tokens=workload.base,
+                tokens=lane.base,
                 replicate_id=replicate_id,
                 pair_id=pair,
                 pair_role=PairRole.CONTROL,
@@ -740,22 +891,20 @@ def requests_for_replicate(
                 block=block,
                 name="shorter",
                 scenario=ScenarioKind.IDENTICAL_PREFIX,
-                tokens=workload.shorter_seed,
+                tokens=lane.shorter_seed,
                 replicate_id=replicate_id,
                 predecessors=(f"{block}:longer",),
                 pair_id=pair,
                 pair_role=PairRole.TREATMENT,
             )
-        elif block == "shorter-to-longer":
-            extension = (
-                workload.shorter_seed + workload.seed_output + workload.extension_32
-            )
+        elif case == "shorter-to-longer":
+            extension = lane.shorter_seed + (lane.seed_output or ()) + lane.extension_32
             _request(
                 items,
                 block=block,
                 name="shorter",
                 scenario=ScenarioKind.COLD,
-                tokens=workload.shorter_seed,
+                tokens=lane.shorter_seed,
                 replicate_id=replicate_id,
                 pair_id=pair,
                 pair_role=PairRole.CONTROL,
@@ -771,7 +920,7 @@ def requests_for_replicate(
                 pair_id=pair,
                 pair_role=PairRole.TREATMENT,
             )
-        elif block in {
+        elif case in {
             "interior-mutation",
             "allocation-step-mutation",
             "same-length-different-ids",
@@ -780,32 +929,32 @@ def requests_for_replicate(
             variants = {
                 "interior-mutation": (
                     ScenarioKind.WITHIN_BLOCK_MUTATION,
-                    workload.mutation_137,
+                    lane.mutation_137,
                     137,
                 ),
                 "allocation-step-mutation": (
                     ScenarioKind.BLOCK_BOUNDARY_MUTATION,
-                    workload.mutation_256,
+                    lane.mutation_256,
                     256,
                 ),
                 "same-length-different-ids": (
                     ScenarioKind.SAME_LENGTH_DIFFERENT_IDS,
-                    workload.different_ids,
+                    lane.different_ids,
                     None,
                 ),
                 "suffix-only-change": (
                     ScenarioKind.SUFFIX_CHANGE,
-                    workload.suffix_change,
-                    1009,
+                    lane.suffix_change,
+                    len(lane.base) - 16,
                 ),
             }
-            scenario, variant, position = variants[block]
+            scenario, variant, position = variants[case]
             _request(
                 items,
                 block=block,
                 name="seed",
                 scenario=ScenarioKind.COLD,
-                tokens=workload.base,
+                tokens=lane.base,
                 replicate_id=replicate_id,
                 pair_id=pair,
                 pair_role=PairRole.CONTROL,
@@ -822,13 +971,13 @@ def requests_for_replicate(
                 pair_id=pair,
                 pair_role=PairRole.TREATMENT,
             )
-        elif block == "namespace-isolation":
+        elif case == "namespace-isolation":
             _request(
                 items,
                 block=block,
                 name="tenant-a",
                 scenario=ScenarioKind.COLD,
-                tokens=workload.base,
+                tokens=lane.base,
                 replicate_id=replicate_id,
                 namespace="tenant-a",
                 pair_id=pair,
@@ -839,7 +988,7 @@ def requests_for_replicate(
                 block=block,
                 name="tenant-b",
                 scenario=ScenarioKind.NAMESPACE_ISOLATION,
-                tokens=workload.base,
+                tokens=lane.base,
                 replicate_id=replicate_id,
                 namespace="tenant-b",
                 predecessors=(f"{block}:tenant-a",),
@@ -851,23 +1000,23 @@ def requests_for_replicate(
                 (
                     "a-seed",
                     ScenarioKind.COLD,
-                    workload.eviction_a,
+                    lane.eviction_a,
                     (),
                     PairRole.CONTROL,
                 ),
                 (
                     "a-hit",
                     ScenarioKind.IDENTICAL_PREFIX,
-                    workload.eviction_a,
+                    lane.eviction_a,
                     (f"{block}:a-seed",),
                     PairRole.SINGLE,
                 ),
-                ("b", ScenarioKind.COLD, workload.eviction_b, (), PairRole.SINGLE),
-                ("c", ScenarioKind.COLD, workload.eviction_c, (), PairRole.SINGLE),
+                ("b", ScenarioKind.COLD, lane.eviction_b, (), PairRole.SINGLE),
+                ("c", ScenarioKind.COLD, lane.eviction_c, (), PairRole.SINGLE),
                 (
                     "a-miss",
                     ScenarioKind.EVICTION_COUNT,
-                    workload.eviction_a,
+                    lane.eviction_a,
                     (f"{block}:a-hit",),
                     PairRole.TREATMENT,
                 ),
@@ -893,23 +1042,32 @@ def requests_for_replicate(
 
 
 def _schedule_shape_specs(replicate_id: str, *, public: bool) -> list[dict[str, Any]]:
-    base = (1,) * 1025
-    different = (2,) + base[1:]
-    mutation_137 = base[:137] + (2,) + base[138:]
-    mutation_256 = base[:256] + (2,) + base[257:]
-    suffix = base[:-16] + (2,) * 16
+    lanes: list[FrozenMLXLane] = []
+    for lane_id in LANE_IDS:
+        contract = _LANE_CONTRACTS[lane_id]
+        base = (1,) * contract["base"]
+        different = (2,) + base[1:]
+        mutation_137 = base[:137] + (2,) + base[138:]
+        mutation_256 = base[:256] + (2,) + base[257:]
+        suffix = base[:-16] + (2,) * 16
+        lanes.append(
+            FrozenMLXLane(
+                lane_id=lane_id,
+                base=base,
+                different_ids=different,
+                mutation_137=mutation_137,
+                mutation_256=mutation_256,
+                suffix_change=suffix,
+                extension_32=(6,) * 32,
+                eviction_a=(3,) * contract["eviction"],
+                eviction_b=(4,) * contract["eviction"],
+                eviction_c=(5,) * contract["eviction"],
+                shorter_seed=base[: contract["shorter_seed"]],
+                seed_output=(7,) * EXPECTED_SEED_OUTPUT_TOKENS[lane_id],
+            )
+        )
     workload = FrozenMLXWorkload(
-        base=base,
-        different_ids=different,
-        mutation_137=mutation_137,
-        mutation_256=mutation_256,
-        suffix_change=suffix,
-        extension_32=(6,) * 32,
-        eviction_a=(3,) * 513,
-        eviction_b=(4,) * 513,
-        eviction_c=(5,) * 513,
-        shorter_seed=base[:769],
-        seed_output=(7,) * EXPECTED_SEED_OUTPUT_TOKENS,
+        lanes=tuple(lanes),
     )
     specs = requests_for_replicate(workload, replicate_id)
     if not public:
@@ -993,7 +1151,7 @@ class LifecycleMLXAdapter:
     def run(self, requests: Sequence[RequestSpec]) -> list[RequestEvidence]:
         records: list[RequestEvidence] = []
         for _, grouped in groupby(
-            requests, key=lambda request: request.request_id.split(":", 1)[0]
+            requests, key=lambda request: _request_block_id(request.request_id)
         ):
             adapter = MLXLocalCacheAdapter(
                 runtime=self._runtime_factory(),
@@ -1037,6 +1195,22 @@ def _system_swap_used_bytes() -> int | None:
     return int(float(match.group(1)) * scale)
 
 
+def _system_memory_free_percent() -> float | None:
+    result = subprocess.run(
+        ["/usr/bin/memory_pressure"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    match = re.search(
+        r"System-wide memory free percentage:\s*([0-9.]+)%",
+        result.stdout,
+    )
+    if result.returncode != 0 or match is None:
+        return None
+    return float(match.group(1))
+
+
 class StageRecorder:
     """Write privacy-safe, canonical stage records."""
 
@@ -1046,24 +1220,35 @@ class StageRecorder:
         *,
         rss_reader: Callable[[], int | None] = _current_rss_bytes,
         swap_reader: Callable[[], int | None] = _system_swap_used_bytes,
+        memory_reader: Callable[[], float | None] = _system_memory_free_percent,
     ) -> None:
         if replicate_id not in REPLICATE_IDS and replicate_id != "calibration":
             raise RealMLXExperimentError("invalid stage replicate ID")
         self._replicate_id = replicate_id
         self._rss_reader = rss_reader
         self._swap_reader = swap_reader
+        self._memory_reader = memory_reader
         self._swap_baseline = swap_reader()
         self.rows: list[dict[str, Any]] = []
 
     def __call__(self, observation: MLXStageObservation) -> None:
         rss = self._rss_reader()
         swap = self._swap_reader()
+        memory_free = self._memory_reader()
         if observation.peak_bytes > MAX_ALLOCATOR_PEAK_BYTES:
             raise RealMLXExperimentError("MLX allocator peak safety gate exceeded")
-        if rss is not None and rss > MAX_PROCESS_RSS_BYTES:
+        if rss is None:
+            raise RealMLXExperimentError("replicate RSS could not be measured")
+        if rss > MAX_PROCESS_RSS_BYTES:
             raise RealMLXExperimentError("replicate RSS safety gate exceeded")
-        if swap is not None and swap > MAX_SWAP_BYTES:
+        if swap is None:
+            raise RealMLXExperimentError("system swap could not be measured")
+        if swap > MAX_SWAP_BYTES:
             raise RealMLXExperimentError("system swap safety gate exceeded")
+        if memory_free is None:
+            raise RealMLXExperimentError("system memory pressure could not be measured")
+        if memory_free < MIN_RUNTIME_MEMORY_FREE_PERCENT:
+            raise RealMLXExperimentError("system memory free safety gate exceeded")
         if (
             swap is not None
             and self._swap_baseline is not None
@@ -1093,6 +1278,10 @@ class StageRecorder:
                 "system_swap": {
                     "used_bytes": swap,
                     "scope": "system_wide",
+                },
+                "system_memory": {
+                    "free_percent": memory_free,
+                    "scope": "system_wide_memory_pressure",
                 },
                 "thermal_power": {
                     "thermal_state": None,
@@ -1173,10 +1362,10 @@ def verify_model_contract(model_dir: Path, summary_path: Path) -> str:
         raise RealMLXExperimentError("conversion summary identity mismatch")
     summary = _safe_object(summary_path)
     if (
-        summary.get("conversion_id") != "qwen3-8b-mlx-q4g64-self-convert-v1"
-        or summary.get("source", {}).get("official_id") != "Qwen/Qwen3-8B"
+        summary.get("conversion_id") != "qwen3-4b-mlx-q4g64-self-convert-v1"
+        or summary.get("source", {}).get("official_id") != "Qwen/Qwen3-4B"
         or summary.get("source", {}).get("official_revision")
-        != "b968826d9c46dd6066d109eabc6255188de91218"
+        != "1cfa9a7208912126459214e8b04321603b3df60c"
         or summary.get("source", {}).get("license") != "Apache-2.0"
         or summary.get("converter", {}).get("package") != "mlx-lm"
         or summary.get("converter", {}).get("version") != REQUIRED_MLX_LM_VERSION
@@ -1186,7 +1375,7 @@ def verify_model_contract(model_dir: Path, summary_path: Path) -> str:
         or summary.get("parameters", {}).get("q_bits") != 4
         or summary.get("parameters", {}).get("q_mode") != "affine"
         or summary.get("output", {}).get("repository_id") != MODEL_ID
-        or summary.get("output", {}).get("total_bytes") != 4_619_328_159
+        or summary.get("output", {}).get("total_bytes") != 2_274_515_269
     ):
         raise RealMLXExperimentError("conversion summary provenance contract mismatch")
     output = summary.get("output")
@@ -1435,9 +1624,14 @@ def run_replicate(
                 "status": "complete",
                 "rotation": list(block_schedule(replicate_id)),
                 "request_count": len(requests),
+                "lane_request_counts": _lane_request_counts(requests),
                 "independent_unit": True,
                 "replacement": False,
                 "frozen_workload_digest": workload.to_dict()["workload_digest"],
+                "frozen_lane_digests": {
+                    lane.lane_id: lane.to_dict()["lane_digest"]
+                    for lane in workload.lanes
+                },
                 "model_artifact_digest": digest,
                 "model_id": MODEL_ID,
                 "tokenizer_id": TOKENIZER_ID,
@@ -1548,6 +1742,7 @@ def _verify_stage_rows(
         "logical_cache",
         "process_rss",
         "system_swap",
+        "system_memory",
         "thermal_power",
     }
     expected_sequence: list[tuple[str | None, str]] = []
@@ -1558,6 +1753,11 @@ def _verify_stage_rows(
         if count is None:
             raise RealMLXExperimentError("attempt rotation contains an unknown block")
         block_records = records[record_index : record_index + count]
+        if not public and any(
+            _request_block_id(record.spec.request_id) != block
+            for record in block_records
+        ):
+            raise RealMLXExperimentError("stage sequence lane/block identity mismatch")
         for record in block_records:
             expected_sequence.extend(
                 (record.spec.request_id, stage)
@@ -1587,6 +1787,11 @@ def _verify_stage_rows(
         _exact_keys(row["process_rss"], {"bytes", "scope"}, "process RSS")
         _exact_keys(row["system_swap"], {"used_bytes", "scope"}, "system swap")
         _exact_keys(
+            row["system_memory"],
+            {"free_percent", "scope"},
+            "system memory",
+        )
+        _exact_keys(
             row["thermal_power"],
             {"thermal_state", "power_watts", "scope"},
             "thermal and power",
@@ -1612,6 +1817,7 @@ def _verify_stage_rows(
             raise RealMLXExperimentError("logical cache stage value is invalid")
         rss = row["process_rss"]["bytes"]
         swap = row["system_swap"]["used_bytes"]
+        memory_free = row["system_memory"]["free_percent"]
         if (
             isinstance(rss, bool)
             or not isinstance(rss, int)
@@ -1621,6 +1827,10 @@ def _verify_stage_rows(
             or not isinstance(swap, int)
             or swap < 0
             or swap > MAX_SWAP_BYTES
+            or isinstance(memory_free, bool)
+            or not isinstance(memory_free, (int, float))
+            or memory_free < MIN_RUNTIME_MEMORY_FREE_PERCENT
+            or memory_free > 100
             or row["allocator"]["peak_bytes"] > MAX_ALLOCATOR_PEAK_BYTES
         ):
             raise RealMLXExperimentError("stage safety measurement is invalid")
@@ -1628,6 +1838,8 @@ def _verify_stage_rows(
             raise RealMLXExperimentError("RSS scope mismatch")
         if row["system_swap"]["scope"] != "system_wide":
             raise RealMLXExperimentError("swap scope mismatch")
+        if row["system_memory"]["scope"] != "system_wide_memory_pressure":
+            raise RealMLXExperimentError("system memory scope mismatch")
         if row["thermal_power"] != {
             "thermal_state": None,
             "power_watts": None,
@@ -1680,9 +1892,11 @@ def verify_replicate(
             "status",
             "rotation",
             "request_count",
+            "lane_request_counts",
             "independent_unit",
             "replacement",
             "frozen_workload_digest",
+            "frozen_lane_digests",
             "model_artifact_digest",
             "model_id",
             "tokenizer_id",
@@ -1696,10 +1910,12 @@ def verify_replicate(
         attempt["schema_version"] != "1"
         or rotation != block_schedule(replicate_id)
         or attempt["request_count"] != sum(_BLOCK_REQUEST_COUNTS.values())
+        or attempt["lane_request_counts"] != dict.fromkeys(LANE_IDS, _REQUESTS_PER_LANE)
         or attempt["independent_unit"] is not True
         or attempt["model_id"] != MODEL_ID
         or attempt["tokenizer_id"] != TOKENIZER_ID
         or attempt["frozen_workload_digest"] != EXPECTED_CALIBRATED_WORKLOAD_DIGEST
+        or attempt["frozen_lane_digests"] != EXPECTED_CALIBRATED_LANE_DIGESTS
         or attempt["model_artifact_digest"] != EXPECTED_MODEL_ARTIFACT_DIGEST
         or attempt["runtime_identity_digest"]
         != _digest_bytes(_json_bytes(_EXPECTED_RUNTIME_IDENTITY))
@@ -1749,6 +1965,8 @@ def verify_replicate(
         expected_binding = {
             "schema_version": "1",
             "frozen_workload_digest": attempt["frozen_workload_digest"],
+            "frozen_lane_digests": attempt["frozen_lane_digests"],
+            "lane_request_counts": attempt["lane_request_counts"],
             "request_specs_digest": request_specs_digest,
         }
         if binding != expected_binding:
@@ -1757,11 +1975,20 @@ def verify_replicate(
         workload = load_workload(directory / "workload.json", calibrated=True)
         if workload.to_dict()["workload_digest"] != attempt["frozen_workload_digest"]:
             raise RealMLXExperimentError("replicate workload digest mismatch")
+        if {
+            lane.lane_id: lane.to_dict()["lane_digest"] for lane in workload.lanes
+        } != attempt["frozen_lane_digests"]:
+            raise RealMLXExperimentError("replicate lane digest mismatch")
         private_expected_specs = requests_for_replicate(workload, replicate_id)
         if [record.spec.to_dict() for record in records] != [
             spec.to_dict() for spec in private_expected_specs
         ]:
             raise RealMLXExperimentError("replicate request schedule drifted")
+        if (
+            _lane_request_counts(private_expected_specs)
+            != attempt["lane_request_counts"]
+        ):
+            raise RealMLXExperimentError("replicate lane request count drifted")
 
     environment = _safe_object(directory / "environment.json")
     _exact_keys(
@@ -1851,6 +2078,10 @@ def _replicate_index(root: Path, *, public: bool) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     verdicts: Counter[str] = Counter()
     scenarios: Counter[str] = Counter()
+    lane_requests: Counter[str] = Counter()
+    lane_scenarios: dict[str, Counter[str]] = {
+        lane_id: Counter() for lane_id in LANE_IDS
+    }
     total_requests = 0
     complete = 0
     compatible_bindings: set[tuple[str, ...]] = set()
@@ -1866,6 +2097,7 @@ def _replicate_index(root: Path, *, public: bool) -> dict[str, Any]:
             compatible_bindings.add(
                 (
                     str(attempt["frozen_workload_digest"]),
+                    canonical_json(attempt["frozen_lane_digests"]),
                     str(attempt["model_artifact_digest"]),
                     str(attempt["model_id"]),
                     str(attempt["tokenizer_id"]),
@@ -1882,8 +2114,13 @@ def _replicate_index(root: Path, *, public: bool) -> dict[str, Any]:
             )
             for key, count in counts.items():
                 verdicts[key] += count
-            for row in records:
+            record_lanes = _scheduled_record_lanes(replicate_id)
+            if len(record_lanes) != len(records):
+                raise RealMLXExperimentError("lane schedule request count mismatch")
+            for row, lane_id in zip(records, record_lanes, strict=True):
                 scenarios[row.spec.scenario.value] += 1
+                lane_requests[lane_id] += 1
+                lane_scenarios[lane_id][row.spec.scenario.value] += 1
             total_requests += len(records)
             entry.update(
                 {
@@ -1906,18 +2143,24 @@ def _replicate_index(root: Path, *, public: bool) -> dict[str, Any]:
         "complete_replicates": complete,
         "attempted_replicates": 6,
         "request_count": total_requests,
+        "lane_request_counts": dict(sorted(lane_requests.items())),
         "verdict_counts": dict(sorted(verdicts.items())),
         "scenario_counts": dict(sorted(scenarios.items())),
+        "lane_scenario_counts": {
+            lane_id: dict(sorted(lane_scenarios[lane_id].items()))
+            for lane_id in LANE_IDS
+        },
         "evidence_binding": {
             "frozen_workload_digest": binding[0],
-            "model_artifact_digest": binding[1],
-            "model_id": binding[2],
-            "tokenizer_id": binding[3],
-            "runtime_identity_digest": binding[4],
-            "cache_config_digest": binding[5],
-            "generator_commit": binding[6],
-            "generator_package_digest": binding[7],
-            "environment_digest": binding[8],
+            "frozen_lane_digests": json.loads(binding[1]),
+            "model_artifact_digest": binding[2],
+            "model_id": binding[3],
+            "tokenizer_id": binding[4],
+            "runtime_identity_digest": binding[5],
+            "cache_config_digest": binding[6],
+            "generator_commit": binding[7],
+            "generator_package_digest": binding[8],
+            "environment_digest": binding[9],
         },
     }
 
@@ -1931,6 +2174,8 @@ def _claim_matrix(index: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "complete_replicates": index["complete_replicates"],
         "scenario_observations": index["scenario_counts"],
+        "lane_scenario_observations": index["lane_scenario_counts"],
+        "lane_request_observations": index["lane_request_counts"],
         "verdict_observations": index["verdict_counts"],
         "allocation_step_boundary_256_is_block_cache_claim": False,
         "mlx_fetch_refreshes_lru": False,
@@ -1939,16 +2184,22 @@ def _claim_matrix(index: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _comparison_name(control: RequestEvidence, treatment: RequestEvidence) -> str:
+def _comparison_name(
+    lane_id: str, control: RequestEvidence, treatment: RequestEvidence
+) -> str:
     scenario: ScenarioKind = treatment.spec.scenario
     if scenario is ScenarioKind.IDENTICAL_PREFIX:
         if treatment.spec.input_token_count < control.spec.input_token_count:
-            return "longer-to-shorter"
-        return "cold-exact"
+            case = "longer-to-shorter"
+        else:
+            case = "cold-exact"
+        return f"{lane_id}:{case}"
     if scenario is ScenarioKind.SUFFIX_CHANGE:
         if treatment.spec.input_token_count > control.spec.input_token_count:
-            return "shorter-to-longer"
-        return "suffix-only-change"
+            case = "shorter-to-longer"
+        else:
+            case = "suffix-only-change"
+        return f"{lane_id}:{case}"
     names: dict[ScenarioKind, str] = {
         ScenarioKind.WITHIN_BLOCK_MUTATION: "interior-mutation",
         ScenarioKind.BLOCK_BOUNDARY_MUTATION: "allocation-step-mutation",
@@ -1956,7 +2207,7 @@ def _comparison_name(control: RequestEvidence, treatment: RequestEvidence) -> st
         ScenarioKind.NAMESPACE_ISOLATION: "namespace-isolation",
         ScenarioKind.EVICTION_COUNT: "capacity-eviction",
     }
-    return names.get(scenario, str(scenario.value))
+    return f"{lane_id}:{names.get(scenario, str(scenario.value))}"
 
 
 def _number(value: Any) -> int | float | None:
@@ -1977,6 +2228,41 @@ def _delta(left: int | float | None, right: int | float | None) -> float | None:
     if left is None or right is None:
         return None
     return float(right) - float(left)
+
+
+def _ratio(left: int | float | None, right: int | float | None) -> float | None:
+    if left is None or right is None or float(left) <= 0:
+        return None
+    return float(right) / float(left)
+
+
+def _request_stage_memory(path: Path) -> dict[str, dict[str, int | float]]:
+    observations: dict[str, dict[str, list[int | float]]] = {}
+    for row in _parse_jsonl(path):
+        request_id = row["request_id"]
+        if request_id is None:
+            continue
+        values = observations.setdefault(
+            request_id,
+            {
+                "process_rss_bytes": [],
+                "system_swap_used_bytes": [],
+                "system_memory_free_percent": [],
+            },
+        )
+        values["process_rss_bytes"].append(row["process_rss"]["bytes"])
+        values["system_swap_used_bytes"].append(row["system_swap"]["used_bytes"])
+        values["system_memory_free_percent"].append(
+            row["system_memory"]["free_percent"]
+        )
+    return {
+        request_id: {
+            "process_rss_bytes": max(values["process_rss_bytes"]),
+            "system_swap_used_bytes": max(values["system_swap_used_bytes"]),
+            "system_memory_free_percent": min(values["system_memory_free_percent"]),
+        }
+        for request_id, values in observations.items()
+    }
 
 
 def _statistics(values: Sequence[int | float | None]) -> dict[str, Any]:
@@ -2006,8 +2292,10 @@ def _statistics(values: Sequence[int | float | None]) -> dict[str, Any]:
 
 def _paired_sample(
     replicate_id: str,
+    lane_id: str,
     control: RequestEvidence,
     treatment: RequestEvidence,
+    stage_memory: Mapping[str, Mapping[str, int | float]],
 ) -> dict[str, Any]:
     control_ttft = _measurement_number(control.timing.client_ttft)
     treatment_ttft = _measurement_number(treatment.timing.client_ttft)
@@ -2019,12 +2307,22 @@ def _paired_sample(
     treatment_active = _fact_number(treatment.memory.runtime_active_bytes)
     control_allocator_cache = _fact_number(control.memory.allocator_cache_bytes)
     treatment_allocator_cache = _fact_number(treatment.memory.allocator_cache_bytes)
+    control_stage = stage_memory[control.spec.request_id]
+    treatment_stage = stage_memory[treatment.spec.request_id]
+    control_rss = control_stage["process_rss_bytes"]
+    treatment_rss = treatment_stage["process_rss_bytes"]
+    control_swap = control_stage["system_swap_used_bytes"]
+    treatment_swap = treatment_stage["system_swap_used_bytes"]
+    control_memory_free = control_stage["system_memory_free_percent"]
+    treatment_memory_free = treatment_stage["system_memory_free_percent"]
     return {
         "replicate_id": replicate_id,
+        "lane_id": lane_id,
         "control_input_tokens": control.spec.input_token_count,
         "treatment_input_tokens": treatment.spec.input_token_count,
         "semantic_prefix_tokens": _fact_number(treatment.reuse.semantic_prefix_tokens),
         "policy_reusable_tokens": _fact_number(treatment.reuse.policy_reusable_tokens),
+        "policy_reusable_blocks": _fact_number(treatment.reuse.reusable_blocks),
         "engine_cached_tokens": _fact_number(treatment.reuse.engine_cached_tokens),
         "engine_created_tokens": _fact_number(treatment.reuse.engine_created_tokens),
         "observed_prompt_tokens": _fact_number(treatment.reuse.observed_prompt_tokens),
@@ -2034,15 +2332,29 @@ def _paired_sample(
         "control_client_ttft_seconds": control_ttft,
         "treatment_client_ttft_seconds": treatment_ttft,
         "client_ttft_difference_seconds": _delta(control_ttft, treatment_ttft),
+        "client_ttft_ratio": _ratio(control_ttft, treatment_ttft),
         "control_total_seconds": control_total,
         "treatment_total_seconds": treatment_total,
         "total_difference_seconds": _delta(control_total, treatment_total),
+        "total_ratio": _ratio(control_total, treatment_total),
         "control_allocator_peak_bytes": control_peak,
         "treatment_allocator_peak_bytes": treatment_peak,
         "allocator_peak_difference_bytes": _delta(control_peak, treatment_peak),
         "allocator_active_difference_bytes": _delta(control_active, treatment_active),
         "allocator_cache_difference_bytes": _delta(
             control_allocator_cache, treatment_allocator_cache
+        ),
+        "control_process_rss_bytes": control_rss,
+        "treatment_process_rss_bytes": treatment_rss,
+        "process_rss_difference_bytes": _delta(control_rss, treatment_rss),
+        "control_system_swap_used_bytes": control_swap,
+        "treatment_system_swap_used_bytes": treatment_swap,
+        "system_swap_difference_bytes": _delta(control_swap, treatment_swap),
+        "control_system_memory_free_percent": control_memory_free,
+        "treatment_system_memory_free_percent": treatment_memory_free,
+        "system_memory_free_difference_percentage_points": _delta(
+            control_memory_free,
+            treatment_memory_free,
         ),
         "output_token_identity": treatment.output.token_identity.value,
         "deterministic_correctness": treatment.output.correctness.value,
@@ -2061,6 +2373,14 @@ def _descriptive_summary(root: Path, *, public: bool) -> dict[str, Any]:
         if attempt.get("status") != "complete":
             continue
         _, records = read_bundle(directory / "bundle")
+        stage_memory = _request_stage_memory(directory / "stages.jsonl")
+        scheduled_lanes = _scheduled_record_lanes(replicate_id)
+        if len(scheduled_lanes) != len(records):
+            raise RealMLXExperimentError("descriptive lane schedule is incomplete")
+        request_lanes = {
+            record.spec.request_id: lane_id
+            for record, lane_id in zip(records, scheduled_lanes, strict=True)
+        }
         pairs: dict[str, dict[PairRole, RequestEvidence]] = {}
         for record in records:
             if record.spec.pair_id is None:
@@ -2073,35 +2393,54 @@ def _descriptive_summary(root: Path, *, public: bool) -> dict[str, Any]:
                 )
             control = roles[PairRole.CONTROL]
             treatment = roles[PairRole.TREATMENT]
-            name = _comparison_name(control, treatment)
+            lane_id = request_lanes[control.spec.request_id]
+            if request_lanes[treatment.spec.request_id] != lane_id:
+                raise RealMLXExperimentError("descriptive pair crosses lanes")
+            name = _comparison_name(lane_id, control, treatment)
             grouped.setdefault(name, []).append(
-                _paired_sample(replicate_id, control, treatment)
+                _paired_sample(
+                    replicate_id,
+                    lane_id,
+                    control,
+                    treatment,
+                    stage_memory,
+                )
             )
     expected = {
-        "cold-exact",
-        "longer-to-shorter",
-        "shorter-to-longer",
-        "interior-mutation",
-        "allocation-step-mutation",
-        "same-length-different-ids",
-        "suffix-only-change",
-        "namespace-isolation",
-        "capacity-eviction",
+        f"{lane_id}:{case}"
+        for lane_id in LANE_IDS
+        for case in (
+            "cold-exact",
+            "longer-to-shorter",
+            "shorter-to-longer",
+            "interior-mutation",
+            "allocation-step-mutation",
+            "same-length-different-ids",
+            "suffix-only-change",
+            "namespace-isolation",
+            "capacity-eviction",
+        )
     }
     if set(grouped) != expected:
         raise RealMLXExperimentError("descriptive comparison matrix is incomplete")
     metrics = (
         "semantic_prefix_tokens",
         "policy_reusable_tokens",
+        "policy_reusable_blocks",
         "engine_cached_tokens",
         "engine_created_tokens",
         "observed_prompt_tokens",
         "unexpected_recomputed_tokens",
         "client_ttft_difference_seconds",
+        "client_ttft_ratio",
         "total_difference_seconds",
+        "total_ratio",
         "allocator_peak_difference_bytes",
         "allocator_active_difference_bytes",
         "allocator_cache_difference_bytes",
+        "process_rss_difference_bytes",
+        "system_swap_difference_bytes",
+        "system_memory_free_difference_percentage_points",
     )
     comparisons: dict[str, Any] = {}
     for name in sorted(grouped):
@@ -2139,6 +2478,7 @@ def _summary(index: Mapping[str, Any], *, public: bool) -> dict[str, Any]:
         "complete_replicates": index["complete_replicates"],
         "failed_replicates": 6 - int(index["complete_replicates"]),
         "request_count": index["request_count"],
+        "lane_request_counts": index["lane_request_counts"],
         "no_replacement": True,
         "sequential_boundary_minutes": 90,
         "missing_facts": "null",
@@ -2189,7 +2529,17 @@ def _experiment_contract(public: bool) -> dict[str, Any]:
         "parent_timeout_minutes": 90,
         "max_output_tokens_per_request": MAX_OUTPUT_TOKENS,
         "max_cache_entries_per_lifecycle": MAX_CACHE_ENTRIES,
-        "blocks": list(_BLOCKS),
+        "lanes": {
+            lane_id: {
+                "base_tokens": _LANE_CONTRACTS[lane_id]["base"],
+                "shorter_seed_tokens": _LANE_CONTRACTS[lane_id]["shorter_seed"],
+                "eviction_prompt_tokens": _LANE_CONTRACTS[lane_id]["eviction"],
+                "cases": list(_CASES),
+                "requests_per_replicate": _REQUESTS_PER_LANE,
+            }
+            for lane_id in LANE_IDS
+        },
+        "combined_blocks": list(_BLOCKS),
         "rotation_offsets": list(ROTATION_OFFSETS),
         "model_contract_file_count": EXPECTED_MODEL_FILE_COUNT,
         "network_allowed": False,
@@ -2221,6 +2571,10 @@ def _aggregate_verifier_source(
         replicate_id: _schedule_shape_specs(replicate_id, public=public)
         for replicate_id in REPLICATE_IDS
     }
+    expected_record_lanes = {
+        replicate_id: _scheduled_record_lanes(replicate_id)
+        for replicate_id in REPLICATE_IDS
+    }
     return f'''"""Portable standard-library verifier for one real MLX aggregate."""
 import hashlib
 import json
@@ -2231,13 +2585,17 @@ from pathlib import Path
 PUBLIC = {public!r}
 ROOT_FILES = {sorted(_AGGREGATE_FILES)!r}
 REPLICATES = {list(REPLICATE_IDS)!r}
+LANES = {list(LANE_IDS)!r}
 BUNDLE_FILES = {list(BUNDLE_FILES)!r}
 DESCRIPTIVE_SUMMARY_SHA256 = {descriptive_summary_digest!r}
 REPLICATE_TREE_SHA256 = {replicate_tree_digest!r}
 EXPECTED_SPECS = {expected_specs!r}
 EXPECTED_ROTATIONS = {{replicate_id: rotation for replicate_id, rotation in {dict(zip(REPLICATE_IDS, (block_schedule(item) for item in REPLICATE_IDS), strict=True))!r}.items()}}
+EXPECTED_RECORD_LANES = {expected_record_lanes!r}
 BLOCK_COUNTS = {_BLOCK_REQUEST_COUNTS!r}
+EXPECTED_LANE_REQUEST_COUNTS = {{lane_id: {_REQUESTS_PER_LANE} for lane_id in LANES}}
 EXPECTED_WORKLOAD_DIGEST = {EXPECTED_CALIBRATED_WORKLOAD_DIGEST!r}
+EXPECTED_LANE_DIGESTS = {EXPECTED_CALIBRATED_LANE_DIGESTS!r}
 EXPECTED_MODEL_ARTIFACT_DIGEST = {EXPECTED_MODEL_ARTIFACT_DIGEST!r}
 EXPECTED_MODEL_ID = {MODEL_ID!r}
 EXPECTED_TOKENIZER_ID = {TOKENIZER_ID!r}
@@ -2248,6 +2606,7 @@ PRIVATE_CACHE_CONFIG = {_experiment_cache_config().to_dict()!r}
 MAX_ALLOCATOR_PEAK_BYTES = {MAX_ALLOCATOR_PEAK_BYTES}
 MAX_PROCESS_RSS_BYTES = {MAX_PROCESS_RSS_BYTES}
 MAX_SWAP_BYTES = {MAX_SWAP_BYTES}
+MIN_RUNTIME_MEMORY_FREE_PERCENT = {MIN_RUNTIME_MEMORY_FREE_PERCENT!r}
 
 def fail(message):
     raise SystemExit(message)
@@ -2282,6 +2641,8 @@ def claim(index):
         "claim_rule": "A hit alone does not prove saved work or latency; article claims require the compatible verified aggregate cell and its raw paired samples.",
         "complete_replicates": index["complete_replicates"],
         "scenario_observations": index["scenario_counts"],
+        "lane_scenario_observations": index["lane_scenario_counts"],
+        "lane_request_observations": index["lane_request_counts"],
         "verdict_observations": index["verdict_counts"],
         "allocation_step_boundary_256_is_block_cache_claim": False,
         "mlx_fetch_refreshes_lru": False,
@@ -2297,6 +2658,7 @@ def summary(index):
         "complete_replicates": index["complete_replicates"],
         "failed_replicates": 6 - int(index["complete_replicates"]),
         "request_count": index["request_count"],
+        "lane_request_counts": index["lane_request_counts"],
         "no_replacement": True,
         "sequential_boundary_minutes": 90,
         "missing_facts": "null",
@@ -2340,6 +2702,8 @@ def verify_schedule_and_stages(directory, replicate_id, attempt, records):
         if binding != {{
             "schema_version": "1",
             "frozen_workload_digest": attempt["frozen_workload_digest"],
+            "frozen_lane_digests": attempt["frozen_lane_digests"],
+            "lane_request_counts": attempt["lane_request_counts"],
             "request_specs_digest": expected_digest,
         }}:
             fail("public workload binding mismatch")
@@ -2374,7 +2738,8 @@ def verify_schedule_and_stages(directory, replicate_id, attempt, records):
         fail("stage sequence does not cover every request")
     row_keys = {{
         "schema_version", "replicate_id", "request_id", "stage", "allocator",
-        "logical_cache", "process_rss", "system_swap", "thermal_power",
+        "logical_cache", "process_rss", "system_swap", "system_memory",
+        "thermal_power",
     }}
     for row, boundary in zip(rows, expected):
         if set(row) != row_keys or (row["request_id"], row["stage"]) != boundary:
@@ -2413,6 +2778,13 @@ def verify_schedule_and_stages(directory, replicate_id, attempt, records):
                 or not isinstance(swap["used_bytes"], int)
                 or not 0 <= swap["used_bytes"] <= MAX_SWAP_BYTES):
             fail("swap stage contract mismatch")
+        memory = row["system_memory"]
+        if (set(memory) != {{"free_percent", "scope"}}
+                or memory["scope"] != "system_wide_memory_pressure"
+                or isinstance(memory["free_percent"], bool)
+                or not isinstance(memory["free_percent"], (int, float))
+                or not MIN_RUNTIME_MEMORY_FREE_PERCENT <= memory["free_percent"] <= 100):
+            fail("system memory stage contract mismatch")
         if row["thermal_power"] != {{
             "thermal_state": None,
             "power_watts": None,
@@ -2424,6 +2796,8 @@ def rebuild_index(root):
     entries = []
     verdicts = {{}}
     scenarios = {{}}
+    lane_requests = {{lane_id: 0 for lane_id in LANES}}
+    lane_scenarios = {{lane_id: {{}} for lane_id in LANES}}
     request_count = 0
     complete = 0
     environments = []
@@ -2463,6 +2837,7 @@ def rebuild_index(root):
                 fail("standard bundle identity mismatch")
             bindings.append({{
                 "frozen_workload_digest": attempt["frozen_workload_digest"],
+                "frozen_lane_digests": attempt["frozen_lane_digests"],
                 "model_artifact_digest": attempt["model_artifact_digest"],
                 "model_id": attempt["model_id"],
                 "tokenizer_id": attempt["tokenizer_id"],
@@ -2480,11 +2855,17 @@ def rebuild_index(root):
             ]
             verify_schedule_and_stages(directory, replicate_id, attempt, records)
             counts = {{}}
-            for record in records:
+            record_lanes = EXPECTED_RECORD_LANES[replicate_id]
+            if len(record_lanes) != len(records):
+                fail("lane schedule request count mismatch")
+            for record, lane_id in zip(records, record_lanes):
                 verdict = record["verdict"] or "unclassified"
                 counts[verdict] = counts.get(verdict, 0) + 1
                 scenario = record["spec"]["scenario"]
                 scenarios[scenario] = scenarios.get(scenario, 0) + 1
+                lane_requests[lane_id] += 1
+                lane_counts = lane_scenarios[lane_id]
+                lane_counts[scenario] = lane_counts.get(scenario, 0) + 1
             for verdict, count in counts.items():
                 verdicts[verdict] = verdicts.get(verdict, 0) + count
             request_count += len(records)
@@ -2506,8 +2887,13 @@ def rebuild_index(root):
         "complete_replicates": complete,
         "attempted_replicates": 6,
         "request_count": request_count,
+        "lane_request_counts": dict(sorted(lane_requests.items())),
         "verdict_counts": dict(sorted(verdicts.items())),
         "scenario_counts": dict(sorted(scenarios.items())),
+        "lane_scenario_counts": {{
+            lane_id: dict(sorted(lane_scenarios[lane_id].items()))
+            for lane_id in LANES
+        }},
         "evidence_binding": bindings[0],
     }}, environments[0])
 
@@ -2558,14 +2944,17 @@ def main():
             complete_keys = {{
                 "schema_version", "replicate_id", "status", "rotation",
                 "request_count", "independent_unit", "replacement",
-                "frozen_workload_digest", "model_artifact_digest", "model_id",
+                "lane_request_counts", "frozen_workload_digest",
+                "frozen_lane_digests", "model_artifact_digest", "model_id",
                 "tokenizer_id", "runtime_identity_digest", "cache_config_digest",
             }}
             if (set(attempt) != complete_keys
                     or tuple(attempt["rotation"]) != tuple(EXPECTED_ROTATIONS[replicate_id])
                     or attempt["request_count"] != sum(BLOCK_COUNTS.values())
+                    or attempt["lane_request_counts"] != EXPECTED_LANE_REQUEST_COUNTS
                     or attempt["independent_unit"] is not True
                     or attempt["frozen_workload_digest"] != EXPECTED_WORKLOAD_DIGEST
+                    or attempt["frozen_lane_digests"] != EXPECTED_LANE_DIGESTS
                     or attempt["model_artifact_digest"] != EXPECTED_MODEL_ARTIFACT_DIGEST
                     or attempt["model_id"] != EXPECTED_MODEL_ID
                     or attempt["tokenizer_id"] != EXPECTED_TOKENIZER_ID
@@ -2789,6 +3178,8 @@ def sanitize_aggregate(source: Path, destination: Path) -> dict[str, Any]:
                 {
                     "schema_version": "1",
                     "frozen_workload_digest": attempt["frozen_workload_digest"],
+                    "frozen_lane_digests": attempt["frozen_lane_digests"],
+                    "lane_request_counts": attempt["lane_request_counts"],
                     "request_specs_digest": _digest_bytes(
                         _json_bytes(
                             [
@@ -2974,7 +3365,7 @@ def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
             snapshot_owner.cleanup()
         return {
             "compiled": True,
-            "base_tokens": len(workload.base),
+            "base_tokens": {lane.lane_id: len(lane.base) for lane in workload.lanes},
             "model_loaded": False,
             "network_used": False,
         }
@@ -2987,7 +3378,9 @@ def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
         )
         return {
             "calibrated": True,
-            "seed_output_tokens": len(workload.seed_output or ()),
+            "seed_output_tokens": {
+                lane.lane_id: len(lane.seed_output or ()) for lane in workload.lanes
+            },
         }
     if args.command == "replicate":
         return run_replicate(
