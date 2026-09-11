@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import hashlib
 import json
 import platform
@@ -208,17 +209,99 @@ def _calibrated_workload() -> FrozenMLXWorkload:
 
 
 def _runtime_packages() -> dict[str, dict[str, str | int]]:
-    return {
-        name: {
-            "version": version,
-            "trusted_root": "purelib",
-            "origin": f"site-packages/{name}/__init__.py",
-            "file_count": 3,
-            "total_bytes": 100,
-            "tree_sha256": "sha256:" + hashlib.sha256(name.encode()).hexdigest(),
-        }
-        for name, version in real_mlx_module._RUNTIME_PACKAGE_VERSIONS.items()
+    return json.loads(json.dumps(real_mlx_module._expected_runtime_package_identity()))
+
+
+def test_runtime_distribution_closure_and_expected_identity_are_exact() -> None:
+    assert real_mlx_module._RUNTIME_DISTRIBUTION_VERSIONS == {
+        "anyio": "4.9.0",
+        "certifi": "2025.7.9",
+        "click": "8.1.8",
+        "filelock": "3.32.4",
+        "fsspec": "2026.7.0",
+        "h11": "0.16.0",
+        "hf-xet": "1.6.0",
+        "httpcore": "1.0.9",
+        "httpx": "0.28.1",
+        "huggingface-hub": "1.13.0",
+        "idna": "3.15",
+        "jinja2": "3.1.6",
+        "markupsafe": "3.0.2",
+        "markdown-it-py": "3.0.0",
+        "mdurl": "0.1.2",
+        "mlx": "0.32.2",
+        "mlx-lm": "0.31.3",
+        "mlx-metal": "0.32.2",
+        "numpy": "2.2.6",
+        "packaging": "26.3",
+        "protobuf": "6.33.5",
+        "pyyaml": "6.0.2",
+        "pygments": "2.20.0",
+        "regex": "2026.7.19",
+        "rich": "14.0.0",
+        "safetensors": "0.8.0",
+        "sentencepiece": "0.2.2",
+        "shellingham": "1.5.4",
+        "sniffio": "1.3.1",
+        "tokenizers": "0.23.1",
+        "tqdm": "4.70.0",
+        "transformers": "5.16.1",
+        "typer": "0.16.0",
+        "typing-extensions": "4.14.1",
     }
+    expected = real_mlx_module._expected_runtime_package_identity()
+    assert set(expected) == set(real_mlx_module._RUNTIME_DISTRIBUTION_VERSIONS)
+    assert all(
+        set(entry)
+        == {
+            "distribution",
+            "version",
+            "trusted_root",
+            "file_count",
+            "total_bytes",
+            "tree_sha256",
+        }
+        for entry in expected.values()
+    )
+
+
+def test_runtime_package_identity_requires_canonical_expected_tree(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    expected = _runtime_packages()
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_compute_runtime_package_identity",
+        lambda _output_workspace: expected,
+    )
+    assert real_mlx_module._runtime_package_identity(tmp_path / "run") == expected
+
+    changed = json.loads(json.dumps(expected))
+    changed["mlx"]["tree_sha256"] = "sha256:" + "0" * 64
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_compute_runtime_package_identity",
+        lambda _output_workspace: changed,
+    )
+    with pytest.raises(RealMLXExperimentError, match="canonical expected tree"):
+        real_mlx_module._runtime_package_identity(tmp_path / "run")
+
+
+def test_expected_runtime_identity_rejects_allowlist_tampering(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    tampered = tmp_path / "runtime-identity.json"
+    tampered.write_bytes(
+        real_mlx_module.EXPECTED_RUNTIME_PACKAGE_IDENTITIES.read_bytes()
+    )
+    tampered.write_bytes(
+        tampered.read_bytes().replace(b'"anyio"', b'"anyio-tampered"', 1)
+    )
+    monkeypatch.setattr(
+        real_mlx_module, "EXPECTED_RUNTIME_PACKAGE_IDENTITIES", tampered
+    )
+    with pytest.raises(RealMLXExperimentError, match="identity digest mismatch"):
+        real_mlx_module._expected_runtime_package_identity()
 
 
 @pytest.mark.skipif(platform.system() != "Darwin", reason="Mach RSS is macOS-only")
@@ -294,104 +377,105 @@ def test_runtime_package_identity_hashes_complete_safe_trees(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     site_packages = tmp_path / "site-packages"
+    scripts = tmp_path / "bin"
     output_parent = tmp_path / "output"
     site_packages.mkdir()
+    scripts.mkdir()
     output_parent.mkdir()
     distributions: dict[str, Any] = {}
-    origins: dict[str, Path] = {}
 
     class FakeDistribution:
         def __init__(self, name: str, version: str) -> None:
+            package_name = name.replace("-", "_")
             self.version = version
+            self.metadata = {"Name": name}
             self.files = [
-                Path(name) / "__init__.py",
-                Path(name) / "native.so",
-                Path(name) / "data" / "runtime.json",
-                Path(name) / "__pycache__" / "ignored.pyc",
+                Path(package_name) / "__init__.py",
+                Path(package_name) / "native.so",
+                Path(package_name) / "data" / "runtime.json",
+                Path(f"{package_name}-1.dist-info") / "METADATA",
             ]
 
-    for module_name, version in real_mlx_module._RUNTIME_PACKAGE_VERSIONS.items():
-        package = site_packages / module_name
+        def locate_file(self, item: object) -> Path:
+            return site_packages / Path(str(item))
+
+    for (
+        distribution_name,
+        version,
+    ) in real_mlx_module._RUNTIME_DISTRIBUTION_VERSIONS.items():
+        package_name = distribution_name.replace("-", "_")
+        package = site_packages / package_name
         (package / "data").mkdir(parents=True)
-        (package / "__pycache__").mkdir()
-        (package / ".cache").mkdir()
-        (package / "__init__.py").write_text(f"{module_name}\n", encoding="ascii")
+        dist_info = site_packages / f"{package_name}-1.dist-info"
+        dist_info.mkdir()
+        (package / "__init__.py").write_text(f"{distribution_name}\n", encoding="ascii")
         (package / "native.so").write_bytes(b"\x00native")
         (package / "data" / "runtime.json").write_text(
             '{"runtime":true}\n', encoding="ascii"
         )
-        (package / "__pycache__" / "ignored.pyc").write_bytes(b"mutable-pyc")
-        (package / ".cache" / "ignored.bin").write_bytes(b"mutable-cache")
-        distributions[real_mlx_module._RUNTIME_DISTRIBUTIONS[module_name]] = (
-            FakeDistribution(module_name, version)
+        (dist_info / "METADATA").write_text(
+            f"Name: {distribution_name}\nVersion: {version}\n", encoding="ascii"
         )
-        origins[module_name] = package / "__init__.py"
+        distributions[distribution_name] = FakeDistribution(distribution_name, version)
 
     monkeypatch.setattr(
         real_mlx_module,
         "_trusted_site_roots",
-        lambda: (("purelib", site_packages),),
+        lambda: (("purelib", site_packages, scripts),),
     )
     monkeypatch.setattr(
         real_mlx_module,
         "_runtime_distribution",
         lambda name: distributions[name],
     )
-    monkeypatch.setattr(
-        real_mlx_module,
-        "_runtime_module_origin",
-        lambda name: origins[name],
-    )
 
     output_workspace = output_parent / "run"
-    identity = real_mlx_module._runtime_package_identity(output_workspace)
+    identity = real_mlx_module._compute_runtime_package_identity(output_workspace)
     assert all(
-        entry["file_count"] == 3
+        entry["file_count"] == 4
         and entry["total_bytes"] > 0
         and entry["trusted_root"] == "purelib"
         and str(entry["tree_sha256"]).startswith("sha256:")
         for entry in identity.values()
     )
-    with pytest.raises(RealMLXExperimentError, match="untrusted"):
-        real_mlx_module._runtime_package_identity(site_packages / "run")
-
-    (site_packages / "mlx_lm" / "__pycache__" / "ignored.pyc").write_bytes(
-        b"changed-pyc"
-    )
-    (site_packages / "mlx_lm" / ".cache" / "ignored.bin").write_bytes(b"changed-cache")
-    assert real_mlx_module._runtime_package_identity(output_workspace) == identity
-
     runtime_data = site_packages / "mlx_lm" / "data" / "runtime.json"
     runtime_data.write_text('{"runtime":false}\n', encoding="ascii")
-    tampered = real_mlx_module._runtime_package_identity(output_workspace)
-    assert tampered["mlx_lm"]["tree_sha256"] != identity["mlx_lm"]["tree_sha256"]
+    tampered = real_mlx_module._compute_runtime_package_identity(output_workspace)
+    assert tampered["mlx-lm"]["tree_sha256"] != identity["mlx-lm"]["tree_sha256"]
     assert tampered["mlx"]["tree_sha256"] == identity["mlx"]["tree_sha256"]
 
+    distributions["mlx-lm"].files.append(Path("mlx_lm") / "injected.metallib")
     (site_packages / "mlx_lm" / "injected.metallib").write_bytes(b"injected")
-    injected = real_mlx_module._runtime_package_identity(output_workspace)
-    assert injected["mlx_lm"]["file_count"] == 4
-    assert injected["mlx_lm"]["tree_sha256"] != tampered["mlx_lm"]["tree_sha256"]
+    injected = real_mlx_module._compute_runtime_package_identity(output_workspace)
+    assert injected["mlx-lm"]["file_count"] == 5
+    assert injected["mlx-lm"]["tree_sha256"] != tampered["mlx-lm"]["tree_sha256"]
 
 
 def test_runtime_package_identity_rejects_missing_and_symlinked_tree_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     site_packages = tmp_path / "site-packages"
+    scripts = tmp_path / "bin"
     output_parent = tmp_path / "output"
     package = site_packages / "mlx"
     package.mkdir(parents=True)
+    scripts.mkdir()
     output_parent.mkdir()
-    origin = package / "__init__.py"
-    origin.write_text("mlx\n", encoding="ascii")
+    (package / "__init__.py").write_text("mlx\n", encoding="ascii")
 
     class FakeDistribution:
         version = real_mlx_module.REQUIRED_MLX_VERSION
+        metadata = {"Name": "mlx"}
         files = [Path("mlx/__init__.py"), Path("mlx/missing.so")]
+
+        @staticmethod
+        def locate_file(item: object) -> Path:
+            return site_packages / Path(str(item))
 
     monkeypatch.setattr(
         real_mlx_module,
         "_trusted_site_roots",
-        lambda: (("purelib", site_packages),),
+        lambda: (("purelib", site_packages, scripts),),
     )
     monkeypatch.setattr(
         real_mlx_module,
@@ -400,17 +484,54 @@ def test_runtime_package_identity_rejects_missing_and_symlinked_tree_files(
     )
     monkeypatch.setattr(
         real_mlx_module,
-        "_runtime_module_origin",
-        lambda _name: origin,
+        "_RUNTIME_DISTRIBUTION_VERSIONS",
+        {"mlx": real_mlx_module.REQUIRED_MLX_VERSION},
     )
 
     with pytest.raises(RealMLXExperimentError, match="missing file"):
-        real_mlx_module._runtime_package_identity(output_parent / "run")
+        real_mlx_module._compute_runtime_package_identity(output_parent / "run")
 
     FakeDistribution.files = [Path("mlx/__init__.py"), Path("mlx/linked.so")]
-    (package / "linked.so").symlink_to(origin)
-    with pytest.raises(RealMLXExperimentError, match="unsafe file"):
-        real_mlx_module._runtime_package_identity(output_parent / "run")
+    (package / "linked.so").symlink_to(package / "__init__.py")
+    with pytest.raises(RealMLXExperimentError, match="symlink"):
+        real_mlx_module._compute_runtime_package_identity(output_parent / "run")
+
+    (package / "linked.so").unlink()
+    FakeDistribution.files = [Path("mlx/__init__.py"), Path("mlx/__pycache__/bad.pyc")]
+    with pytest.raises(RealMLXExperimentError, match="unsafe bytecode"):
+        real_mlx_module._compute_runtime_package_identity(output_parent / "run")
+
+    FakeDistribution.files = [Path("mlx/__init__.py"), Path("../../escape.py")]
+    with pytest.raises(RealMLXExperimentError, match="missing file|out of root"):
+        real_mlx_module._compute_runtime_package_identity(output_parent / "run")
+
+
+@pytest.mark.skipif(
+    platform.system() != "Darwin", reason="canonical MLX closure is macOS-only"
+)
+def test_runtime_package_identity_real_environment_imports_no_runtime_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target_roots = {
+        package.split(".", 1)[0] for package in real_mlx_module._RUNTIME_IMPORT_PACKAGES
+    }
+    original_import = builtins.__import__
+
+    def reject_runtime_import(
+        name: str,
+        globals: Any = None,
+        locals: Any = None,
+        fromlist: Any = (),
+        level: int = 0,
+    ) -> Any:
+        if level == 0 and name.split(".", 1)[0] in target_roots:
+            raise AssertionError(f"runtime import attempted: {name}")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", reject_runtime_import)
+    identity = real_mlx_module._compute_runtime_package_identity(tmp_path / "run")
+    assert set(identity) == set(real_mlx_module._RUNTIME_DISTRIBUTION_VERSIONS)
+    assert all(entry["file_count"] > 0 for entry in identity.values())
 
 
 def test_heavy_process_gate_counts_every_nonexcluded_large_process(
@@ -432,6 +553,31 @@ def test_heavy_process_gate_counts_every_nonexcluded_large_process(
     assert real_mlx_module._heavy_process_summary({10}) == (
         2,
         ("other_large_process",),
+    )
+
+
+def test_host_identity_mismatch_is_not_an_eligible_exclusion() -> None:
+    def rows(failed_reason: str) -> list[dict[str, str]]:
+        return [
+            {
+                "event": "finalized",
+                "replicate_id": replicate_id,
+                "status": "failed" if replicate_id == "replicate-5" else "complete",
+                "reason": (
+                    failed_reason if replicate_id == "replicate-5" else "completed"
+                ),
+            }
+            for replicate_id in REPLICATE_IDS
+        ]
+
+    assert not real_mlx_module._aggregate_eligibility_from_rows(
+        rows("preflight_host_chip_mismatch")
+    )
+    assert not real_mlx_module._aggregate_eligibility_from_rows(
+        rows("preflight_host_memory_mismatch")
+    )
+    assert real_mlx_module._aggregate_eligibility_from_rows(
+        rows("preflight_memory_below_floor")
     )
 
 
@@ -1378,6 +1524,12 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
         "started_failure_disqualifies": True,
         "supervisor_aborted_before_start_disqualifies": True,
     }
+    assert "preflight_host_chip_mismatch" not in (
+        real_mlx_module._ALLOWED_PREFLIGHT_MACHINE_POLICY_REASONS
+    )
+    assert "preflight_host_memory_mismatch" not in (
+        real_mlx_module._ALLOWED_PREFLIGHT_MACHINE_POLICY_REASONS
+    )
     assert (
         contract["integrity_and_authenticity"]["sha256sums"] == "integrity_only_unkeyed"
     )
@@ -1387,6 +1539,10 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     )
     assert any(
         "2-second monitoring" in limitation for limitation in contract["limitations"]
+    )
+    assert any(
+        "incomplete order coverage" in limitation
+        for limitation in contract["limitations"]
     )
     assert (private / "results.json").is_file()
     assert (private / "run-ledger.jsonl").is_file()

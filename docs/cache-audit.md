@@ -299,16 +299,24 @@ tracked changes, package-source drift, top-level import-shadow candidates, an
 existing output workspace, or an unavailable macOS network sandbox. Before
 creating the workspace, it runs an isolated (`python -I`) model-free probe from
 a resolved non-repository directory under the exact network-denied sandbox.
-The probe verifies installed MLX, MLX-LM, NumPy, Tokenizers, Transformers, and safetensors
-versions and complete package-tree identities, including the trusted install
-root, import origin, regular-file count, total bytes, and deterministic tree
-digest. Bytecode and mutable cache directories are excluded from the identity;
-symlinks and other unsafe or missing package files are rejected. The probe
-also verifies source/package identity, current process RSS, system swap, and
-system memory pressure. It then applies one global machine gate. A failure returns
+The probe uses only standard-library distribution metadata and regular-file
+hashing before runtime verification; it does not import a target package to
+discover its origin. It verifies the exact frozen 34-distribution MLX-LM
+closure, including every declared site-packages file and declared environment
+entry-point script, against the immutable Apple Silicon/Python 3.13 identity
+allowlist shipped in `llmtracefx/cache_audit/data/`. The allowlist itself is
+bound by a SHA-256 constant in code and records only distribution, exact
+version, trusted-root label, regular-file count, total bytes, and deterministic
+tree digest—never absolute paths. Missing, symlinked, out-of-install-root, or
+declared bytecode/`__pycache__` files are rejected; `.dist-info` metadata and
+`RECORD` are included. The probe also verifies source/package identity, current
+process RSS, system swap, and system memory pressure. It then applies one global
+machine gate. A failure returns
 `NEEDS_CLEAN_BOOT:<reason>` without creating a ledger or consuming a replicate
-ID. The same checks can be recorded without canonical execution by writing an
-explicitly new receipt:
+ID. The committed tree identity is intentionally canonical for this installed
+Apple Silicon/Python 3.13 runtime; it is not a portable cross-platform wheel
+identity. The same checks can be recorded without canonical execution by
+writing an explicitly new receipt:
 
 ```console
 uv run llmtracefx-real-mlx-cache-audit preflight --model-dir MODEL \
@@ -329,9 +337,9 @@ with a distinct privacy-safe child-instance digest. Failed-before-start and
 failed-after-start transitions have separate schemas and reason rules. Every
 finalized row binds the status, safe reason code, and deterministic digest of
 its final attempt directory. Each child receives the expected commit and
-revalidates the clean source/package tree and trusted runtime-package origins
-before loading the model and immediately before finalizing evidence. The parent
-repeats source validation before and after every child.
+revalidates the clean source/package tree and immutable runtime-distribution
+identities before loading the model and immediately before finalizing evidence.
+The parent repeats source validation before and after every child.
 
 Each replicate loads the model once, then performs exactly one untimed,
 discarded, direct runtime generation against a fresh cache per lane. Warm-ups
@@ -427,11 +435,14 @@ or output agreement.
 
 The fixed interpretation limits are one observation per cell per replicate,
 descriptive medians and ranges only, possible schedule/order and thermal
-effects, non-causal allocator-active/cache, RSS, swap, and pressure levels,
+effects, and incomplete order coverage when one excluded replicate removes a
+counterbalanced schedule arm, non-causal allocator-active/cache, RSS, swap, and
+pressure levels,
 monitoring/stage-observation scheduling perturbation, no block-cache
 interpretation of allocation step 256, token-granular MLX cache behavior, and
 no power, energy, kernel, or utilization claims. The constant-target
 `CACHE_OK` identity/correctness check is a low-power guard and cannot rule out
 all KV corruption. Evidence is scoped to one host, model, and conversion. The
 output workspace must be outside every repository and free of top-level import
-shadows for every runtime-tree package.
+shadows for every runtime import package. A host chip or installed-memory
+mismatch is disqualifying and is not an eligible five-of-six exclusion.

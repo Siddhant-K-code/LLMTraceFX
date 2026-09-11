@@ -12,7 +12,6 @@ import argparse
 import ctypes
 import gc
 import hashlib
-import importlib
 import importlib.util
 import json
 import math
@@ -36,7 +35,7 @@ from importlib import metadata
 from itertools import groupby
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 from llmtracefx.evidence.core import (
     PRIVACY_PATTERNS,
@@ -121,6 +120,9 @@ REQUIRED_TRANSFORMERS_VERSION = "5.16.1"
 REQUIRED_SAFETENSORS_VERSION = "0.8.0"
 REQUIRED_NUMPY_VERSION = "2.2.6"
 REQUIRED_TOKENIZERS_VERSION = "0.23.1"
+EXPECTED_RUNTIME_PACKAGE_IDENTITIES_SHA256 = (
+    "sha256:771a47f7ab419b4a11ec9ac333501f08c74550938f9b0ae53cd19ea762ed4c9d"
+)
 CHILD_TIMEOUT_SECONDS = 12 * 60
 TOTAL_TIMEOUT_SECONDS = 90 * 60
 MONITOR_INTERVAL_SECONDS = 2.0
@@ -147,6 +149,10 @@ TOKENIZER_ID = "Qwen/Qwen3-4B@1cfa9a7208912126459214e8b04321603b3df60c"
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONVERSION_SUMMARY = (
     _PROJECT_ROOT / "llmtracefx/cache_audit/data/qwen3-4b-conversion-summary.json"
+)
+EXPECTED_RUNTIME_PACKAGE_IDENTITIES = (
+    _PROJECT_ROOT
+    / "llmtracefx/cache_audit/data/apple-silicon-python313-mlx-lm-runtime-v1.json"
 )
 _CASES = (
     "cold-exact-duplicate",
@@ -187,45 +193,83 @@ SANDBOX_POLICY = "(version 1) (allow default) (deny network*)"
 SANDBOX_POLICY_DIGEST = (
     "sha256:" + hashlib.sha256(SANDBOX_POLICY.encode("ascii")).hexdigest()
 )
-_RUNTIME_PACKAGE_VERSIONS = {
+_RUNTIME_DISTRIBUTION_VERSIONS = {
+    "anyio": "4.9.0",
+    "certifi": "2025.7.9",
+    "click": "8.1.8",
+    "filelock": "3.32.4",
+    "fsspec": "2026.7.0",
+    "h11": "0.16.0",
+    "hf-xet": "1.6.0",
+    "httpcore": "1.0.9",
+    "httpx": "0.28.1",
+    "huggingface-hub": "1.13.0",
+    "idna": "3.15",
+    "jinja2": "3.1.6",
+    "markupsafe": "3.0.2",
+    "markdown-it-py": "3.0.0",
+    "mdurl": "0.1.2",
     "mlx": REQUIRED_MLX_VERSION,
-    "mlx_lm": REQUIRED_MLX_LM_VERSION,
+    "mlx-lm": REQUIRED_MLX_LM_VERSION,
+    "mlx-metal": "0.32.2",
     "numpy": REQUIRED_NUMPY_VERSION,
-    "tokenizers": REQUIRED_TOKENIZERS_VERSION,
-    "transformers": REQUIRED_TRANSFORMERS_VERSION,
+    "packaging": "26.3",
+    "protobuf": "6.33.5",
+    "pyyaml": "6.0.2",
+    "pygments": "2.20.0",
+    "regex": "2026.7.19",
+    "rich": "14.0.0",
     "safetensors": REQUIRED_SAFETENSORS_VERSION,
+    "sentencepiece": "0.2.2",
+    "shellingham": "1.5.4",
+    "sniffio": "1.3.1",
+    "tokenizers": REQUIRED_TOKENIZERS_VERSION,
+    "tqdm": "4.70.0",
+    "transformers": REQUIRED_TRANSFORMERS_VERSION,
+    "typer": "0.16.0",
+    "typing-extensions": "4.14.1",
 }
-_RUNTIME_DISTRIBUTIONS = {
-    "mlx": "mlx",
-    "mlx_lm": "mlx-lm",
-    "numpy": "numpy",
-    "tokenizers": "tokenizers",
-    "transformers": "transformers",
-    "safetensors": "safetensors",
-}
-_IMPORT_SHADOW_CANDIDATES = (
-    "mlx.py",
+_RUNTIME_IMPORT_PACKAGES = (
+    "anyio",
+    "certifi",
+    "click",
+    "filelock",
+    "fsspec",
+    "h11",
+    "hf_xet",
+    "httpcore",
+    "httpx",
+    "huggingface_hub",
+    "idna",
+    "jinja2",
+    "markupsafe",
+    "markdown_it",
+    "mdurl",
     "mlx",
-    "mlx_lm.py",
     "mlx_lm",
-    "numpy.py",
+    "mlx_metal",
     "numpy",
-    "tokenizers.py",
-    "tokenizers",
-    "transformers.py",
-    "transformers",
-    "safetensors.py",
+    "packaging",
+    "google.protobuf",
+    "yaml",
+    "pygments",
+    "regex",
+    "rich",
     "safetensors",
+    "sentencepiece",
+    "shellingham",
+    "sniffio",
+    "tokenizers",
+    "tqdm",
+    "transformers",
+    "typer",
+    "typing_extensions",
 )
-_RUNTIME_TREE_IGNORED_DIRECTORIES = {
-    "__pycache__",
-    ".cache",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-}
-_RUNTIME_TREE_IGNORED_FILES = {".DS_Store"}
-_RUNTIME_TREE_IGNORED_SUFFIXES = {".pyc", ".pyo"}
+_IMPORT_SHADOW_CANDIDATES = tuple(
+    candidate
+    for package in _RUNTIME_IMPORT_PACKAGES
+    for candidate in (f"{package.split('.', 1)[0]}.py", package.split(".", 1)[0])
+)
 _STARTED_TERMINAL_REASONS = {
     "child_exit_nonzero",
     "child_timeout",
@@ -254,8 +298,6 @@ _ABORT_LATER_REASONS = {
     "total_timeout_before_start",
 }
 _ALLOWED_PREFLIGHT_MACHINE_POLICY_REASONS = {
-    "preflight_host_chip_mismatch",
-    "preflight_host_memory_mismatch",
     "preflight_memory_unavailable",
     "preflight_memory_below_floor",
     "preflight_swap_unavailable",
@@ -1540,24 +1582,12 @@ def _runtime_distribution(name: str) -> metadata.Distribution:
         ) from exc
 
 
-def _runtime_module_origin(module_name: str) -> Path:
-    try:
-        module = importlib.import_module(module_name)
-        origin_module = (
-            importlib.import_module("mlx.core") if module_name == "mlx" else module
-        )
-        raw_origin = getattr(origin_module, "__file__", None)
-        if not isinstance(raw_origin, str):
-            raise RealMLXExperimentError(f"{module_name} has no importable origin file")
-        return Path(raw_origin).resolve(strict=True)
-    except (ImportError, OSError) as exc:
-        raise RealMLXExperimentError(
-            f"{module_name} runtime package import failed"
-        ) from exc
-
-
 def _regular_file_identity(path: Path) -> tuple[int, str]:
-    if path.is_symlink() or not path.is_file():
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.resolve(strict=True) != path.absolute()
+    ):
         raise RealMLXExperimentError("runtime package tree contains an unsafe file")
     before = path.lstat()
     if not stat.S_ISREG(before.st_mode):
@@ -1584,8 +1614,14 @@ def _regular_file_identity(path: Path) -> tuple[int, str]:
     return before.st_size, "sha256:" + digest.hexdigest()
 
 
-def _trusted_site_roots() -> tuple[tuple[str, Path], ...]:
-    roots: dict[Path, str] = {}
+def _trusted_site_roots() -> tuple[tuple[str, Path, Path], ...]:
+    roots: dict[Path, tuple[str, Path]] = {}
+    try:
+        scripts_root = Path(sysconfig.get_path("scripts")).resolve(strict=True)
+    except OSError as exc:
+        raise RealMLXExperimentError("trusted runtime scripts are unavailable") from exc
+    if not scripts_root.is_dir():
+        raise RealMLXExperimentError("trusted runtime scripts are unavailable")
     for key in ("purelib", "platlib"):
         raw = sysconfig.get_path(key)
         try:
@@ -1595,104 +1631,89 @@ def _trusted_site_roots() -> tuple[tuple[str, Path], ...]:
                 "trusted site-packages is unavailable"
             ) from exc
         if root.is_dir():
-            roots.setdefault(root, key)
+            roots.setdefault(root, (key, scripts_root))
     if not roots:
         raise RealMLXExperimentError("trusted site-packages is unavailable")
     return tuple(
         sorted(
-            ((label, root) for root, label in roots.items()),
+            (
+                (label, root, trusted_scripts)
+                for root, (label, trusted_scripts) in roots.items()
+            ),
             key=lambda item: (item[0], item[1].as_posix()),
         )
     )
 
 
-def _runtime_tree_ignored(path: Path) -> bool:
-    return (
-        path.name in _RUNTIME_TREE_IGNORED_FILES
-        or path.suffix in _RUNTIME_TREE_IGNORED_SUFFIXES
-        or any(part in _RUNTIME_TREE_IGNORED_DIRECTORIES for part in path.parts)
-    )
+def _normalized_distribution_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def _runtime_package_tree_identity(
-    package_root: Path,
+def _distribution_tree_identity(
+    distribution: metadata.Distribution,
     *,
+    distribution_name: str,
     trusted_root: Path,
+    trusted_scripts_root: Path,
     output_workspace: Path,
-    declared_files: set[Path],
 ) -> tuple[int, int, str]:
-    if (
-        package_root.is_symlink()
-        or not package_root.is_dir()
-        or not _is_relative_to(package_root, trusted_root)
-        or _is_relative_to(package_root, _PROJECT_ROOT)
-        or _is_relative_to(package_root, output_workspace.parent)
-    ):
-        raise RealMLXExperimentError("runtime package tree root is untrusted")
-
-    def reject_walk_error(error: OSError) -> None:
-        raise RealMLXExperimentError("runtime package tree cannot be read") from error
-
-    files: list[tuple[Path, Path]] = []
-    for current, directory_names, file_names in os.walk(
-        package_root,
-        topdown=True,
-        onerror=reject_walk_error,
-        followlinks=False,
-    ):
-        current_path = Path(current)
-        retained_directories: list[str] = []
-        for directory_name in sorted(directory_names):
-            relative = (current_path / directory_name).relative_to(package_root)
-            if _runtime_tree_ignored(relative):
-                continue
-            directory = current_path / directory_name
-            if directory.is_symlink() or not directory.is_dir():
-                raise RealMLXExperimentError(
-                    "runtime package tree contains an unsafe directory"
-                )
-            retained_directories.append(directory_name)
-        directory_names[:] = retained_directories
-        for file_name in sorted(file_names):
-            relative = (current_path / file_name).relative_to(package_root)
-            if _runtime_tree_ignored(relative):
-                continue
-            path = current_path / file_name
-            if (
-                path.is_symlink()
-                or not path.is_file()
-                or path.resolve(strict=True) != path
-                or not _is_relative_to(path, trusted_root)
-                or _is_relative_to(path, _PROJECT_ROOT)
-                or _is_relative_to(path, output_workspace.parent)
-            ):
-                raise RealMLXExperimentError(
-                    "runtime package tree contains an unsafe file"
-                )
-            files.append((relative, path))
-
-    if not files:
-        raise RealMLXExperimentError("runtime package tree is empty")
-    discovered = {relative for relative, _ in files}
-    missing = {
-        relative
-        for relative in declared_files
-        if not _runtime_tree_ignored(relative) and relative not in discovered
-    }
-    if missing:
+    declared = distribution.files
+    if declared is None or not declared:
         raise RealMLXExperimentError(
-            "runtime package distribution contains a missing file"
+            f"{distribution_name} runtime distribution files are unavailable"
         )
+    files: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for item in declared:
+        declared_path = Path(str(item))
+        if (
+            declared_path.is_absolute()
+            or not declared_path.parts
+            or declared_path.suffix.lower() in {".pyc", ".pyo"}
+            or "__pycache__" in declared_path.parts
+        ):
+            raise RealMLXExperimentError(
+                f"{distribution_name} runtime distribution declares unsafe bytecode or path"
+            )
+        try:
+            located = Path(os.path.abspath(str(distribution.locate_file(item))))
+            resolved = located.resolve(strict=True)
+        except OSError as exc:
+            raise RealMLXExperimentError(
+                f"{distribution_name} runtime distribution contains a missing file"
+            ) from exc
+        if resolved != located:
+            raise RealMLXExperimentError(
+                f"{distribution_name} runtime distribution contains a symlink"
+            )
+        if _is_relative_to(resolved, trusted_root):
+            logical_path = (
+                "site-packages/" + resolved.relative_to(trusted_root).as_posix()
+            )
+        elif _is_relative_to(resolved, trusted_scripts_root):
+            logical_path = (
+                "scripts/" + resolved.relative_to(trusted_scripts_root).as_posix()
+            )
+        else:
+            raise RealMLXExperimentError(
+                f"{distribution_name} runtime distribution file is out of root"
+            )
+        if logical_path in seen or _is_relative_to(resolved, output_workspace.parent):
+            raise RealMLXExperimentError(
+                f"{distribution_name} runtime distribution contains an unsafe file"
+            )
+        seen.add(logical_path)
+        files.append((logical_path, resolved))
 
     tree_digest = hashlib.sha256()
     total_bytes = 0
-    for relative, path in sorted(files, key=lambda item: item[0].as_posix()):
+    for logical_path, path in sorted(files):
         size, digest = _regular_file_identity(path)
         total_bytes += size
         tree_digest.update(
             _json_bytes(
                 {
-                    "path": relative.as_posix(),
+                    "path": logical_path,
                     "size": size,
                     "sha256": digest,
                 }
@@ -1702,76 +1723,54 @@ def _runtime_package_tree_identity(
     return len(files), total_bytes, "sha256:" + tree_digest.hexdigest()
 
 
-def _runtime_package_identity(
+def _compute_runtime_package_identity(
     output_workspace: Path,
 ) -> dict[str, dict[str, str | int]]:
     site_roots = _trusted_site_roots()
-    shadow_roots = tuple(
-        root / name
-        for root in {_PROJECT_ROOT, output_workspace.parent}
-        for name in _IMPORT_SHADOW_CANDIDATES
-    )
     identities: dict[str, dict[str, str | int]] = {}
-    for module_name, required_version in _RUNTIME_PACKAGE_VERSIONS.items():
-        distribution = _runtime_distribution(_RUNTIME_DISTRIBUTIONS[module_name])
-        if distribution.version != required_version:
+    for distribution_name, required_version in _RUNTIME_DISTRIBUTION_VERSIONS.items():
+        distribution = _runtime_distribution(distribution_name)
+        installed_name = distribution.metadata["Name"]
+        if (
+            not isinstance(installed_name, str)
+            or _normalized_distribution_name(installed_name) != distribution_name
+            or distribution.version != required_version
+        ):
             raise RealMLXExperimentError(
-                f"{module_name} runtime package version mismatch"
+                f"{distribution_name} runtime distribution identity mismatch"
             )
-        origin = _runtime_module_origin(module_name)
+        try:
+            distribution_root = Path(str(distribution.locate_file(""))).resolve(
+                strict=True
+            )
+        except OSError as exc:
+            raise RealMLXExperimentError(
+                f"{distribution_name} runtime distribution root is unavailable"
+            ) from exc
         trusted = next(
             (
-                (label, root)
-                for label, root in site_roots
-                if _is_relative_to(origin, root)
+                (label, root, scripts_root)
+                for label, root, scripts_root in site_roots
+                if distribution_root == root
             ),
             None,
         )
-        files = distribution.files
-        if files is None:
-            raise RealMLXExperimentError(
-                f"{module_name} runtime package file metadata is unavailable"
-            )
-        declared_files: set[Path] = set()
-        for item in files:
-            relative = Path(str(item))
-            if (
-                not relative.is_absolute()
-                and relative.parts
-                and relative.parts[0] == module_name
-                and ".." not in relative.parts
-            ):
-                declared_files.add(Path(*relative.parts[1:]))
-        if not declared_files:
-            raise RealMLXExperimentError(
-                f"{module_name} runtime package tree is undeclared"
-            )
         if trusted is None:
             raise RealMLXExperimentError(
-                f"{module_name} runtime package origin is untrusted"
+                f"{distribution_name} runtime distribution root is untrusted"
             )
-        trusted_label, trusted_root = trusted
-        package_root = trusted_root / module_name
-        if (
-            package_root.is_symlink()
-            or not package_root.is_dir()
-            or not _is_relative_to(origin, package_root)
-            or _is_relative_to(origin, output_workspace)
-            or any(_is_relative_to(origin, shadow_root) for shadow_root in shadow_roots)
-        ):
-            raise RealMLXExperimentError(
-                f"{module_name} runtime package origin is untrusted"
-            )
-        file_count, total_bytes, tree_sha256 = _runtime_package_tree_identity(
-            package_root,
+        trusted_label, trusted_root, trusted_scripts_root = trusted
+        file_count, total_bytes, tree_sha256 = _distribution_tree_identity(
+            distribution,
+            distribution_name=distribution_name,
             trusted_root=trusted_root,
+            trusted_scripts_root=trusted_scripts_root,
             output_workspace=output_workspace,
-            declared_files=declared_files,
         )
-        identities[module_name] = {
+        identities[distribution_name] = {
+            "distribution": distribution_name,
             "version": required_version,
             "trusted_root": trusted_label,
-            "origin": "site-packages/" + origin.relative_to(trusted_root).as_posix(),
             "file_count": file_count,
             "total_bytes": total_bytes,
             "tree_sha256": tree_sha256,
@@ -1779,35 +1778,29 @@ def _runtime_package_identity(
     return identities
 
 
-def _verify_runtime_package_identity(value: Any) -> None:
-    if not isinstance(value, dict) or set(value) != set(_RUNTIME_PACKAGE_VERSIONS):
+def _validate_runtime_package_identity_schema(value: Any) -> None:
+    if not isinstance(value, dict) or set(value) != set(_RUNTIME_DISTRIBUTION_VERSIONS):
         raise RealMLXExperimentError("runtime package identity is invalid")
-    for name, required_version in _RUNTIME_PACKAGE_VERSIONS.items():
+    for name, required_version in _RUNTIME_DISTRIBUTION_VERSIONS.items():
         entry = value[name]
         if not isinstance(entry, dict):
             raise RealMLXExperimentError("runtime package identity is invalid")
         _exact_keys(
             entry,
             {
+                "distribution",
                 "version",
                 "trusted_root",
-                "origin",
                 "file_count",
                 "total_bytes",
                 "tree_sha256",
             },
             "runtime package identity",
         )
-        origin = Path(str(entry["origin"]))
         if (
-            entry["version"] != required_version
+            entry["distribution"] != name
+            or entry["version"] != required_version
             or entry["trusted_root"] not in {"purelib", "platlib"}
-            or not isinstance(entry["origin"], str)
-            or not entry["origin"].startswith("site-packages/")
-            or origin.is_absolute()
-            or ".." in origin.parts
-            or len(origin.parts) < 3
-            or origin.parts[1] != name
             or isinstance(entry["file_count"], bool)
             or not isinstance(entry["file_count"], int)
             or entry["file_count"] <= 0
@@ -1817,6 +1810,63 @@ def _verify_runtime_package_identity(value: Any) -> None:
             or re.fullmatch(r"sha256:[0-9a-f]{64}", str(entry["tree_sha256"])) is None
         ):
             raise RealMLXExperimentError("runtime package identity is invalid")
+
+
+def _expected_runtime_package_identity() -> dict[str, dict[str, str | int]]:
+    path = EXPECTED_RUNTIME_PACKAGE_IDENTITIES
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or path.resolve(strict=True) != path.absolute()
+    ):
+        raise RealMLXExperimentError("expected runtime package identity is unavailable")
+    raw = path.read_bytes()
+    if (
+        "sha256:" + hashlib.sha256(raw).hexdigest()
+        != EXPECTED_RUNTIME_PACKAGE_IDENTITIES_SHA256
+    ):
+        raise RealMLXExperimentError(
+            "expected runtime package identity digest mismatch"
+        )
+
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in result:
+                raise RealMLXExperimentError(
+                    "expected runtime package identity contains duplicate keys"
+                )
+            result[key] = item
+        return result
+
+    try:
+        value = json.loads(raw.decode("ascii"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RealMLXExperimentError(
+            "expected runtime package identity is invalid"
+        ) from exc
+    _validate_runtime_package_identity_schema(value)
+    return cast(dict[str, dict[str, str | int]], value)
+
+
+def _verify_runtime_package_identity(value: Any) -> None:
+    _validate_runtime_package_identity_schema(value)
+    if value != _expected_runtime_package_identity():
+        raise RealMLXExperimentError(
+            "runtime package identity does not match canonical expected tree"
+        )
+
+
+def _runtime_package_identity(
+    output_workspace: Path,
+) -> dict[str, dict[str, str | int]]:
+    expected = _expected_runtime_package_identity()
+    actual = _compute_runtime_package_identity(output_workspace)
+    if actual != expected:
+        raise RealMLXExperimentError(
+            "installed runtime package identity does not match canonical expected tree"
+        )
+    return actual
 
 
 def _hash_regular_file(path: Path, expected_size: int, expected_digest: str) -> None:
@@ -3933,6 +3983,8 @@ def _experiment_contract(
             "evidence is scoped to one host, model, and conversion",
             "at most one replicate may be excluded, only for an allowed "
             "never-started preflight machine-policy refusal",
+            "an excluded replicate removes one counterbalanced schedule arm, "
+            "leaving incomplete order coverage",
             "no power, energy, kernel, or utilization claims",
             "namespace isolation is harness-enforced key separation, not native MLX tenancy",
         ],
