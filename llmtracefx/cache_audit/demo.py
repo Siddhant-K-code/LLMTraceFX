@@ -161,7 +161,8 @@ def build_demo(output_dir: Path) -> dict[str, Any]:
         "title": "LLMTraceFX KV-cache truth auditor deterministic public demo",
         "command": DEMO_COMMAND,
         "verification_command": (
-            "python -I <output-dir>/bundle/evidence_bundle.py verify "
+            "uv run --offline --no-sync python -I "
+            "<output-dir>/bundle/evidence_bundle.py verify "
             "--public-dir <output-dir>/bundle --package-root ."
         ),
         "generator_commit": manifest.generator_commit,

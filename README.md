@@ -64,7 +64,8 @@ transition proof.
 Verify the generated bundle without trusting the installed entry point:
 
 ```bash
-python -I build/kv-cache-truth-demo/bundle/evidence_bundle.py verify \
+uv run --offline --no-sync python -I \
+  build/kv-cache-truth-demo/bundle/evidence_bundle.py verify \
   --public-dir build/kv-cache-truth-demo/bundle \
   --package-root .
 ```

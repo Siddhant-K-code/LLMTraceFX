@@ -138,8 +138,8 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         print(f"Bundle: {args.output_dir / 'bundle'}")
         print(f"Machine-readable: {args.output_dir / 'truth-table.json'}")
         print(
-            "Standalone verifier: "
-            f"python -I {args.output_dir / 'bundle' / 'evidence_bundle.py'} "
+            "Standalone verifier: uv run --offline --no-sync python -I "
+            f"{args.output_dir / 'bundle' / 'evidence_bundle.py'} "
             f"verify --public-dir {args.output_dir / 'bundle'} --package-root ."
         )
         print(f"Claim boundary: {CLAIM_BOUNDARIES[0]}")

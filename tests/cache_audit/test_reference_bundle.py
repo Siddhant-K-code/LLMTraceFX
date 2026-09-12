@@ -1084,7 +1084,7 @@ def _write_hermetic_bundle(
     manifest: AuditManifest,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Path:
-    _, records = read_bundle(Path("examples/cache-audit/reference-positive-control"))
+    records = ReferenceCacheAdapter().run(adversarial_requests())
     output = tmp_path / "bundle"
     with monkeypatch.context() as context:
         context.setattr(
