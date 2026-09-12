@@ -264,6 +264,10 @@ from a private, read-only `git archive` snapshot outside both the repository
 and output. The dependencies-only venv and output workspace must not contain
 one another. They may be siblings under a common parent; only package files
 actually beneath the output workspace are rejected.
+For `aggregate`, `sanitize`, and `verify`, dispatch carries that trusted commit
+and the read-only snapshot package digest through to the operation. The source
+run ledger must bind both values exactly before any aggregate derivation or
+verification; private and public contracts and indexes retain the same binding.
 It never downloads a model. The pinned artifact is the eight-file local
 self-conversion of `Qwen/Qwen3-4B` revision
 `1cfa9a7208912126459214e8b04321603b3df60c` (Apache-2.0), produced with
@@ -413,13 +417,17 @@ preflight, launch, started, runtime, timeout, source, cleanup, or
 `supervisor_aborted_before_start` failure is preserved but invalidates the
 full run; failed IDs are never replaced. The global gate runs before workspace
 creation, so an initial refusal consumes no replicate.
-Output identity and deterministic correctness failures, recomputation, and any
-schema-valid cache verdict—including a non-`evicted` capacity revisit—are
-preserved canonical observations, not replicate-fatal gates. Their counts are
-observations rather than pass preconditions. A pair with failed identity or
-correctness, or an eviction-pressure pair, has
-`paired_latency_comparable: false`; warmup and calibration remain pre-run
-compatibility gates.
+Output identity and deterministic correctness failures, recomputation,
+engine-attestation or observed-work disagreement, and any schema-valid cache
+verdict—including `unsupported`, `recomputed`, `attested_only`, `invalid`, or
+a non-`evicted` capacity revisit—are preserved canonical observations, not
+replicate-fatal gates. The per-arm policy-agreement booleans and verdict counts
+are measured outcomes rather than pass preconditions. Only structural evidence
+corruption or inconsistent coverage/accounting invalidates the aggregate. A
+pair with failed output identity or correctness, recomputation, an unsupported
+cache verdict, or eviction pressure has `paired_latency_comparable: false` and
+null paired deltas/ratios; warmup and calibration remain pre-run compatibility
+gates.
 Both `preflight` and `run-all` require the literal integer
 `--run-attempt 1`; the receipt and canonical ledger bind
 `run_attempt: 1` and `prior_invalidated_run_ledger_digests: []`; those fields
@@ -458,20 +466,24 @@ in `run-ledger.jsonl` and contain a strict `results.json`; both files are
 covered by the recursive `SHA256SUMS`.
 `results.json` is derived from verified private records before nested bundle
 redaction and preserves per-lane/case paired reuse, engine verdict, timing,
-memory-level, output-count, identity, and correctness observations plus
-descriptive medians and ranges. Every cell has exactly six raw samples and an
-explicit comparable-pair count. It declares deltas as treatment minus control
-and ratios as treatment divided by control, and retains control verdict,
-control engine-cached-token, and control policy-reuse observations. These are
-descriptive measurements, not causal claims. It contains no token arrays, prompts, paths,
-host IDs, or secrets.
+memory-level, output-count, identity, correctness, and policy-agreement
+observations plus descriptive medians and ranges. Every cell accounts for all
+six complete replicates as zero to six complete paired samples plus explicit
+per-replicate missing-pair reasons; no measurement is invented for a refused or
+otherwise incomplete pair. Each cell also has an explicit comparable-pair
+count, and statistics are null when no values are available. It declares
+deltas as treatment minus control and ratios as treatment divided by control,
+and retains control verdict, control engine-cached-token, and control
+policy-reuse observations. These are descriptive measurements, not causal
+claims. It contains no token arrays, prompts, paths, host IDs, or secrets.
 
 Real-MLX aggregate bundles deliberately contain no executable verifier.
 Offline verification must invoke the independently installed, version-pinned
 `llmtracefx-real-mlx-cache-audit verify` command. The verifier requires a
 terminal `aggregate_eligible` ledger with exactly six complete replicates and
-exactly six raw samples in every result cell. It checks the ledger against
-every attempt, reproduces `results.json` from private
+exact accounting of those six replicates in every result cell across present
+samples and missing-pair reasons. It checks the ledger against every attempt,
+reproduces `results.json` from private
 aggregates, strictly validates public result schemas and bounds, and verifies
 the result digest bound by the ledger and experiment contract. Unkeyed
 `SHA256SUMS` provides integrity only, not authenticity. The Git commit that

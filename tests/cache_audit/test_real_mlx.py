@@ -6,6 +6,7 @@ import platform
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import fields, replace
 from pathlib import Path
 from typing import Any
@@ -60,7 +61,9 @@ from llmtracefx.cache_audit.schema import (
     CacheConfig,
     EvidenceBasis,
     PublicationMode,
+    RequestEvidence,
     RequestSpec,
+    TerminalState,
     Verdict,
 )
 from llmtracefx.optimizer.lab.qwen3_8b.conversion import conversion_manifest_hash
@@ -111,6 +114,12 @@ class FakeTokenizer:
 class MLXIdentityReference:
     backend = "mlx_lm_local"
 
+    def __init__(
+        self,
+        record_transform: Callable[[RequestEvidence], RequestEvidence] | None = None,
+    ) -> None:
+        self._record_transform = record_transform
+
     def capabilities(self) -> CacheAuditCapability:
         return CacheAuditCapability(backend=self.backend, supported=True)
 
@@ -130,7 +139,7 @@ class MLXIdentityReference:
         )
 
     def run(self, requests: tuple[RequestSpec, ...]) -> list[Any]:
-        return [
+        records = [
             replace(
                 record,
                 timing=replace(
@@ -196,6 +205,9 @@ class MLXIdentityReference:
                 requests
             )
         ]
+        if self._record_transform is not None:
+            records = [self._record_transform(record) for record in records]
+        return records
 
 
 def _reference_output(tokens: tuple[int, ...]) -> tuple[int, ...]:
@@ -1180,6 +1192,7 @@ def _make_attempts(
     monkeypatch: pytest.MonkeyPatch,
     *,
     failed_last: bool = False,
+    record_transform: Callable[[RequestEvidence], RequestEvidence] | None = None,
 ) -> Path:
     expected_commit = "a" * 40
     monkeypatch.setattr(
@@ -1245,7 +1258,7 @@ def _make_attempts(
         bundle = replicate / "bundle"
         requests = requests_for_replicate(workload, replicate_id)
         run_audit(
-            adapter=MLXIdentityReference(),
+            adapter=MLXIdentityReference(record_transform),
             requests=requests,
             cache_config=CacheConfig(
                 namespace_id="experiment-namespaces",
@@ -1468,6 +1481,10 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace = _make_attempts(tmp_path, monkeypatch)
+    derivation_identity = {
+        "expected_commit": "a" * 40,
+        "generator_package_digest": real_mlx_module.package_source_digest(),
+    }
     private = tmp_path / "private"
     assert all(
         (
@@ -1476,9 +1493,41 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
         for replicate_id in REPLICATE_IDS
     )
     with pytest.raises(RealMLXExperimentError, match="run workspace allowlist"):
-        assemble_aggregate(workspace / "attempts", tmp_path / "bare-attempts")
-    assert assemble_aggregate(workspace, private)["complete_replicates"] == 6
-    assert verify_aggregate(private)["verified"] is True
+        assemble_aggregate(
+            workspace / "attempts",
+            tmp_path / "bare-attempts",
+            **derivation_identity,
+        )
+    for mismatch in (
+        {"expected_commit": "b" * 40},
+        {"generator_package_digest": "sha256:" + "0" * 64},
+    ):
+        identity = {**derivation_identity, **mismatch}
+        with pytest.raises(
+            RealMLXExperimentError,
+            match="run ledger derivation identity does not match trusted source",
+        ):
+            assemble_aggregate(
+                workspace,
+                tmp_path / "aggregate-mismatch",
+                **identity,
+            )
+    assert (
+        assemble_aggregate(workspace, private, **derivation_identity)[
+            "complete_replicates"
+        ]
+        == 6
+    )
+    assert verify_aggregate(private, **derivation_identity)["verified"] is True
+    for mismatch in (
+        {"expected_commit": "b" * 40},
+        {"generator_package_digest": "sha256:" + "0" * 64},
+    ):
+        with pytest.raises(
+            RealMLXExperimentError,
+            match="run ledger derivation identity does not match trusted source",
+        ):
+            verify_aggregate(private, **{**derivation_identity, **mismatch})
     results = json.loads((private / "results.json").read_text())
     assert results["delta_convention"] == "treatment_minus_control"
     assert results["ratio_convention"] == "treatment_divided_by_control"
@@ -1500,6 +1549,11 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
         cache_bundle.verify_bundle(private / "replicates" / "replicate-0" / "bundle")
     private_index = json.loads((private / "replicate-index.json").read_text())
     assert private_index["lane_request_counts"] == {"1k": 108, "4k": 108}
+    assert private_index["evidence_binding"]["expected_commit"] == "a" * 40
+    assert (
+        private_index["evidence_binding"]["generator_package_digest"]
+        == derivation_identity["generator_package_digest"]
+    )
     assert set(private_index["lane_scenario_counts"]) == set(LANE_IDS)
     assert private_index["replicates"][-1]["status"] == "complete"
     private_claims = json.loads((private / "claim-matrix.json").read_text())
@@ -1577,6 +1631,10 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     }
     assert contract["prior_invalidated_run_ledger_digests"] == []
     assert contract["evidence_binding"]["expected_commit"] == "a" * 40
+    assert (
+        contract["evidence_binding"]["generator_package_digest"]
+        == derivation_identity["generator_package_digest"]
+    )
     assert contract["evidence_binding"]["run_attempt"] == 1
     assert contract["evidence_binding"]["prior_invalidated_run_ledger_digests"] == []
     assert contract["replicate_eligibility"] == {
@@ -1627,7 +1685,7 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     )
     _write_recursive_checksums(ledger_tamper)
     with pytest.raises(RealMLXExperimentError, match="does not match attempt"):
-        verify_aggregate(ledger_tamper)
+        verify_aggregate(ledger_tamper, **derivation_identity)
 
     lane_tamper = tmp_path / "lane-tamper"
     shutil.copytree(private, lane_tamper)
@@ -1640,7 +1698,7 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
         RealMLXExperimentError,
         match="run ledger finalization does not match attempt",
     ):
-        verify_aggregate(lane_tamper)
+        verify_aggregate(lane_tamper, **derivation_identity)
 
     summary = private / "summary.json"
     value = json.loads(summary.read_text())
@@ -1648,21 +1706,47 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     _write_json(summary, value)
     _write_recursive_checksums(private)
     with pytest.raises(RealMLXExperimentError, match="derived aggregate"):
-        verify_aggregate(private)
+        verify_aggregate(private, **derivation_identity)
 
     shutil.rmtree(private)
-    assemble_aggregate(workspace, private)
+    assemble_aggregate(workspace, private, **derivation_identity)
     public = tmp_path / "public"
-    assert sanitize_aggregate(private, public)["publication_mode"] == "public_redacted"
+    for mismatch in (
+        {"expected_commit": "b" * 40},
+        {"generator_package_digest": "sha256:" + "0" * 64},
+    ):
+        with pytest.raises(
+            RealMLXExperimentError,
+            match="run ledger derivation identity does not match trusted source",
+        ):
+            sanitize_aggregate(
+                private,
+                tmp_path / "sanitize-mismatch",
+                **{**derivation_identity, **mismatch},
+            )
+    assert (
+        sanitize_aggregate(private, public, **derivation_identity)["publication_mode"]
+        == "public_redacted"
+    )
     public_index = json.loads((public / "replicate-index.json").read_text())
     assert public_index["lane_request_counts"] == {"1k": 108, "4k": 108}
     assert public_index["evidence_binding"]["expected_commit"] == "a" * 40
+    assert (
+        public_index["evidence_binding"]["generator_package_digest"]
+        == derivation_identity["generator_package_digest"]
+    )
     assert public_index["evidence_binding"]["run_attempt"] == 1
     assert (
         public_index["evidence_binding"]["prior_invalidated_run_ledger_digests"] == []
     )
     assert public_index["evidence_binding"]["generator_package_digest"].startswith(
         "sha256:"
+    )
+    public_contract = json.loads((public / "experiment-contract.json").read_text())
+    assert public_contract["evidence_binding"]["expected_commit"] == "a" * 40
+    assert (
+        public_contract["evidence_binding"]["generator_package_digest"]
+        == derivation_identity["generator_package_digest"]
     )
     public_results = json.loads((public / "results.json").read_text())
     assert public_results["source"] == "verified_private_records_before_redaction"
@@ -1730,7 +1814,7 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     _write_json(results_path, results_value)
     _write_recursive_checksums(results_tamper)
     with pytest.raises(RealMLXExperimentError, match="public result"):
-        verify_aggregate(results_tamper)
+        verify_aggregate(results_tamper, **derivation_identity)
 
     sample_count_tamper = tmp_path / "sample-count-tamper"
     shutil.copytree(public, sample_count_tamper)
@@ -1741,7 +1825,7 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     _write_json(sample_count_results, sample_count_value)
     _write_recursive_checksums(sample_count_tamper)
     with pytest.raises(RealMLXExperimentError, match="sample count"):
-        verify_aggregate(sample_count_tamper)
+        verify_aggregate(sample_count_tamper, **derivation_identity)
 
     memory_tamper = tmp_path / "memory-tamper"
     shutil.copytree(public, memory_tamper)
@@ -1753,7 +1837,7 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     _write_json(memory_results, memory_value)
     _write_recursive_checksums(memory_tamper)
     with pytest.raises(RealMLXExperimentError, match="system-memory"):
-        verify_aggregate(memory_tamper)
+        verify_aggregate(memory_tamper, **derivation_identity)
 
     control_memory_tamper = tmp_path / "control-memory-tamper"
     shutil.copytree(public, control_memory_tamper)
@@ -1765,7 +1849,7 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     _write_json(control_memory_results, control_memory_value)
     _write_recursive_checksums(control_memory_tamper)
     with pytest.raises(RealMLXExperimentError, match="system-memory"):
-        verify_aggregate(control_memory_tamper)
+        verify_aggregate(control_memory_tamper, **derivation_identity)
 
     nested_tamper = tmp_path / "nested-tamper"
     shutil.copytree(public, nested_tamper)
@@ -1794,7 +1878,7 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     _write_json(nested_contract, nested_contract_value)
     _write_recursive_checksums(nested_tamper)
     with pytest.raises(RealMLXExperimentError, match="retained nested evidence"):
-        verify_aggregate(nested_tamper)
+        verify_aggregate(nested_tamper, **derivation_identity)
 
     script_tamper = tmp_path / "script-tamper"
     shutil.copytree(public, script_tamper)
@@ -1802,14 +1886,14 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     script.write_text("print('not data-only')\n", encoding="ascii")
     _write_recursive_checksums(script_tamper)
     with pytest.raises(RealMLXExperimentError, match="script-like"):
-        verify_aggregate(script_tamper)
+        verify_aggregate(script_tamper, **derivation_identity)
 
     executable_tamper = tmp_path / "executable-tamper"
     shutil.copytree(public, executable_tamper)
     executable = executable_tamper / "report.html"
     executable.chmod(executable.stat().st_mode | 0o100)
     with pytest.raises(RealMLXExperimentError, match="executable"):
-        verify_aggregate(executable_tamper)
+        verify_aggregate(executable_tamper, **derivation_identity)
 
     stage_tamper = tmp_path / "stage-tamper"
     shutil.copytree(public, stage_tamper)
@@ -1822,7 +1906,7 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
         RealMLXExperimentError,
         match="run ledger finalization does not match attempt",
     ):
-        verify_aggregate(stage_tamper)
+        verify_aggregate(stage_tamper, **derivation_identity)
     rows[0], rows[1] = rows[1], rows[0]
     stages.write_text("\n".join(rows) + "\n", encoding="ascii")
     real_mlx_module._write_sanitized_run_ledger(
@@ -1838,7 +1922,7 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     _write_json(descriptive, descriptive_value)
     _write_recursive_checksums(stage_tamper)
     with pytest.raises(RealMLXExperimentError, match="derived aggregate"):
-        verify_aggregate(stage_tamper)
+        verify_aggregate(stage_tamper, **derivation_identity)
 
 
 def test_run_ledger_rejects_minimal_finalization_only_fixture(
@@ -2238,11 +2322,21 @@ def test_aggregate_requires_all_six_without_replacement(
             },
         )
     with pytest.raises(RealMLXExperimentError, match="all 6"):
-        assemble_aggregate(workspace, tmp_path / "aggregate")
+        assemble_aggregate(
+            workspace,
+            tmp_path / "aggregate",
+            expected_commit="a" * 40,
+            generator_package_digest=real_mlx_module.package_source_digest(),
+        )
 
     (attempts / "replicate-5").rename(attempts / "replicate-6")
     with pytest.raises(RealMLXExperimentError, match="replicate-0..5 exactly"):
-        assemble_aggregate(workspace, tmp_path / "replacement")
+        assemble_aggregate(
+            workspace,
+            tmp_path / "replacement",
+            expected_commit="a" * 40,
+            generator_package_digest=real_mlx_module.package_source_digest(),
+        )
 
 
 @pytest.mark.parametrize("results_failure", [None, "derivation", "verification"])
@@ -2783,6 +2877,68 @@ def test_run_all_cli_exits_nonzero_when_results_derivation_fails(
     assert raised.value.code == 1
 
 
+@pytest.mark.parametrize(
+    ("arguments", "target"),
+    [
+        (
+            [
+                "aggregate",
+                "--run-workspace",
+                "run",
+                "--output-dir",
+                "aggregate",
+                "--expected-commit",
+                "a" * 40,
+            ],
+            "assemble_aggregate",
+        ),
+        (
+            [
+                "sanitize",
+                "aggregate",
+                "--output-dir",
+                "public",
+                "--expected-commit",
+                "a" * 40,
+            ],
+            "sanitize_aggregate",
+        ),
+        (
+            ["verify", "aggregate", "--expected-commit", "a" * 40],
+            "verify_aggregate",
+        ),
+    ],
+)
+def test_derivation_cli_dispatch_preserves_trusted_source_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: list[str],
+    target: str,
+) -> None:
+    package_digest = "sha256:" + "b" * 64
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_require_trusted_canonical_dispatch",
+        lambda expected_commit: (
+            package_digest if expected_commit == "a" * 40 else pytest.fail()
+        ),
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        target,
+        lambda *_args, **kwargs: calls.append(kwargs) or {"verified": True},
+    )
+
+    real_mlx_module._run_cli(real_mlx_module._parser().parse_args(arguments))
+
+    assert calls == [
+        {
+            "expected_commit": "a" * 40,
+            "generator_package_digest": package_digest,
+        }
+    ]
+
+
 @pytest.mark.parametrize("command", ["preflight", "run-all"])
 @pytest.mark.parametrize("attempt", [None, "0", "2", "1.0"])
 def test_canonical_entrypoints_accept_only_explicit_integer_attempt_one(
@@ -2922,6 +3078,60 @@ def test_preflight_does_not_consume_marker_and_run_consumes_after_gate(
     assert marker["run_ledger_digest"] is None
 
 
+def test_run_all_marker_finalization_failure_does_not_mask_original_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workload = _calibrated_workload()
+    state = real_mlx_module._RunPreflight(
+        workload_path=tmp_path / "workload.json",
+        model_dir=tmp_path / "model",
+        conversion_summary=tmp_path / "summary.json",
+        output_workspace=real_mlx_module.CANONICAL_OUTPUT_WORKSPACE,
+        package_digest="sha256:" + "b" * 64,
+        workload=workload,
+        runtime_packages=_runtime_packages(),
+        machine_observation={},
+    )
+    marker = tmp_path / "attempt-marker.json"
+    monkeypatch.setattr(real_mlx_module, "_run_global_preflight", lambda **_: state)
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_consume_canonical_attempt",
+        lambda **_: (marker, "sha256:" + "c" * 64),
+    )
+
+    class OriginalFailure(RuntimeError):
+        pass
+
+    def execute(**_: Any) -> dict[str, Any]:
+        raise OriginalFailure("original run failure")
+
+    def fail_finalization(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("marker write failure")
+
+    monkeypatch.setattr(
+        real_mlx_module, "_run_all_replicates_after_consumption", execute
+    )
+    monkeypatch.setattr(
+        real_mlx_module, "_finalize_canonical_attempt_marker", fail_finalization
+    )
+
+    with pytest.raises(OriginalFailure, match="original run failure") as caught:
+        real_mlx_module.run_all_replicates(
+            workload=state.workload_path,
+            model_dir=state.model_dir,
+            conversion_summary=state.conversion_summary,
+            output_workspace=state.output_workspace,
+            expected_commit="a" * 40,
+            run_attempt=1,
+        )
+
+    assert getattr(caught.value, "__notes__", []) == [
+        "canonical attempt marker finalization also failed: "
+        "OSError: marker write failure"
+    ]
+
+
 def test_public_results_allow_measured_output_failure_and_nonevicted_verdict(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2937,6 +3147,190 @@ def test_public_results_allow_measured_output_failure_and_nonevicted_verdict(
     comparison["output_identity_true_pair_count"] -= 1
     comparison["correctness_true_pair_count"] -= 1
     real_mlx_module._verify_public_results(results)
+
+
+def test_public_results_preserve_recomputation_attestation_mismatch_and_missing_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target_request = "1k:interior-mutation:variant"
+    control_request = "1k:interior-mutation:seed"
+    fully_unsupported_request = "4k:suffix-only-change:variant"
+
+    def transform(record: RequestEvidence) -> RequestEvidence:
+        if record.spec.request_id == fully_unsupported_request:
+            return replace(record, terminal_state=TerminalState.REFUSED)
+        if (
+            record.spec.request_id == control_request
+            and record.spec.replicate_id == "replicate-3"
+        ):
+            return replace(
+                record,
+                reuse=replace(
+                    record.reuse,
+                    engine_cached_tokens=replace(
+                        record.reuse.engine_cached_tokens,
+                        value=1,
+                    ),
+                    engine_created_tokens=replace(
+                        record.reuse.engine_created_tokens,
+                        value=record.spec.input_token_count - 1,
+                    ),
+                ),
+            )
+        if (
+            record.spec.request_id == control_request
+            and record.spec.replicate_id == "replicate-4"
+        ):
+            required = record.reuse.policy_required_prompt_tokens.value
+            assert isinstance(required, int)
+            return replace(
+                record,
+                reuse=replace(
+                    record.reuse,
+                    observed_prompt_tokens=replace(
+                        record.reuse.observed_prompt_tokens,
+                        value=required - 1,
+                    ),
+                ),
+            )
+        if record.spec.request_id != target_request:
+            return record
+        if record.spec.replicate_id == "replicate-0":
+            required = record.reuse.policy_required_prompt_tokens.value
+            assert isinstance(required, int)
+            return replace(
+                record,
+                reuse=replace(
+                    record.reuse,
+                    observed_prompt_tokens=replace(
+                        record.reuse.observed_prompt_tokens,
+                        value=required + 1,
+                    ),
+                    unexpected_recomputed_tokens=replace(
+                        record.reuse.unexpected_recomputed_tokens,
+                        value=1,
+                    ),
+                ),
+            )
+        if record.spec.replicate_id == "replicate-1":
+            policy = record.reuse.policy_reusable_tokens.value
+            assert isinstance(policy, int) and policy > 0
+            cached = policy - 1
+            return replace(
+                record,
+                reuse=replace(
+                    record.reuse,
+                    engine_cached_tokens=replace(
+                        record.reuse.engine_cached_tokens,
+                        value=cached,
+                    ),
+                    engine_created_tokens=replace(
+                        record.reuse.engine_created_tokens,
+                        value=record.spec.input_token_count - cached,
+                    ),
+                ),
+            )
+        if record.spec.replicate_id == "replicate-2":
+            return replace(record, terminal_state=TerminalState.REFUSED)
+        return record
+
+    workspace = _make_attempts(
+        tmp_path,
+        monkeypatch,
+        record_transform=transform,
+    )
+    results = real_mlx_module._public_results_from_private(workspace / "attempts")
+    real_mlx_module._verify_public_results(
+        results,
+        complete_replicate_ids=set(REPLICATE_IDS),
+    )
+
+    comparison = results["comparisons"]["1k:interior-mutation"]
+    assert comparison["independent_units"] == 5
+    assert comparison["missing_pair_count"] == 1
+    assert comparison["missing_pair_reasons"] == [
+        {
+            "replicate_id": "replicate-2",
+            "reason": "treatment_refused_unsupported",
+        }
+    ]
+    recomputed = next(
+        sample
+        for sample in comparison["samples"]
+        if sample["replicate_id"] == "replicate-0"
+    )
+    assert recomputed["verdict"] == Verdict.RECOMPUTED.value
+    assert recomputed["control_engine_attestation_matches_policy"] is True
+    assert recomputed["control_observed_matches_policy_required"] is True
+    assert recomputed["engine_attestation_matches_policy"] is True
+    assert recomputed["observed_matches_policy_required"] is False
+    assert recomputed["unexpected_recomputed_tokens"] == 1
+    assert recomputed["paired_latency_comparable"] is False
+    assert recomputed["client_ttft_difference_seconds"] is None
+    assert recomputed["total_ratio"] is None
+
+    mismatch = next(
+        sample
+        for sample in comparison["samples"]
+        if sample["replicate_id"] == "replicate-1"
+    )
+    assert mismatch["verdict"] == Verdict.INVALID.value
+    assert mismatch["engine_attestation_matches_policy"] is False
+    assert mismatch["observed_matches_policy_required"] is True
+    assert mismatch["paired_latency_comparable"] is False
+    assert mismatch["client_ttft_ratio"] is None
+    assert mismatch["allocator_peak_difference_bytes"] is None
+    control_mismatch = next(
+        sample
+        for sample in comparison["samples"]
+        if sample["replicate_id"] == "replicate-3"
+    )
+    assert control_mismatch["control_verdict"] == Verdict.INVALID.value
+    assert control_mismatch["control_engine_attestation_matches_policy"] is False
+    assert control_mismatch["paired_latency_comparable"] is False
+    assert control_mismatch["total_difference_seconds"] is None
+    control_observed_mismatch = next(
+        sample
+        for sample in comparison["samples"]
+        if sample["replicate_id"] == "replicate-4"
+    )
+    assert control_observed_mismatch["control_unexpected_recomputed_tokens"] == 0
+    assert (
+        control_observed_mismatch["control_observed_matches_policy_required"] is False
+    )
+    assert control_observed_mismatch["paired_latency_comparable"] is False
+    assert comparison["statistics"]["unexpected_recomputed_tokens"]["values"] == [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    ]
+
+    tampered = json.loads(json.dumps(results))
+    tampered_sample = next(
+        sample
+        for sample in tampered["comparisons"]["1k:interior-mutation"]["samples"]
+        if sample["replicate_id"] == "replicate-1"
+    )
+    tampered_sample["engine_attestation_matches_policy"] = True
+    with pytest.raises(RealMLXExperimentError, match="agreement boolean"):
+        real_mlx_module._verify_public_results(tampered)
+
+    unsupported = results["comparisons"]["4k:suffix-only-change"]
+    assert unsupported["independent_units"] == 0
+    assert unsupported["missing_pair_count"] == 6
+    assert unsupported["samples"] == []
+    assert {item["reason"] for item in unsupported["missing_pair_reasons"]} == {
+        "treatment_refused_unsupported"
+    }
+    assert unsupported["statistics"]["unexpected_recomputed_tokens"] == {
+        "count": 0,
+        "values": [],
+        "median": None,
+        "minimum": None,
+        "maximum": None,
+    }
 
 
 def test_run_all_rejects_symlinked_input_before_creating_workspace(

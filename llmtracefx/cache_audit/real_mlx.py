@@ -3101,6 +3101,18 @@ def _claim_matrix(index: Mapping[str, Any]) -> dict[str, Any]:
             "observations, not replicate pass preconditions"
         ),
         "negative_measured_outcomes_preserved": True,
+        "agreement_booleans_are_measured_outcomes": True,
+        "canonical_cache_verdict_observations": [
+            Verdict.UNSUPPORTED.value,
+            Verdict.RECOMPUTED.value,
+            Verdict.ATTESTED_ONLY.value,
+            Verdict.INVALID.value,
+        ],
+        "aggregate_invalidity_rule": (
+            "only structural evidence corruption or coverage/accounting failure "
+            "invalidates the aggregate; measured cache disagreements and "
+            "schema-valid negative verdicts do not"
+        ),
         "allocation_step_boundary_256_is_block_cache_claim": False,
         "same_length_different_ids_interpretation": (
             "early_divergence_same_length_case_without_zero_reuse_guarantee"
@@ -3264,8 +3276,25 @@ def _paired_sample(
     control_policy_reusable = _fact_number(control.reuse.policy_reusable_tokens)
     control_reusable_blocks = _fact_number(control.reuse.reusable_blocks)
     control_engine_cached = _fact_number(control.reuse.engine_cached_tokens)
-    control_output_tokens = len(control.output.output_token_ids or ())
-    treatment_output_tokens = len(treatment.output.output_token_ids or ())
+    control_engine_created = _fact_number(control.reuse.engine_created_tokens)
+    control_observed = _fact_number(control.reuse.observed_prompt_tokens)
+    control_policy_required = _fact_number(control.reuse.policy_required_prompt_tokens)
+    treatment_policy_reusable = _fact_number(treatment.reuse.policy_reusable_tokens)
+    treatment_engine_cached = _fact_number(treatment.reuse.engine_cached_tokens)
+    treatment_observed = _fact_number(treatment.reuse.observed_prompt_tokens)
+    treatment_policy_required = _fact_number(
+        treatment.reuse.policy_required_prompt_tokens
+    )
+    control_output_tokens = (
+        None
+        if control.output.output_token_ids is None
+        else len(control.output.output_token_ids)
+    )
+    treatment_output_tokens = (
+        None
+        if treatment.output.output_token_ids is None
+        else len(treatment.output.output_token_ids)
+    )
     supported_treatment_verdicts = {
         Verdict.VERIFIED_HIT,
         Verdict.PARTIAL_REUSE,
@@ -3282,11 +3311,14 @@ def _paired_sample(
         and treatment.output.token_identity.value is True
         and control.output.correctness.value is True
         and treatment.output.correctness.value is True
+        and control_output_tokens is not None
+        and treatment_output_tokens is not None
         and control_output_tokens == treatment_output_tokens
         and control_ttft is not None
         and treatment_ttft is not None
         and control_total is not None
         and treatment_total is not None
+        and control.verdict in supported_treatment_verdicts
         and treatment.verdict in supported_treatment_verdicts
         and control_recomputed == 0
         and treatment_recomputed == 0
@@ -3312,13 +3344,38 @@ def _paired_sample(
         "control_policy_reusable_tokens": control_policy_reusable,
         "control_policy_reusable_blocks": control_reusable_blocks,
         "control_engine_cached_tokens": control_engine_cached,
+        "control_engine_created_tokens": control_engine_created,
+        "control_observed_prompt_tokens": control_observed,
+        "control_policy_required_prompt_tokens": control_policy_required,
+        "control_unexpected_recomputed_tokens": control_recomputed,
+        "control_engine_attestation_matches_policy": (
+            control_engine_cached is not None
+            and control_policy_reusable is not None
+            and control_engine_cached == control_policy_reusable
+        ),
+        "control_observed_matches_policy_required": (
+            control_observed is not None
+            and control_policy_required is not None
+            and control_observed == control_policy_required
+        ),
         "semantic_prefix_tokens": _fact_number(treatment.reuse.semantic_prefix_tokens),
-        "policy_reusable_tokens": _fact_number(treatment.reuse.policy_reusable_tokens),
+        "policy_reusable_tokens": treatment_policy_reusable,
         "policy_reusable_blocks": _fact_number(treatment.reuse.reusable_blocks),
-        "engine_cached_tokens": _fact_number(treatment.reuse.engine_cached_tokens),
+        "engine_cached_tokens": treatment_engine_cached,
         "engine_created_tokens": _fact_number(treatment.reuse.engine_created_tokens),
-        "observed_prompt_tokens": _fact_number(treatment.reuse.observed_prompt_tokens),
+        "observed_prompt_tokens": treatment_observed,
+        "policy_required_prompt_tokens": treatment_policy_required,
         "unexpected_recomputed_tokens": treatment_recomputed,
+        "engine_attestation_matches_policy": (
+            treatment_engine_cached is not None
+            and treatment_policy_reusable is not None
+            and treatment_engine_cached == treatment_policy_reusable
+        ),
+        "observed_matches_policy_required": (
+            treatment_observed is not None
+            and treatment_policy_required is not None
+            and treatment_observed == treatment_policy_required
+        ),
         "paired_latency_comparable": paired_latency_comparable,
         "control_client_ttft_seconds": control_ttft,
         "treatment_client_ttft_seconds": treatment_ttft,
@@ -3384,7 +3441,21 @@ def _paired_sample(
 def _descriptive_summary(
     replicates: Path, *, public: bool, data_only_bundle: bool = True
 ) -> dict[str, Any]:
-    grouped: dict[str, list[dict[str, Any]]] = {}
+    expected = {
+        f"{lane_id}:{case}"
+        for lane_id in LANE_IDS
+        for case in (
+            "cold-exact",
+            "interior-mutation",
+            "allocation-step-mutation",
+            "same-length-different-ids",
+            "suffix-only-change",
+            "namespace-isolation",
+            "capacity-eviction",
+        )
+    }
+    grouped: dict[str, list[dict[str, Any]]] = {name: [] for name in expected}
+    missing_pairs: dict[str, list[dict[str, str]]] = {name: [] for name in expected}
     for replicate_id in REPLICATE_IDS:
         directory = replicates / replicate_id
         attempt = _safe_object(directory / "attempt.json")
@@ -3415,7 +3486,28 @@ def _descriptive_summary(
             if request_lanes[treatment.spec.request_id] != lane_id:
                 raise RealMLXExperimentError("descriptive pair crosses lanes")
             name = _comparison_name(lane_id, control, treatment)
-            grouped.setdefault(name, []).append(
+            if name not in expected:
+                raise RealMLXExperimentError("descriptive comparison is unexpected")
+            incomplete_roles = [
+                (
+                    f"{role.value}_{record.terminal_state.value}_"
+                    f"{record.verdict.value if record.verdict is not None else 'unclassified'}"
+                )
+                for role, record in (
+                    (PairRole.CONTROL, control),
+                    (PairRole.TREATMENT, treatment),
+                )
+                if record.terminal_state is not TerminalState.COMPLETED
+            ]
+            if incomplete_roles:
+                missing_pairs[name].append(
+                    {
+                        "replicate_id": replicate_id,
+                        "reason": "+".join(incomplete_roles),
+                    }
+                )
+                continue
+            grouped[name].append(
                 _paired_sample(
                     replicate_id,
                     lane_id,
@@ -3424,31 +3516,21 @@ def _descriptive_summary(
                     stage_memory,
                 )
             )
-    expected = {
-        f"{lane_id}:{case}"
-        for lane_id in LANE_IDS
-        for case in (
-            "cold-exact",
-            "interior-mutation",
-            "allocation-step-mutation",
-            "same-length-different-ids",
-            "suffix-only-change",
-            "namespace-isolation",
-            "capacity-eviction",
-        )
-    }
-    if set(grouped) != expected:
-        raise RealMLXExperimentError("descriptive comparison matrix is incomplete")
     metrics = (
         "control_policy_reusable_tokens",
         "control_policy_reusable_blocks",
         "control_engine_cached_tokens",
+        "control_engine_created_tokens",
+        "control_observed_prompt_tokens",
+        "control_policy_required_prompt_tokens",
+        "control_unexpected_recomputed_tokens",
         "semantic_prefix_tokens",
         "policy_reusable_tokens",
         "policy_reusable_blocks",
         "engine_cached_tokens",
         "engine_created_tokens",
         "observed_prompt_tokens",
+        "policy_required_prompt_tokens",
         "unexpected_recomputed_tokens",
         "client_ttft_difference_seconds",
         "client_ttft_ratio",
@@ -3459,8 +3541,11 @@ def _descriptive_summary(
     comparisons: dict[str, Any] = {}
     for name in sorted(grouped):
         samples = sorted(grouped[name], key=lambda item: item["replicate_id"])
+        missing = sorted(missing_pairs[name], key=lambda item: item["replicate_id"])
         comparisons[name] = {
             "independent_units": len(samples),
+            "missing_pair_count": len(missing),
+            "missing_pair_reasons": missing,
             "comparable_pair_count": sum(
                 sample["paired_latency_comparable"] for sample in samples
             ),
@@ -3503,10 +3588,12 @@ def _public_results_from_private(
     for comparison in comparisons.values():
         comparison.pop("identity_and_correctness_unavailable", None)
     return {
-        "schema_version": "real-mlx-public-results-v1",
+        "schema_version": "real-mlx-public-results-v2",
         "source": "verified_private_records_before_redaction",
         "independent_unit": "one_fresh_replicate_child_process",
-        "raw_sample_scope": "one_control_treatment_pair_per_cell_per_replicate",
+        "raw_sample_scope": (
+            "up_to_one_complete_control_treatment_pair_per_cell_per_replicate"
+        ),
         "delta_convention": "treatment_minus_control",
         "ratio_convention": "treatment_divided_by_control",
         "comparison_count": len(comparisons),
@@ -3557,11 +3644,11 @@ def _verify_public_results(
     }
     comparisons = value["comparisons"]
     if (
-        value["schema_version"] != "real-mlx-public-results-v1"
+        value["schema_version"] != "real-mlx-public-results-v2"
         or value["source"] != "verified_private_records_before_redaction"
         or value["independent_unit"] != "one_fresh_replicate_child_process"
         or value["raw_sample_scope"]
-        != "one_control_treatment_pair_per_cell_per_replicate"
+        != "up_to_one_complete_control_treatment_pair_per_cell_per_replicate"
         or value["delta_convention"] != "treatment_minus_control"
         or value["ratio_convention"] != "treatment_divided_by_control"
         or value["comparison_count"] != len(expected_names)
@@ -3573,12 +3660,17 @@ def _verify_public_results(
         "control_policy_reusable_tokens",
         "control_policy_reusable_blocks",
         "control_engine_cached_tokens",
+        "control_engine_created_tokens",
+        "control_observed_prompt_tokens",
+        "control_policy_required_prompt_tokens",
+        "control_unexpected_recomputed_tokens",
         "semantic_prefix_tokens",
         "policy_reusable_tokens",
         "policy_reusable_blocks",
         "engine_cached_tokens",
         "engine_created_tokens",
         "observed_prompt_tokens",
+        "policy_required_prompt_tokens",
         "unexpected_recomputed_tokens",
         "client_ttft_difference_seconds",
         "client_ttft_ratio",
@@ -3596,13 +3688,22 @@ def _verify_public_results(
         "control_policy_reusable_tokens",
         "control_policy_reusable_blocks",
         "control_engine_cached_tokens",
+        "control_engine_created_tokens",
+        "control_observed_prompt_tokens",
+        "control_policy_required_prompt_tokens",
+        "control_unexpected_recomputed_tokens",
+        "control_engine_attestation_matches_policy",
+        "control_observed_matches_policy_required",
         "semantic_prefix_tokens",
         "policy_reusable_tokens",
         "policy_reusable_blocks",
         "engine_cached_tokens",
         "engine_created_tokens",
         "observed_prompt_tokens",
+        "policy_required_prompt_tokens",
         "unexpected_recomputed_tokens",
+        "engine_attestation_matches_policy",
+        "observed_matches_policy_required",
         "paired_latency_comparable",
         "control_client_ttft_seconds",
         "treatment_client_ttft_seconds",
@@ -3631,7 +3732,14 @@ def _verify_public_results(
         "output_eligibility",
         "quality_eligibility",
     }
-    expected_replicates: set[str] | None = None
+    required_replicates = set(REPLICATE_IDS)
+    if (
+        complete_replicate_ids is not None
+        and complete_replicate_ids != required_replicates
+    ):
+        raise RealMLXExperimentError(
+            "public results require six complete ledger attempts"
+        )
     for name, comparison in comparisons.items():
         if not isinstance(comparison, dict):
             raise RealMLXExperimentError("public result comparison is invalid")
@@ -3639,6 +3747,8 @@ def _verify_public_results(
             comparison,
             {
                 "independent_units",
+                "missing_pair_count",
+                "missing_pair_reasons",
                 "comparable_pair_count",
                 "samples",
                 "statistics",
@@ -3648,10 +3758,20 @@ def _verify_public_results(
             "public result comparison",
         )
         samples = comparison["samples"]
+        missing_pair_reasons = comparison["missing_pair_reasons"]
         if (
             not isinstance(samples, list)
-            or len(samples) != len(REPLICATE_IDS)
+            or len(samples) > len(REPLICATE_IDS)
+            or not isinstance(missing_pair_reasons, list)
+            or comparison["missing_pair_count"] != len(missing_pair_reasons)
+            or len(samples) + len(missing_pair_reasons) != len(REPLICATE_IDS)
             or comparison["independent_units"] != len(samples)
+            or isinstance(comparison["independent_units"], bool)
+            or not isinstance(comparison["independent_units"], int)
+            or isinstance(comparison["missing_pair_count"], bool)
+            or not isinstance(comparison["missing_pair_count"], int)
+            or isinstance(comparison["comparable_pair_count"], bool)
+            or not isinstance(comparison["comparable_pair_count"], int)
             or comparison["comparable_pair_count"]
             != sum(
                 isinstance(sample, dict)
@@ -3674,6 +3794,36 @@ def _verify_public_results(
             )
         ):
             raise RealMLXExperimentError("public result sample count is invalid")
+        missing_replicates: set[str] = set()
+        for missing in missing_pair_reasons:
+            if not isinstance(missing, dict):
+                raise RealMLXExperimentError(
+                    "public result missing-pair reason is invalid"
+                )
+            _exact_keys(
+                missing,
+                {"replicate_id", "reason"},
+                "public result missing-pair reason",
+            )
+            replicate_id = missing["replicate_id"]
+            reason = missing["reason"]
+            if (
+                replicate_id not in required_replicates
+                or replicate_id in missing_replicates
+                or not isinstance(reason, str)
+                or re.fullmatch(
+                    r"(?:control_(?:refused_unsupported|failed_invalid)"
+                    r"(?:\+treatment_(?:refused_unsupported|failed_invalid))?"
+                    r"|treatment_(?:refused_unsupported|failed_invalid))",
+                    reason,
+                )
+                is None
+                or not reason
+            ):
+                raise RealMLXExperimentError(
+                    "public result missing-pair reason is invalid"
+                )
+            missing_replicates.add(replicate_id)
         lane_id = name.split(":", 1)[0]
         case = name.split(":", 1)[1]
         expected_input_tokens = _LANE_CONTRACTS[lane_id][
@@ -3691,11 +3841,23 @@ def _verify_public_results(
                 or sample["lane_id"] != lane_id
                 or sample["control_input_tokens"] != expected_input_tokens
                 or sample["treatment_input_tokens"] != expected_input_tokens
-                or not isinstance(sample["control_output_token_identity"], bool)
-                or not isinstance(sample["treatment_output_token_identity"], bool)
-                or not isinstance(sample["control_deterministic_correctness"], bool)
-                or not isinstance(sample["treatment_deterministic_correctness"], bool)
+                or sample["control_output_token_identity"] is not None
+                and not isinstance(sample["control_output_token_identity"], bool)
+                or sample["treatment_output_token_identity"] is not None
+                and not isinstance(sample["treatment_output_token_identity"], bool)
+                or sample["control_deterministic_correctness"] is not None
+                and not isinstance(sample["control_deterministic_correctness"], bool)
+                or sample["treatment_deterministic_correctness"] is not None
+                and not isinstance(sample["treatment_deterministic_correctness"], bool)
                 or not isinstance(sample["paired_latency_comparable"], bool)
+                or not isinstance(
+                    sample["control_engine_attestation_matches_policy"], bool
+                )
+                or not isinstance(sample["engine_attestation_matches_policy"], bool)
+                or not isinstance(
+                    sample["control_observed_matches_policy_required"], bool
+                )
+                or not isinstance(sample["observed_matches_policy_required"], bool)
             ):
                 raise RealMLXExperimentError("public result sample binding is invalid")
             seen_replicates.add(replicate_id)
@@ -3704,7 +3866,7 @@ def _verify_public_results(
                 "treatment_generated_output_tokens",
             ):
                 count = sample[key]
-                if (
+                if count is not None and (
                     isinstance(count, bool)
                     or not isinstance(count, int)
                     or count < 0
@@ -3718,11 +3880,16 @@ def _verify_public_results(
                 "semantic_prefix_tokens",
                 "control_policy_reusable_tokens",
                 "control_engine_cached_tokens",
+                "control_engine_created_tokens",
+                "control_observed_prompt_tokens",
+                "control_policy_required_prompt_tokens",
+                "control_unexpected_recomputed_tokens",
                 "policy_reusable_tokens",
                 "policy_reusable_blocks",
                 "engine_cached_tokens",
                 "engine_created_tokens",
                 "observed_prompt_tokens",
+                "policy_required_prompt_tokens",
                 "unexpected_recomputed_tokens",
                 "control_client_ttft_seconds",
                 "treatment_client_ttft_seconds",
@@ -3741,43 +3908,100 @@ def _verify_public_results(
             control_policy = sample["control_policy_reusable_tokens"]
             control_reusable_blocks = sample["control_policy_reusable_blocks"]
             control_engine_cached = sample["control_engine_cached_tokens"]
+            control_engine_created = sample["control_engine_created_tokens"]
+            control_observed = sample["control_observed_prompt_tokens"]
+            control_required = sample["control_policy_required_prompt_tokens"]
+            control_recomputed = sample["control_unexpected_recomputed_tokens"]
             policy = sample["policy_reusable_tokens"]
             reusable_blocks = sample["policy_reusable_blocks"]
             engine_cached = sample["engine_cached_tokens"]
             engine_created = sample["engine_created_tokens"]
             observed = sample["observed_prompt_tokens"]
+            required = sample["policy_required_prompt_tokens"]
             recomputed = sample["unexpected_recomputed_tokens"]
+            counts = (
+                semantic,
+                control_policy,
+                control_engine_cached,
+                control_engine_created,
+                control_observed,
+                control_required,
+                control_recomputed,
+                policy,
+                engine_cached,
+                engine_created,
+                observed,
+                required,
+                recomputed,
+            )
             if (
                 any(
-                    isinstance(number, bool) or not isinstance(number, int)
-                    for number in (
-                        semantic,
-                        control_policy,
-                        control_engine_cached,
-                        policy,
-                        engine_cached,
-                        engine_created,
-                        observed,
-                        recomputed,
+                    number is not None
+                    and (
+                        isinstance(number, bool)
+                        or not isinstance(number, int)
+                        or not 0 <= number <= expected_input_tokens
                     )
+                    for number in counts
                 )
                 or control_reusable_blocks is not None
                 or reusable_blocks is not None
-                or not 0 <= control_policy <= expected_input_tokens
-                or not 0 <= control_engine_cached <= expected_input_tokens
-                or control_engine_cached != control_policy
-                or not 0 <= semantic <= expected_input_tokens
-                or not 0 <= policy <= semantic
-                or not 0 <= engine_cached <= expected_input_tokens
-                or not 0 <= engine_created <= expected_input_tokens
-                or not 0 <= observed <= expected_input_tokens
-                or not 0 <= recomputed <= observed
-                or engine_cached + engine_created != expected_input_tokens
-                or observed != expected_input_tokens - policy
-                or engine_cached != policy
+                or semantic is not None
+                and policy is not None
+                and policy > semantic
+                or control_policy is not None
+                and control_required is not None
+                and control_policy + control_required != expected_input_tokens
+                or policy is not None
+                and required is not None
+                and policy + required != expected_input_tokens
+                or control_engine_cached is not None
+                and control_engine_created is not None
+                and control_engine_cached + control_engine_created
+                != expected_input_tokens
+                or engine_cached is not None
+                and engine_created is not None
+                and engine_cached + engine_created != expected_input_tokens
+                or control_observed is not None
+                and control_required is not None
+                and control_recomputed is not None
+                and control_recomputed != max(0, control_observed - control_required)
+                or observed is not None
+                and required is not None
+                and recomputed is not None
+                and recomputed != max(0, observed - required)
             ):
                 raise RealMLXExperimentError(
                     "public result reuse counters are inconsistent"
+                )
+            expected_agreements = {
+                "control_engine_attestation_matches_policy": (
+                    control_engine_cached is not None
+                    and control_policy is not None
+                    and control_engine_cached == control_policy
+                ),
+                "engine_attestation_matches_policy": (
+                    engine_cached is not None
+                    and policy is not None
+                    and engine_cached == policy
+                ),
+                "control_observed_matches_policy_required": (
+                    control_observed is not None
+                    and control_required is not None
+                    and control_observed == control_required
+                ),
+                "observed_matches_policy_required": (
+                    observed is not None
+                    and required is not None
+                    and observed == required
+                ),
+            }
+            if any(
+                sample[key] is not expected
+                for key, expected in expected_agreements.items()
+            ):
+                raise RealMLXExperimentError(
+                    "public result agreement boolean does not match raw values"
                 )
             valid_verdicts = {verdict.value for verdict in Verdict}
             valid_eligibility = {status.value for status in EligibilityStatus}
@@ -3795,24 +4019,38 @@ def _verify_public_results(
             for prefix in ("control", "treatment"):
                 ttft = sample[f"{prefix}_client_ttft_seconds"]
                 total = sample[f"{prefix}_total_seconds"]
-                if ttft is None or total is None:
-                    raise RealMLXExperimentError("public result timing is unavailable")
-                if ttft > total:
+                if ttft is not None and total is not None and ttft > total:
                     raise RealMLXExperimentError(
                         "public result TTFT exceeds total time"
                     )
-            if case == "capacity-eviction" and sample["paired_latency_comparable"]:
+            latency_verdicts = {
+                Verdict.VERIFIED_HIT.value,
+                Verdict.PARTIAL_REUSE.value,
+                Verdict.VERIFIED_MISS.value,
+                Verdict.EVICTED.value,
+            }
+            expected_latency_comparable = (
+                case != "capacity-eviction"
+                and sample["control_output_token_identity"] is True
+                and sample["treatment_output_token_identity"] is True
+                and sample["control_deterministic_correctness"] is True
+                and sample["treatment_deterministic_correctness"] is True
+                and sample["control_generated_output_tokens"] is not None
+                and sample["treatment_generated_output_tokens"] is not None
+                and sample["control_generated_output_tokens"]
+                == sample["treatment_generated_output_tokens"]
+                and sample["control_client_ttft_seconds"] is not None
+                and sample["treatment_client_ttft_seconds"] is not None
+                and sample["control_total_seconds"] is not None
+                and sample["treatment_total_seconds"] is not None
+                and sample["control_verdict"] in latency_verdicts
+                and sample["verdict"] in latency_verdicts
+                and control_recomputed == 0
+                and recomputed == 0
+            )
+            if sample["paired_latency_comparable"] is not expected_latency_comparable:
                 raise RealMLXExperimentError(
-                    "eviction latency samples are not adjacent"
-                )
-            if sample["paired_latency_comparable"] and not (
-                sample["control_output_token_identity"]
-                and sample["treatment_output_token_identity"]
-                and sample["control_deterministic_correctness"]
-                and sample["treatment_deterministic_correctness"]
-            ):
-                raise RealMLXExperimentError(
-                    "output divergence cannot be timing-comparable"
+                    "public result timing comparability does not match raw values"
                 )
             if sample["paired_latency_comparable"]:
                 if any(
@@ -3869,7 +4107,7 @@ def _verify_public_results(
                     raise RealMLXExperimentError("public allocator scope is invalid")
                 for field in ("active_bytes", "peak_bytes", "cache_bytes"):
                     number = allocator[field]
-                    if (
+                    if number is not None and (
                         isinstance(number, bool)
                         or not isinstance(number, int)
                         or number < 0
@@ -3965,11 +4203,22 @@ def _verify_public_results(
                     raise RealMLXExperimentError(
                         "public result delta does not match raw levels"
                     )
-        if expected_replicates is None:
-            expected_replicates = seen_replicates
-        elif seen_replicates != expected_replicates:
+        if (
+            seen_replicates & missing_replicates
+            or seen_replicates | missing_replicates != required_replicates
+            or [
+                sample["replicate_id"] for sample in samples if isinstance(sample, dict)
+            ]
+            != sorted(seen_replicates, key=REPLICATE_IDS.index)
+            or [
+                missing["replicate_id"]
+                for missing in missing_pair_reasons
+                if isinstance(missing, dict)
+            ]
+            != sorted(missing_replicates, key=REPLICATE_IDS.index)
+        ):
             raise RealMLXExperimentError(
-                "public result replicate coverage is inconsistent"
+                "public result replicate coverage/accounting is inconsistent"
             )
         statistics = comparison["statistics"]
         if not isinstance(statistics, dict) or set(statistics) != metric_names:
@@ -3981,13 +4230,6 @@ def _verify_public_results(
                 raise RealMLXExperimentError(
                     "public result statistic does not match raw samples"
                 )
-    if (
-        complete_replicate_ids is not None
-        and expected_replicates != complete_replicate_ids
-    ):
-        raise RealMLXExperimentError(
-            "public result replicate IDs do not match complete ledger attempts"
-        )
 
 
 def _complete_attempt_ids(attempts_dir: Path) -> set[str]:
@@ -4040,9 +4282,18 @@ def _verify_public_result_record_bindings(
                 "treatment_generated_output_tokens",
                 "control_policy_reusable_tokens",
                 "control_policy_reusable_blocks",
+                "control_engine_created_tokens",
+                "control_observed_prompt_tokens",
+                "control_policy_required_prompt_tokens",
+                "control_unexpected_recomputed_tokens",
+                "control_engine_attestation_matches_policy",
+                "control_observed_matches_policy_required",
                 "semantic_prefix_tokens",
                 "policy_reusable_tokens",
+                "policy_required_prompt_tokens",
                 "unexpected_recomputed_tokens",
+                "engine_attestation_matches_policy",
+                "observed_matches_policy_required",
                 "paired_latency_comparable",
                 "control_output_token_identity",
                 "treatment_output_token_identity",
@@ -4057,7 +4308,17 @@ def _verify_public_result_record_bindings(
         )
     for name, comparison in results["comparisons"].items():
         observed_samples = comparison["samples"]
-        expected_samples = expected["comparisons"][name]["samples"]
+        expected_comparison = expected["comparisons"][name]
+        expected_samples = expected_comparison["samples"]
+        if (
+            comparison["missing_pair_count"]
+            != expected_comparison["missing_pair_count"]
+            or comparison["missing_pair_reasons"]
+            != expected_comparison["missing_pair_reasons"]
+        ):
+            raise RealMLXExperimentError(
+                "public result missing-pair accounting does not match nested evidence"
+            )
         if len(observed_samples) != len(expected_samples):
             raise RealMLXExperimentError("public result sample binding is incomplete")
         for observed, retained in zip(observed_samples, expected_samples, strict=True):
@@ -4237,7 +4498,18 @@ def _common_environment(replicates: Path) -> dict[str, Any]:
     return values[0]
 
 
-def _write_derived(root: Path, *, public: bool) -> None:
+def _write_derived(
+    root: Path,
+    *,
+    public: bool,
+    expected_commit: str,
+    generator_package_digest: str,
+) -> None:
+    _require_run_ledger_derivation_identity(
+        root / "run-ledger.jsonl",
+        expected_commit=expected_commit,
+        generator_package_digest=generator_package_digest,
+    )
     results = _safe_object(root / "results.json")
     _verify_public_results(results)
     if not public and results != _public_results_from_private(
@@ -4250,6 +4522,8 @@ def _write_derived(root: Path, *, public: bool) -> None:
     run_binding = _verify_run_ledger(
         root / "run-ledger.jsonl",
         attempts_dir=root / "replicates",
+        expected_commit=expected_commit,
+        expected_generator_package_digest=generator_package_digest,
         expected_results_digest=results_digest,
     )
     ledger_rows = _parse_jsonl(root / "run-ledger.jsonl")
@@ -4300,7 +4574,13 @@ def _write_derived(root: Path, *, public: bool) -> None:
     _write_recursive_checksums(root)
 
 
-def assemble_aggregate(run_workspace: Path, output_dir: Path) -> dict[str, Any]:
+def assemble_aggregate(
+    run_workspace: Path,
+    output_dir: Path,
+    *,
+    expected_commit: str,
+    generator_package_digest: str,
+) -> dict[str, Any]:
     """Assemble one exact run-all workspace without publishing private artifacts."""
 
     if output_dir.exists():
@@ -4325,6 +4605,11 @@ def assemble_aggregate(run_workspace: Path, output_dir: Path) -> dict[str, Any]:
         or not ledger.is_file()
     ):
         raise RealMLXExperimentError("run workspace contains an unsafe entry")
+    _require_run_ledger_derivation_identity(
+        ledger,
+        expected_commit=expected_commit,
+        generator_package_digest=generator_package_digest,
+    )
     actual = {item.name for item in attempts_dir.iterdir()}
     if actual != set(REPLICATE_IDS):
         raise RealMLXExperimentError(
@@ -4340,7 +4625,12 @@ def assemble_aggregate(run_workspace: Path, output_dir: Path) -> dict[str, Any]:
     ]
     if sum(state["status"] == "complete" for state in states) != len(REPLICATE_IDS):
         raise RealMLXExperimentError("aggregate requires all 6 attempts complete")
-    _verify_run_ledger(ledger, attempts_dir=attempts_dir)
+    _verify_run_ledger(
+        ledger,
+        attempts_dir=attempts_dir,
+        expected_commit=expected_commit,
+        expected_generator_package_digest=generator_package_digest,
+    )
     if not _aggregate_eligibility_from_rows(_parse_jsonl(ledger)):
         raise RealMLXExperimentError("aggregate requires all 6 attempts complete")
     output_dir.mkdir(parents=True)
@@ -4362,6 +4652,8 @@ def assemble_aggregate(run_workspace: Path, output_dir: Path) -> dict[str, Any]:
         _verify_run_ledger(
             ledger,
             attempts_dir=attempts_dir,
+            expected_commit=expected_commit,
+            expected_generator_package_digest=generator_package_digest,
             expected_results_digest=results_digest,
         )
         _write_json(output_dir / "results.json", results)
@@ -4370,8 +4662,18 @@ def assemble_aggregate(run_workspace: Path, output_dir: Path) -> dict[str, Any]:
             output_dir / "run-ledger.jsonl",
             attempts_dir=output_dir / "replicates",
         )
-        _write_derived(output_dir, public=False)
-        return verify_aggregate(output_dir, public=False)
+        _write_derived(
+            output_dir,
+            public=False,
+            expected_commit=expected_commit,
+            generator_package_digest=generator_package_digest,
+        )
+        return verify_aggregate(
+            output_dir,
+            expected_commit=expected_commit,
+            generator_package_digest=generator_package_digest,
+            public=False,
+        )
     except Exception:
         shutil.rmtree(output_dir)
         raise
@@ -4394,10 +4696,21 @@ def _sanitize_stages(
     atomic_write_text(destination, "".join(_json_line(row) for row in redacted))
 
 
-def sanitize_aggregate(source: Path, destination: Path) -> dict[str, Any]:
+def sanitize_aggregate(
+    source: Path,
+    destination: Path,
+    *,
+    expected_commit: str,
+    generator_package_digest: str,
+) -> dict[str, Any]:
     """Create the public aggregate by applying standard and supplemental redaction."""
 
-    verify_aggregate(source, public=False)
+    verify_aggregate(
+        source,
+        expected_commit=expected_commit,
+        generator_package_digest=generator_package_digest,
+        public=False,
+    )
     if destination.exists():
         raise RealMLXExperimentError("public aggregate output already exists")
     destination.mkdir(parents=True)
@@ -4465,8 +4778,18 @@ def sanitize_aggregate(source: Path, destination: Path) -> dict[str, Any]:
             destination / "run-ledger.jsonl",
             attempts_dir=destination / "replicates",
         )
-        _write_derived(destination, public=True)
-        return verify_aggregate(destination, public=True)
+        _write_derived(
+            destination,
+            public=True,
+            expected_commit=expected_commit,
+            generator_package_digest=generator_package_digest,
+        )
+        return verify_aggregate(
+            destination,
+            expected_commit=expected_commit,
+            generator_package_digest=generator_package_digest,
+            public=True,
+        )
     except Exception:
         shutil.rmtree(destination)
         raise
@@ -4562,7 +4885,13 @@ def _verify_public_aggregate_privacy(root: Path) -> None:
                 _scan_private_keys(value)
 
 
-def verify_aggregate(root: Path, *, public: bool | None = None) -> dict[str, Any]:
+def verify_aggregate(
+    root: Path,
+    *,
+    expected_commit: str,
+    generator_package_digest: str,
+    public: bool | None = None,
+) -> dict[str, Any]:
     """Verify allowlists, nested bundles, derivations, checksums, and privacy."""
 
     if root.is_symlink() or not root.is_dir():
@@ -4571,6 +4900,11 @@ def verify_aggregate(root: Path, *, public: bool | None = None) -> dict[str, Any
         raise RealMLXExperimentError("aggregate root allowlist mismatch")
     if any(path.is_symlink() for path in root.rglob("*")):
         raise RealMLXExperimentError("aggregate contains a symlink")
+    _require_run_ledger_derivation_identity(
+        root / "run-ledger.jsonl",
+        expected_commit=expected_commit,
+        generator_package_digest=generator_package_digest,
+    )
     _verify_data_only_aggregate(root)
     _verify_recursive_checksums(root)
     results = _safe_object(root / "results.json")
@@ -4579,6 +4913,8 @@ def verify_aggregate(root: Path, *, public: bool | None = None) -> dict[str, Any
     run_binding = _verify_run_ledger(
         root / "run-ledger.jsonl",
         attempts_dir=root / "replicates",
+        expected_commit=expected_commit,
+        expected_generator_package_digest=generator_package_digest,
         expected_results_digest=results_digest,
     )
     ledger_rows = _parse_jsonl(root / "run-ledger.jsonl")
@@ -5107,7 +5443,7 @@ def _validate_supervisor_source(expected_commit: str) -> str:
     return package_digest
 
 
-def _require_trusted_canonical_dispatch(expected_commit: Any) -> None:
+def _require_trusted_canonical_dispatch(expected_commit: Any) -> str:
     if sys.flags.isolated != 1 or sys.flags.no_site != 1:
         raise RealMLXExperimentError(
             "canonical execution requires the trusted Python -I -S bootstrap"
@@ -5179,8 +5515,10 @@ def _require_trusted_canonical_dispatch(expected_commit: Any) -> None:
                 raise RealMLXExperimentError(
                     "canonical source snapshot is not read-only"
                 )
-    if _validate_supervisor_source(expected_commit) != package_source_digest():
+    package_digest = _validate_supervisor_source(expected_commit)
+    if package_digest != package_source_digest():
         raise RealMLXExperimentError("canonical source snapshot digest mismatch")
+    return package_digest
 
 
 def _resolve_existing_file(path: Path, label: str) -> Path:
@@ -5720,13 +6058,48 @@ def _aggregate_eligibility_from_rows(rows: Sequence[Mapping[str, Any]]) -> bool:
     return all(row.get("status") == "complete" for row in finalized.values())
 
 
+def _require_run_ledger_derivation_identity(
+    path: Path,
+    *,
+    expected_commit: str,
+    generator_package_digest: str,
+) -> None:
+    if re.fullmatch(r"[0-9a-f]{40}", expected_commit) is None:
+        raise RealMLXExperimentError("expected commit must be a full lowercase SHA")
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", generator_package_digest) is None:
+        raise RealMLXExperimentError("package source digest is invalid")
+    if path.is_symlink() or not path.is_file():
+        raise RealMLXExperimentError("run ledger must be a regular file")
+    rows = _parse_jsonl(path)
+    if (
+        not rows
+        or rows[0].get("event") != "run-start"
+        or rows[0].get("expected_commit") != expected_commit
+        or rows[0].get("generator_package_digest") != generator_package_digest
+    ):
+        raise RealMLXExperimentError(
+            "run ledger derivation identity does not match trusted source"
+        )
+
+
 def _verify_run_ledger(
     path: Path,
     *,
     attempts_dir: Path | None = None,
     expected_binding: Mapping[str, Any] | None = None,
+    expected_commit: str | None = None,
+    expected_generator_package_digest: str | None = None,
     expected_results_digest: str | None = None,
 ) -> dict[str, Any]:
+    if (expected_commit is None) != (expected_generator_package_digest is None):
+        raise RealMLXExperimentError("run ledger derivation identity is incomplete")
+    if expected_commit is not None:
+        assert expected_generator_package_digest is not None
+        _require_run_ledger_derivation_identity(
+            path,
+            expected_commit=expected_commit,
+            generator_package_digest=expected_generator_package_digest,
+        )
     if path.is_symlink() or not path.is_file():
         raise RealMLXExperimentError("run ledger must be a regular file")
     text = path.read_text(encoding="ascii")
@@ -6584,13 +6957,24 @@ def run_all_replicates(
             run_attempt=run_attempt,
             attempt_marker_digest=marker_digest,
         )
-    except BaseException:
-        _finalize_canonical_attempt_marker(
-            marker,
-            marker_digest,
-            status="failed",
-            ledger=ledger,
-        )
+    except BaseException as original_error:
+        try:
+            _finalize_canonical_attempt_marker(
+                marker,
+                marker_digest,
+                status="failed",
+                ledger=ledger,
+            )
+        except BaseException as marker_error:
+            try:
+                add_note = getattr(original_error, "add_note", None)
+                if callable(add_note):
+                    add_note(
+                        "canonical attempt marker finalization also failed: "
+                        f"{type(marker_error).__name__}: {marker_error}"
+                    )
+            except (AttributeError, TypeError, ValueError):
+                pass
         raise
     _finalize_canonical_attempt_marker(
         marker,
@@ -7031,6 +7415,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
+    trusted_package_digest: str | None = None
     if args.command in {
         "aggregate",
         "calibrate",
@@ -7042,7 +7427,9 @@ def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
         "sanitize",
         "verify",
     }:
-        _require_trusted_canonical_dispatch(getattr(args, "expected_commit", None))
+        trusted_package_digest = _require_trusted_canonical_dispatch(
+            getattr(args, "expected_commit", None)
+        )
     if args.command == "compile":
         snapshot_owner, snapshot, _ = _verified_model_snapshot(
             args.model_dir, args.conversion_summary
@@ -7118,10 +7505,27 @@ def _run_cli(args: argparse.Namespace) -> dict[str, Any]:
         )
         return {"recorded": True, "status": "failed"}
     if args.command == "aggregate":
-        return assemble_aggregate(args.run_workspace, args.output_dir)
+        assert trusted_package_digest is not None
+        return assemble_aggregate(
+            args.run_workspace,
+            args.output_dir,
+            expected_commit=args.expected_commit,
+            generator_package_digest=trusted_package_digest,
+        )
     if args.command == "sanitize":
-        return sanitize_aggregate(args.aggregate, args.output_dir)
-    return verify_aggregate(args.aggregate)
+        assert trusted_package_digest is not None
+        return sanitize_aggregate(
+            args.aggregate,
+            args.output_dir,
+            expected_commit=args.expected_commit,
+            generator_package_digest=trusted_package_digest,
+        )
+    assert trusted_package_digest is not None
+    return verify_aggregate(
+        args.aggregate,
+        expected_commit=args.expected_commit,
+        generator_package_digest=trusted_package_digest,
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
