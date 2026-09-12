@@ -62,6 +62,14 @@ PUBLIC_REDACTED_FACT_SCOPE = "public_redacted_fact"
 PUBLIC_REDACTED_TIMING_SCOPE = "public_redacted_timing"
 PUBLIC_REDACTED_TIMING_EXCLUSIONS = ("timing_details_redacted",)
 PUBLIC_REDACTED_TIMING_UNIT = "s"
+PUBLIC_SAFE_LIMITATION_CODES = frozenset(
+    {
+        "quantized_cache_unsupported",
+        "rotating_cache_unsupported",
+        "non_trimmable_cache_reuse_unsupported",
+        "exact_empty_remainder_unsupported",
+    }
+)
 _GIT_ENV = {
     "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
     "HOME": "/dev/null",
@@ -839,7 +847,7 @@ def _verify_manifest_chronology(
     if status.returncode != 0:
         raise CacheAuditBundleError("repository status is unavailable")
     if status.stdout:
-        if _repository_is_incomplete(repository):
+        if _package_objects_missing(repository, manifest.generator_commit):
             return "unavailable"
         raise CacheAuditBundleError("repository worktree is dirty")
     object_type = subprocess.run(
@@ -1276,7 +1284,11 @@ def _verify_public_redacted_shape(
         for limitation in record.limitations:
             if limitation.code == "public_tokens_redacted":
                 continue
-            if re.fullmatch(r"redacted_limitation_[0-9]{4}", limitation.code) is None:
+            if (
+                limitation.code not in PUBLIC_SAFE_LIMITATION_CODES
+                and re.fullmatch(r"redacted_limitation_[0-9]{4}", limitation.code)
+                is None
+            ):
                 raise CacheAuditBundleError(
                     "public-redacted limitation identifier is invalid"
                 )
@@ -1573,7 +1585,11 @@ def _redacted_limitations(
 ) -> tuple[Limitation, ...]:
     return tuple(
         Limitation(
-            code=f"redacted_limitation_{index:04d}",
+            code=(
+                limitation.code
+                if limitation.code in PUBLIC_SAFE_LIMITATION_CODES
+                else f"redacted_limitation_{index:04d}"
+            ),
             message="Limitation details are available only in the private bundle.",
             blocks_verdict=limitation.blocks_verdict,
         )

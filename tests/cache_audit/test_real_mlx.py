@@ -1549,6 +1549,21 @@ def test_terminal_adapter_records_survive_replicate_and_aggregate_verification(
         )["verified"]
         is True
     )
+    public = tmp_path / "terminal-public"
+    sanitize_aggregate(
+        aggregate,
+        public,
+        expected_commit=derivation_identity["expected_commit"],
+        generator_package_digest=derivation_identity["generator_package_digest"],
+    )
+    assert (
+        verify_aggregate(
+            public,
+            expected_commit=derivation_identity["expected_commit"],
+            generator_package_digest=derivation_identity["generator_package_digest"],
+        )["verified"]
+        is True
+    )
     results = json.loads((aggregate / "results.json").read_text())
     assert results["comparisons"]["1k:cold-exact"]["missing_pair_count"] == len(
         REPLICATE_IDS
