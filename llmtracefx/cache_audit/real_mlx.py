@@ -2588,19 +2588,9 @@ def _verify_stage_rows(
                 if known_counts:
                     stage_count = known_counts.pop()
                 else:
-                    stage_count = 0
-                    while stage_count < len(measurement_stages):
-                        row_index = len(expected_sequence)
-                        if row_index >= len(rows):
-                            break
-                        candidate = rows[row_index]
-                        if candidate.get("request_id") != record.spec.request_id:
-                            break
-                        if candidate.get("stage") != measurement_stages[stage_count]:
-                            raise RealMLXExperimentError(
-                                "terminal stage sequence is not an ordered prefix"
-                            )
-                        stage_count += 1
+                    raise RealMLXExperimentError(
+                        "terminal record has an unknown stage bound"
+                    )
             expected_sequence.extend(
                 (record.spec.request_id, stage)
                 for stage in measurement_stages[:stage_count]
@@ -5881,15 +5871,16 @@ def _run_binding(
     workload: FrozenMLXWorkload,
     runtime_packages: Mapping[str, Any],
     run_attempt: int,
-    attempt_marker_digest: str | None = None,
+    attempt_marker_digest: str,
 ) -> dict[str, Any]:
     _require_canonical_run_attempt(run_attempt)
     if re.fullmatch(r"sha256:[0-9a-f]{64}", package_digest) is None:
         raise RealMLXExperimentError("package source digest is invalid")
     _verify_runtime_package_identity(runtime_packages)
-    if attempt_marker_digest is None:
-        attempt_marker_digest = "sha256:" + "0" * 64
-    if re.fullmatch(r"sha256:[0-9a-f]{64}", attempt_marker_digest) is None:
+    if (
+        re.fullmatch(r"sha256:[0-9a-f]{64}", attempt_marker_digest) is None
+        or attempt_marker_digest == "sha256:" + "0" * 64
+    ):
         raise RealMLXExperimentError("canonical attempt marker digest is invalid")
     return {
         "canonical_run_id": CANONICAL_RUN_ID,
@@ -6217,6 +6208,7 @@ def _verify_run_ledger(
             str(binding["canonical_attempt_marker_digest"]),
         )
         is None
+        or binding["canonical_attempt_marker_digest"] == "sha256:" + "0" * 64
         or binding["run_attempt"] != CANONICAL_RUN_ATTEMPT
         or binding["prior_invalidated_run_ledger_digests"]
         != list(PRIOR_INVALIDATED_RUN_LEDGER_DIGESTS)

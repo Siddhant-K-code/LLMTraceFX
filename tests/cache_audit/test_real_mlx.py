@@ -1391,6 +1391,7 @@ def _make_attempts(
         workload=workload,
         runtime_packages=_runtime_packages(),
         run_attempt=1,
+        attempt_marker_digest="sha256:" + "1" * 64,
     )
     ledger = workspace / "run-ledger.jsonl"
     real_mlx_module._create_run_ledger(ledger, binding)
@@ -1557,6 +1558,51 @@ def test_terminal_adapter_records_survive_replicate_and_aggregate_verification(
     )
 
 
+def test_unknown_terminal_stage_bound_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter_stub = SimpleNamespace(backend="mlx_lm_local")
+
+    def capture_unknown_terminal(record: RequestEvidence) -> RequestEvidence:
+        if record.spec.request_id != "1k:cold-exact-duplicate:exact":
+            return record
+        return MLXLocalCacheAdapter._unsupported_record(
+            cast(MLXLocalCacheAdapter, adapter_stub),
+            record.spec,
+            code="future_unsupported",
+        )
+
+    workspace = _make_attempts(
+        tmp_path,
+        monkeypatch,
+        record_transform=capture_unknown_terminal,
+    )
+    with pytest.raises(
+        RealMLXExperimentError,
+        match="terminal record has an unknown stage bound",
+    ):
+        real_mlx_module.verify_replicate(
+            workspace / "attempts" / "replicate-0",
+            replicate_id="replicate-0",
+            public=False,
+        )
+
+
+def test_run_binding_rejects_zero_marker_digest() -> None:
+    with pytest.raises(
+        RealMLXExperimentError,
+        match="canonical attempt marker digest is invalid",
+    ):
+        real_mlx_module._run_binding(
+            expected_commit="a" * 40,
+            package_digest=real_mlx_module.package_source_digest(),
+            workload=_calibrated_workload(),
+            runtime_packages=_runtime_packages(),
+            run_attempt=1,
+            attempt_marker_digest="sha256:" + "0" * 64,
+        )
+
+
 def test_aggregate_regeneration_checksums_and_public_redaction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1707,7 +1753,7 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     )
     assert contract["canonical_attempt_marker"] == {
         "identity": real_mlx_module.CANONICAL_ATTEMPT_MARKER.name,
-        "started_digest": "sha256:" + "0" * 64,
+        "started_digest": "sha256:" + "1" * 64,
     }
     assert contract["prior_invalidated_run_ledger_digests"] == []
     assert contract["evidence_binding"]["expected_commit"] == "a" * 40
@@ -1856,7 +1902,7 @@ def test_aggregate_regeneration_checksums_and_public_redaction(
     public_run_start = next(row for row in public_ledger if row["event"] == "run-start")
     assert public_run_start["run_attempt"] == 1
     assert public_run_start["canonical_run_id"] == real_mlx_module.CANONICAL_RUN_ID
-    assert public_run_start["canonical_attempt_marker_digest"] == "sha256:" + "0" * 64
+    assert public_run_start["canonical_attempt_marker_digest"] == "sha256:" + "1" * 64
     assert public_run_start["prior_invalidated_run_ledger_digests"] == []
     public_workload_binding = json.loads(
         (public / "replicates" / "replicate-0" / "workload-binding.json").read_text()

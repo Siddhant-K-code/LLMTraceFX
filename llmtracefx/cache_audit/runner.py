@@ -37,13 +37,16 @@ def _run_id(backend: str, requests: Sequence[RequestSpec], seed: int) -> str:
 def source_commit() -> tuple[str | None, str | None]:
     """Return the repository commit and its timestamp, when available."""
 
-    repository = Path(
-        os.environ.get(
-            "LLMTRACEFX_TRUSTED_REPO_ROOT",
-            str(Path(__file__).resolve().parents[2]),
-        )
-    ).resolve()
-    trusted_commit = os.environ.get("LLMTRACEFX_TRUSTED_COMMIT")
+    trusted = os.environ.get("LLMTRACEFX_TRUSTED_BOOTSTRAP") == "1"
+    repository_text = (
+        os.environ.get("LLMTRACEFX_TRUSTED_REPO_ROOT")
+        if trusted
+        else str(Path(__file__).resolve().parents[2])
+    )
+    if not repository_text:
+        return None, None
+    repository = Path(repository_text).resolve()
+    trusted_commit = os.environ.get("LLMTRACEFX_TRUSTED_COMMIT") if trusted else None
     environment = {
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "HOME": "/dev/null",
