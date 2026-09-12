@@ -3139,6 +3139,36 @@ def test_direct_preflight_rejects_noncanonical_attempt_before_writing(
     assert not receipt.exists()
 
 
+@pytest.mark.parametrize("receipt_kind", ["marker", "workspace"])
+def test_preflight_receipt_cannot_consume_canonical_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    receipt_kind: str,
+) -> None:
+    marker = tmp_path / "attempt-marker.json"
+    workspace = tmp_path / "canonical-workspace"
+    monkeypatch.setattr(real_mlx_module, "CANONICAL_ATTEMPT_MARKER", marker)
+    monkeypatch.setattr(real_mlx_module, "CANONICAL_OUTPUT_WORKSPACE", workspace)
+    receipt = marker if receipt_kind == "marker" else workspace
+
+    with pytest.raises(
+        RealMLXExperimentError,
+        match="preflight output must not overlap canonical attempt state",
+    ):
+        real_mlx_module.run_preflight(
+            workload=tmp_path / "workload.json",
+            model_dir=tmp_path / "model",
+            conversion_summary=tmp_path / "summary.json",
+            output_workspace=workspace,
+            expected_commit="a" * 40,
+            output=receipt,
+            run_attempt=1,
+        )
+
+    assert not marker.exists()
+    assert not workspace.exists()
+
+
 def test_canonical_workspace_is_exact_and_consumed_marker_is_durable(
     tmp_path: Path,
 ) -> None:

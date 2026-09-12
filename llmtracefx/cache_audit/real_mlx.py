@@ -5801,6 +5801,16 @@ def run_preflight(
 
     _require_canonical_run_attempt(run_attempt)
     receipt_path = _resolve_new_file(output, "preflight output")
+    canonical_workspace = CANONICAL_OUTPUT_WORKSPACE.expanduser().absolute()
+    canonical_marker = CANONICAL_ATTEMPT_MARKER.expanduser().absolute()
+    if (
+        receipt_path == canonical_marker
+        or receipt_path == canonical_workspace
+        or _is_relative_to(receipt_path, canonical_workspace)
+    ):
+        raise RealMLXExperimentError(
+            "preflight output must not overlap canonical attempt state"
+        )
     try:
         state = _run_global_preflight(
             workload=workload,
