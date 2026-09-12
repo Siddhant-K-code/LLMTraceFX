@@ -12,12 +12,15 @@ _CACHE_AUDIT_PACKAGE_DIGEST = (
 )
 _CACHE_AUDIT_CAPTURED_AT = "2026-09-05T09:19:05.277130Z"
 _CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = "2026-09-05T17:49:44Z"
-_KV_DEMO_SOURCE_COMMIT = "51351be86d55f293de70ab0db5b170f71463e891"
+_KV_DEMO_SOURCE_COMMIT = "2f82e24ed19dee2241b8fb298dcd4505dc0dfa9d"
 _KV_DEMO_PACKAGE_DIGEST = (
-    "sha256:c7b054d90e9ae650ce1b24d60b3f6dc90c94e04791c5250ca958a8be6bc958f3"
+    "sha256:2a2dda39007c09e17e99a6fe5791a595e7bab1ebfd96910c9e29b49dd2847e5c"
 )
-_KV_DEMO_CAPTURED_AT = "2026-09-13T00:55:16+05:30"
-_KV_DEMO_IMPLEMENTATION_BOUND_AT = "2026-09-13T00:55:16+05:30"
+_KV_DEMO_CAPTURED_AT = "2026-09-13T00:56:42+05:30"
+_KV_DEMO_IMPLEMENTATION_BOUND_AT = "2026-09-13T00:56:42+05:30"
+_KV_DEMO_VERIFIER_DIGEST = (
+    "sha256:430ed0946de04f0c4e22f5af6d2b9a02a79d2f58f5f9161d48c30fd1fa7aeff6"
+)
 
 CLAIM_DIMENSIONS = (
     "timing",
@@ -1221,9 +1224,7 @@ SOURCES: tuple[dict[str, Any], ...] = (
             "generator_package_digest": _KV_DEMO_PACKAGE_DIGEST,
             "implementation_bound_at": _KV_DEMO_IMPLEMENTATION_BOUND_AT,
             "privacy_status": "verified_public_synthetic",
-            "standalone_verifier_sha256": (
-                "sha256:0ed446c2fedb261ef545e5ddd3e7928ae5428464e7a5d44dd2f0e8d78151b8b9"
-            ),
+            "standalone_verifier_sha256": _KV_DEMO_VERIFIER_DIGEST,
         },
         "model": {
             "id": "synthetic-tiny-model",
