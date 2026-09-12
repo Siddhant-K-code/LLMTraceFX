@@ -151,7 +151,9 @@ _TRUSTED_COMMIT = os.environ.get("LLMTRACEFX_TRUSTED_COMMIT")
 _TRUSTED_SNAPSHOT_ROOT = Path(
     os.environ.get("LLMTRACEFX_TRUSTED_SNAPSHOT_ROOT", str(_INSTALLED_PROJECT_ROOT))
 ).resolve()
-_TRUSTED_BOOTSTRAP = _PROJECT_ROOT / "scripts" / "run-real-mlx-cache-audit-trusted.py"
+_TRUSTED_BOOTSTRAP = (
+    _TRUSTED_SNAPSHOT_ROOT / "scripts" / "run-real-mlx-cache-audit-trusted.py"
+)
 DEFAULT_CONVERSION_SUMMARY = (
     _TRUSTED_SNAPSHOT_ROOT
     / "llmtracefx/cache_audit/data/qwen3-4b-conversion-summary.json"
@@ -2544,6 +2546,18 @@ def _verify_stage_rows(
         "system_memory",
         "thermal_power",
     }
+    measurement_stages = (
+        "request_before_lookup",
+        "request_after_lookup",
+        "request_after_generation",
+        "request_after_insertion",
+    )
+    exact_terminal_stage_counts = {
+        "quantized_cache_unsupported": 0,
+        "rotating_cache_unsupported": 0,
+        "non_trimmable_cache_reuse_unsupported": 1,
+        "exact_empty_remainder_unsupported": 2,
+    }
     expected_sequence: list[tuple[str | None, str]] = []
     record_index = 0
     for block in rotation:
@@ -2558,18 +2572,43 @@ def _verify_stage_rows(
         ):
             raise RealMLXExperimentError("stage sequence lane/block identity mismatch")
         for record in block_records:
+            if record.terminal_state is TerminalState.COMPLETED:
+                stage_count = len(measurement_stages)
+            else:
+                limitation_codes = {item.code for item in record.limitations}
+                known_counts = {
+                    exact_terminal_stage_counts[code]
+                    for code in limitation_codes
+                    if code in exact_terminal_stage_counts
+                }
+                if len(known_counts) > 1:
+                    raise RealMLXExperimentError(
+                        "terminal record has conflicting stage bounds"
+                    )
+                if known_counts:
+                    stage_count = known_counts.pop()
+                else:
+                    stage_count = 0
+                    while stage_count < len(measurement_stages):
+                        row_index = len(expected_sequence)
+                        if row_index >= len(rows):
+                            break
+                        candidate = rows[row_index]
+                        if candidate.get("request_id") != record.spec.request_id:
+                            break
+                        if candidate.get("stage") != measurement_stages[stage_count]:
+                            raise RealMLXExperimentError(
+                                "terminal stage sequence is not an ordered prefix"
+                            )
+                        stage_count += 1
             expected_sequence.extend(
                 (record.spec.request_id, stage)
-                for stage in (
-                    "request_before_lookup",
-                    "request_after_lookup",
-                    "request_after_generation",
-                    "request_after_insertion",
-                )
+                for stage in measurement_stages[:stage_count]
             )
         expected_sequence.extend(
             (record.spec.request_id, "request_after_baseline")
             for record in block_records
+            if record.terminal_state is TerminalState.COMPLETED
         )
         record_index += count
     if record_index != len(records) or len(rows) != len(expected_sequence):
@@ -5213,7 +5252,15 @@ def _trusted_bootstrap_command(*args: str) -> list[str]:
         or bootstrap.resolve(strict=True) != bootstrap.absolute()
     ):
         raise RealMLXExperimentError("trusted bootstrap script is unavailable")
-    return [sys.executable, "-I", "-S", str(bootstrap), *args]
+    return [
+        sys.executable,
+        "-I",
+        "-S",
+        str(bootstrap),
+        "--trusted-repo-root",
+        str(_PROJECT_ROOT),
+        *args,
+    ]
 
 
 def _replicate_child_command(
@@ -5415,13 +5462,6 @@ def _validate_supervisor_source(expected_commit: str) -> str:
     commit, commit_at = source_commit()
     if commit != expected_commit or commit_at is None:
         raise RealMLXExperimentError("current Git HEAD does not match expected commit")
-    status = _safe_git(
-        _PROJECT_ROOT,
-        ["status", "--porcelain=v1", "--untracked-files=no"],
-        text=True,
-    )
-    if status.returncode != 0 or status.stdout:
-        raise RealMLXExperimentError("tracked worktree must be clean")
     head = _safe_git(
         _PROJECT_ROOT,
         ["rev-parse", "--verify", "HEAD^{commit}"],

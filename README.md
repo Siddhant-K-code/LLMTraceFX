@@ -762,14 +762,17 @@ implement a side-effect-free `--help` path.
   runtime imports, every distribution in the locked MLX-LM closure is hashed
   from standard-library metadata and compared with the immutable packaged
   Apple Silicon/Python 3.13 identity allowlist. Canonical execution requires
-  `EXTERNAL_VENV/bin/python -I -S
-  /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py ...`; the console
-  entry point remains for help and capability inspection. Every artifact
-  command requires an exact `--expected-commit`. Project code is imported only
-  from a private read-only snapshot of that commit, never from the mutable
-  checkout. The dependencies-only venv and output workspace may be siblings,
-  but neither may contain the other; the output must remain outside every
-  repository and free of runtime-package import shadows.
+  an externally extracted, SHA-256-checked copy of
+  `scripts/run-real-mlx-cache-audit-trusted.py`, invoked as
+  `EXTERNAL_VENV/bin/python -I -S /external/trusted-bootstrap.py
+  --trusted-repo-root /absolute/repo ...`; the console entry point remains for
+  help and capability inspection. Every artifact command requires an exact
+  `--expected-commit`. The bootstrap, runtime identity, and project code are
+  read from that exact commit, with project code imported only from a private
+  read-only snapshot rather than the mutable checkout. The dependencies-only
+  venv and output workspace may be siblings, but neither may contain the
+  other; the output must remain outside every repository and free of
+  runtime-package import shadows.
 - API timing is observed at the client. It cannot expose provider queueing,
   prefill, kernel execution, or server-side clocks.
 - Native Qwen MTP execution is not supported by the current MLX-LM path.

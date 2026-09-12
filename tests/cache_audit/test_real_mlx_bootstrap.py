@@ -138,7 +138,15 @@ def test_built_wheel_contains_trusted_bootstrap(tmp_path: Path) -> None:
 
 def test_bootstrap_rejection_is_safe_json_and_imports_no_runtime() -> None:
     completed = subprocess.run(
-        [sys.executable, "-I", "-S", str(BOOTSTRAP), "--bootstrap-self-test"],
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            str(BOOTSTRAP),
+            "--trusted-repo-root",
+            str(PROJECT_ROOT),
+            "--bootstrap-self-test",
+        ],
         cwd=PROJECT_ROOT,
         capture_output=True,
         check=False,
@@ -377,7 +385,7 @@ def test_runtime_identity_record_hashing_matches_bootstrap_fixture() -> None:
     )
 
 
-def test_modified_tracked_worktree_refuses_before_project_import(
+def test_modified_running_bootstrap_refuses_before_project_import(
     tmp_path: Path,
 ) -> None:
     repository = tmp_path / "repository"
@@ -425,6 +433,8 @@ def test_modified_tracked_worktree_refuses_before_project_import(
             "-I",
             "-S",
             str(script),
+            "--trusted-repo-root",
+            str(repository),
             "--bootstrap-self-test",
             "--expected-commit",
             commit,
@@ -435,7 +445,163 @@ def test_modified_tracked_worktree_refuses_before_project_import(
         text=True,
     )
     assert completed.returncode == 2
-    assert json.loads(completed.stdout)["error"] == "tracked worktree must be clean"
+    assert json.loads(completed.stdout)["error"] == (
+        "scripts/run-real-mlx-cache-audit-trusted.py does not match expected commit"
+    )
+
+
+def _external_bootstrap_repository(tmp_path: Path) -> tuple[Path, Path, str]:
+    repository = tmp_path / "repository"
+    checkout_script = repository / "scripts/run-real-mlx-cache-audit-trusted.py"
+    identity = (
+        repository / "llmtracefx/cache_audit/data/"
+        "apple-silicon-python313-mlx-lm-runtime-v1.json"
+    )
+    checkout_script.parent.mkdir(parents=True)
+    identity.parent.mkdir(parents=True)
+    (repository / "vllm_kv_truth").mkdir()
+    (repository / "vllm_kv_truth/__init__.py").write_text("", encoding="ascii")
+    checkout_script.write_bytes(BOOTSTRAP.read_bytes())
+    identity.write_bytes(
+        (
+            PROJECT_ROOT / "llmtracefx/cache_audit/data/"
+            "apple-silicon-python313-mlx-lm-runtime-v1.json"
+        ).read_bytes()
+    )
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(["git", "add", "."], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=repository,
+        check=True,
+    )
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    external = tmp_path / "trusted-bootstrap.py"
+    external.write_bytes(BOOTSTRAP.read_bytes())
+    return repository, external, commit
+
+
+def test_external_exact_bootstrap_ignores_tampered_checkout_copy(
+    tmp_path: Path,
+) -> None:
+    repository, external, commit = _external_bootstrap_repository(tmp_path)
+    checkout = repository / "scripts/run-real-mlx-cache-audit-trusted.py"
+    checkout.write_bytes(b"raise RuntimeError('mutable checkout must be irrelevant')\n")
+    (
+        repository / "llmtracefx/cache_audit/data/"
+        "apple-silicon-python313-mlx-lm-runtime-v1.json"
+    ).write_text("{}", encoding="ascii")
+    namespace = runpy.run_path(str(external), run_name="external_bootstrap_test")
+
+    identity = namespace["_verify_repository"](repository, external, commit)
+
+    committed_identity = subprocess.run(
+        [
+            "git",
+            "show",
+            f"{commit}:llmtracefx/cache_audit/data/"
+            "apple-silicon-python313-mlx-lm-runtime-v1.json",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    ).stdout
+    assert identity == committed_identity
+
+
+def test_external_bootstrap_self_test_succeeds_and_consumes_repo_argument(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repository, external, commit = _external_bootstrap_repository(tmp_path)
+    namespace = runpy.run_path(str(external), run_name="external_bootstrap_test")
+    globals_ = namespace["main"].__globals__
+    venv_root = tmp_path / "runtime"
+    site_root = venv_root / "site-packages"
+    site_root.mkdir(parents=True)
+    expected_identity = namespace["_load_expected_bytes"](
+        subprocess.run(
+            [
+                "git",
+                "show",
+                f"{commit}:llmtracefx/cache_audit/data/"
+                "apple-silicon-python313-mlx-lm-runtime-v1.json",
+            ],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        ).stdout
+    )
+    monkeypatch.setitem(globals_, "_external_site_root", lambda: (venv_root, site_root))
+    monkeypatch.setitem(globals_, "_scan_site_root", lambda *_args, **_kwargs: None)
+    monkeypatch.setitem(globals_, "_actual_identity", lambda _site: expected_identity)
+    monkeypatch.setitem(
+        globals_,
+        "sys",
+        SimpleNamespace(
+            flags=SimpleNamespace(isolated=1, no_site=1),
+            argv=[
+                str(external),
+                "--trusted-repo-root",
+                str(repository),
+                "--bootstrap-self-test",
+                "--expected-commit",
+                commit,
+            ],
+        ),
+    )
+
+    namespace["main"]()
+
+    assert json.loads(capsys.readouterr().out) == {
+        "bootstrap_verified": True,
+        "distribution_count": len(namespace["EXPECTED_DISTRIBUTIONS"]),
+        "snapshot_verified": True,
+    }
+
+
+def test_external_bootstrap_mismatch_and_repo_argument_validation(
+    tmp_path: Path,
+) -> None:
+    repository, external, commit = _external_bootstrap_repository(tmp_path)
+    namespace = runpy.run_path(str(external), run_name="external_bootstrap_test")
+    external.write_bytes(external.read_bytes() + b"\n")
+    with pytest.raises(namespace["BootstrapError"], match="does not match"):
+        namespace["_verify_repository"](repository, external, commit)
+
+    with pytest.raises(namespace["BootstrapError"], match="exactly one"):
+        namespace["_trusted_repository"](["preflight"])
+    with pytest.raises(namespace["BootstrapError"], match="must be absolute"):
+        namespace["_trusted_repository"](
+            ["--trusted-repo-root", "relative", "preflight"]
+        )
+    root, forwarded = namespace["_trusted_repository"](
+        [
+            "--trusted-repo-root",
+            str(repository),
+            "preflight",
+            "--expected-commit",
+            commit,
+        ]
+    )
+    assert root == repository
+    assert forwarded == ["preflight", "--expected-commit", commit]
 
 
 @pytest.mark.parametrize(

@@ -250,19 +250,22 @@ implementations.
 ## Private real-MLX experiment
 
 `llmtracefx-real-mlx-cache-audit` remains the public help/test entry point. Every
-canonical command must instead use the committed standard-library bootstrap as
-`EXTERNAL_VENV/bin/python -I -S
-/absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py ...`. The bootstrap
-derives the one allowed `site-packages` root from that interpreter, verifies
-the complete frozen runtime identity before importing any runtime package, and
+canonical command must instead use a SHA-256-checked external copy extracted
+with hardened `git show` from the expected commit:
+`EXTERNAL_VENV/bin/python -I -S /external/trusted-bootstrap.py
+--trusted-repo-root /absolute/repo ...`. The bootstrap derives the one allowed
+`site-packages` root from that interpreter, authenticates its own running bytes
+against the commit, reads the frozen runtime identity through `git show`, and
 keeps site startup disabled. `compile`, `calibrate`, `preflight`, `run-all`,
-`replicate`, `aggregate`, `sanitize`, and `verify` all require this wrapper and
-an exact `--expected-commit`; only capability inspection and help may use the
-console entry point directly.
-The wrapper verifies the original checkout, then imports project code only
-from a private, read-only `git archive` snapshot outside both the repository
-and output. The dependencies-only venv and output workspace must not contain
-one another. They may be siblings under a common parent; only package files
+`replicate`, `aggregate`, `sanitize`, and `verify` all require this wrapper,
+the bootstrap-only absolute repository argument, and an exact
+`--expected-commit`; only capability inspection and help may use the console
+entry point directly. The repository argument is removed before canonical
+argument dispatch.
+The wrapper verifies the repository HEAD, then imports project code only from
+a private, read-only `git archive` snapshot outside both the repository and
+output. The dependencies-only venv and output workspace must not contain one
+another. They may be siblings under a common parent; only package files
 actually beneath the output workspace are rejected.
 For `aggregate`, `sanitize`, and `verify`, dispatch carries that trusted commit
 and the read-only snapshot package digest through to the operation. The source
@@ -305,14 +308,14 @@ After the calibrated workload digests have been reviewed and pinned, `run-all`
 is the canonical execution path:
 
 ```console
-EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py \
+EXTERNAL_VENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo \
   compile --model-dir MODEL --output workload.json \
   --expected-commit FULL_40_CHARACTER_GIT_SHA
-EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py \
+EXTERNAL_VENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo \
   calibrate --model-dir MODEL \
   --workload workload.json --output calibrated.json \
   --expected-commit FULL_40_CHARACTER_GIT_SHA
-EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py \
+EXTERNAL_VENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo \
   run-all --model-dir MODEL \
   --workload calibrated.json --expected-commit FULL_40_CHARACTER_GIT_SHA \
   --output-workspace /Users/siddhant-git-ai/.cache/llmtracefx/qwen3-4b-kv-cache-v1/canonical-run-attempt-1 \
@@ -321,8 +324,8 @@ EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-t
 
 `run-all` resolves all input and output paths before creating anything and
 refuses missing, non-regular, or symlinked inputs, a mismatched Git HEAD,
-tracked changes, package-source drift, top-level import-shadow candidates, an
-existing output workspace, or an unavailable macOS network sandbox. Before
+package-source drift, top-level import-shadow candidates, an existing output
+workspace, or an unavailable macOS network sandbox. Before
 creating the workspace, it runs an isolated (`python -I -S`) model-free probe from
 a resolved non-repository directory under the exact network-denied sandbox.
 The probe uses only standard-library distribution metadata and regular-file
@@ -351,7 +354,7 @@ identity. The same checks can be recorded without canonical execution by
 writing an explicitly new receipt:
 
 ```console
-EXTERNAL_VENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py \
+EXTERNAL_VENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo \
   preflight --model-dir MODEL \
   --workload calibrated.json --expected-commit FULL_40_CHARACTER_GIT_SHA \
   --output-workspace /Users/siddhant-git-ai/.cache/llmtracefx/qwen3-4b-kv-cache-v1/canonical-run-attempt-1 \
@@ -445,15 +448,15 @@ unless all six replicates complete and public results derivation succeeds.
 Aggregation and sanitization remain explicit:
 
 ```console
-PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py aggregate \
+PINNED_ENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo aggregate \
   --run-workspace /Users/siddhant-git-ai/.cache/llmtracefx/qwen3-4b-kv-cache-v1/canonical-run-attempt-1 \
   --output-dir private-aggregate \
   --expected-commit FULL_40_CHARACTER_GIT_SHA
-PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py verify private-aggregate \
+PINNED_ENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo verify private-aggregate \
   --expected-commit FULL_40_CHARACTER_GIT_SHA
-PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py sanitize private-aggregate \
+PINNED_ENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo sanitize private-aggregate \
   --output-dir public-aggregate --expected-commit FULL_40_CHARACTER_GIT_SHA
-PINNED_ENV/bin/python -I -S /absolute/repo/scripts/run-real-mlx-cache-audit-trusted.py verify public-aggregate \
+PINNED_ENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo verify public-aggregate \
   --expected-commit FULL_40_CHARACTER_GIT_SHA
 ```
 

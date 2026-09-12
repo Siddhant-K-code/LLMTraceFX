@@ -8,8 +8,10 @@ import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import fields, replace
+from itertools import groupby
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -23,6 +25,7 @@ from llmtracefx.cache_audit.adapters.base import (
 from llmtracefx.cache_audit.adapters.mlx import (
     REQUIRED_MLX_LM_VERSION,
     REQUIRED_MLX_VERSION,
+    MLXLocalCacheAdapter,
     MLXStageObservation,
 )
 from llmtracefx.cache_audit.adapters.reference import ReferenceCacheAdapter
@@ -117,8 +120,10 @@ class MLXIdentityReference:
     def __init__(
         self,
         record_transform: Callable[[RequestEvidence], RequestEvidence] | None = None,
+        stage_observer: Callable[[MLXStageObservation], None] | None = None,
     ) -> None:
         self._record_transform = record_transform
+        self._stage_observer = stage_observer
 
     def capabilities(self) -> CacheAuditCapability:
         return CacheAuditCapability(backend=self.backend, supported=True)
@@ -207,7 +212,68 @@ class MLXIdentityReference:
         ]
         if self._record_transform is not None:
             records = [self._record_transform(record) for record in records]
+        if self._stage_observer is not None:
+            for _, block_records in groupby(
+                records, key=lambda record: record.spec.request_id.rsplit(":", 1)[0]
+            ):
+                grouped_records = tuple(block_records)
+                self._stage_observer(
+                    MLXStageObservation(
+                        request_id=None,
+                        stage="lifecycle_ready",
+                        active_bytes=1,
+                        peak_bytes=2,
+                        allocator_cache_bytes=3,
+                        logical_cache_bytes=4,
+                    )
+                )
+                for record in grouped_records:
+                    for stage in _captured_measurement_stages(record):
+                        self._stage_observer(
+                            MLXStageObservation(
+                                request_id=record.spec.request_id,
+                                stage=stage,
+                                active_bytes=1,
+                                peak_bytes=2,
+                                allocator_cache_bytes=3,
+                                logical_cache_bytes=4,
+                            )
+                        )
+                for record in grouped_records:
+                    if record.terminal_state is TerminalState.COMPLETED:
+                        self._stage_observer(
+                            MLXStageObservation(
+                                request_id=record.spec.request_id,
+                                stage="request_after_baseline",
+                                active_bytes=1,
+                                peak_bytes=2,
+                                allocator_cache_bytes=3,
+                                logical_cache_bytes=4,
+                            )
+                        )
         return records
+
+
+def _captured_measurement_stages(record: RequestEvidence) -> tuple[str, ...]:
+    stages = (
+        "request_before_lookup",
+        "request_after_lookup",
+        "request_after_generation",
+        "request_after_insertion",
+    )
+    if record.terminal_state is TerminalState.COMPLETED:
+        return stages
+    limitation_codes = {item.code for item in record.limitations}
+    if "exact_empty_remainder_unsupported" in limitation_codes:
+        return stages[:2]
+    if "non_trimmable_cache_reuse_unsupported" in limitation_codes:
+        return stages[:1]
+    if limitation_codes & {
+        "quantized_cache_unsupported",
+        "rotating_cache_unsupported",
+    }:
+        return ()
+    return stages
 
 
 def _reference_output(tokens: tuple[int, ...]) -> tuple[int, ...]:
@@ -374,7 +440,7 @@ assert _git_package_digest(_PROJECT_ROOT, commit).startswith("sha256:")
 try:
     validated = _validate_supervisor_source(commit)
 except RealMLXExperimentError as exc:
-    assert str(exc) == "tracked worktree must be clean"
+    assert str(exc) == "installed package source digest does not match expected commit tree"
 else:
     assert validated == package_source_digest()
 """
@@ -657,7 +723,7 @@ def test_import_shadow_scan_is_narrow_and_fail_closed(
         real_mlx_module._reject_import_shadows(output_workspace)
 
 
-def test_source_validation_rejects_tracked_dirt_and_package_drift(
+def test_source_validation_ignores_checkout_dirt_and_rejects_package_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     expected_commit = "a" * 40
@@ -666,19 +732,12 @@ def test_source_validation_rejects_tracked_dirt_and_package_drift(
         "source_commit",
         lambda: (expected_commit, "2026-01-01T00:00:00Z"),
     )
-    monkeypatch.setattr(
-        real_mlx_module.subprocess,
-        "run",
-        lambda *_args, **_kwargs: subprocess.CompletedProcess(
-            [], 0, " M llmtracefx/cache_audit/real_mlx.py\n", ""
-        ),
-    )
-    with pytest.raises(RealMLXExperimentError, match="tracked worktree"):
-        real_mlx_module._validate_supervisor_source(expected_commit)
+    calls: list[list[str]] = []
 
     def clean_git(
         command: list[str], **_kwargs: Any
     ) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
         output = expected_commit + "\n" if "rev-parse" in command else ""
         return subprocess.CompletedProcess(command, 0, output, "")
 
@@ -695,6 +754,7 @@ def test_source_validation_rejects_tracked_dirt_and_package_drift(
     )
     with pytest.raises(RealMLXExperimentError, match="does not match expected commit"):
         real_mlx_module._validate_supervisor_source(expected_commit)
+    assert not any("status" in command for command in calls)
 
 
 def test_workload_invariants_and_counterbalanced_schedule() -> None:
@@ -1257,8 +1317,14 @@ def _make_attempts(
             continue
         bundle = replicate / "bundle"
         requests = requests_for_replicate(workload, replicate_id)
+        recorder = StageRecorder(
+            replicate_id,
+            rss_reader=lambda: 100,
+            swap_reader=lambda: 200,
+            memory_reader=lambda: 80.0,
+        )
         run_audit(
-            adapter=MLXIdentityReference(record_transform),
+            adapter=MLXIdentityReference(record_transform, recorder),
             requests=requests,
             cache_config=CacheConfig(
                 namespace_id="experiment-namespaces",
@@ -1316,58 +1382,6 @@ def _make_attempts(
             },
         )
         _write_json(replicate / "workload.json", workload.to_dict())
-        recorder = StageRecorder(
-            replicate_id,
-            rss_reader=lambda: 100,
-            swap_reader=lambda: 200,
-            memory_reader=lambda: 80.0,
-        )
-        request_index = 0
-        for block in block_schedule(replicate_id):
-            block_start = request_index
-            recorder(
-                MLXStageObservation(
-                    request_id=None,
-                    stage="lifecycle_ready",
-                    active_bytes=1,
-                    peak_bytes=2,
-                    allocator_cache_bytes=3,
-                    logical_cache_bytes=4,
-                )
-            )
-            while (
-                request_index < len(requests)
-                and requests[request_index].request_id.rsplit(":", 1)[0] == block
-            ):
-                request_id = requests[request_index].request_id
-                for stage in (
-                    "request_before_lookup",
-                    "request_after_lookup",
-                    "request_after_generation",
-                    "request_after_insertion",
-                ):
-                    recorder(
-                        MLXStageObservation(
-                            request_id=request_id,
-                            stage=stage,
-                            active_bytes=1,
-                            peak_bytes=2,
-                            allocator_cache_bytes=3,
-                            logical_cache_bytes=4,
-                        )
-                    )
-                request_index += 1
-            for request in requests[block_start:request_index]:
-                recorder(
-                    MLXStageObservation(
-                        request_id=request.request_id,
-                        stage="request_after_baseline",
-                        active_bytes=1,
-                        peak_bytes=2,
-                        allocator_cache_bytes=3,
-                        logical_cache_bytes=4,
-                    )
-                )
         recorder.write(replicate / "stages.jsonl")
         _write_json(replicate / "teardown.json", teardown)
     package_digest = real_mlx_module.package_source_digest()
@@ -1475,6 +1489,72 @@ def _make_attempts(
         results_digest=results_digest,
     )
     return workspace
+
+
+def test_terminal_adapter_records_survive_replicate_and_aggregate_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    terminal_codes = {
+        "1k:cold-exact-duplicate:exact": "exact_empty_remainder_unsupported",
+        "4k:suffix-only-change:variant": "quantized_cache_unsupported",
+    }
+    adapter_stub = SimpleNamespace(backend="mlx_lm_local")
+
+    def capture_terminal_record(record: RequestEvidence) -> RequestEvidence:
+        code = terminal_codes.get(record.spec.request_id)
+        if code is None:
+            return record
+        return MLXLocalCacheAdapter._unsupported_record(
+            cast(MLXLocalCacheAdapter, adapter_stub), record.spec, code=code
+        )
+
+    workspace = _make_attempts(
+        tmp_path,
+        monkeypatch,
+        record_transform=capture_terminal_record,
+    )
+    captured_rows = real_mlx_module._parse_jsonl(
+        workspace / "attempts" / "replicate-0" / "stages.jsonl"
+    )
+    assert [
+        row["stage"]
+        for row in captured_rows
+        if row["request_id"] == "1k:cold-exact-duplicate:exact"
+    ] == ["request_before_lookup", "request_after_lookup"]
+    assert not any(
+        row["request_id"] == "4k:suffix-only-change:variant" for row in captured_rows
+    )
+    for replicate_id in REPLICATE_IDS:
+        assert (
+            real_mlx_module.verify_replicate(
+                workspace / "attempts" / replicate_id,
+                replicate_id=replicate_id,
+                public=False,
+            )["status"]
+            == "complete"
+        )
+
+    derivation_identity = {
+        "expected_commit": "a" * 40,
+        "generator_package_digest": real_mlx_module.package_source_digest(),
+    }
+    aggregate = tmp_path / "terminal-aggregate"
+    assemble_aggregate(workspace, aggregate, **derivation_identity)
+    assert (
+        verify_aggregate(
+            aggregate,
+            expected_commit=derivation_identity["expected_commit"],
+            generator_package_digest=derivation_identity["generator_package_digest"],
+        )["verified"]
+        is True
+    )
+    results = json.loads((aggregate / "results.json").read_text())
+    assert results["comparisons"]["1k:cold-exact"]["missing_pair_count"] == len(
+        REPLICATE_IDS
+    )
+    assert results["comparisons"]["4k:suffix-only-change"]["missing_pair_count"] == len(
+        REPLICATE_IDS
+    )
 
 
 def test_aggregate_regeneration_checksums_and_public_redaction(
@@ -3379,11 +3459,13 @@ def test_replicate_child_uses_current_module_and_expected_commit(
     )
 
     bootstrap_index = command.index(str(real_mlx_module._TRUSTED_BOOTSTRAP))
-    assert command[bootstrap_index - 3 : bootstrap_index + 2] == [
+    assert command[bootstrap_index - 3 : bootstrap_index + 4] == [
         real_mlx_module.sys.executable,
         "-I",
         "-S",
         str(real_mlx_module._TRUSTED_BOOTSTRAP),
+        "--trusted-repo-root",
+        str(real_mlx_module._PROJECT_ROOT),
         "replicate",
     ]
     assert command[command.index("--expected-commit") + 1] == "a" * 40
@@ -3434,11 +3516,13 @@ def test_sandbox_probe_is_isolated_and_uses_non_repository_cwd(
     assert calls[0]["cwd"] == tmp_path
     command = calls[0]["command"]
     bootstrap_index = command.index(str(real_mlx_module._TRUSTED_BOOTSTRAP))
-    assert command[bootstrap_index - 3 : bootstrap_index + 2] == [
+    assert command[bootstrap_index - 3 : bootstrap_index + 4] == [
         real_mlx_module.sys.executable,
         "-I",
         "-S",
         str(real_mlx_module._TRUSTED_BOOTSTRAP),
+        "--trusted-repo-root",
+        str(real_mlx_module._PROJECT_ROOT),
         "sandbox-probe",
     ]
     assert real_mlx_module.SANDBOX_POLICY in command

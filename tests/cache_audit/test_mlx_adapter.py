@@ -249,13 +249,18 @@ def _spec(
     )
 
 
-def _adapter(runtime: FakeMLXRuntime | None = None) -> MLXLocalCacheAdapter:
+def _adapter(
+    runtime: FakeMLXRuntime | None = None,
+    *,
+    stage_observer: Callable[[MLXStageObservation], None] | None = None,
+) -> MLXLocalCacheAdapter:
     return MLXLocalCacheAdapter(
         runtime=runtime if runtime is not None else FakeMLXRuntime(),
         model="fake-model",
         tokenizer="fake-tokenizer",
         model_key="fake-model-key",
         model_artifact_digest=_MODEL_ARTIFACT_DIGEST,
+        stage_observer=stage_observer,
     )
 
 
@@ -500,7 +505,8 @@ def test_corrupted_output_does_not_mutate_cache_truth() -> None:
 
 
 def test_exact_empty_remainder_is_refused_not_silently_regenerated() -> None:
-    adapter = _adapter()
+    observations: list[MLXStageObservation] = []
+    adapter = _adapter(stage_observer=observations.append)
     prompt = (31, 32, 33)
     first = adapter.run([_spec("cold", prompt, order=0)])[0]
     assert first.output.output_token_ids is not None
@@ -521,15 +527,23 @@ def test_exact_empty_remainder_is_refused_not_silently_regenerated() -> None:
     assert second.verdict_reasons == ("unsupported:exact_empty_remainder_unsupported",)
     assert second.output.output_token_ids is None
     assert any(item.blocks_verdict for item in second.limitations)
+    second_stages = [
+        item.stage for item in observations if item.request_id == "exact-empty"
+    ]
+    assert second_stages == ["request_before_lookup", "request_after_lookup"]
 
 
 def test_quantized_cache_scenario_is_explicitly_unsupported() -> None:
-    adapter = _adapter()
+    observations: list[MLXStageObservation] = []
+    adapter = _adapter(stage_observer=observations.append)
     record = adapter.run(
         [_spec("quant", (1, 2, 3), order=0, scenario=ScenarioKind.QUANTIZED_CACHE)]
     )[0]
     assert record.verdict is Verdict.UNSUPPORTED
     assert record.verdict_reasons == ("unsupported:quantized_cache_unsupported",)
+    assert [(item.request_id, item.stage) for item in observations] == [
+        (None, "lifecycle_ready")
+    ]
 
 
 def test_observed_hidden_prompt_work_is_classified_as_recomputed() -> None:

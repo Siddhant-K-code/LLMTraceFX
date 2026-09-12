@@ -70,7 +70,7 @@ _CANONICAL_COMMANDS = {
 }
 _FORBIDDEN_FILENAMES = {"sitecustomize.py", "usercustomize.py"}
 _FORBIDDEN_SUFFIXES = {".pth", ".pyc", ".pyo"}
-_SNAPSHOT_PREFIXES = ("llmtracefx/", "vllm_kv_truth/")
+_SNAPSHOT_PREFIXES = ("llmtracefx/", "vllm_kv_truth/", "scripts/")
 _IDENTITY_PATH = (
     "llmtracefx/cache_audit/data/" "apple-silicon-python313-mlx-lm-runtime-v1.json"
 )
@@ -127,7 +127,7 @@ def _external_site_root() -> tuple[Path, Path]:
     return venv_root, site_root
 
 
-def _repository_paths() -> tuple[Path, Path, Path]:
+def _running_script() -> Path:
     script = Path(os.path.abspath(__file__))
     if script.is_symlink() or not script.is_file():
         raise BootstrapError("bootstrap script is missing or symlinked")
@@ -137,17 +137,33 @@ def _repository_paths() -> tuple[Path, Path, Path]:
         raise BootstrapError("bootstrap script is unavailable") from exc
     if resolved_script != script:
         raise BootstrapError("bootstrap script path is unsafe")
-    repo_root = _safe_existing_directory(script.parent.parent)
-    if script != repo_root / _BOOTSTRAP_PATH:
-        raise BootstrapError("bootstrap script is outside the repository")
-    identity = Path(os.path.abspath(repo_root / _IDENTITY_PATH))
-    if (
-        identity.is_symlink()
-        or not identity.is_file()
-        or identity.resolve(strict=True) != identity
-    ):
-        raise BootstrapError("committed runtime identity is unavailable")
-    return repo_root, script, identity
+    return script
+
+
+def _trusted_repository(argv: list[str]) -> tuple[Path, list[str]]:
+    values: list[str] = []
+    forwarded: list[str] = []
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if item == "--trusted-repo-root":
+            if index + 1 >= len(argv):
+                raise BootstrapError("--trusted-repo-root requires an absolute path")
+            values.append(argv[index + 1])
+            index += 2
+            continue
+        if item.startswith("--trusted-repo-root="):
+            values.append(item.split("=", 1)[1])
+            index += 1
+            continue
+        forwarded.append(item)
+        index += 1
+    if len(values) != 1:
+        raise BootstrapError("exactly one --trusted-repo-root is required")
+    raw = Path(values[0])
+    if not raw.is_absolute():
+        raise BootstrapError("--trusted-repo-root must be absolute")
+    return _safe_existing_directory(raw), forwarded
 
 
 def _scan_site_root(
@@ -219,6 +235,49 @@ def _regular_file_identity(path: Path) -> tuple[int, str]:
     ):
         raise BootstrapError("runtime distribution changed while hashing")
     return before.st_size, "sha256:" + digest.hexdigest()
+
+
+def _regular_file_bytes(path: Path) -> bytes:
+    absolute = Path(os.path.abspath(path))
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(absolute, flags)
+    except OSError as exc:
+        raise BootstrapError("bootstrap script is unavailable") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise BootstrapError("bootstrap script is not a regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            raw = handle.read()
+        after = os.fstat(descriptor)
+        path_state = absolute.lstat()
+    except OSError as exc:
+        raise BootstrapError("bootstrap script could not be read") from exc
+    finally:
+        os.close(descriptor)
+    identity = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_size,
+        before.st_mtime_ns,
+    )
+    if identity != (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_size,
+        after.st_mtime_ns,
+    ) or identity != (
+        path_state.st_dev,
+        path_state.st_ino,
+        path_state.st_mode,
+        path_state.st_size,
+        path_state.st_mtime_ns,
+    ):
+        raise BootstrapError("bootstrap script changed while being authenticated")
+    return raw
 
 
 def _identity_record_bytes(logical_path: str, size: int, digest: str) -> bytes:
@@ -373,10 +432,6 @@ def _load_expected_bytes(raw: bytes) -> dict[str, Any]:
     return value
 
 
-def _load_expected(identity_path: Path) -> dict[str, Any]:
-    return _load_expected_bytes(identity_path.read_bytes())
-
-
 def _expected_commit(argv: list[str]) -> str:
     command = argv[0] if argv else ""
     if command == "--bootstrap-self-test":
@@ -436,27 +491,27 @@ def _git(
 def _verify_repository(
     repo_root: Path,
     script_path: Path,
-    identity_path: Path,
     expected_commit: str,
-) -> None:
+) -> bytes:
     head = _git(repo_root, ["rev-parse", "--verify", "HEAD^{commit}"], text=True)
     if head.returncode != 0 or head.stdout.strip() != expected_commit:
         raise BootstrapError("current Git HEAD does not match expected commit")
-    status = _git(
-        repo_root,
-        ["status", "--porcelain=v1", "--untracked-files=no"],
-        text=True,
-    )
-    if status.returncode != 0 or status.stdout:
-        raise BootstrapError("tracked worktree must be clean")
-    for relative, path in (
-        (_BOOTSTRAP_PATH, script_path),
-        (_IDENTITY_PATH, identity_path),
+    committed_script = _git(repo_root, ["show", f"{expected_commit}:{_BOOTSTRAP_PATH}"])
+    if (
+        committed_script.returncode != 0
+        or committed_script.stdout != _regular_file_bytes(script_path)
     ):
-        committed = _git(repo_root, ["show", f"{expected_commit}:{relative}"])
-        if committed.returncode != 0 or committed.stdout != path.read_bytes():
-            raise BootstrapError(f"{relative} does not match expected commit")
-    _load_expected_bytes(identity_path.read_bytes())
+        raise BootstrapError(f"{_BOOTSTRAP_PATH} does not match expected commit")
+    committed_identity = _git(
+        repo_root, ["show", f"{expected_commit}:{_IDENTITY_PATH}"]
+    )
+    if committed_identity.returncode != 0 or not isinstance(
+        committed_identity.stdout, bytes
+    ):
+        raise BootstrapError("committed runtime identity is unavailable")
+    identity_bytes = committed_identity.stdout
+    _load_expected_bytes(identity_bytes)
+    return identity_bytes
 
 
 def _output_paths(argv: list[str]) -> tuple[Path, ...]:
@@ -495,6 +550,7 @@ def _materialize_snapshot(
             "--",
             "llmtracefx",
             "vllm_kv_truth",
+            _BOOTSTRAP_PATH,
         ],
     )
     if archived.returncode != 0:
@@ -539,9 +595,11 @@ def _materialize_snapshot(
                 target.chmod(0o400)
     except (OSError, tarfile.TarError) as exc:
         raise BootstrapError("trusted source archive is invalid") from exc
-    for required in _SNAPSHOT_PREFIXES:
-        if not (snapshot / required.rstrip("/")).is_dir():
+    for required in ("llmtracefx", "vllm_kv_truth"):
+        if not (snapshot / required).is_dir():
             raise BootstrapError("trusted source snapshot is incomplete")
+    if not (snapshot / _BOOTSTRAP_PATH).is_file():
+        raise BootstrapError("trusted source snapshot is incomplete")
     for directory in sorted(
         (path for path in snapshot.rglob("*") if path.is_dir()),
         key=lambda path: len(path.parts),
@@ -554,13 +612,21 @@ def _materialize_snapshot(
 
 def _verify(
     argv: list[str],
-) -> tuple[Path, Path, str, tempfile.TemporaryDirectory[str], Path]:
+) -> tuple[
+    Path,
+    Path,
+    str,
+    tempfile.TemporaryDirectory[str],
+    Path,
+    list[str],
+]:
     if sys.flags.isolated != 1 or sys.flags.no_site != 1:
         raise BootstrapError("bootstrap requires Python -I -S")
-    expected_commit = _expected_commit(argv)
+    repo_root, forwarded = _trusted_repository(argv)
+    expected_commit = _expected_commit(forwarded)
     venv_root, site_root = _external_site_root()
-    repo_root, script_path, identity_path = _repository_paths()
-    outputs = _output_paths(argv)
+    script_path = _running_script()
+    outputs = _output_paths(forwarded)
     if _is_relative_to(venv_root, repo_root) or _is_relative_to(repo_root, venv_root):
         raise BootstrapError("trusted runtime venv must be external to the repository")
     if any(
@@ -570,9 +636,9 @@ def _verify(
         raise BootstrapError(
             "trusted runtime venv and output workspace must not overlap"
         )
-    _verify_repository(repo_root, script_path, identity_path, expected_commit)
+    identity_bytes = _verify_repository(repo_root, script_path, expected_commit)
     _scan_site_root(site_root)
-    expected = _load_expected(identity_path)
+    expected = _load_expected_bytes(identity_bytes)
     if _actual_identity(site_root) != expected:
         raise BootstrapError("installed runtime identity does not match committed tree")
     _scan_site_root(site_root)
@@ -587,14 +653,21 @@ def _verify(
         owner.cleanup()
         raise BootstrapError("trusted source snapshot overlaps repository or output")
     snapshot = _materialize_snapshot(repo_root, expected_commit, owner_path)
-    return repo_root, site_root, expected_commit, owner, snapshot
+    return repo_root, site_root, expected_commit, owner, snapshot, forwarded
 
 
 def main() -> None:
     owner: tempfile.TemporaryDirectory[str] | None = None
     try:
-        repo_root, site_root, expected_commit, owner, snapshot = _verify(sys.argv[1:])
-        if sys.argv[1] == "--bootstrap-self-test":
+        (
+            repo_root,
+            site_root,
+            expected_commit,
+            owner,
+            snapshot,
+            forwarded,
+        ) = _verify(sys.argv[1:])
+        if forwarded[0] == "--bootstrap-self-test":
             print(
                 json.dumps(
                     {
@@ -614,7 +687,7 @@ def main() -> None:
         os.environ["LLMTRACEFX_TRUSTED_BOOTSTRAP"] = "1"
         sys.dont_write_bytecode = True
         sys.path.extend((str(site_root), str(snapshot)))
-        sys.argv = ["llmtracefx-real-mlx-cache-audit", *sys.argv[1:]]
+        sys.argv = ["llmtracefx-real-mlx-cache-audit", *forwarded]
         runpy.run_module("llmtracefx.cache_audit.real_mlx", run_name="__main__")
     except BootstrapError as exc:
         print(json.dumps({"error": str(exc), "ok": False}, sort_keys=True))
