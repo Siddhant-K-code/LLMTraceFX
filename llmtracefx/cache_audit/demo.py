@@ -192,7 +192,7 @@ def build_demo(output_dir: Path) -> dict[str, Any]:
         f"{_sha256(output_dir / name).removeprefix('sha256:')}  {name}\n"
         for name in sorted(files)
     )
-    (output_dir / "SHA256SUMS").write_text(checksums, encoding="ascii")
+    (output_dir / "DEMO-SHA256SUMS").write_text(checksums, encoding="ascii")
 
     verifier = subprocess.run(
         [

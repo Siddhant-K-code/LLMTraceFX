@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
@@ -462,6 +463,136 @@ def _run_script_verifier(repo_root: Path, source: Mapping[str, Any]) -> None:
         )
 
 
+def _run_cache_audit_verifier(repo_root: Path, source: Mapping[str, Any]) -> None:
+    bundle = _resolve_contained(repo_root, source["public_path"], directory=True)
+    script = _resolve_contained(
+        repo_root,
+        f"{source['public_path']}/evidence_bundle.py",
+    )
+    expected = source["cache_binding"]["standalone_verifier_sha256"]
+    actual = "sha256:" + _sha256(
+        read_bounded_regular_bytes(script, MAX_EVIDENCE_ARTIFACT_BYTES)
+    )
+    if actual != expected:
+        raise CatalogError(
+            f"{source['evidence_id']} standalone verifier binding drifted"
+        )
+    manifest = _load_json(bundle / "audit-manifest.json")
+    commit = manifest["generator_commit"]
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise CatalogError(f"{source['evidence_id']} has an invalid generator commit")
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONNOUSERSITE": "1",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "NO_PROXY": "*",
+        "no_proxy": "*",
+        "GIT_NO_LAZY_FETCH": "1",
+    }
+    with tempfile.TemporaryDirectory(prefix="llmtracefx-catalog-cache-audit-") as raw:
+        package_root = Path(raw)
+        try:
+            listing = subprocess.run(
+                (
+                    "git",
+                    "--no-replace-objects",
+                    "-C",
+                    str(repo_root),
+                    "ls-tree",
+                    "-r",
+                    "--name-only",
+                    commit,
+                    "--",
+                    "llmtracefx",
+                ),
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+                shell=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise CatalogError(
+                f"{source['evidence_id']} generator package is unavailable"
+            ) from exc
+        paths = [
+            Path(line) for line in listing.stdout.splitlines() if line.endswith(".py")
+        ]
+        if listing.returncode != 0 or not paths:
+            raise CatalogError(
+                f"{source['evidence_id']} generator package is unavailable"
+            )
+        try:
+            for relative in paths:
+                if relative.parts[0] != "llmtracefx" or ".." in relative.parts:
+                    raise CatalogError(
+                        f"{source['evidence_id']} generator package path is unsafe"
+                    )
+                content = subprocess.run(
+                    (
+                        "git",
+                        "--no-replace-objects",
+                        "-C",
+                        str(repo_root),
+                        "show",
+                        f"{commit}:{relative.as_posix()}",
+                    ),
+                    env=environment,
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                    shell=False,
+                )
+                if content.returncode != 0:
+                    raise CatalogError(
+                        f"{source['evidence_id']} generator package is incomplete"
+                    )
+                destination = package_root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(content.stdout)
+            completed = subprocess.run(
+                (
+                    sys.executable,
+                    "-I",
+                    str(script),
+                    "verify",
+                    "--public-dir",
+                    str(bundle),
+                    "--package-root",
+                    str(package_root),
+                ),
+                cwd=repo_root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+                shell=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise CatalogError(
+                f"{source['evidence_id']} verifier could not run"
+            ) from exc
+    if completed.returncode != 0:
+        detail = (completed.stdout + completed.stderr).strip().splitlines()
+        reason = detail[-1][:240] if detail else "no diagnostic"
+        raise CatalogError(
+            f"{source['evidence_id']} existing verifier failed: {reason}"
+        )
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise CatalogError(
+            f"{source['evidence_id']} verifier returned invalid JSON"
+        ) from exc
+    if result.get("verified") is not True:
+        raise CatalogError(
+            f"{source['evidence_id']} verifier did not confirm the bundle"
+        )
+
+
 def _verify_source_bindings(repo_root: Path, source: Mapping[str, Any]) -> None:
     bundle = _resolve_contained(repo_root, source["public_path"], directory=True)
     evidence_id = source["evidence_id"]
@@ -561,7 +692,10 @@ def _verify_source_bindings(repo_root: Path, source: Mapping[str, Any]) -> None:
         captured = contract["captured_at"]
         model_id = plan["model"]["id"]
         model_revision = plan["model"]["revision"]
-    elif evidence_id == "cache-audit-reference-positive-control-20260905":
+    elif evidence_id in {
+        "cache-audit-reference-positive-control-20260905",
+        "cache-audit-kv-truth-demo-20260913",
+    }:
         manifest = _load_json(bundle / "audit-manifest.json")
         schema = manifest["schema_version"]
         captured = manifest["created_at"]
@@ -576,6 +710,15 @@ def _verify_source_bindings(repo_root: Path, source: Mapping[str, Any]) -> None:
             "generator_package_digest": manifest["generator_package_digest"],
             "implementation_bound_at": manifest["generated_at"],
             "privacy_status": "verified_public_synthetic",
+            "standalone_verifier_sha256": (
+                "sha256:"
+                + _sha256(
+                    read_bounded_regular_bytes(
+                        bundle / "evidence_bundle.py",
+                        MAX_EVIDENCE_ARTIFACT_BYTES,
+                    )
+                )
+            ),
         }
         if observed_binding != binding:
             raise CatalogError(f"{evidence_id} cache provenance binding drifted")
@@ -605,11 +748,7 @@ def verify_source(repo_root: Path, source: Mapping[str, Any]) -> None:
     elif adapter == "sha256_allowlist_v1":
         _verify_sha256_allowlist(repo_root, source)
     elif adapter == "cache_audit_v1":
-        from llmtracefx.cache_audit.bundle import verify_bundle
-
-        verify_bundle(
-            _resolve_contained(repo_root, source["public_path"], directory=True)
-        )
+        _run_cache_audit_verifier(repo_root, source)
     elif adapter in SCRIPT_ADAPTERS:
         _run_script_verifier(repo_root, source)
     else:  # pragma: no cover - registry and branch are intentionally closed together

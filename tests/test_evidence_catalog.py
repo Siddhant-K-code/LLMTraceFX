@@ -40,7 +40,7 @@ def _write_catalog(tmp_path: Path, catalog: dict) -> Path:
 def test_committed_catalog_verifies_every_registered_adapter() -> None:
     result = core.verify_catalog(CATALOG, ROOT)
     assert result["verified"] is True
-    assert result["entries"] == len(SOURCES) == 11
+    assert result["entries"] == len(SOURCES) == 12
     assert result["edges"] == 7
     assert result["verified_evidence_ids"] == sorted(
         source["evidence_id"] for source in SOURCES
@@ -88,13 +88,21 @@ def test_modal_l4_adapters_are_closed_but_not_fabricated(
         ("generator_package_digest", "sha256:" + "0" * 64),
         ("implementation_bound_at", "2000-01-01T00:00:00Z"),
         ("privacy_status", "private"),
+        ("standalone_verifier_sha256", "sha256:" + "0" * 64),
     ),
 )
-def test_cache_catalog_binding_bypass_is_rejected(field: str, value: str) -> None:
+@pytest.mark.parametrize(
+    "evidence_id",
+    (
+        "cache-audit-reference-positive-control-20260905",
+        "cache-audit-kv-truth-demo-20260913",
+    ),
+)
+def test_cache_catalog_binding_bypass_is_rejected(
+    field: str, value: str, evidence_id: str
+) -> None:
     source = next(
-        copy.deepcopy(item)
-        for item in SOURCES
-        if item["evidence_id"] == "cache-audit-reference-positive-control-20260905"
+        copy.deepcopy(item) for item in SOURCES if item["evidence_id"] == evidence_id
     )
     source["cache_binding"][field] = value
     with pytest.raises(core.CatalogError, match="cache provenance binding drifted"):

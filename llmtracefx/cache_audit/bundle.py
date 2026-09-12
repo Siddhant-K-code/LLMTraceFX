@@ -112,6 +112,30 @@ def _normalized_source(relative: str, content: bytes) -> bytes:
         text,
         flags=re.MULTILINE,
     )
+    text = re.sub(
+        r'^_KV_DEMO_SOURCE_COMMIT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_SOURCE_COMMIT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_PACKAGE_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_PACKAGE_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_CAPTURED_AT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_CAPTURED_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_IMPLEMENTATION_BOUND_AT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_IMPLEMENTATION_BOUND_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
     return text.encode("utf-8")
 
 
@@ -297,6 +321,30 @@ def normalized_source(relative: str, content: bytes) -> bytes:
     text = re.sub(
         r'^_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
         '_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_SOURCE_COMMIT = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_KV_DEMO_SOURCE_COMMIT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_PACKAGE_DIGEST = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_KV_DEMO_PACKAGE_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_CAPTURED_AT = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_KV_DEMO_CAPTURED_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_IMPLEMENTATION_BOUND_AT = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_KV_DEMO_IMPLEMENTATION_BOUND_AT = "<bound-at-generation>"',
         text,
         flags=re.MULTILINE,
     )
