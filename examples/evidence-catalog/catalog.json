@@ -1,5 +1,5 @@
 {
-  "catalog_hash": "sha256:db999f31aaff0ecaa4202927ac416a70a15472d15ff9f15b04b4933742d248ee",
+  "catalog_hash": "sha256:990075f1656171de94c72bf34d9817604894b25fc693b2c9156f3bcf338e37db",
   "claim_dimensions": [
     "timing",
     "quality",
@@ -52,6 +52,129 @@
     }
   ],
   "entries": [
+    {
+      "artifact_set_hash": "sha256:e9c9949d2fff64182b3d49f6883f246dc47215df54bce38c21d6890ed7d0c244",
+      "budget": {
+        "authorized_usd": 0.0,
+        "inferred_usd": 0.0,
+        "limitation": "The local synthetic demo performs no paid operation.",
+        "planned_usd": 0.0,
+        "reported_usd": null,
+        "scope": "not_applicable"
+      },
+      "bundle_schema_version": "2",
+      "captured_at": "2026-09-13T00:57:59+05:30",
+      "claims": {
+        "cache_compute_avoidance": {
+          "provenance": "synthetic policy operations are not observed runtime compute",
+          "state": "unsupported"
+        },
+        "cache_latency_effect": {
+          "provenance": "timing is intentionally null",
+          "state": "unsupported"
+        },
+        "cache_memory_effect": {
+          "provenance": "runtime memory is intentionally null",
+          "state": "unsupported"
+        },
+        "cache_output_correctness": {
+          "provenance": "deterministic outputs match an independent no-cache evaluator",
+          "state": "supported"
+        },
+        "cache_reuse_identity": {
+          "provenance": "public exact token arrays and independent prefix oracle",
+          "state": "supported"
+        },
+        "cost": {
+          "provenance": "no provider or paid execution occurred",
+          "state": "not_applicable"
+        },
+        "deployment_readiness": {
+          "provenance": "synthetic positive control is not a deployment assessment",
+          "state": "not_applicable"
+        },
+        "memory": {
+          "provenance": "logical synthetic accounting is not runtime memory evidence",
+          "state": "unsupported"
+        },
+        "model_fit": {
+          "provenance": "no model weights were loaded",
+          "state": "not_applicable"
+        },
+        "process_attribution": {
+          "provenance": "no native runtime process was measured",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "deterministic synthetic equivalence is not model quality evidence",
+          "state": "not_applicable"
+        },
+        "timing": {
+          "provenance": "the synthetic reference records no latency",
+          "state": "unsupported"
+        }
+      },
+      "dependencies": [],
+      "evidence_id": "cache-audit-kv-truth-demo-20260913",
+      "hardware": {
+        "architecture": "not_applicable",
+        "system": "platform-independent synthetic control"
+      },
+      "kind": "cache_truth_audit",
+      "limitations": [
+        "This is a synthetic reference adapter, not MLX or vLLM evidence.",
+        "Timing and runtime-memory measurements are null.",
+        "The token-granular reference cache has no block observation."
+      ],
+      "measurements": [
+        {
+          "provenance": "independent oracle and synthetic engine attestation",
+          "scope": "expected and engine-attested reusable token counts"
+        },
+        {
+          "provenance": "synthetic observation; not runtime compute",
+          "scope": "synthetic prompt-policy operations"
+        },
+        {
+          "provenance": "independent synthetic no-cache evaluator",
+          "scope": "deterministic output-token equivalence"
+        }
+      ],
+      "model": {
+        "id": "synthetic-tiny-model",
+        "quantization": null,
+        "revision": null
+      },
+      "outcome": "completed",
+      "public_path": "examples/cache-audit/kv-truth-demo/bundle",
+      "runtime": {
+        "name": "LLMTraceFX deterministic synthetic reference cache",
+        "provider": "local",
+        "version": "1"
+      },
+      "source_commit": "3fd7c36091a53f0624c572ffb35a7888cd0128d3",
+      "status": "verified",
+      "supported_claims": [
+        "Expected and attested reusable-token counts agree for duplicate, mutation, suffix, namespace, and eviction cases.",
+        "All outputs match the independent deterministic evaluator.",
+        "The public bundle, schemas, claim matrix, privacy scan, and hashes verify."
+      ],
+      "unsupported_claims": [
+        "MLX or vLLM speedup or production cache correctness",
+        "provider identity or GPU performance",
+        "latency improvement or runtime memory savings",
+        "block reuse for the token-granular reference cache"
+      ],
+      "verifier": {
+        "name": "cache-audit.verify_bundle",
+        "version": "1"
+      },
+      "workload": {
+        "context": "ten public synthetic exact-token requests",
+        "identity": "cache-audit-kv-truth-demo-v1",
+        "request": "duplicate, interior/boundary/suffix mutations, identity isolation, and controlled capacity eviction"
+      }
+    },
     {
       "artifact_set_hash": "sha256:f4c778e0449376670f95446293af817ae55896bcd1482f1e09121989e0397130",
       "budget": {
@@ -1402,7 +1525,7 @@
     "name": "llmtracefx-evidence",
     "version": "1"
   },
-  "registry_hash": "sha256:d9491481aaf971a65d96c015b9b3ec551459568da87c0c6da706c1c6d5c1523e",
+  "registry_hash": "sha256:63af7f17c366b45fd1c3bdca2d24eb74275a1f84e3aeea3f9c0372c6121c6fc7",
   "schema_version": "1",
   "unregistered_candidates": []
 }

@@ -12,12 +12,12 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-EXPECTED_COMMIT = "2dc3749ebc235451c3a0501f3f179599c653aa8e"
-EXPECTED_COMMIT_AT = "2026-09-13T00:50:49+05:30"
+EXPECTED_COMMIT = "3fd7c36091a53f0624c572ffb35a7888cd0128d3"
+EXPECTED_COMMIT_AT = "2026-09-13T00:57:59+05:30"
 EXPECTED_PACKAGE_DIGEST = (
-    "sha256:0173e8ffa4760f31e6c38ba62b84ac4004c0a841955c208c36ba6c24ac842458"
+    "sha256:5118417b50d29422deebe9e3dd204c565c7aed0e73728f1c6b9f6bd9db9f7284"
 )
-EXPECTED_GENERATED_AT = "2026-09-13T00:50:49+05:30"
+EXPECTED_GENERATED_AT = "2026-09-13T00:57:59+05:30"
 BUNDLE_DATA_FILES = (
     "audit-manifest.json",
     "request-evidence.jsonl",
@@ -167,6 +167,36 @@ def normalized_source(relative: str, content: bytes) -> bytes:
     text = re.sub(
         r'^_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
         '_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_SOURCE_COMMIT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_SOURCE_COMMIT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_PACKAGE_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_PACKAGE_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_CAPTURED_AT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_CAPTURED_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_IMPLEMENTATION_BOUND_AT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_IMPLEMENTATION_BOUND_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_VERIFIER_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_VERIFIER_DIGEST = "<bound-at-generation>"',
         text,
         flags=re.MULTILINE,
     )

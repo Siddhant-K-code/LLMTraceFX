@@ -17,6 +17,60 @@
     {
       "claims": {
         "cache_compute_avoidance": {
+          "provenance": "synthetic policy operations are not observed runtime compute",
+          "state": "unsupported"
+        },
+        "cache_latency_effect": {
+          "provenance": "timing is intentionally null",
+          "state": "unsupported"
+        },
+        "cache_memory_effect": {
+          "provenance": "runtime memory is intentionally null",
+          "state": "unsupported"
+        },
+        "cache_output_correctness": {
+          "provenance": "deterministic outputs match an independent no-cache evaluator",
+          "state": "supported"
+        },
+        "cache_reuse_identity": {
+          "provenance": "public exact token arrays and independent prefix oracle",
+          "state": "supported"
+        },
+        "cost": {
+          "provenance": "no provider or paid execution occurred",
+          "state": "not_applicable"
+        },
+        "deployment_readiness": {
+          "provenance": "synthetic positive control is not a deployment assessment",
+          "state": "not_applicable"
+        },
+        "memory": {
+          "provenance": "logical synthetic accounting is not runtime memory evidence",
+          "state": "unsupported"
+        },
+        "model_fit": {
+          "provenance": "no model weights were loaded",
+          "state": "not_applicable"
+        },
+        "process_attribution": {
+          "provenance": "no native runtime process was measured",
+          "state": "not_applicable"
+        },
+        "quality": {
+          "provenance": "deterministic synthetic equivalence is not model quality evidence",
+          "state": "not_applicable"
+        },
+        "timing": {
+          "provenance": "the synthetic reference records no latency",
+          "state": "unsupported"
+        }
+      },
+      "evidence_id": "cache-audit-kv-truth-demo-20260913",
+      "outcome": "completed"
+    },
+    {
+      "claims": {
+        "cache_compute_avoidance": {
           "provenance": "synthetic policy arithmetic is not observed runtime compute",
           "state": "unsupported"
         },
