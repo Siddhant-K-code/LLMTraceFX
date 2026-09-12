@@ -1210,6 +1210,17 @@ def test_repository_chronology_ignores_replacement_refs(tmp_path: Path) -> None:
     assert _verify_manifest_chronology(manifest, repository=repository) == "verified"
 
 
+def test_repository_chronology_rejects_dirty_worktree(tmp_path: Path) -> None:
+    repository, manifest, _ = _hermetic_chronology_fixture(tmp_path)
+    source = repository / "llmtracefx" / "__init__.py"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\n# uncommitted change\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CacheAuditBundleError, match="worktree is dirty"):
+        _verify_manifest_chronology(manifest, repository=repository)
+
+
 def _blobless_partial_clone(
     tmp_path: Path,
 ) -> tuple[Path, AuditManifest]:

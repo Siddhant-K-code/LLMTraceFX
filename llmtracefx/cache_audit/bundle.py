@@ -839,26 +839,7 @@ def _verify_manifest_chronology(
     if status.returncode != 0:
         raise CacheAuditBundleError("repository status is unavailable")
     if status.stdout:
-        head = subprocess.run(
-            [
-                *_GIT_COMMAND,
-                "-C",
-                str(repository),
-                "rev-parse",
-                "--verify",
-                "HEAD^{commit}",
-            ],
-            capture_output=True,
-            check=False,
-            text=True,
-            env=_GIT_ENV,
-        )
-        if (
-            head.returncode == 0
-            and head.stdout.strip() == manifest.generator_commit
-            and manifest.generator_package_digest == package_source_digest()
-        ):
-            return "unavailable"
+        raise CacheAuditBundleError("repository worktree is dirty")
     object_type = subprocess.run(
         [
             *_GIT_COMMAND,

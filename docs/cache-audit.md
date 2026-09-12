@@ -197,8 +197,11 @@ Verification reports `repository_chronology_corroboration` as `verified` when
 the exact generator commit is available and its timestamp and package tree
 match. It reports `unavailable` for an installed package without Git metadata
 or a shallow/partial checkout missing that object; the checksum-bound embedded
-timestamps and exact package digest remain mandatory. An available but
-conflicting Git object, timestamp, or tree always fails verification. Git
+timestamps and exact package digest remain mandatory. A later trusted verifier
+may have a different current package digest; that is accepted only when the
+recorded generator commit is available and its exact package tree independently
+matches the manifest digest. An available but conflicting Git object,
+timestamp, tree, or dirty tracked worktree always fails verification. Git
 corroboration disables replacement objects and lazy network fetching, and only
 an explicitly configured promisor remote can establish a partial checkout.
 
