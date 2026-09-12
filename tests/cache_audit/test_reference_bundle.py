@@ -31,6 +31,7 @@ from llmtracefx.cache_audit.bundle import (
     verify_bundle,
     write_bundle,
 )
+from llmtracefx.cache_audit.demo import build_demo
 from llmtracefx.cache_audit.expected import MLXCacheOracle
 from llmtracefx.cache_audit.runner import run_audit
 from llmtracefx.cache_audit.schema import (
@@ -51,6 +52,7 @@ from llmtracefx.cache_audit.workloads import (
     adversarial_requests,
     eviction_requests,
     gated_extension_requests,
+    public_demo_requests,
 )
 from llmtracefx.optimizer.schema import Measurement, MetricProvenance
 
@@ -63,6 +65,53 @@ def test_reference_adapter_exercises_truth_states() -> None:
     assert verdicts["first-token-mutation"] is Verdict.VERIFIED_MISS
     assert verdicts["within-block-mutation"] is Verdict.PARTIAL_REUSE
     assert verdicts["namespace-isolation"] is Verdict.VERIFIED_MISS
+
+
+def test_public_demo_covers_requested_truth_cases() -> None:
+    records = ReferenceCacheAdapter(max_entries=7).run(public_demo_requests())
+    rows = {record.spec.request_id: record for record in records}
+    expected = {
+        "exact-duplicate": (8, 8, 1, Verdict.VERIFIED_HIT),
+        "interior-mutation": (3, 3, 6, Verdict.PARTIAL_REUSE),
+        "boundary-mutation": (4, 4, 5, Verdict.PARTIAL_REUSE),
+        "same-length-different-ids": (0, 0, 9, Verdict.VERIFIED_MISS),
+        "suffix-change": (8, 8, 1, Verdict.PARTIAL_REUSE),
+        "namespace-isolation": (0, 0, 9, Verdict.VERIFIED_MISS),
+        "capacity-revisit": (0, 0, 4, Verdict.EVICTED),
+    }
+    for request_id, values in expected.items():
+        record = rows[request_id]
+        assert (
+            record.reuse.policy_reusable_tokens.value,
+            record.reuse.engine_cached_tokens.value,
+            record.reuse.observed_prompt_tokens.value,
+            record.verdict,
+        ) == values
+        assert record.output.token_identity.value is True
+        assert record.output.correctness.value is True
+
+
+def test_public_demo_is_deterministic_and_standalone_verifiable(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    built = build_demo(first)
+    build_demo(second)
+    assert built["standalone_verifier"]["verified"] is True
+    assert built["manifest"]["timing_measurements"] is None
+    assert built["manifest"]["runtime_memory_measurements"] is None
+    first_files = {
+        path.relative_to(first): path.read_bytes()
+        for path in first.rglob("*")
+        if path.is_file()
+    }
+    second_files = {
+        path.relative_to(second): path.read_bytes()
+        for path in second.rglob("*")
+        if path.is_file()
+    }
+    assert first_files == second_files
 
 
 def test_bundle_round_trip_and_tamper_detection(tmp_path: Path) -> None:

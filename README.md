@@ -32,6 +32,49 @@ OpenAI-compatible streaming APIs. It collects measurements into one canonical
 schema, checks model output with deterministic workloads, and recommends a
 configuration only when it satisfies an explicit policy.
 
+## KV-cache truth auditor demo
+
+From a clean checkout, one offline command builds and verifies the deterministic
+public proof:
+
+```bash
+make kv-cache-demo
+```
+
+It prints an expected-vs-observed table and writes the machine-readable table,
+hash-bound evidence bundle, report, claim matrix, privacy-checked manifest, and
+standalone verifier under `build/kv-cache-truth-demo/`. Representative rows:
+
+| case | input | expected tokens/blocks | attested tokens/blocks | observed prompt work | verdict | output identity | evaluator | output/performance/quality eligibility |
+|---|---:|---:|---:|---:|---|---|---|---|
+| exact-duplicate | 9 | 8/n/a | 8/n/a | 1 | `verified_hit` | yes | yes | eligible/ineligible/not applicable |
+| interior-mutation | 9 | 3/n/a | 3/n/a | 6 | `partial_reuse` | yes | yes | eligible/ineligible/not applicable |
+| boundary-mutation | 9 | 4/n/a | 4/n/a | 5 | `partial_reuse` | yes | yes | eligible/ineligible/not applicable |
+| same-length-different-ids | 9 | 0/n/a | 0/n/a | 9 | `verified_miss` | yes | yes | eligible/ineligible/not applicable |
+| suffix-change | 9 | 8/n/a | 8/n/a | 1 | `partial_reuse` | yes | yes | eligible/ineligible/not applicable |
+| namespace-isolation | 9 | 0/n/a | 0/n/a | 9 | `verified_miss` | yes | yes | eligible/ineligible/not applicable |
+| capacity-revisit | 4 | 0/n/a | 0/n/a | 4 | `evicted` | yes | yes | eligible/ineligible/not applicable |
+
+The token-granular reference cache has no block observation, so block cells are
+`n/a`. Timing and runtime memory remain `null`; the demo invents no benchmark
+measurements. The seed, cold, and capacity-pressure rows are retained in
+`truth-table.json` because they are part of the independently verified state
+transition proof.
+
+Verify the generated bundle without trusting the installed entry point:
+
+```bash
+python -I build/kv-cache-truth-demo/bundle/evidence_bundle.py verify \
+  --public-dir build/kv-cache-truth-demo/bundle \
+  --package-root .
+```
+
+This proves the auditor, independent oracle, synthetic attestation, output
+evaluator, schemas, claim matrix, privacy checks, hashes, and verifier behavior.
+It does **not** prove MLX or vLLM speedup, production cache correctness,
+provider identity, GPU performance, latency improvement, or runtime memory
+savings.
+
 The main workflow is:
 
 1. **Measure** with a collector or import an existing runtime artifact.

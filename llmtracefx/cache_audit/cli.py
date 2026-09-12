@@ -19,6 +19,7 @@ from .bundle import (
     verify_bundle,
     write_bundle,
 )
+from .demo import CLAIM_BOUNDARIES, build_demo
 from .runner import run_audit
 from .schema import CacheConfig, PublicationMode, RequestSpec
 from .workloads import adversarial_requests
@@ -39,6 +40,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     compile_parser.add_argument("--output", type=Path, required=True)
     compile_parser.add_argument("--block-size", type=int, default=4)
+
+    demo_parser = subparsers.add_parser(
+        "demo", help="build and print the deterministic public truth-auditor demo"
+    )
+    demo_parser.add_argument("--output-dir", type=Path, required=True)
 
     run_parser = subparsers.add_parser(
         "run", help="run a cache audit and write an evidence bundle"
@@ -123,6 +129,22 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(canonical_json(payload), encoding="utf-8")
         return {"compiled": True, "requests": len(requests), "output": str(args.output)}
+
+    if args.command == "demo":
+        result = build_demo(args.output_dir)
+        print("LLMTraceFX KV-cache truth auditor demo")
+        print(result["table"])
+        print()
+        print(f"Bundle: {args.output_dir / 'bundle'}")
+        print(f"Machine-readable: {args.output_dir / 'truth-table.json'}")
+        print(
+            "Standalone verifier: "
+            f"python -I {args.output_dir / 'bundle' / 'evidence_bundle.py'} "
+            f"verify --public-dir {args.output_dir / 'bundle'} --package-root ."
+        )
+        print(f"Claim boundary: {CLAIM_BOUNDARIES[0]}")
+        print(f"Unsupported: {CLAIM_BOUNDARIES[1]}")
+        return {}
 
     if args.command == "run":
         if args.publication_mode == PublicationMode.PUBLIC_REDACTED.value:
@@ -219,7 +241,8 @@ def main(argv: list[str] | None = None) -> None:
     except (CacheAuditBundleError, OSError, RuntimeError, ValueError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
         raise SystemExit(2) from exc
-    print(json.dumps(result, indent=2, sort_keys=True))
+    if result:
+        print(json.dumps(result, indent=2, sort_keys=True))
     raise SystemExit(0)
 
 

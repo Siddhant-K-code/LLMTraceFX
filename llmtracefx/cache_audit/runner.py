@@ -34,11 +34,21 @@ def _run_id(backend: str, requests: Sequence[RequestSpec], seed: int) -> str:
 
 
 def source_commit() -> tuple[str | None, str | None]:
-    """Return the repository commit and its timestamp, when available."""
+    """Return the latest commit that changed the generating Python package."""
 
     repository = Path(__file__).resolve().parents[2]
     result = subprocess.run(
-        ["git", "-C", str(repository), "show", "-s", "--format=%H%n%cI", "HEAD"],
+        [
+            "git",
+            "-C",
+            str(repository),
+            "log",
+            "-1",
+            "--format=%H%n%cI",
+            "HEAD",
+            "--",
+            "llmtracefx",
+        ],
         capture_output=True,
         check=False,
         text=True,

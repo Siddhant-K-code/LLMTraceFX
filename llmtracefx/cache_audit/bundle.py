@@ -41,7 +41,7 @@ from .schema import (
     ReuseEvidence,
 )
 from .verdicts import classify_request
-from .workloads import adversarial_requests, workload_digest
+from .workloads import adversarial_requests, public_demo_requests, workload_digest
 
 BUNDLE_DATA_FILES = (
     "audit-manifest.json",
@@ -585,14 +585,25 @@ if __name__ == "__main__":
 def _verify_public_synthetic_provenance(
     manifest: AuditManifest, records: Sequence[RequestEvidence]
 ) -> None:
-    approved = adversarial_requests()
+    recorded = tuple(record.spec for record in records)
+    legacy = adversarial_requests()
+    demo = public_demo_requests()
+    workload_approved = (
+        recorded == legacy
+        and manifest.cache_config.max_entries == 32
+        and manifest.cache_config.max_bytes == 1 << 30
+    ) or (
+        recorded == demo
+        and manifest.cache_config.max_entries == 7
+        and manifest.cache_config.max_bytes == 1 << 30
+    )
     if (
         manifest.backend != "synthetic_reference"
         or manifest.model_id != "synthetic-tiny-model"
         or manifest.tokenizer_id != "integer-tokenizer-v1"
-        or tuple(record.spec for record in records) != approved
+        or not workload_approved
         or manifest.adapter_version != "2"
-        or manifest.workload_digest != workload_digest(approved)
+        or manifest.workload_digest != workload_digest(recorded)
         or manifest.generator_commit is None
         or manifest.generator_package_digest != package_source_digest()
     ):
