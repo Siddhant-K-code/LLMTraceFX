@@ -1564,6 +1564,18 @@ def test_terminal_adapter_records_survive_replicate_and_aggregate_verification(
         )["verified"]
         is True
     )
+    _, public_records = cache_bundle.read_bundle(
+        public / "replicates" / "replicate-0" / "bundle",
+        data_only=True,
+    )
+    public_codes = {
+        limitation.code
+        for record in public_records
+        for limitation in record.limitations
+    }
+    assert "exact_empty_remainder_unsupported" in public_codes
+    assert "quantized_cache_unsupported" in public_codes
+    assert "future_unsupported" not in public_codes
     results = json.loads((aggregate / "results.json").read_text())
     assert results["comparisons"]["1k:cold-exact"]["missing_pair_count"] == len(
         REPLICATE_IDS

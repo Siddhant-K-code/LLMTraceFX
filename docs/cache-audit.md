@@ -228,11 +228,17 @@ uv run llmtracefx-cache-audit run --backend reference --output-dir private-audit
 uv run llmtracefx-cache-audit sanitize private-audit --output-dir public-audit
 ```
 
-The redacted bundle removes exact input/output token arrays, replaces
-request, pair, namespace, model, tokenizer, runtime, and limitation identifiers,
-replaces every evidence/timing scope and timing exclusion with fixed public
-constants, normalizes retained timing measurements to seconds, and downgrades
-identity-dependent verdicts to `attested_only` or `unsupported`.
+The redacted bundle removes exact input/output token arrays, replaces request,
+pair, namespace, model, tokenizer, and runtime identifiers, replaces every
+evidence/timing scope and timing exclusion with fixed public constants,
+normalizes retained timing measurements to seconds, and downgrades
+identity-dependent verdicts to `attested_only` or `unsupported`. Limitation
+identifiers are redacted except for the closed, non-identifying MLX refusal
+codes `quantized_cache_unsupported`, `rotating_cache_unsupported`,
+`non_trimmable_cache_reuse_unsupported`, and
+`exact_empty_remainder_unsupported`; those four remain only so the public
+verifier can reconstruct the exact terminal stage boundary. Their messages
+remain redacted.
 They also exclude prompts, native cache hashes, cache tensors, salts,
 credentials, host/account identities, and local paths. Sanitization is followed
 by complete bundle verification.
