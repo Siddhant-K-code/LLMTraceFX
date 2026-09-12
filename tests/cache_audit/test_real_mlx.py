@@ -3139,17 +3139,23 @@ def test_direct_preflight_rejects_noncanonical_attempt_before_writing(
     assert not receipt.exists()
 
 
-@pytest.mark.parametrize("receipt_kind", ["marker", "workspace"])
+@pytest.mark.parametrize("receipt_kind", ["marker", "marker-parent", "workspace"])
 def test_preflight_receipt_cannot_consume_canonical_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     receipt_kind: str,
 ) -> None:
-    marker = tmp_path / "attempt-marker.json"
+    marker = tmp_path / "canonical-attempts" / "attempt-marker.json"
     workspace = tmp_path / "canonical-workspace"
     monkeypatch.setattr(real_mlx_module, "CANONICAL_ATTEMPT_MARKER", marker)
     monkeypatch.setattr(real_mlx_module, "CANONICAL_OUTPUT_WORKSPACE", workspace)
-    receipt = marker if receipt_kind == "marker" else workspace
+    if receipt_kind == "marker":
+        marker.parent.mkdir()
+    receipt = {
+        "marker": marker,
+        "marker-parent": marker.parent,
+        "workspace": workspace,
+    }[receipt_kind]
 
     with pytest.raises(
         RealMLXExperimentError,

@@ -5807,6 +5807,8 @@ def run_preflight(
         receipt_path == canonical_marker
         or receipt_path == canonical_workspace
         or _is_relative_to(receipt_path, canonical_workspace)
+        or _is_relative_to(canonical_marker, receipt_path)
+        or _is_relative_to(canonical_workspace, receipt_path)
     ):
         raise RealMLXExperimentError(
             "preflight output must not overlap canonical attempt state"
