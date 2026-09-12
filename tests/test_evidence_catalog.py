@@ -320,7 +320,7 @@ def test_claim_matrix_is_closed_and_never_boolean() -> None:
     artifacts = core.render_catalog_artifacts(_catalog())
     matrix = json.loads(artifacts["claim-matrix.json"])
     assert matrix["dimensions"] == list(CLAIM_DIMENSIONS)
-    assert len(matrix["rows"]) == 11
+    assert len(matrix["rows"]) == 12
     for row in matrix["rows"]:
         assert set(row["claims"]) == set(CLAIM_DIMENSIONS)
         assert {claim["state"] for claim in row["claims"].values()} <= {
@@ -560,7 +560,7 @@ def test_external_cwd_verification_uses_explicit_catalog(tmp_path: Path) -> None
     assert completed.returncode == 0, completed.stdout + completed.stderr
     result = json.loads(completed.stdout)
     assert result["verified"] is True
-    assert result["entries"] == 11
+    assert result["entries"] == 12
 
 
 def test_unrelated_project_is_not_inferred_as_repository_root(
