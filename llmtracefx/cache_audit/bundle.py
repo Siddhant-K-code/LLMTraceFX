@@ -839,6 +839,8 @@ def _verify_manifest_chronology(
     if status.returncode != 0:
         raise CacheAuditBundleError("repository status is unavailable")
     if status.stdout:
+        if _repository_is_incomplete(repository):
+            return "unavailable"
         raise CacheAuditBundleError("repository worktree is dirty")
     object_type = subprocess.run(
         [
