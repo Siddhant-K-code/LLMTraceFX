@@ -13,19 +13,19 @@ _CACHE_AUDIT_PACKAGE_DIGEST = (
 _CACHE_AUDIT_CAPTURED_AT = "2026-09-05T09:19:05.277130Z"
 _CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = "2026-09-05T17:49:44Z"
 _CACHE_AUDIT_SNAPSHOT_DIGEST = (
-    "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    "sha256:6b341c4d3a053cd0945a1b131bccc19dee6544c31d64f6f889eadc4a5d7145db"
 )
-_KV_DEMO_SOURCE_COMMIT = "3fd7c36091a53f0624c572ffb35a7888cd0128d3"
+_KV_DEMO_SOURCE_COMMIT = "0eb1f0b2eefc1d1608417fc2dc546db864d2599f"
 _KV_DEMO_PACKAGE_DIGEST = (
-    "sha256:5118417b50d29422deebe9e3dd204c565c7aed0e73728f1c6b9f6bd9db9f7284"
+    "sha256:33a4d92f5807beecdc707f92d0efe8513515669f67bc19ea6870315aa5dc144d"
 )
-_KV_DEMO_CAPTURED_AT = "2026-09-13T00:57:59+05:30"
-_KV_DEMO_IMPLEMENTATION_BOUND_AT = "2026-09-13T00:57:59+05:30"
+_KV_DEMO_CAPTURED_AT = "2026-09-13T10:49:02+05:30"
+_KV_DEMO_IMPLEMENTATION_BOUND_AT = "2026-09-13T10:49:02+05:30"
 _KV_DEMO_VERIFIER_DIGEST = (
     "sha256:4bfe67b765f72e85cd8afb9d261e27dc92109be03f7c81d85677903dca31b2c0"
 )
 _KV_DEMO_SNAPSHOT_DIGEST = (
-    "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    "sha256:6d0e86dca67188c2d110a1c0d501efe1d24655228e7c98ba0e866cd4cdf1988e"
 )
 
 CLAIM_DIMENSIONS = (
@@ -1098,7 +1098,7 @@ SOURCES: tuple[dict[str, Any], ...] = (
                 "format": "canonical-zip-v1",
                 "path": (
                     "examples/cache-audit/generator-packages/"
-                    "214ee30de6dc59f1c110e8089f45af84cc8f2a08.zip"
+                    "reference-positive-control.zip"
                 ),
                 "sha256": _CACHE_AUDIT_SNAPSHOT_DIGEST,
             },
@@ -1241,10 +1241,7 @@ SOURCES: tuple[dict[str, Any], ...] = (
             "standalone_verifier_sha256": _KV_DEMO_VERIFIER_DIGEST,
             "generator_snapshot": {
                 "format": "canonical-zip-v1",
-                "path": (
-                    "examples/cache-audit/generator-packages/"
-                    "3fd7c36091a53f0624c572ffb35a7888cd0128d3.zip"
-                ),
+                "path": ("examples/cache-audit/generator-packages/kv-truth-demo.zip"),
                 "sha256": _KV_DEMO_SNAPSHOT_DIGEST,
             },
         },
