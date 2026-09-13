@@ -273,7 +273,7 @@ evidence-catalog-verify:  ## Verify the committed catalog and every public bundl
 KV_CACHE_DEMO_OUTPUT ?= build/kv-cache-truth-demo
 
 kv-cache-demo:  ## Build and verify the deterministic public KV-cache truth demo
-	uv run --offline --no-sync llmtracefx-cache-audit demo --output-dir $(KV_CACHE_DEMO_OUTPUT)
+	uv run llmtracefx-cache-audit demo --output-dir $(KV_CACHE_DEMO_OUTPUT)
 
 # Documentation
 docs:  ## Build documentation
