@@ -515,7 +515,7 @@ def _cache_audit_snapshot_binding(
                     info.is_dir()
                     or info.flag_bits & 0x1
                     or info.date_time != (1980, 1, 1, 0, 0, 0)
-                    or info.compress_type != zipfile.ZIP_STORED
+                    or info.compress_type != zipfile.ZIP_DEFLATED
                     or info.create_system != 3
                     or mode != (stat.S_IFREG | 0o444)
                     or info.extra
