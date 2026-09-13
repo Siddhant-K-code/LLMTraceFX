@@ -12,6 +12,21 @@ _CACHE_AUDIT_PACKAGE_DIGEST = (
 )
 _CACHE_AUDIT_CAPTURED_AT = "2026-09-05T09:19:05.277130Z"
 _CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = "2026-09-05T17:49:44Z"
+_CACHE_AUDIT_SNAPSHOT_DIGEST = (
+    "sha256:6b341c4d3a053cd0945a1b131bccc19dee6544c31d64f6f889eadc4a5d7145db"
+)
+_KV_DEMO_SOURCE_COMMIT = "50ffcec9ead5bea1b40f4434522f9952ac85e9ea"
+_KV_DEMO_PACKAGE_DIGEST = (
+    "sha256:37c952895755435bacfc08baa461e8ade3a696c7b2db07276a8b0dd7a0ae91b8"
+)
+_KV_DEMO_CAPTURED_AT = "2026-09-13T11:08:48+05:30"
+_KV_DEMO_IMPLEMENTATION_BOUND_AT = "2026-09-13T11:08:48+05:30"
+_KV_DEMO_VERIFIER_DIGEST = (
+    "sha256:f4644e79a78c452c2fecd8e0742142bf4d24bd99e1a089d42b9b75fffdeaac36"
+)
+_KV_DEMO_SNAPSHOT_DIGEST = (
+    "sha256:415b47b45ea143d5dd487157f671a3fe5e7da90f28e4e0d2a3fc517deeba8f6b"
+)
 
 CLAIM_DIMENSIONS = (
     "timing",
@@ -1076,6 +1091,17 @@ SOURCES: tuple[dict[str, Any], ...] = (
             "generator_package_digest": _CACHE_AUDIT_PACKAGE_DIGEST,
             "implementation_bound_at": _CACHE_AUDIT_IMPLEMENTATION_BOUND_AT,
             "privacy_status": "verified_public_synthetic",
+            "standalone_verifier_sha256": (
+                "sha256:a5dc2c71e91c096ec4a65f62221b0c18610bd0c0f952e1ae01e37de2de0d87e4"
+            ),
+            "generator_snapshot": {
+                "format": "canonical-zip-v1",
+                "path": (
+                    "examples/cache-audit/generator-packages/"
+                    "reference-positive-control.zip"
+                ),
+                "sha256": _CACHE_AUDIT_SNAPSHOT_DIGEST,
+            },
         },
         "model": {
             "id": "synthetic-tiny-model",
@@ -1179,6 +1205,150 @@ SOURCES: tuple[dict[str, Any], ...] = (
             "This is a synthetic reference adapter, not MLX or vLLM evidence.",
             "No client or engine timing domain was measured.",
             "Logical cache bytes are not allocator or process memory.",
+        ),
+    },
+    {
+        "evidence_id": "cache-audit-kv-truth-demo-20260913",
+        "kind": "cache_truth_audit",
+        "status": "verified",
+        "outcome": "completed",
+        "public_path": "examples/cache-audit/kv-truth-demo/bundle",
+        "bundle_schema_version": "2",
+        "adapter": "cache_audit_v1",
+        "artifact_files": (
+            "SHA256SUMS",
+            "audit-manifest.json",
+            "cache-events.jsonl",
+            "claim-matrix.json",
+            "evidence_bundle.py",
+            "report.html",
+            "request-evidence.jsonl",
+            "reuse-alignment.svg",
+            "summary.json",
+        ),
+        "captured_at": _KV_DEMO_CAPTURED_AT,
+        "source_commit": _KV_DEMO_SOURCE_COMMIT,
+        "cache_binding": {
+            "publication_mode": "public_synthetic",
+            "backend": "synthetic_reference",
+            "workload_digest": (
+                "sha256:71d744c08b9636bdaa151010a8cbc031b995091dda690bb6e8ad21c8702aace5"
+            ),
+            "adapter_version": "2",
+            "generator_package_digest": _KV_DEMO_PACKAGE_DIGEST,
+            "implementation_bound_at": _KV_DEMO_IMPLEMENTATION_BOUND_AT,
+            "privacy_status": "verified_public_synthetic",
+            "standalone_verifier_sha256": _KV_DEMO_VERIFIER_DIGEST,
+            "generator_snapshot": {
+                "format": "canonical-zip-v1",
+                "path": ("examples/cache-audit/generator-packages/kv-truth-demo.zip"),
+                "sha256": _KV_DEMO_SNAPSHOT_DIGEST,
+            },
+        },
+        "model": {
+            "id": "synthetic-tiny-model",
+            "revision": None,
+            "quantization": None,
+        },
+        "runtime": {
+            "name": "LLMTraceFX deterministic synthetic reference cache",
+            "version": "1",
+            "provider": "local",
+        },
+        "hardware": {
+            "system": "platform-independent synthetic control",
+            "architecture": "not_applicable",
+        },
+        "workload": {
+            "identity": "cache-audit-kv-truth-demo-v1",
+            "context": "ten public synthetic exact-token requests",
+            "request": (
+                "duplicate, interior/boundary/suffix mutations, identity isolation, "
+                "and controlled capacity eviction"
+            ),
+        },
+        "measurements": (
+            {
+                "scope": "expected and engine-attested reusable token counts",
+                "provenance": "independent oracle and synthetic engine attestation",
+            },
+            {
+                "scope": "synthetic prompt-policy operations",
+                "provenance": "synthetic observation; not runtime compute",
+            },
+            {
+                "scope": "deterministic output-token equivalence",
+                "provenance": "independent synthetic no-cache evaluator",
+            },
+        ),
+        "claims": _claims(
+            timing=("unsupported", "the synthetic reference records no latency"),
+            quality=(
+                "not_applicable",
+                "deterministic synthetic equivalence is not model quality evidence",
+            ),
+            cost=("not_applicable", "no provider or paid execution occurred"),
+            memory=(
+                "unsupported",
+                "logical synthetic accounting is not runtime memory evidence",
+            ),
+            process_attribution=(
+                "not_applicable",
+                "no native runtime process was measured",
+            ),
+            model_fit=("not_applicable", "no model weights were loaded"),
+            deployment_readiness=(
+                "not_applicable",
+                "synthetic positive control is not a deployment assessment",
+            ),
+            cache_reuse_identity=(
+                "supported",
+                "public exact token arrays and independent prefix oracle",
+            ),
+            cache_compute_avoidance=(
+                "unsupported",
+                "synthetic policy operations are not observed runtime compute",
+            ),
+            cache_latency_effect=(
+                "unsupported",
+                "timing is intentionally null",
+            ),
+            cache_memory_effect=(
+                "unsupported",
+                "runtime memory is intentionally null",
+            ),
+            cache_output_correctness=(
+                "supported",
+                "deterministic outputs match an independent no-cache evaluator",
+            ),
+        ),
+        "supported_claims": (
+            (
+                "Expected and attested reusable-token counts agree for duplicate, "
+                "mutation, suffix, namespace, and eviction cases."
+            ),
+            "All outputs match the independent deterministic evaluator.",
+            "The public bundle, schemas, claim matrix, privacy scan, and hashes verify.",
+        ),
+        "unsupported_claims": (
+            "MLX or vLLM speedup or production cache correctness",
+            "provider identity or GPU performance",
+            "latency improvement or runtime memory savings",
+            "block reuse for the token-granular reference cache",
+        ),
+        "budget": {
+            "scope": "not_applicable",
+            "authorized_usd": 0.0,
+            "planned_usd": 0.0,
+            "reported_usd": None,
+            "inferred_usd": 0.0,
+            "limitation": "The local synthetic demo performs no paid operation.",
+        },
+        "dependencies": (),
+        "limitations": (
+            "This is a synthetic reference adapter, not MLX or vLLM evidence.",
+            "Timing and runtime-memory measurements are null.",
+            "The token-granular reference cache has no block observation.",
         ),
     },
 )

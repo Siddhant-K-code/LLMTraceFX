@@ -1,0 +1,239 @@
+{
+  "claim_boundaries": [
+    "Proves the deterministic auditor, independent oracle, synthetic engine attestation, output evaluator, evidence schemas, privacy checks, hashes, and verifier behavior only.",
+    "Does not prove MLX or vLLM speedup, production cache correctness, provider identity, GPU performance, latency improvement, or runtime memory savings."
+  ],
+  "rows": [
+    {
+      "case": "capacity-seed",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "engine_attested_reusable_blocks": null,
+      "engine_attested_reusable_tokens": 0,
+      "evaluator_correctness": true,
+      "expected_reusable_blocks": null,
+      "expected_reusable_tokens": 0,
+      "input_length": 4,
+      "observed_prompt_work_tokens": 4,
+      "output_identity": true,
+      "runtime_memory": null,
+      "timing": null,
+      "typed_verdict": "verified_miss"
+    },
+    {
+      "case": "cold",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "engine_attested_reusable_blocks": null,
+      "engine_attested_reusable_tokens": 0,
+      "evaluator_correctness": true,
+      "expected_reusable_blocks": null,
+      "expected_reusable_tokens": 0,
+      "input_length": 9,
+      "observed_prompt_work_tokens": 9,
+      "output_identity": true,
+      "runtime_memory": null,
+      "timing": null,
+      "typed_verdict": "verified_miss"
+    },
+    {
+      "case": "exact-duplicate",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "engine_attested_reusable_blocks": null,
+      "engine_attested_reusable_tokens": 8,
+      "evaluator_correctness": true,
+      "expected_reusable_blocks": null,
+      "expected_reusable_tokens": 8,
+      "input_length": 9,
+      "observed_prompt_work_tokens": 1,
+      "output_identity": true,
+      "runtime_memory": null,
+      "timing": null,
+      "typed_verdict": "verified_hit"
+    },
+    {
+      "case": "interior-mutation",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "engine_attested_reusable_blocks": null,
+      "engine_attested_reusable_tokens": 3,
+      "evaluator_correctness": true,
+      "expected_reusable_blocks": null,
+      "expected_reusable_tokens": 3,
+      "input_length": 9,
+      "observed_prompt_work_tokens": 6,
+      "output_identity": true,
+      "runtime_memory": null,
+      "timing": null,
+      "typed_verdict": "partial_reuse"
+    },
+    {
+      "case": "boundary-mutation",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "engine_attested_reusable_blocks": null,
+      "engine_attested_reusable_tokens": 4,
+      "evaluator_correctness": true,
+      "expected_reusable_blocks": null,
+      "expected_reusable_tokens": 4,
+      "input_length": 9,
+      "observed_prompt_work_tokens": 5,
+      "output_identity": true,
+      "runtime_memory": null,
+      "timing": null,
+      "typed_verdict": "partial_reuse"
+    },
+    {
+      "case": "same-length-different-ids",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "engine_attested_reusable_blocks": null,
+      "engine_attested_reusable_tokens": 0,
+      "evaluator_correctness": true,
+      "expected_reusable_blocks": null,
+      "expected_reusable_tokens": 0,
+      "input_length": 9,
+      "observed_prompt_work_tokens": 9,
+      "output_identity": true,
+      "runtime_memory": null,
+      "timing": null,
+      "typed_verdict": "verified_miss"
+    },
+    {
+      "case": "suffix-change",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "engine_attested_reusable_blocks": null,
+      "engine_attested_reusable_tokens": 8,
+      "evaluator_correctness": true,
+      "expected_reusable_blocks": null,
+      "expected_reusable_tokens": 8,
+      "input_length": 9,
+      "observed_prompt_work_tokens": 1,
+      "output_identity": true,
+      "runtime_memory": null,
+      "timing": null,
+      "typed_verdict": "partial_reuse"
+    },
+    {
+      "case": "namespace-isolation",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "engine_attested_reusable_blocks": null,
+      "engine_attested_reusable_tokens": 0,
+      "evaluator_correctness": true,
+      "expected_reusable_blocks": null,
+      "expected_reusable_tokens": 0,
+      "input_length": 9,
+      "observed_prompt_work_tokens": 9,
+      "output_identity": true,
+      "runtime_memory": null,
+      "timing": null,
+      "typed_verdict": "verified_miss"
+    },
+    {
+      "case": "capacity-pressure",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "engine_attested_reusable_blocks": null,
+      "engine_attested_reusable_tokens": 0,
+      "evaluator_correctness": true,
+      "expected_reusable_blocks": null,
+      "expected_reusable_tokens": 0,
+      "input_length": 4,
+      "observed_prompt_work_tokens": 4,
+      "output_identity": true,
+      "runtime_memory": null,
+      "timing": null,
+      "typed_verdict": "verified_miss"
+    },
+    {
+      "case": "capacity-revisit",
+      "claim_eligibility": {
+        "output_equivalence": "eligible",
+        "performance": "ineligible",
+        "quality": "not_applicable",
+        "reasons": [
+          "synthetic_equivalence_is_not_model_quality",
+          "paired_replicated_performance_evidence_required"
+        ]
+      },
+      "engine_attested_reusable_blocks": null,
+      "engine_attested_reusable_tokens": 0,
+      "evaluator_correctness": true,
+      "expected_reusable_blocks": null,
+      "expected_reusable_tokens": 0,
+      "input_length": 4,
+      "observed_prompt_work_tokens": 4,
+      "output_identity": true,
+      "runtime_memory": null,
+      "timing": null,
+      "typed_verdict": "evicted"
+    }
+  ],
+  "schema_version": "1"
+}

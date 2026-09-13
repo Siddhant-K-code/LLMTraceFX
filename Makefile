@@ -1,6 +1,6 @@
 # LLMTraceFX Makefile
 
-.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan cloudrift-plan test-deploy metal-evidence evidence-catalog evidence-catalog-verify m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication m5-autopsy m5-autopsy-run m5-autopsy-publication m5-autopsy-evidence-verify m5-control-plan m5-control-convert m5-control-bind m5-control-run m5-control-verify m5-control-report vllm-crossover-plan vllm-crossover-verify modal-l4-crossover-plan modal-l4-crossover-bundle modal-l4-crossover-verify modal-l4-crossover-results-bundle modal-l4-crossover-results-verify modal-l4-crossover-preflight
+.PHONY: help install install-dev sync test lint lint-changed test-ratchet format format-check clean run-sample run-server deploy-modal install-modal glm-recipe glm-budget glm-plan cloudrift-plan test-deploy metal-evidence evidence-catalog evidence-catalog-verify kv-cache-demo m5-lab m5-lab-acquire m5-lab-run m5-lab-verify m5-lab-report m5-frontier m5-frontier-run m5-frontier-publication m5-autopsy m5-autopsy-run m5-autopsy-publication m5-autopsy-evidence-verify m5-control-plan m5-control-convert m5-control-bind m5-control-run m5-control-verify m5-control-report vllm-crossover-plan vllm-crossover-verify modal-l4-crossover-plan modal-l4-crossover-bundle modal-l4-crossover-verify modal-l4-crossover-results-bundle modal-l4-crossover-results-verify modal-l4-crossover-preflight
 
 help:  ## Show this help message
 	@echo "LLMTraceFX - evidence-first inference toolkit"
@@ -269,6 +269,11 @@ evidence-catalog:  ## Deterministically regenerate and verify the offline eviden
 
 evidence-catalog-verify:  ## Verify the committed catalog and every public bundle
 	uv run llmtracefx-evidence verify
+
+KV_CACHE_DEMO_OUTPUT ?= build/kv-cache-truth-demo
+
+kv-cache-demo:  ## Build and verify the deterministic public KV-cache truth demo
+	uv run llmtracefx-cache-audit demo --output-dir $(KV_CACHE_DEMO_OUTPUT)
 
 # Documentation
 docs:  ## Build documentation

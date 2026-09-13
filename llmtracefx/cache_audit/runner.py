@@ -8,10 +8,11 @@ import subprocess
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 from .adapters.base import CacheAuditAdapter
-from .bundle import package_source_digest, write_bundle
+from .bundle import _git_package_digest, package_source_digest, write_bundle
 from .expected import longest_common_prefix
 from .schema import (
     AuditManifest,
@@ -33,20 +34,45 @@ def _run_id(backend: str, requests: Sequence[RequestSpec], seed: int) -> str:
     return "cache-audit-" + hashlib.sha256(material).hexdigest()[:16]
 
 
+@lru_cache(maxsize=1)
 def source_commit() -> tuple[str | None, str | None]:
-    """Return the repository commit and its timestamp, when available."""
+    """Return the stable commit that introduced the current normalized package."""
 
     repository = Path(__file__).resolve().parents[2]
     result = subprocess.run(
-        ["git", "-C", str(repository), "show", "-s", "--format=%H%n%cI", "HEAD"],
+        [
+            "git",
+            "-C",
+            str(repository),
+            "log",
+            "--format=%H%x09%cI",
+            "HEAD",
+            "--",
+            "llmtracefx",
+        ],
         capture_output=True,
         check=False,
         text=True,
     )
-    lines = result.stdout.splitlines()
-    if result.returncode != 0 or len(lines) != 2 or len(lines[0]) != 40:
+    if result.returncode != 0:
         return None, None
-    return lines[0], lines[1]
+    current_digest = package_source_digest()
+    selected: tuple[str, str] | None = None
+    for line in result.stdout.splitlines():
+        try:
+            commit, committed_at = line.split("\t", maxsplit=1)
+        except ValueError:
+            return None, None
+        if len(commit) != 40:
+            return None, None
+        try:
+            digest = _git_package_digest(repository, commit)
+        except ValueError:
+            return None, None
+        if digest != current_digest:
+            break
+        selected = (commit, committed_at)
+    return selected or (None, None)
 
 
 def _cache_config_digest(config: CacheConfig) -> str:

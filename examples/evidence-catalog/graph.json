@@ -1,5 +1,5 @@
 {
-  "catalog_hash": "sha256:db999f31aaff0ecaa4202927ac416a70a15472d15ff9f15b04b4933742d248ee",
+  "catalog_hash": "sha256:e727c4992c4582ee9db71801d792f1fe18e9c19a1ff7bcb2b540eaee7d64716f",
   "edges": [
     {
       "relation": "same_model_as",
@@ -38,6 +38,18 @@
     }
   ],
   "nodes": [
+    {
+      "evidence_id": "cache-audit-kv-truth-demo-20260913",
+      "kind": "cache_truth_audit",
+      "model": "synthetic-tiny-model",
+      "outcome": "completed",
+      "status": "verified",
+      "supported_claim_scope": [
+        "cache_reuse_identity",
+        "cache_output_correctness"
+      ],
+      "system": "platform-independent synthetic control"
+    },
     {
       "evidence_id": "cache-audit-reference-positive-control-20260905",
       "kind": "cache_truth_audit",

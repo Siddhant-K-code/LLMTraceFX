@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import platform
-import sys
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -322,9 +320,9 @@ class ReferenceCacheAdapter:
         return AdapterAuditIdentity(
             backend_version="1",
             runtime_identity={
-                "implementation": platform.python_implementation(),
-                "platform": sys.platform,
-                "python": platform.python_version(),
+                "implementation": "pure-python-reference",
+                "platform": "platform-independent",
+                "python": ">=3.10",
                 "synthetic_engine": "independent-state-machine-v2",
             },
             model_artifact_digest=None,

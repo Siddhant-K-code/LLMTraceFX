@@ -6,6 +6,7 @@ import copy
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -40,7 +41,7 @@ def _write_catalog(tmp_path: Path, catalog: dict) -> Path:
 def test_committed_catalog_verifies_every_registered_adapter() -> None:
     result = core.verify_catalog(CATALOG, ROOT)
     assert result["verified"] is True
-    assert result["entries"] == len(SOURCES) == 11
+    assert result["entries"] == len(SOURCES) == 12
     assert result["edges"] == 7
     assert result["verified_evidence_ids"] == sorted(
         source["evidence_id"] for source in SOURCES
@@ -50,6 +51,161 @@ def test_committed_catalog_verifies_every_registered_adapter() -> None:
 @pytest.mark.parametrize("source", SOURCES, ids=lambda source: source["adapter"])
 def test_every_source_adapter_verifies(source: dict) -> None:
     core.verify_source(ROOT, source)
+
+
+def _cache_audit_sources() -> list[dict]:
+    return [source for source in SOURCES if source["adapter"] == "cache_audit_v1"]
+
+
+def test_cache_audit_sources_verify_from_fresh_shallow_checkout(
+    tmp_path: Path,
+) -> None:
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        (
+            "git",
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            ROOT.as_uri(),
+            str(shallow),
+        ),
+        check=True,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_LAZY_FETCH": "1",
+        },
+    )
+    for source in _cache_audit_sources():
+        manifest = json.loads(
+            (shallow / source["public_path"] / "audit-manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        missing = subprocess.run(
+            (
+                "git",
+                "--no-replace-objects",
+                "-C",
+                str(shallow),
+                "cat-file",
+                "-e",
+                f"{manifest['generator_commit']}^{{commit}}",
+            ),
+            check=False,
+            env={"PATH": os.environ.get("PATH", ""), "GIT_NO_LAZY_FETCH": "1"},
+        )
+        assert missing.returncode != 0
+        core.verify_source(shallow, source)
+
+
+def test_available_cache_generator_object_mismatch_fails(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    package = repository / "llmtracefx"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Fixture package."""\n', encoding="utf-8")
+    environment = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Evidence Fixture",
+        "GIT_AUTHOR_EMAIL": "evidence@example.invalid",
+        "GIT_COMMITTER_NAME": "Evidence Fixture",
+        "GIT_COMMITTER_EMAIL": "evidence@example.invalid",
+        "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
+        "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
+    }
+    subprocess.run(("git", "init", "--quiet", str(repository)), check=True)
+    subprocess.run(
+        ("git", "-C", str(repository), "add", "llmtracefx"),
+        check=True,
+        env=environment,
+    )
+    subprocess.run(
+        ("git", "-C", str(repository), "commit", "--quiet", "-m", "fixture"),
+        check=True,
+        env=environment,
+    )
+    commit = subprocess.check_output(
+        ("git", "-C", str(repository), "rev-parse", "HEAD"),
+        text=True,
+        env=environment,
+    ).strip()
+    committed_at = subprocess.check_output(
+        ("git", "-C", str(repository), "show", "-s", "--format=%cI", "HEAD"),
+        text=True,
+        env=environment,
+    ).strip()
+    source = {"evidence_id": "cache-audit-git-corroboration-fixture"}
+    manifest = {
+        "generator_commit": commit,
+        "generator_commit_at": committed_at,
+        "generator_package_digest": "sha256:" + "0" * 64,
+    }
+    with pytest.raises(core.CatalogError, match="generator package digest drifted"):
+        core._cache_audit_git_corroboration(repository, source, manifest)
+
+
+def test_cache_generator_snapshot_tamper_fails(tmp_path: Path) -> None:
+    source = copy.deepcopy(_cache_audit_sources()[0])
+    manifest = core._load_json(ROOT / source["public_path"] / "audit-manifest.json")
+    relative = Path(source["cache_binding"]["generator_snapshot"]["path"])
+    destination = tmp_path / relative
+    destination.parent.mkdir(parents=True)
+    shutil.copyfile(ROOT / relative, destination)
+    content = bytearray(destination.read_bytes())
+    content[-1] ^= 1
+    destination.write_bytes(content)
+    with pytest.raises(core.CatalogError, match="snapshot digest drifted"):
+        core._cache_audit_snapshot_binding(tmp_path, source, manifest)
+
+
+def test_cache_audit_sources_verify_without_git_metadata(tmp_path: Path) -> None:
+    root = tmp_path / "portable"
+    for source in _cache_audit_sources():
+        bundle = Path(source["public_path"])
+        shutil.copytree(ROOT / bundle, root / bundle)
+        snapshot = Path(source["cache_binding"]["generator_snapshot"]["path"])
+        destination = root / snapshot
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / snapshot, destination)
+        core.verify_source(root, source)
+
+
+def test_cache_audit_executes_the_verified_script_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = copy.deepcopy(_cache_audit_sources()[0])
+    root = tmp_path / "portable"
+    bundle = Path(source["public_path"])
+    shutil.copytree(ROOT / bundle, root / bundle)
+    snapshot = Path(source["cache_binding"]["generator_snapshot"]["path"])
+    destination = root / snapshot
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ROOT / snapshot, destination)
+    original_extract = core._extract_cache_audit_snapshot
+    marker = root / "untrusted-script-ran"
+
+    def replace_after_hash(
+        archive_bytes: bytes,
+        package_root: Path,
+        evidence_id: str,
+    ) -> None:
+        (root / bundle / "evidence_bundle.py").write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).touch()\n",
+            encoding="utf-8",
+        )
+        original_extract(archive_bytes, package_root, evidence_id)
+
+    monkeypatch.setattr(
+        core,
+        "_extract_cache_audit_snapshot",
+        replace_after_hash,
+    )
+    with pytest.raises(core.CatalogError, match="checksum mismatch"):
+        core._run_cache_audit_verifier(root, source)
+    assert not marker.exists()
 
 
 def test_completed_crossover_adapter_is_closed_but_not_fabricated() -> None:
@@ -88,13 +244,21 @@ def test_modal_l4_adapters_are_closed_but_not_fabricated(
         ("generator_package_digest", "sha256:" + "0" * 64),
         ("implementation_bound_at", "2000-01-01T00:00:00Z"),
         ("privacy_status", "private"),
+        ("standalone_verifier_sha256", "sha256:" + "0" * 64),
     ),
 )
-def test_cache_catalog_binding_bypass_is_rejected(field: str, value: str) -> None:
+@pytest.mark.parametrize(
+    "evidence_id",
+    (
+        "cache-audit-reference-positive-control-20260905",
+        "cache-audit-kv-truth-demo-20260913",
+    ),
+)
+def test_cache_catalog_binding_bypass_is_rejected(
+    field: str, value: str, evidence_id: str
+) -> None:
     source = next(
-        copy.deepcopy(item)
-        for item in SOURCES
-        if item["evidence_id"] == "cache-audit-reference-positive-control-20260905"
+        copy.deepcopy(item) for item in SOURCES if item["evidence_id"] == evidence_id
     )
     source["cache_binding"][field] = value
     with pytest.raises(core.CatalogError, match="cache provenance binding drifted"):
@@ -312,7 +476,7 @@ def test_claim_matrix_is_closed_and_never_boolean() -> None:
     artifacts = core.render_catalog_artifacts(_catalog())
     matrix = json.loads(artifacts["claim-matrix.json"])
     assert matrix["dimensions"] == list(CLAIM_DIMENSIONS)
-    assert len(matrix["rows"]) == 11
+    assert len(matrix["rows"]) == 12
     for row in matrix["rows"]:
         assert set(row["claims"]) == set(CLAIM_DIMENSIONS)
         assert {claim["state"] for claim in row["claims"].values()} <= {
@@ -552,7 +716,7 @@ def test_external_cwd_verification_uses_explicit_catalog(tmp_path: Path) -> None
     assert completed.returncode == 0, completed.stdout + completed.stderr
     result = json.loads(completed.stdout)
     assert result["verified"] is True
-    assert result["entries"] == 11
+    assert result["entries"] == 12
 
 
 def test_unrelated_project_is_not_inferred_as_repository_root(

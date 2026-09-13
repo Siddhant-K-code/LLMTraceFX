@@ -22,8 +22,20 @@ compute.
 
 ## Quick start
 
-Create the deterministic synthetic workload and run the download-free reference
-positive control:
+For the output-first, download-free public proof, run:
+
+```console
+make kv-cache-demo
+```
+
+The command writes a standard verified evidence bundle under
+`build/kv-cache-truth-demo/bundle`, prints its exact truth table, and also writes
+`truth-table.json` plus a concise hash manifest. It includes exact duplicate,
+interior and boundary mutation, same-length/different-ID, suffix, namespace, and
+controlled capacity-eviction cases. Block fields are not applicable because the
+reference cache is token-granular. Timing and runtime-memory fields are null.
+
+To exercise the lower-level workflow directly:
 
 ```console
 uv run llmtracefx-cache-audit compile --output workload.json

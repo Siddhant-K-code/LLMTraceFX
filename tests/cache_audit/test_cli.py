@@ -111,3 +111,18 @@ def test_python_api_compiles_and_verifies(
         capsys,
     )
     assert verify_audit_bundle(bundle)["request_count"] == len(requests)
+
+
+def test_demo_prints_truth_table_and_rejects_existing_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "demo"
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["demo", "--output-dir", str(output)])
+    assert raised.value.code == 0
+    printed = capsys.readouterr().out
+    assert "exact-duplicate" in printed
+    assert "capacity-revisit" in printed
+    assert "MLX or vLLM speedup" in printed
+    error = _invoke_error(["demo", "--output-dir", str(output)], capsys)
+    assert error["error"] == f"output already exists: {output}"

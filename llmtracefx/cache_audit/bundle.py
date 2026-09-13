@@ -41,7 +41,7 @@ from .schema import (
     ReuseEvidence,
 )
 from .verdicts import classify_request
-from .workloads import adversarial_requests, workload_digest
+from .workloads import adversarial_requests, public_demo_requests, workload_digest
 
 BUNDLE_DATA_FILES = (
     "audit-manifest.json",
@@ -59,7 +59,16 @@ PUBLIC_REDACTED_FACT_SCOPE = "public_redacted_fact"
 PUBLIC_REDACTED_TIMING_SCOPE = "public_redacted_timing"
 PUBLIC_REDACTED_TIMING_EXCLUSIONS = ("timing_details_redacted",)
 PUBLIC_REDACTED_TIMING_UNIT = "s"
-_GIT_ENV = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
+_GIT_ENV = {
+    key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+}
+_GIT_ENV.update(
+    {
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+)
 
 
 class CacheAuditBundleError(ValueError):
@@ -109,6 +118,48 @@ def _normalized_source(relative: str, content: bytes) -> bytes:
     text = re.sub(
         r'^_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
         '_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_SOURCE_COMMIT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_SOURCE_COMMIT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_PACKAGE_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_PACKAGE_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_CAPTURED_AT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_CAPTURED_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_IMPLEMENTATION_BOUND_AT = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_IMPLEMENTATION_BOUND_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_VERIFIER_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_VERIFIER_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_CACHE_AUDIT_SNAPSHOT_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_CACHE_AUDIT_SNAPSHOT_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_SNAPSHOT_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_SNAPSHOT_DIGEST = "<bound-at-generation>"',
         text,
         flags=re.MULTILINE,
     )
@@ -297,6 +348,48 @@ def normalized_source(relative: str, content: bytes) -> bytes:
     text = re.sub(
         r'^_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
         '_CACHE_AUDIT_IMPLEMENTATION_BOUND_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_SOURCE_COMMIT = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_KV_DEMO_SOURCE_COMMIT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_PACKAGE_DIGEST = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_KV_DEMO_PACKAGE_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_CAPTURED_AT = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_KV_DEMO_CAPTURED_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_IMPLEMENTATION_BOUND_AT = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_KV_DEMO_IMPLEMENTATION_BOUND_AT = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_VERIFIER_DIGEST = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_KV_DEMO_VERIFIER_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_CACHE_AUDIT_SNAPSHOT_DIGEST = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_CACHE_AUDIT_SNAPSHOT_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_SNAPSHOT_DIGEST = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_KV_DEMO_SNAPSHOT_DIGEST = "<bound-at-generation>"',
         text,
         flags=re.MULTILINE,
     )
@@ -585,14 +678,25 @@ if __name__ == "__main__":
 def _verify_public_synthetic_provenance(
     manifest: AuditManifest, records: Sequence[RequestEvidence]
 ) -> None:
-    approved = adversarial_requests()
+    recorded = tuple(record.spec for record in records)
+    legacy = adversarial_requests()
+    demo = public_demo_requests()
+    workload_approved = (
+        recorded == legacy
+        and manifest.cache_config.max_entries == 32
+        and manifest.cache_config.max_bytes == 1 << 30
+    ) or (
+        recorded == demo
+        and manifest.cache_config.max_entries == 7
+        and manifest.cache_config.max_bytes == 1 << 30
+    )
     if (
         manifest.backend != "synthetic_reference"
         or manifest.model_id != "synthetic-tiny-model"
         or manifest.tokenizer_id != "integer-tokenizer-v1"
-        or tuple(record.spec for record in records) != approved
+        or not workload_approved
         or manifest.adapter_version != "2"
-        or manifest.workload_digest != workload_digest(approved)
+        or manifest.workload_digest != workload_digest(recorded)
         or manifest.generator_commit is None
         or manifest.generator_package_digest != package_source_digest()
     ):

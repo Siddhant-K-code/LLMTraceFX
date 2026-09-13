@@ -1,0 +1,48 @@
+{
+  "adapter_version": "2",
+  "backend": "synthetic_reference",
+  "backend_version": "1",
+  "cache_config": {
+    "cache_salt_relationship": null,
+    "cache_type": "token_trie",
+    "fine_grained_hits": false,
+    "hash_algorithm": null,
+    "hash_block_size": null,
+    "max_bytes": 1073741824,
+    "max_entries": 7,
+    "namespace_id": "synthetic-namespaces",
+    "physical_block_sizes": []
+  },
+  "created_at": "2026-09-13T11:08:48+05:30",
+  "generated_at": "2026-09-13T11:08:48+05:30",
+  "generator_commit": "50ffcec9ead5bea1b40f4434522f9952ac85e9ea",
+  "generator_commit_at": "2026-09-13T11:08:48+05:30",
+  "generator_package_digest": "sha256:37c952895755435bacfc08baa461e8ade3a696c7b2db07276a8b0dd7a0ae91b8",
+  "limitations": [],
+  "model_artifact_digest": null,
+  "model_id": "synthetic-tiny-model",
+  "publication_mode": "public_synthetic",
+  "request_order": [
+    "capacity-seed",
+    "cold",
+    "exact-duplicate",
+    "interior-mutation",
+    "boundary-mutation",
+    "same-length-different-ids",
+    "suffix-change",
+    "namespace-isolation",
+    "capacity-pressure",
+    "capacity-revisit"
+  ],
+  "run_id": "cache-audit-455671d6fb6187a5",
+  "runtime_identity": {
+    "implementation": "pure-python-reference",
+    "platform": "platform-independent",
+    "python": ">=3.10",
+    "synthetic_engine": "independent-state-machine-v2"
+  },
+  "schema_version": "2",
+  "seed": 20260913,
+  "tokenizer_id": "integer-tokenizer-v1",
+  "workload_digest": "sha256:71d744c08b9636bdaa151010a8cbc031b995091dda690bb6e8ad21c8702aace5"
+}

@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import html
+import io
 import json
 import math
 import os
 import re
+import stat
 import subprocess
 import sys
+import tempfile
+import zipfile
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
@@ -462,6 +466,341 @@ def _run_script_verifier(repo_root: Path, source: Mapping[str, Any]) -> None:
         )
 
 
+def _cache_audit_snapshot_binding(
+    repo_root: Path,
+    source: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+) -> tuple[bytes, dict[str, str]]:
+    evidence_id = source["evidence_id"]
+    binding = source["cache_binding"].get("generator_snapshot")
+    if not isinstance(binding, dict):
+        raise CatalogError(f"{evidence_id} generator snapshot binding is missing")
+    _require_exact_keys(binding, {"format", "path", "sha256"}, "generator_snapshot")
+    if binding["format"] != "canonical-zip-v1":
+        raise CatalogError(f"{evidence_id} generator snapshot format is unsupported")
+    _validate_relative_path(binding["path"], "generator_snapshot.path")
+    if (
+        not isinstance(binding["sha256"], str)
+        or SHA256.fullmatch(binding["sha256"]) is None
+    ):
+        raise CatalogError(f"{evidence_id} generator snapshot digest is invalid")
+    archive = _resolve_contained(repo_root, binding["path"])
+    archive_bytes = read_bounded_regular_bytes(
+        archive,
+        MAX_EVIDENCE_ARTIFACT_BYTES,
+    )
+    if "sha256:" + _sha256(archive_bytes) != binding["sha256"]:
+        raise CatalogError(f"{evidence_id} generator snapshot digest drifted")
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as snapshot:
+            infos = snapshot.infolist()
+            names = [info.filename for info in infos]
+            if (
+                len(names) > 4096
+                or len(names) != len(set(names))
+                or "generator-package.json" not in names
+            ):
+                raise CatalogError(
+                    f"{evidence_id} generator snapshot inventory is invalid"
+                )
+            if snapshot.comment:
+                raise CatalogError(
+                    f"{evidence_id} generator snapshot comment is not canonical"
+                )
+            total_size = 0
+            for info in infos:
+                total_size += info.file_size
+                mode = info.external_attr >> 16
+                if (
+                    info.is_dir()
+                    or info.flag_bits & 0x1
+                    or info.date_time != (1980, 1, 1, 0, 0, 0)
+                    or info.compress_type != zipfile.ZIP_DEFLATED
+                    or info.create_system != 3
+                    or mode != (stat.S_IFREG | 0o444)
+                    or info.extra
+                    or info.comment
+                    or "\\" in info.filename
+                    or info.filename.startswith("/")
+                    or ".." in Path(info.filename).parts
+                    or (
+                        info.filename != "generator-package.json"
+                        and (
+                            not info.filename.startswith("llmtracefx/")
+                            or not info.filename.endswith(".py")
+                        )
+                    )
+                    or total_size > MAX_EVIDENCE_ARTIFACT_BYTES
+                ):
+                    raise CatalogError(
+                        f"{evidence_id} generator snapshot entry is unsafe"
+                    )
+            metadata_bytes = snapshot.read("generator-package.json")
+            metadata = json.loads(
+                metadata_bytes,
+                parse_constant=reject_non_finite_json_constant,
+            )
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        raise CatalogError(f"{evidence_id} generator snapshot is invalid") from exc
+    if not isinstance(metadata, dict):
+        raise CatalogError(f"{evidence_id} generator snapshot metadata is invalid")
+    if metadata_bytes != canonical_json(metadata).encode("utf-8"):
+        raise CatalogError(
+            f"{evidence_id} generator snapshot metadata is not canonical"
+        )
+    _require_exact_keys(
+        metadata,
+        {
+            "schema_version",
+            "source_commit",
+            "source_commit_at",
+            "package_digest",
+            "files",
+        },
+        "generator_snapshot.metadata",
+    )
+    expected_metadata = {
+        "schema_version": "1",
+        "source_commit": manifest["generator_commit"],
+        "source_commit_at": manifest["generator_commit_at"],
+        "package_digest": manifest["generator_package_digest"],
+    }
+    if any(metadata[key] != value for key, value in expected_metadata.items()):
+        raise CatalogError(f"{evidence_id} generator snapshot metadata drifted")
+    files = metadata["files"]
+    if not isinstance(files, list) or not files:
+        raise CatalogError(f"{evidence_id} generator snapshot file list is invalid")
+    expected_names = {"generator-package.json"}
+    file_paths: list[str] = []
+    for index, item in enumerate(files):
+        if not isinstance(item, dict):
+            raise CatalogError(
+                f"{evidence_id} generator snapshot file record is invalid"
+            )
+        _require_exact_keys(
+            item,
+            {"path", "sha256"},
+            f"generator_snapshot.files[{index}]",
+        )
+        path = item["path"]
+        digest = item["sha256"]
+        if (
+            not isinstance(path, str)
+            or not path.startswith("llmtracefx/")
+            or not path.endswith(".py")
+            or "\\" in path
+            or ".." in Path(path).parts
+            or not isinstance(digest, str)
+            or SHA256.fullmatch(digest) is None
+            or path in expected_names
+        ):
+            raise CatalogError(
+                f"{evidence_id} generator snapshot file record is invalid"
+            )
+        expected_names.add(path)
+        file_paths.append(path)
+    if file_paths != sorted(file_paths):
+        raise CatalogError(f"{evidence_id} generator snapshot files are not canonical")
+    if names != ["generator-package.json", *file_paths]:
+        raise CatalogError(f"{evidence_id} generator snapshot order is not canonical")
+    if set(names) != expected_names:
+        raise CatalogError(f"{evidence_id} generator snapshot file set drifted")
+    return archive_bytes, dict(binding)
+
+
+def _extract_cache_audit_snapshot(
+    archive_bytes: bytes,
+    destination: Path,
+    evidence_id: str,
+) -> None:
+    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as snapshot:
+        metadata = json.loads(
+            snapshot.read("generator-package.json"),
+            parse_constant=reject_non_finite_json_constant,
+        )
+        for item in metadata["files"]:
+            content = snapshot.read(item["path"])
+            if "sha256:" + _sha256(content) != item["sha256"]:
+                raise CatalogError(
+                    f"{evidence_id} generator snapshot file digest drifted"
+                )
+            output = destination / item["path"]
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(content)
+
+
+def _cache_audit_git_corroboration(
+    repo_root: Path,
+    source: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+) -> str:
+    if not (repo_root / ".git").exists():
+        return "unavailable"
+    evidence_id = source["evidence_id"]
+    commit = manifest["generator_commit"]
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    environment.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_LAZY_FETCH": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+        }
+    )
+
+    def run_git(*arguments: str) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                ("git", "--no-replace-objects", "-C", str(repo_root), *arguments),
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+                shell=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise CatalogError(
+                f"{evidence_id} Git corroboration could not run"
+            ) from exc
+
+    object_type = run_git(
+        "cat-file",
+        "-t",
+        commit,
+    )
+    if object_type.returncode != 0:
+        shallow = run_git(
+            "rev-parse",
+            "--is-shallow-repository",
+        )
+        if shallow.returncode == 0 and shallow.stdout.strip() == "true":
+            return "unavailable"
+        promisor = run_git(
+            "config",
+            "--type=bool",
+            "--get-regexp",
+            r"^remote\..*\.promisor$",
+        )
+        if promisor.returncode == 0 and any(
+            line.rsplit(maxsplit=1)[-1] == "true"
+            for line in promisor.stdout.splitlines()
+        ):
+            return "unavailable"
+        raise CatalogError(f"{evidence_id} generator commit is unavailable")
+    if object_type.stdout.strip() != "commit":
+        raise CatalogError(f"{evidence_id} generator object is not a commit")
+    timestamp = run_git(
+        "show",
+        "-s",
+        "--format=%cI",
+        commit,
+    )
+    if (
+        timestamp.returncode != 0
+        or timestamp.stdout.strip() != manifest["generator_commit_at"]
+    ):
+        raise CatalogError(f"{evidence_id} generator commit timestamp drifted")
+    from llmtracefx.cache_audit.bundle import _git_package_digest
+
+    try:
+        digest = _git_package_digest(repo_root, commit)
+    except ValueError as exc:
+        raise CatalogError(f"{evidence_id} generator package is invalid") from exc
+    if digest != manifest["generator_package_digest"]:
+        raise CatalogError(f"{evidence_id} generator package digest drifted")
+    return "verified"
+
+
+def _run_cache_audit_verifier(repo_root: Path, source: Mapping[str, Any]) -> None:
+    bundle = _resolve_contained(repo_root, source["public_path"], directory=True)
+    script = _resolve_contained(
+        repo_root,
+        f"{source['public_path']}/evidence_bundle.py",
+    )
+    expected = source["cache_binding"]["standalone_verifier_sha256"]
+    script_bytes = read_bounded_regular_bytes(
+        script,
+        MAX_EVIDENCE_ARTIFACT_BYTES,
+    )
+    actual = "sha256:" + _sha256(script_bytes)
+    if actual != expected:
+        raise CatalogError(
+            f"{source['evidence_id']} standalone verifier binding drifted"
+        )
+    manifest = _load_json(bundle / "audit-manifest.json")
+    commit = manifest["generator_commit"]
+    if not isinstance(commit, str) or re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+        raise CatalogError(f"{source['evidence_id']} has an invalid generator commit")
+    archive_bytes, _ = _cache_audit_snapshot_binding(repo_root, source, manifest)
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONNOUSERSITE": "1",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "NO_PROXY": "*",
+        "no_proxy": "*",
+        "GIT_NO_LAZY_FETCH": "1",
+    }
+    with tempfile.TemporaryDirectory(prefix="llmtracefx-catalog-cache-audit-") as raw:
+        package_root = Path(raw)
+        verified_script = package_root / "evidence_bundle.py"
+        try:
+            descriptor = os.open(
+                verified_script,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o400,
+            )
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(script_bytes)
+            _extract_cache_audit_snapshot(
+                archive_bytes,
+                package_root,
+                source["evidence_id"],
+            )
+            completed = subprocess.run(
+                (
+                    sys.executable,
+                    "-I",
+                    str(verified_script),
+                    "verify",
+                    "--public-dir",
+                    str(bundle),
+                    "--package-root",
+                    str(package_root),
+                ),
+                cwd=repo_root,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+                shell=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise CatalogError(
+                f"{source['evidence_id']} verifier could not run"
+            ) from exc
+    if completed.returncode != 0:
+        detail = (completed.stdout + completed.stderr).strip().splitlines()
+        reason = detail[-1][:240] if detail else "no diagnostic"
+        raise CatalogError(
+            f"{source['evidence_id']} existing verifier failed: {reason}"
+        )
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise CatalogError(
+            f"{source['evidence_id']} verifier returned invalid JSON"
+        ) from exc
+    if result.get("verified") is not True:
+        raise CatalogError(
+            f"{source['evidence_id']} verifier did not confirm the bundle"
+        )
+    _cache_audit_git_corroboration(repo_root, source, manifest)
+
+
 def _verify_source_bindings(repo_root: Path, source: Mapping[str, Any]) -> None:
     bundle = _resolve_contained(repo_root, source["public_path"], directory=True)
     evidence_id = source["evidence_id"]
@@ -561,13 +900,21 @@ def _verify_source_bindings(repo_root: Path, source: Mapping[str, Any]) -> None:
         captured = contract["captured_at"]
         model_id = plan["model"]["id"]
         model_revision = plan["model"]["revision"]
-    elif evidence_id == "cache-audit-reference-positive-control-20260905":
+    elif evidence_id in {
+        "cache-audit-reference-positive-control-20260905",
+        "cache-audit-kv-truth-demo-20260913",
+    }:
         manifest = _load_json(bundle / "audit-manifest.json")
         schema = manifest["schema_version"]
         captured = manifest["created_at"]
         source_commit = manifest["generator_commit"]
         model_id = manifest["model_id"]
         binding = source["cache_binding"]
+        _, snapshot_binding = _cache_audit_snapshot_binding(
+            repo_root,
+            source,
+            manifest,
+        )
         observed_binding = {
             "publication_mode": manifest["publication_mode"],
             "backend": manifest["backend"],
@@ -576,6 +923,16 @@ def _verify_source_bindings(repo_root: Path, source: Mapping[str, Any]) -> None:
             "generator_package_digest": manifest["generator_package_digest"],
             "implementation_bound_at": manifest["generated_at"],
             "privacy_status": "verified_public_synthetic",
+            "standalone_verifier_sha256": (
+                "sha256:"
+                + _sha256(
+                    read_bounded_regular_bytes(
+                        bundle / "evidence_bundle.py",
+                        MAX_EVIDENCE_ARTIFACT_BYTES,
+                    )
+                )
+            ),
+            "generator_snapshot": snapshot_binding,
         }
         if observed_binding != binding:
             raise CatalogError(f"{evidence_id} cache provenance binding drifted")
@@ -605,11 +962,7 @@ def verify_source(repo_root: Path, source: Mapping[str, Any]) -> None:
     elif adapter == "sha256_allowlist_v1":
         _verify_sha256_allowlist(repo_root, source)
     elif adapter == "cache_audit_v1":
-        from llmtracefx.cache_audit.bundle import verify_bundle
-
-        verify_bundle(
-            _resolve_contained(repo_root, source["public_path"], directory=True)
-        )
+        _run_cache_audit_verifier(repo_root, source)
     elif adapter in SCRIPT_ADAPTERS:
         _run_script_verifier(repo_root, source)
     else:  # pragma: no cover - registry and branch are intentionally closed together
@@ -1651,11 +2004,11 @@ def verify_catalog(
         )
     if catalog["unregistered_candidates"]:
         raise CatalogError("unregistered candidate evidence directories were found")
+    _verify_generated_files(path, catalog)
     verified: list[str] = []
     for source in SOURCES:
         verify_source(root, source)
         verified.append(source["evidence_id"])
-    _verify_generated_files(path, catalog)
     return {
         "verified": True,
         "catalog_hash": catalog["catalog_hash"],
