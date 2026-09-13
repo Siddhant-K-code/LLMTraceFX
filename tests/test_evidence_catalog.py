@@ -135,6 +135,42 @@ def test_cache_audit_sources_verify_without_git_metadata(tmp_path: Path) -> None
         core.verify_source(root, source)
 
 
+def test_cache_audit_executes_the_verified_script_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = copy.deepcopy(_cache_audit_sources()[0])
+    root = tmp_path / "portable"
+    bundle = Path(source["public_path"])
+    shutil.copytree(ROOT / bundle, root / bundle)
+    snapshot = Path(source["cache_binding"]["generator_snapshot"]["path"])
+    destination = root / snapshot
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(ROOT / snapshot, destination)
+    original_extract = core._extract_cache_audit_snapshot
+    marker = root / "untrusted-script-ran"
+
+    def replace_after_hash(
+        archive_bytes: bytes,
+        package_root: Path,
+        evidence_id: str,
+    ) -> None:
+        (root / bundle / "evidence_bundle.py").write_text(
+            f"from pathlib import Path\nPath({str(marker)!r}).touch()\n",
+            encoding="utf-8",
+        )
+        original_extract(archive_bytes, package_root, evidence_id)
+
+    monkeypatch.setattr(
+        core,
+        "_extract_cache_audit_snapshot",
+        replace_after_hash,
+    )
+    with pytest.raises(core.CatalogError, match="checksum mismatch"):
+        core._run_cache_audit_verifier(root, source)
+    assert not marker.exists()
+
+
 def test_completed_crossover_adapter_is_closed_but_not_fabricated() -> None:
     assert "vllm_crossover_results_v1" in ADAPTERS
     assert all(source["adapter"] != "vllm_crossover_results_v1" for source in SOURCES)

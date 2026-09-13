@@ -720,9 +720,11 @@ def _run_cache_audit_verifier(repo_root: Path, source: Mapping[str, Any]) -> Non
         f"{source['public_path']}/evidence_bundle.py",
     )
     expected = source["cache_binding"]["standalone_verifier_sha256"]
-    actual = "sha256:" + _sha256(
-        read_bounded_regular_bytes(script, MAX_EVIDENCE_ARTIFACT_BYTES)
+    script_bytes = read_bounded_regular_bytes(
+        script,
+        MAX_EVIDENCE_ARTIFACT_BYTES,
     )
+    actual = "sha256:" + _sha256(script_bytes)
     if actual != expected:
         raise CatalogError(
             f"{source['evidence_id']} standalone verifier binding drifted"
@@ -743,7 +745,15 @@ def _run_cache_audit_verifier(repo_root: Path, source: Mapping[str, Any]) -> Non
     }
     with tempfile.TemporaryDirectory(prefix="llmtracefx-catalog-cache-audit-") as raw:
         package_root = Path(raw)
+        verified_script = package_root / "evidence_bundle.py"
         try:
+            descriptor = os.open(
+                verified_script,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o400,
+            )
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(script_bytes)
             _extract_cache_audit_snapshot(
                 archive_bytes,
                 package_root,
@@ -753,7 +763,7 @@ def _run_cache_audit_verifier(repo_root: Path, source: Mapping[str, Any]) -> Non
                 (
                     sys.executable,
                     "-I",
-                    str(script),
+                    str(verified_script),
                     "verify",
                     "--public-dir",
                     str(bundle),
