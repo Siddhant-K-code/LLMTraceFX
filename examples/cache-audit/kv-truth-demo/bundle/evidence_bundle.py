@@ -12,12 +12,12 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-EXPECTED_COMMIT = "27cbb3c589a4507f2ec6ae96e9ec1602abc9b8bb"
-EXPECTED_COMMIT_AT = "2026-09-13T10:50:35+05:30"
+EXPECTED_COMMIT = "50ffcec9ead5bea1b40f4434522f9952ac85e9ea"
+EXPECTED_COMMIT_AT = "2026-09-13T11:08:48+05:30"
 EXPECTED_PACKAGE_DIGEST = (
-    "sha256:01ebe2ca504ba46a48cf0f0f6414f415acb6a6452c0b512eedfb88595a15a15f"
+    "sha256:37c952895755435bacfc08baa461e8ade3a696c7b2db07276a8b0dd7a0ae91b8"
 )
-EXPECTED_GENERATED_AT = "2026-09-13T10:50:35+05:30"
+EXPECTED_GENERATED_AT = "2026-09-13T11:08:48+05:30"
 BUNDLE_DATA_FILES = (
     "audit-manifest.json",
     "request-evidence.jsonl",

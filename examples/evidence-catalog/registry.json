@@ -1509,19 +1509,19 @@
       "cache_binding": {
         "adapter_version": "2",
         "backend": "synthetic_reference",
-        "generator_package_digest": "sha256:01ebe2ca504ba46a48cf0f0f6414f415acb6a6452c0b512eedfb88595a15a15f",
+        "generator_package_digest": "sha256:37c952895755435bacfc08baa461e8ade3a696c7b2db07276a8b0dd7a0ae91b8",
         "generator_snapshot": {
           "format": "canonical-zip-v1",
           "path": "examples/cache-audit/generator-packages/kv-truth-demo.zip",
-          "sha256": "sha256:bdcb163b38144f9495b62ac1ba7da27b0eb61b58b6e59a303a2ed49160f8dea0"
+          "sha256": "sha256:415b47b45ea143d5dd487157f671a3fe5e7da90f28e4e0d2a3fc517deeba8f6b"
         },
-        "implementation_bound_at": "2026-09-13T10:50:35+05:30",
+        "implementation_bound_at": "2026-09-13T11:08:48+05:30",
         "privacy_status": "verified_public_synthetic",
         "publication_mode": "public_synthetic",
-        "standalone_verifier_sha256": "sha256:bdbcc962b246e7c0320e3a21865e7bbf13a8c2c56d936ae3a8c252bb6bb9ed81",
+        "standalone_verifier_sha256": "sha256:f4644e79a78c452c2fecd8e0742142bf4d24bd99e1a089d42b9b75fffdeaac36",
         "workload_digest": "sha256:71d744c08b9636bdaa151010a8cbc031b995091dda690bb6e8ad21c8702aace5"
       },
-      "captured_at": "2026-09-13T10:50:35+05:30",
+      "captured_at": "2026-09-13T11:08:48+05:30",
       "claims": {
         "cache_compute_avoidance": {
           "provenance": "synthetic policy operations are not observed runtime compute",
@@ -1610,7 +1610,7 @@
         "provider": "local",
         "version": "1"
       },
-      "source_commit": "27cbb3c589a4507f2ec6ae96e9ec1602abc9b8bb",
+      "source_commit": "50ffcec9ead5bea1b40f4434522f9952ac85e9ea",
       "status": "verified",
       "supported_claims": [
         "Expected and attested reusable-token counts agree for duplicate, mutation, suffix, namespace, and eviction cases.",

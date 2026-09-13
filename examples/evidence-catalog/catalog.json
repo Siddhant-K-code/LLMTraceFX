@@ -1,5 +1,5 @@
 {
-  "catalog_hash": "sha256:d3d4cae77844b39c772142ca1498968aa9e5b4d8d115f71a7b836ce790f152c6",
+  "catalog_hash": "sha256:e727c4992c4582ee9db71801d792f1fe18e9c19a1ff7bcb2b540eaee7d64716f",
   "claim_dimensions": [
     "timing",
     "quality",
@@ -53,7 +53,7 @@
   ],
   "entries": [
     {
-      "artifact_set_hash": "sha256:7df7de1820373065dd7d3507fb9deeeddffab97b03c8402ba1b5290adbc93d5b",
+      "artifact_set_hash": "sha256:3470a2f52140474de6da07e3691d200cd4f285c41e1f52975c0c96a7b213d9fe",
       "budget": {
         "authorized_usd": 0.0,
         "inferred_usd": 0.0,
@@ -63,7 +63,7 @@
         "scope": "not_applicable"
       },
       "bundle_schema_version": "2",
-      "captured_at": "2026-09-13T10:50:35+05:30",
+      "captured_at": "2026-09-13T11:08:48+05:30",
       "claims": {
         "cache_compute_avoidance": {
           "provenance": "synthetic policy operations are not observed runtime compute",
@@ -152,7 +152,7 @@
         "provider": "local",
         "version": "1"
       },
-      "source_commit": "27cbb3c589a4507f2ec6ae96e9ec1602abc9b8bb",
+      "source_commit": "50ffcec9ead5bea1b40f4434522f9952ac85e9ea",
       "status": "verified",
       "supported_claims": [
         "Expected and attested reusable-token counts agree for duplicate, mutation, suffix, namespace, and eviction cases.",
@@ -1525,7 +1525,7 @@
     "name": "llmtracefx-evidence",
     "version": "1"
   },
-  "registry_hash": "sha256:35751ffe0a95d7bac570014bbf8f3f3687e9505419362eb87cffe04d4006b8c5",
+  "registry_hash": "sha256:531e37b4df0452aa31820bbd1545b7366a2c17f4bbed515c0e42f9731e7b0162",
   "schema_version": "1",
   "unregistered_candidates": []
 }
