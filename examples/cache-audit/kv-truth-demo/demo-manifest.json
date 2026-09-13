@@ -1,18 +1,18 @@
 {
-  "bundle_checksum_manifest_sha256": "sha256:9b9fcef8029677b2edccde0989aa92b9d8f8b82f76b9add813591feb1937b87d",
+  "bundle_checksum_manifest_sha256": "sha256:bf97895ff5d8a267f4060e40e5fd649bfd13e00b173daeef52cc5eccbeab015b",
   "case_count": 10,
   "claim_boundaries": [
     "Proves the deterministic auditor, independent oracle, synthetic engine attestation, output evaluator, evidence schemas, privacy checks, hashes, and verifier behavior only.",
     "Does not prove MLX or vLLM speedup, production cache correctness, provider identity, GPU performance, latency improvement, or runtime memory savings."
   ],
   "command": "make kv-cache-demo",
-  "generator_commit": "3fd7c36091a53f0624c572ffb35a7888cd0128d3",
+  "generator_commit": "27cbb3c589a4507f2ec6ae96e9ec1602abc9b8bb",
   "privacy_mode": "public_synthetic",
-  "report_sha256": "sha256:6b21f7e8713764c899f77e9fc89e3c237a76b3126087a566cfc4c477b26156a0",
+  "report_sha256": "sha256:d5c38ef50dd9e78c0d357c530aa0c2328e069a6d70896539b6ce3e1ddf3c1cd6",
   "run_id": "cache-audit-455671d6fb6187a5",
   "runtime_memory_measurements": null,
   "schema_version": "1",
-  "standalone_verifier_sha256": "sha256:4bfe67b765f72e85cd8afb9d261e27dc92109be03f7c81d85677903dca31b2c0",
+  "standalone_verifier_sha256": "sha256:bdbcc962b246e7c0320e3a21865e7bbf13a8c2c56d936ae3a8c252bb6bb9ed81",
   "timing_measurements": null,
   "title": "LLMTraceFX KV-cache truth auditor deterministic public demo",
   "truth_table_sha256": "sha256:96fc36fc50d9f83ff216a2598edee991d0732442865c885e3421bfe2f1cd09e9",

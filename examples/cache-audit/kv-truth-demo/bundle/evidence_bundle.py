@@ -12,12 +12,12 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-EXPECTED_COMMIT = "3fd7c36091a53f0624c572ffb35a7888cd0128d3"
-EXPECTED_COMMIT_AT = "2026-09-13T00:57:59+05:30"
+EXPECTED_COMMIT = "27cbb3c589a4507f2ec6ae96e9ec1602abc9b8bb"
+EXPECTED_COMMIT_AT = "2026-09-13T10:50:35+05:30"
 EXPECTED_PACKAGE_DIGEST = (
-    "sha256:5118417b50d29422deebe9e3dd204c565c7aed0e73728f1c6b9f6bd9db9f7284"
+    "sha256:01ebe2ca504ba46a48cf0f0f6414f415acb6a6452c0b512eedfb88595a15a15f"
 )
-EXPECTED_GENERATED_AT = "2026-09-13T00:57:59+05:30"
+EXPECTED_GENERATED_AT = "2026-09-13T10:50:35+05:30"
 BUNDLE_DATA_FILES = (
     "audit-manifest.json",
     "request-evidence.jsonl",
@@ -197,6 +197,18 @@ def normalized_source(relative: str, content: bytes) -> bytes:
     text = re.sub(
         r'^_KV_DEMO_VERIFIER_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
         '_KV_DEMO_VERIFIER_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_CACHE_AUDIT_SNAPSHOT_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_CACHE_AUDIT_SNAPSHOT_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_SNAPSHOT_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_SNAPSHOT_DIGEST = "<bound-at-generation>"',
         text,
         flags=re.MULTILINE,
     )
