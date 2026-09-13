@@ -6,6 +6,7 @@ import copy
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -50,6 +51,88 @@ def test_committed_catalog_verifies_every_registered_adapter() -> None:
 @pytest.mark.parametrize("source", SOURCES, ids=lambda source: source["adapter"])
 def test_every_source_adapter_verifies(source: dict) -> None:
     core.verify_source(ROOT, source)
+
+
+def _cache_audit_sources() -> list[dict]:
+    return [source for source in SOURCES if source["adapter"] == "cache_audit_v1"]
+
+
+def test_cache_audit_sources_verify_from_fresh_shallow_checkout(
+    tmp_path: Path,
+) -> None:
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        (
+            "git",
+            "clone",
+            "--quiet",
+            "--depth",
+            "1",
+            ROOT.as_uri(),
+            str(shallow),
+        ),
+        check=True,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_NO_LAZY_FETCH": "1",
+        },
+    )
+    for source in _cache_audit_sources():
+        manifest = json.loads(
+            (shallow / source["public_path"] / "audit-manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        missing = subprocess.run(
+            (
+                "git",
+                "--no-replace-objects",
+                "-C",
+                str(shallow),
+                "cat-file",
+                "-e",
+                f"{manifest['generator_commit']}^{{commit}}",
+            ),
+            check=False,
+            env={"PATH": os.environ.get("PATH", ""), "GIT_NO_LAZY_FETCH": "1"},
+        )
+        assert missing.returncode != 0
+        core.verify_source(shallow, source)
+
+
+def test_available_cache_generator_object_mismatch_fails() -> None:
+    source = _cache_audit_sources()[0]
+    manifest = core._load_json(ROOT / source["public_path"] / "audit-manifest.json")
+    manifest["generator_package_digest"] = "sha256:" + "0" * 64
+    with pytest.raises(core.CatalogError, match="generator package digest drifted"):
+        core._cache_audit_git_corroboration(ROOT, source, manifest)
+
+
+def test_cache_generator_snapshot_tamper_fails(tmp_path: Path) -> None:
+    source = copy.deepcopy(_cache_audit_sources()[0])
+    manifest = core._load_json(ROOT / source["public_path"] / "audit-manifest.json")
+    relative = Path(source["cache_binding"]["generator_snapshot"]["path"])
+    destination = tmp_path / relative
+    destination.parent.mkdir(parents=True)
+    shutil.copyfile(ROOT / relative, destination)
+    content = bytearray(destination.read_bytes())
+    content[-1] ^= 1
+    destination.write_bytes(content)
+    with pytest.raises(core.CatalogError, match="snapshot digest drifted"):
+        core._cache_audit_snapshot_binding(tmp_path, source, manifest)
+
+
+def test_cache_audit_sources_verify_without_git_metadata(tmp_path: Path) -> None:
+    root = tmp_path / "portable"
+    for source in _cache_audit_sources():
+        bundle = Path(source["public_path"])
+        shutil.copytree(ROOT / bundle, root / bundle)
+        snapshot = Path(source["cache_binding"]["generator_snapshot"]["path"])
+        destination = root / snapshot
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / snapshot, destination)
+        core.verify_source(root, source)
 
 
 def test_completed_crossover_adapter_is_closed_but_not_fabricated() -> None:

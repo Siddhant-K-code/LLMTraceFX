@@ -59,7 +59,16 @@ PUBLIC_REDACTED_FACT_SCOPE = "public_redacted_fact"
 PUBLIC_REDACTED_TIMING_SCOPE = "public_redacted_timing"
 PUBLIC_REDACTED_TIMING_EXCLUSIONS = ("timing_details_redacted",)
 PUBLIC_REDACTED_TIMING_UNIT = "s"
-_GIT_ENV = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
+_GIT_ENV = {
+    key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+}
+_GIT_ENV.update(
+    {
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+)
 
 
 class CacheAuditBundleError(ValueError):
@@ -139,6 +148,18 @@ def _normalized_source(relative: str, content: bytes) -> bytes:
     text = re.sub(
         r'^_KV_DEMO_VERIFIER_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
         '_KV_DEMO_VERIFIER_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_CACHE_AUDIT_SNAPSHOT_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_CACHE_AUDIT_SNAPSHOT_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_SNAPSHOT_DIGEST = (?:"[^"]*"|\(\n\s*"[^"]*"\n\))$',
+        '_KV_DEMO_SNAPSHOT_DIGEST = "<bound-at-generation>"',
         text,
         flags=re.MULTILINE,
     )
@@ -357,6 +378,18 @@ def normalized_source(relative: str, content: bytes) -> bytes:
     text = re.sub(
         r'^_KV_DEMO_VERIFIER_DIGEST = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
         '_KV_DEMO_VERIFIER_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_CACHE_AUDIT_SNAPSHOT_DIGEST = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_CACHE_AUDIT_SNAPSHOT_DIGEST = "<bound-at-generation>"',
+        text,
+        flags=re.MULTILINE,
+    )
+    text = re.sub(
+        r'^_KV_DEMO_SNAPSHOT_DIGEST = (?:"[^"]*"|\\(\\n\\s*"[^"]*"\\n\\))$',
+        '_KV_DEMO_SNAPSHOT_DIGEST = "<bound-at-generation>"',
         text,
         flags=re.MULTILINE,
     )
