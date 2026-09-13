@@ -47,13 +47,13 @@ standalone verifier under `build/kv-cache-truth-demo/`. Representative rows:
 
 | case | input | expected tokens/blocks | attested tokens/blocks | observed prompt work | verdict | output identity | evaluator | output/performance/quality eligibility |
 |---|---:|---:|---:|---:|---|---|---|---|
-| exact-duplicate | 9 | 8/n/a | 8/n/a | 1 | `verified_hit` | yes | yes | eligible/ineligible/not applicable |
-| interior-mutation | 9 | 3/n/a | 3/n/a | 6 | `partial_reuse` | yes | yes | eligible/ineligible/not applicable |
-| boundary-mutation | 9 | 4/n/a | 4/n/a | 5 | `partial_reuse` | yes | yes | eligible/ineligible/not applicable |
-| same-length-different-ids | 9 | 0/n/a | 0/n/a | 9 | `verified_miss` | yes | yes | eligible/ineligible/not applicable |
-| suffix-change | 9 | 8/n/a | 8/n/a | 1 | `partial_reuse` | yes | yes | eligible/ineligible/not applicable |
-| namespace-isolation | 9 | 0/n/a | 0/n/a | 9 | `verified_miss` | yes | yes | eligible/ineligible/not applicable |
-| capacity-revisit | 4 | 0/n/a | 0/n/a | 4 | `evicted` | yes | yes | eligible/ineligible/not applicable |
+| exact-duplicate | 9 | 8/n/a | 8/n/a | 1 | `verified_hit` | yes | yes | eligible/ineligible/not_applicable |
+| interior-mutation | 9 | 3/n/a | 3/n/a | 6 | `partial_reuse` | yes | yes | eligible/ineligible/not_applicable |
+| boundary-mutation | 9 | 4/n/a | 4/n/a | 5 | `partial_reuse` | yes | yes | eligible/ineligible/not_applicable |
+| same-length-different-ids | 9 | 0/n/a | 0/n/a | 9 | `verified_miss` | yes | yes | eligible/ineligible/not_applicable |
+| suffix-change | 9 | 8/n/a | 8/n/a | 1 | `partial_reuse` | yes | yes | eligible/ineligible/not_applicable |
+| namespace-isolation | 9 | 0/n/a | 0/n/a | 9 | `verified_miss` | yes | yes | eligible/ineligible/not_applicable |
+| capacity-revisit | 4 | 0/n/a | 0/n/a | 4 | `evicted` | yes | yes | eligible/ineligible/not_applicable |
 
 The token-granular reference cache has no block observation, so block cells are
 `n/a`. Timing and runtime memory remain `null`; the demo invents no benchmark
