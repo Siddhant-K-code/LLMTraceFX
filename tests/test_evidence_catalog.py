@@ -101,12 +101,49 @@ def test_cache_audit_sources_verify_from_fresh_shallow_checkout(
         core.verify_source(shallow, source)
 
 
-def test_available_cache_generator_object_mismatch_fails() -> None:
-    source = _cache_audit_sources()[0]
-    manifest = core._load_json(ROOT / source["public_path"] / "audit-manifest.json")
-    manifest["generator_package_digest"] = "sha256:" + "0" * 64
+def test_available_cache_generator_object_mismatch_fails(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    package = repository / "llmtracefx"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text('"""Fixture package."""\n', encoding="utf-8")
+    environment = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "Evidence Fixture",
+        "GIT_AUTHOR_EMAIL": "evidence@example.invalid",
+        "GIT_COMMITTER_NAME": "Evidence Fixture",
+        "GIT_COMMITTER_EMAIL": "evidence@example.invalid",
+        "GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
+        "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
+    }
+    subprocess.run(("git", "init", "--quiet", str(repository)), check=True)
+    subprocess.run(
+        ("git", "-C", str(repository), "add", "llmtracefx"),
+        check=True,
+        env=environment,
+    )
+    subprocess.run(
+        ("git", "-C", str(repository), "commit", "--quiet", "-m", "fixture"),
+        check=True,
+        env=environment,
+    )
+    commit = subprocess.check_output(
+        ("git", "-C", str(repository), "rev-parse", "HEAD"),
+        text=True,
+        env=environment,
+    ).strip()
+    committed_at = subprocess.check_output(
+        ("git", "-C", str(repository), "show", "-s", "--format=%cI", "HEAD"),
+        text=True,
+        env=environment,
+    ).strip()
+    source = {"evidence_id": "cache-audit-git-corroboration-fixture"}
+    manifest = {
+        "generator_commit": commit,
+        "generator_commit_at": committed_at,
+        "generator_package_digest": "sha256:" + "0" * 64,
+    }
     with pytest.raises(core.CatalogError, match="generator package digest drifted"):
-        core._cache_audit_git_corroboration(ROOT, source, manifest)
+        core._cache_audit_git_corroboration(repository, source, manifest)
 
 
 def test_cache_generator_snapshot_tamper_fails(tmp_path: Path) -> None:
