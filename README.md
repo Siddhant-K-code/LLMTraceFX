@@ -14,6 +14,8 @@
   ·
   <a href="#current-capabilities">Capabilities</a>
   ·
+  <a href="#research--publication">Research</a>
+  ·
   <a href="SELF_HOST_GLM_RUNBOOK.md">Modal runbook</a>
   ·
   <a href="https://siddhantkhare.com/writing/ttft-http-client">Methods example</a>
@@ -31,6 +33,43 @@ LLMTraceFX is an evidence-first inference toolkit for local models and
 OpenAI-compatible streaming APIs. It collects measurements into one canonical
 schema, checks model output with deterministic workloads, and recommends a
 configuration only when it satisfies an explicit policy.
+
+## Research / Publication
+
+Research based on earlier LLMTraceFX work is published as the peer-reviewed
+conference paper **[Understanding GPU-Level Bottlenecks in Large Language Model
+Inference](https://doi.org/10.1007/978-3-032-27448-9_18)** by Shubhanshu
+Kushwaha, Mamata Samal, and Siddhant Khare. It appears in the *Proceedings of
+International Conference on Data, Electronics and Computing: ICDEC 2025, Volume
+1*, *Lecture Notes in Networks and Systems*, vol. 2003 (Springer, Cham, 2026),
+pp. 211–224; first online August 2, 2026.
+
+The paper discusses profiling LLM inference with LLMTraceFX, including memory
+bandwidth, GPU interconnects, kernel overhead, and prefill/decoding. It reflects
+an earlier research snapshot: this repository has continued evolving, and
+current features and results should not be assumed to appear in or have been
+validated by the paper.
+
+```bibtex
+@inproceedings{kushwaha2026gpu,
+  author    = {Shubhanshu Kushwaha and Mamata Samal and Siddhant Khare},
+  title     = {Understanding GPU-Level Bottlenecks in Large Language Model Inference},
+  booktitle = {Proceedings of International Conference on Data, Electronics and Computing: ICDEC 2025, Volume 1},
+  series    = {Lecture Notes in Networks and Systems},
+  volume    = {2003},
+  pages     = {211--224},
+  publisher = {Springer},
+  address   = {Cham},
+  year      = {2026},
+  doi       = {10.1007/978-3-032-27448-9_18},
+  url       = {https://doi.org/10.1007/978-3-032-27448-9_18}
+}
+```
+
+For research collaboration, reproducibility questions, or LLMTraceFX usage,
+contact [siddhantkhare2694@gmail.com](mailto:siddhantkhare2694@gmail.com).
+Please use [GitHub Issues](https://github.com/Siddhant-K-code/LLMTraceFX/issues)
+for bug reports.
 
 ## KV-cache truth auditor demo
 
