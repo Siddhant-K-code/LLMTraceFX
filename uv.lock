@@ -1389,7 +1389,7 @@ requires-dist = [
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.22.0" },
     { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'mlx'", specifier = "==0.32.2" },
     { name = "mlx-lm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'mlx'", specifier = "==0.31.3" },
-    { name = "mlx-vlm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'mlx'", specifier = "==0.6.17" },
+    { name = "mlx-vlm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'mlx'", specifier = "==0.7.1" },
     { name = "modal", marker = "extra == 'modal'", specifier = ">=1.0.5" },
     { name = "modal", marker = "extra == 'modal-l4-execute'", specifier = "==1.5.5" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.5.0" },
@@ -1737,10 +1737,11 @@ wheels = [
 
 [[package]]
 name = "mlx-vlm"
-version = "0.6.17"
+version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi" },
+    { name = "jinja2" },
     { name = "llguidance" },
     { name = "miniaudio" },
     { name = "mlx" },
@@ -1757,9 +1758,9 @@ dependencies = [
     { name = "uvicorn" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c5/a1/4b21ea85918e5223144bbe80cb649f5953c105ea440f0eba45dd00a5b863/mlx_vlm-0.6.17.tar.gz", hash = "sha256:5e4ff5426af093b3cf41b4e5e33c272db82fa33000cb3c36a1aab9e218ad7ee7", size = 2043597, upload-time = "2026-08-26T17:08:38.01Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/57/62/7fb872fd4c4cb2b8069afde85f08590098d0689efc588eab01bedb2d741b/mlx_vlm-0.7.1.tar.gz", hash = "sha256:b8abd3cc7e3513d9915bf9f6903833c697dc4c3084c2acdc880029c33e331a03", size = 2326562, upload-time = "2026-09-14T18:09:51.229Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f8/42/f275566dba66b54c21e039344c4fb90fd3a3749fc251754545249b45dc8d/mlx_vlm-0.6.17-py3-none-any.whl", hash = "sha256:d24723244ef89b2a6140bec45e38c078689ea89450edfc0e348ad149f5af3b1c", size = 2590205, upload-time = "2026-08-26T17:08:36.148Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/fc/7fbd894db247582bfa16df9b0b7514a47e9c3971836fc8d3fbd9f6efdbe8/mlx_vlm-0.7.1-py3-none-any.whl", hash = "sha256:d9696bc3a2e961f43b5948a101dc0c966b5989d382e6910c37e2f3d555bc3408", size = 2924465, upload-time = "2026-09-14T18:09:49.737Z" },
 ]
 
 [[package]]
