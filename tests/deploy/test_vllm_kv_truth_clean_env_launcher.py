@@ -92,13 +92,14 @@ def bootstrap_dispatch(argv):
     output = Path(args[args.index("--output-dir") + 1])
     auth = Path(args[args.index("--authorization") + 1])
     authorization = json.loads(auth.read_text(encoding="utf-8"))
-    (output / "started").write_text("yes", encoding="utf-8")
     def finish(signum, _frame):
         (output / "cleanup").write_text(f"signal={signum}", encoding="utf-8")
         raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, finish)
     if hasattr(signal, "SIGHUP"):
         signal.signal(signal.SIGHUP, finish)
+    # Tests signal as soon as "started" exists, so handlers must already be set.
+    (output / "started").write_text("yes", encoding="utf-8")
     if authorization.get("wait_for_signal"):
         while True:
             time.sleep(0.02)
