@@ -287,7 +287,7 @@ def test_real_setuptools_wheel_install_and_public_cli_split(tmp_path: Path) -> N
             "install",
             "--python",
             str(build_python),
-            "setuptools==84.0.0",
+            "setuptools==84.1.0",
             "wheel==0.48.0",
             "packaging==26.3",
         ],
@@ -310,7 +310,7 @@ def test_real_setuptools_wheel_install_and_public_cli_split(tmp_path: Path) -> N
         check=False,
     )
     assert versions.returncode == 0, versions.stderr
-    assert versions.stdout.strip() == "84.0.0 0.48.0 26.3"
+    assert versions.stdout.strip() == "84.1.0 0.48.0 26.3"
 
     dist = tmp_path / "dist"
     built = subprocess.run(

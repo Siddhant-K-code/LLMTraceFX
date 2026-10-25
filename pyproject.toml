@@ -1,6 +1,6 @@
 [build-system]
 requires = [
-    "setuptools==84.0.0",
+    "setuptools==84.1.0",
     "wheel==0.48.0",
     "packaging==26.3",
 ]
@@ -11,7 +11,7 @@ name = "llmtracefx"
 version = "1.0.0"
 description = "Evidence-first inference measurement, verification, and constrained optimization toolkit"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 authors = [
     {name = "LLMTraceFX Team", email = "info@llmtracefx.com"},
@@ -21,7 +21,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -43,7 +42,7 @@ dependencies = [
 
 [project.optional-dependencies]
 build = [
-    "setuptools==84.0.0",
+    "setuptools==84.1.0",
     "wheel==0.48.0",
     "packaging==26.3",
 ]
@@ -103,7 +102,7 @@ mlx = [
     "mlx==0.32.2; platform_system == 'Darwin' and platform_machine == 'arm64'",
     "mlx-lm==0.31.3; platform_system == 'Darwin' and platform_machine == 'arm64'",
     "mlx-vlm==0.6.17; platform_system == 'Darwin' and platform_machine == 'arm64'",
-    "transformers==5.16.1; platform_system == 'Darwin' and platform_machine == 'arm64'",
+    "transformers==5.20.2; platform_system == 'Darwin' and platform_machine == 'arm64'",
 ]
 
 docs = [
@@ -156,7 +155,7 @@ vllm_kv_truth = ["data/*.json"]
 # Black configuration
 [tool.black]
 line-length = 88
-target-version = ['py310']
+target-version = ['py311']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -182,7 +181,7 @@ known_third_party = ["fastapi", "uvicorn", "aiohttp", "plotly", "pandas", "numpy
 
 # MyPy configuration
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -274,7 +273,7 @@ exclude_lines = [
 
 # Ruff configuration (alternative to flake8)
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 88
 
 [tool.ruff.lint]

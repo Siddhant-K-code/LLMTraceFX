@@ -94,7 +94,7 @@ def test_download_uses_exact_pins_allowlist_and_sanitized_scratch_environment(
     assert receipt["version"] == model_download.DOWNLOADER_VERSION
 
 
-@pytest.mark.parametrize("python_minor", ["3.10", "3.11", "3.12", "3.13"])
+@pytest.mark.parametrize("python_minor", ["3.11", "3.12", "3.13"])
 def test_attestation_logic_is_python_minor_and_platform_independent(
     python_minor: str,
 ) -> None:
