@@ -609,7 +609,7 @@ uv run llmtracefx-optimizer optimize \
 
 | Path | Requirements | Install or check |
 | --- | --- | --- |
-| Offline planning and report inspection | Python 3.10+ and `uv` | `uv sync --locked` |
+| Offline planning and report inspection | Python 3.11+ and `uv` | `uv sync --locked` |
 | Local MLX collection | macOS on arm64, MLX, MLX-LM, and an existing local model directory | `uv sync --locked --extra mlx` |
 | Metal and `xctrace` | macOS, full Xcode command-line tools, and a locally available Instruments template | `uv run llmtracefx-optimizer instruments capability` |
 | Hosted API collection | An HTTPS OpenAI-compatible endpoint and a provider key stored in an environment variable | Use `collect-api --dry-run` before making a request |
@@ -841,7 +841,7 @@ uv run pytest
 make lint-changed
 ```
 
-The project supports Python 3.10 through 3.13. The `mlx` extra is installed
+The project supports Python 3.11 through 3.13. The `mlx` extra is installed
 only on macOS arm64, and the `modal` extra is optional.
 
 ## License
