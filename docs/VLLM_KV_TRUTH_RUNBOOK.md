@@ -305,7 +305,7 @@ cd "$source_dir"
 uv venv --python 3.12 "$build_venv"
 uv pip install \
   --python "$build_venv/bin/python" \
-  setuptools==84.0.0 wheel==0.48.0 packaging==26.3
+  setuptools==84.1.0 wheel==0.48.0 packaging==26.3
 uv build --no-build-isolation --wheel \
   --python "$build_venv/bin/python" \
   --out-dir "$build_dir"
@@ -331,7 +331,7 @@ BASH
 ```
 
 The locked `build` extra and `[build-system]` both fix
-`setuptools==84.0.0`, `wheel==0.48.0`, and `packaging==26.3`.
+`setuptools==84.1.0`, `wheel==0.48.0`, and `packaging==26.3`.
 The build uses the already verified commit archive rather than the checkout,
 so unrelated untracked files cannot enter the wheel. It also creates a new
 dedicated build environment containing only that exact toolchain; do not reuse

@@ -49,7 +49,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13"]
         include:
           # GitHub's macOS runners are Apple Silicon, and macOS defaults to a
           # case-insensitive filesystem. Both matter here:
@@ -62,7 +62,7 @@ jobs:
           # macOS covers the ends of the supported range rather than the full
           # matrix, to add the platform signal without doubling the job count.
           - os: macos-latest
-            python-version: "3.10"
+            python-version: "3.11"
           - os: macos-latest
             python-version: "3.13"
     steps:
