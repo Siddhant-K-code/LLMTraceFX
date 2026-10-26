@@ -921,11 +921,15 @@ class DelayedRequestAndHeadersServer:
                 if self._stop.wait(self._phase_delay):
                     return
                 self.request_body_read_started.set()
-                while len(body) < declared:
+                # Count rather than accumulate: growing an 8 MiB bytes object
+                # chunk by chunk is quadratic and slow enough on a loaded
+                # runner to push the drain past the client's deadline.
+                remaining = declared - len(body)
+                while remaining > 0:
                     part = conn.recv(65536)
                     if not part:
                         return
-                    body += part
+                    remaining -= len(part)
                 if self._stop.wait(self._phase_delay):
                     return
                 payload = b"data: [DONE]\n\n"
@@ -1076,9 +1080,11 @@ def test_connect_upload_and_headers_share_one_deadline() -> None:
                     timeout_seconds=budget,
                 )
             )
+        # Measured before teardown: closing the server can wait for it to
+        # drain bytes the client had already handed to the kernel.
+        elapsed = time.monotonic() - started
     finally:
         server.close()
-    elapsed = time.monotonic() - started
 
     assert server.request_body_read_started.is_set()
     assert elapsed >= budget * 0.75
