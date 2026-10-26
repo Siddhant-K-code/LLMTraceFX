@@ -5,9 +5,13 @@ from __future__ import annotations
 import csv
 import io
 import json
+import os
+import re
 import time
 import types
+from collections.abc import Iterator
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -863,15 +867,43 @@ def test_journal_byte_size_bound_is_enforced(tmp_path: Path) -> None:
     assert journal.checkpoints == []
 
 
+def _scalar_leaves(node: object) -> Iterator[object]:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield key
+            yield from _scalar_leaves(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _scalar_leaves(item)
+    else:
+        yield node
+
+
+def _is_iso_timestamp(value: str) -> bool:
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
 def test_journal_never_records_pids_paths_or_hostnames(tmp_path: Path) -> None:
     journal = _new_journal(tmp_path)
     journal.checkpoint("child_start", None)
     journal.finalize(complete=True, terminal="completed")
     serialized = journal.path.read_text(encoding="utf-8")
     assert str(tmp_path) not in serialized
-    import os
-
-    assert str(os.getpid()) not in serialized
+    # A bare substring check fails whenever the PID's digits occur inside a
+    # hash or a memory reading, so look for it as a whole value or a
+    # standalone token. Timestamps cannot carry a PID and are skipped because
+    # the year alone is a plausible CI PID.
+    pid = os.getpid()
+    standalone = re.compile(rf"(?<![0-9A-Za-z]){pid}(?![0-9A-Za-z])")
+    for leaf in _scalar_leaves(json.loads(serialized)):
+        if isinstance(leaf, str):
+            assert _is_iso_timestamp(leaf) or not standalone.search(leaf), leaf
+        else:
+            assert leaf != pid
 
 
 def test_journal_records_peak_memory_is_never_reset_with_explicit_provenance(

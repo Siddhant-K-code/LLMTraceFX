@@ -860,7 +860,9 @@ def test_a_mistyped_subcommand_leaves_the_valid_choices_readable() -> None:
     code, _, err = run_main(["collect-ap"])
 
     assert code == 2
-    assert "'collect-api'" in err
+    # Some CPython releases (3.12.13+) list the choices bare, others quote them.
+    listed = err.partition("choose from")[2].partition(")")[0]
+    assert "collect-api" in {choice.strip(" '") for choice in listed.split(",")}
     assert "[REDACTED]i" not in err
 
 
