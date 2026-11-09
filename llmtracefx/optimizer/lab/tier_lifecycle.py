@@ -19,7 +19,7 @@ import json
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 
 from ..collectors._shared import atomic_write_text, config_hash
 from ..schema import utc_now_iso
@@ -27,9 +27,6 @@ from ..workloads.schema import ContextTier
 from ..workloads.verify import RowResult, RowStatus
 from .manifest import ContextTierPin, LabManifest
 from .run_owner import current_run_owner
-
-if TYPE_CHECKING:
-    from .core import SafetyDecision
 
 
 class RunStatus(StrEnum):
@@ -76,6 +73,21 @@ def transition_run_status(state: dict[str, Any], new: RunStatus) -> None:
     state["status"] = new.value
 
 
+class SafetyDecision(Protocol):
+    """The parts of ``lab.core.SafetyDecision`` this module reads."""
+
+    @property
+    def safe(self) -> bool:
+        """Whether the host may run the next step."""
+
+    @property
+    def blockers(self) -> tuple[str, ...]:
+        """Reasons the host is not safe."""
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON form stored in ``state.json``."""
+
+
 class RowRunner(Protocol):
     def __call__(
         self,
@@ -86,7 +98,8 @@ class RowRunner(Protocol):
         warmup: bool,
         output_dir: Path,
         resume: bool,
-    ) -> RowResult: ...
+    ) -> RowResult:
+        """Execute one warmup or measured row and return its result."""
 
 
 def row_status_ok(result: RowResult) -> bool:
