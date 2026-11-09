@@ -381,8 +381,12 @@ async def analyze_trace(
                         gpu_analyses, explanations_pending=False
                     )
                     gpu_results_store[analysis_id] = gpu_result
-                    if gpu_result.get("explanations"):
-                        explanations_store[analysis_id] = gpu_result["explanations"]
+                    gpu_explanations = gpu_result.get("explanations") or {}
+                    if gpu_explanations:
+                        explanations_store[analysis_id] = gpu_explanations
+                    analysis_states[analysis_id] = _gpu_explanations_state(
+                        request.enable_claude, gpu_explanations
+                    )
 
                     return _build_response(analysis_id)
                 elif gpu_result and gpu_result.get("status") == "error":
@@ -687,6 +691,52 @@ def _fail_explanations(analysis_id: str, reason: str) -> None:
     )
 
 
+def _explanations_state(
+    attempted: int, failures: int, first_error: str | None
+) -> AnalysisState:
+    """Final status after explanation generation ran for `attempted` tokens.
+
+    Shared by the CPU background task and the GPU path: "completed" when at
+    least one token was explained, "explanations_failed" when every token failed.
+    """
+    if attempted and failures == attempted:
+        return AnalysisState(
+            status="explanations_failed",
+            error=f"Explanation generation failed for all {failures} tokens: "
+            f"{first_error}",
+        )
+    return AnalysisState(status="completed")
+
+
+# Prefix modal_app.analyze_trace_modal puts on a token's explanation when
+# generating it raised.
+GPU_EXPLANATION_ERROR_PREFIX = "Error: "
+
+
+def _gpu_explanations_state(
+    enable_claude: bool, explanations: dict[int, str]
+) -> AnalysisState:
+    """Final status for a GPU analysis, given the explanations Modal returned."""
+    if not enable_claude:
+        return AnalysisState(status="completed")
+    if not explanations:
+        # Modal skips explanations when CLAUDE_API_KEY is not set there.
+        return AnalysisState(
+            status="explanations_failed",
+            error="GPU analysis returned no explanations. "
+            "Set CLAUDE_API_KEY in the Modal environment.",
+        )
+
+    errors = [
+        text.removeprefix(GPU_EXPLANATION_ERROR_PREFIX)
+        for text in explanations.values()
+        if text.startswith(GPU_EXPLANATION_ERROR_PREFIX)
+    ]
+    return _explanations_state(
+        len(explanations), len(errors), errors[0] if errors else None
+    )
+
+
 async def generate_claude_explanations(
     analysis_id: str, analyses: list[TokenAnalysis]
 ) -> None:
@@ -722,15 +772,9 @@ async def generate_claude_explanations(
                 )
 
         explanations_store[analysis_id] = explanations
-
-        if analyses and failures == len(analyses):
-            _fail_explanations(
-                analysis_id,
-                f"Explanation generation failed for all {failures} tokens: "
-                f"{first_error}",
-            )
-        else:
-            analysis_states[analysis_id] = AnalysisState(status="completed")
+        analysis_states[analysis_id] = _explanations_state(
+            len(analyses), failures, first_error
+        )
 
     except Exception as e:
         _fail_explanations(analysis_id, f"Error generating explanations: {str(e)}")
