@@ -18,7 +18,9 @@ the ways this control requires and the 27B lab does not:
 
 It otherwise deliberately reuses the load-bearing pieces of the 27B lab
 unmodified: ``LabManifest`` parsing/validation, ``verify_model``/
-``verify_catalog``/``assess_safety``, the workload catalog and
+``verify_catalog``/``assess_safety``, the tier loop and ``state.json``
+layout in ``lab.tier_lifecycle`` (shared with ``run_lab``, with a stricter
+row check that also requires evaluator success), the workload catalog and
 deterministic prompt materialization, the safe evaluators and MLX
 collector (both reached through ``workloads.verify.execute_row``, which
 this module's child subprocess calls directly), and the tune/compare/
@@ -29,7 +31,6 @@ directory shape ``lab.core`` already expects.
 from __future__ import annotations
 
 import argparse
-import json
 import subprocess
 import sys
 from collections.abc import Callable
@@ -46,16 +47,14 @@ from ...workloads.verify import RowResult, RowStatus, RowVerification, execute_r
 from ..core import (
     LabError,
     _binding,
-    _peak_bytes,
     _record_matches_manifest,
-    _tier_is_safe,
     assess_safety,
     verify_catalog,
     verify_model,
 )
 from ..frontier import _clean_process_group
 from ..manifest import LabManifest
-from ..run_owner import current_run_owner
+from ..tier_lifecycle import run_tiers, start_run
 from .runtime import Qwen3ChatMLXLMRuntime
 
 BENCHMARK_STATE_SCHEMA_VERSION = "1"
@@ -133,6 +132,15 @@ def _evaluator_failure_blockers(results: tuple[RowResult, ...]) -> tuple[str, ..
         if result.verification.status in (RowStatus.COMPLETED, RowStatus.SKIPPED)
         and result.verification.outcome_success is False
     )
+
+
+def _describe_warmup_failure(result: RowResult) -> str:
+    if result.verification.status in (RowStatus.COMPLETED, RowStatus.SKIPPED):
+        return (
+            f"{result.entry.run_id} completed but the evaluator "
+            "reported outcome_success=False (task quality failure)"
+        )
+    return f"{result.entry.run_id} ended as {result.verification.status.value}"
 
 
 def _row_result_from_disk(entry: MatrixEntry, *, output_dir: Path) -> RowResult | None:
@@ -482,10 +490,8 @@ def run_benchmark(
             + "; ".join(preflight.blockers)
         )
 
-    selected_max = manifest.tier(max_tier)
-    tiers = tuple(
-        tier for tier in manifest.context_tiers if tier.order <= selected_max.order
-    )
+    # Reject an unknown tier before a running state is persisted.
+    manifest.tier(max_tier)
     hardware_fingerprint = config_hash(
         {
             "os_name": preflight.snapshot.os_name,
@@ -500,221 +506,53 @@ def run_benchmark(
         }
     )
 
-    state: dict[str, Any] = {
-        "schema_version": BENCHMARK_STATE_SCHEMA_VERSION,
-        "lab_id": manifest.lab_id,
-        "run_mode": run_mode,
-        "clean_boot_confirmed": clean_boot_confirmed,
-        "started_at": utc_now_iso(),
-        "status": "running",
-        "owner": current_run_owner(),
-        "requested_max_tier": max_tier,
-        "preflight": preflight.to_dict(),
-        "tiers": [],
-        "stopped_before_tier": None,
-        "stopped_during": None,
-        "unattempted_tiers": [],
-        "stop_reasons": [],
-    }
-    state["execution_id"] = config_hash(
-        {
-            "lab_id": manifest.lab_id,
-            "started_at": state["started_at"],
-            "hardware_fingerprint": hardware_fingerprint,
-            "run_mode": run_mode,
-        }
-    )
-    workspace.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(
-        workspace / "state.json", json.dumps(state, indent=2, sort_keys=False) + "\n"
+    state = start_run(
+        workspace=workspace,
+        schema_version=BENCHMARK_STATE_SCHEMA_VERSION,
+        lab_id=manifest.lab_id,
+        requested_max_tier=max_tier,
+        preflight=preflight,
+        hardware_fingerprint=hardware_fingerprint,
+        header={"run_mode": run_mode, "clean_boot_confirmed": clean_boot_confirmed},
+        identity={"run_mode": run_mode},
     )
 
-    results_root = workspace / "results"
-
-    for tier_pin in tiers:
-        tier = ContextTier(tier_pin.name)
-        tier_preflight = assess_safety(manifest, workspace, include_download=False)
-        if not tier_preflight.safe:
-            state["stopped_before_tier"] = tier.value
-            state["unattempted_tiers"] = [
-                candidate.name
-                for candidate in manifest.context_tiers
-                if tier_pin.order <= candidate.order <= selected_max.order
-            ]
-            state["stop_reasons"] = list(tier_preflight.blockers)
-            break
-
-        warmup_results: list[RowResult] = []
-        if manifest.repetitions.warmup_per_tier:
-            warmup_workload_id = manifest.workloads[0].workload_id
-            for index in range(manifest.repetitions.warmup_per_tier):
-                result = _run_row_isolated(
-                    manifest,
-                    manifest_path=manifest_path,
-                    workload_id=warmup_workload_id,
-                    tier=tier,
-                    repetition_index=index,
-                    warmup=True,
-                    model_path=model_path,
-                    output_dir=workspace / "warmups" / tier.value,
-                    resume=False,
-                    timeout_seconds=row_timeout_seconds,
-                    cleanup_grace_seconds=cleanup_grace_seconds,
-                    launcher=launcher,
-                )
-                warmup_results.append(result)
-                if manifest.safety.stop_on_any_failed_row and not _row_is_ok(result):
-                    break
-
-        if any(not _row_is_ok(result) for result in warmup_results):
-            reasons = [
-                result.verification.reason
-                or (
-                    f"{result.entry.run_id} completed but the evaluator "
-                    "reported outcome_success=False (task quality failure)"
-                    if result.verification.status
-                    in (RowStatus.COMPLETED, RowStatus.SKIPPED)
-                    else f"{result.entry.run_id} ended as {result.verification.status.value}"
-                )
-                for result in warmup_results
-                if not _row_is_ok(result)
-            ]
-            state["tiers"].append(
-                {
-                    "tier": tier.value,
-                    "status": "failed_warmup",
-                    "run_ids": [result.entry.run_id for result in warmup_results],
-                    "maximum_observed_peak_memory_bytes": max(
-                        (
-                            peak
-                            for result in warmup_results
-                            if (peak := _peak_bytes(result)) is not None
-                        ),
-                        default=None,
-                    ),
-                    "postflight": assess_safety(
-                        manifest, workspace, include_download=False
-                    ).to_dict(),
-                    "blockers": reasons,
-                }
-            )
-            state["stopped_during"] = {"tier": tier.value, "phase": "warmup"}
-            state["unattempted_tiers"] = [
-                later.name
-                for later in manifest.context_tiers
-                if later.order > tier_pin.order and later.order <= selected_max.order
-            ]
-            state["stop_reasons"] = reasons
-            break
-
-        warmup_postflight = assess_safety(manifest, workspace, include_download=False)
-        warmup_safe, warmup_blockers = _tier_is_safe(
-            manifest, tuple(warmup_results), warmup_postflight
+    def run_row(
+        *,
+        workload_id: str,
+        tier: ContextTier,
+        repetition_index: int,
+        warmup: bool,
+        output_dir: Path,
+        resume: bool,
+    ) -> RowResult:
+        return _run_row_isolated(
+            manifest,
+            manifest_path=manifest_path,
+            workload_id=workload_id,
+            tier=tier,
+            repetition_index=repetition_index,
+            warmup=warmup,
+            model_path=model_path,
+            output_dir=output_dir,
+            resume=resume,
+            timeout_seconds=row_timeout_seconds,
+            cleanup_grace_seconds=cleanup_grace_seconds,
+            launcher=launcher,
         )
-        warmup_evaluator_blockers = _evaluator_failure_blockers(tuple(warmup_results))
-        if warmup_evaluator_blockers:
-            warmup_safe = False
-            warmup_blockers = tuple(warmup_blockers) + warmup_evaluator_blockers
-        if not warmup_safe:
-            state["tiers"].append(
-                {
-                    "tier": tier.value,
-                    "status": "failed_warmup_safety",
-                    "run_ids": [result.entry.run_id for result in warmup_results],
-                    "maximum_observed_peak_memory_bytes": max(
-                        (
-                            peak
-                            for result in warmup_results
-                            if (peak := _peak_bytes(result)) is not None
-                        ),
-                        default=None,
-                    ),
-                    "postflight": warmup_postflight.to_dict(),
-                    "blockers": list(warmup_blockers),
-                }
-            )
-            state["stopped_during"] = {"tier": tier.value, "phase": "warmup_safety"}
-            state["unattempted_tiers"] = [
-                later.name
-                for later in manifest.context_tiers
-                if later.order > tier_pin.order and later.order <= selected_max.order
-            ]
-            state["stop_reasons"] = list(warmup_blockers)
-            break
 
-        tier_results: list[RowResult] = []
-        stopped = False
-        for workload_pin in manifest.workloads:
-            for index in range(manifest.repetitions.measured_per_workload):
-                result = _run_row_isolated(
-                    manifest,
-                    manifest_path=manifest_path,
-                    workload_id=workload_pin.workload_id,
-                    tier=tier,
-                    repetition_index=index,
-                    warmup=False,
-                    model_path=model_path,
-                    output_dir=results_root,
-                    resume=resume,
-                    timeout_seconds=row_timeout_seconds,
-                    cleanup_grace_seconds=cleanup_grace_seconds,
-                    launcher=launcher,
-                )
-                tier_results.append(result)
-                if manifest.safety.stop_on_any_failed_row and not _row_is_ok(result):
-                    stopped = True
-                    break
-            if stopped:
-                break
-
-        postflight = assess_safety(manifest, workspace, include_download=False)
-        safe, blockers = _tier_is_safe(manifest, tuple(tier_results), postflight)
-        evaluator_blockers = _evaluator_failure_blockers(tuple(tier_results))
-        if evaluator_blockers:
-            safe = False
-            blockers = tuple(blockers) + evaluator_blockers
-        state["tiers"].append(
-            {
-                "tier": tier.value,
-                "status": "passed" if safe else "failed",
-                "run_ids": [result.entry.run_id for result in tier_results],
-                "maximum_observed_peak_memory_bytes": max(
-                    (
-                        peak
-                        for result in tier_results
-                        if (peak := _peak_bytes(result)) is not None
-                    ),
-                    default=None,
-                ),
-                "postflight": postflight.to_dict(),
-                "blockers": list(blockers),
-            }
-        )
-        atomic_write_text(
-            workspace / "state.json",
-            json.dumps(state, indent=2, sort_keys=False) + "\n",
-        )
-        if not safe:
-            remaining = [
-                later.name
-                for later in manifest.context_tiers
-                if later.order > tier_pin.order and later.order <= selected_max.order
-            ]
-            state["stopped_before_tier"] = remaining[0] if remaining else None
-            state["stopped_during"] = {
-                "tier": tier.value,
-                "phase": "measured_or_postflight",
-            }
-            state["unattempted_tiers"] = remaining
-            state["stop_reasons"] = list(blockers)
-            break
-
-    state["ended_at"] = utc_now_iso()
-    state["status"] = "stopped" if state["stop_reasons"] else "completed"
-    atomic_write_text(
-        workspace / "state.json", json.dumps(state, indent=2, sort_keys=False) + "\n"
+    return run_tiers(
+        manifest,
+        state=state,
+        workspace=workspace,
+        max_tier=max_tier,
+        resume=resume,
+        run_row=run_row,
+        assess=lambda: assess_safety(manifest, workspace, include_download=False),
+        row_ok=_row_is_ok,
+        describe_failure=_describe_warmup_failure,
+        extra_blockers=_evaluator_failure_blockers,
     )
-    return state
 
 
 def _read_manifest(path: Path) -> LabManifest:

@@ -46,6 +46,7 @@ from ..core import (
 )
 from ..manifest import LabManifest
 from ..run_owner import describe_running_state
+from ..tier_lifecycle import RunStatus
 
 CONTROL_REPORT_SCHEMA_VERSION = "1"
 
@@ -94,7 +95,7 @@ def build_control_report(manifest: LabManifest, *, workspace: Path) -> dict[str,
         if state_path.exists()
         else {}
     )
-    if state.get("status") == "running":
+    if state.get("status") == RunStatus.RUNNING.value:
         raise LabError(
             "current benchmark run is incomplete; report generation is refused: "
             + describe_running_state(state)
