@@ -8,14 +8,12 @@ network access.
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import math
 import random
 import re
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, localcontext
@@ -29,6 +27,7 @@ from ..._artifact_io import (
     reject_non_finite_json_constant,
 )
 from ...collectors._shared import atomic_write_text
+from .. import call_ledger
 
 MODEL_ID = "Qwen/Qwen3-8B"
 MODEL_REVISION = "b968826d9c46dd6066d109eabc6255188de91218"
@@ -1190,28 +1189,124 @@ def build_default_plan() -> VLLMCompilePlan:
 build_plan = VLLMCompilePlan.create
 
 
-def _event_hash(event: dict[str, Any]) -> str:
-    material = dict(event)
-    material.pop("event_sha256", None)
-    return _sha256_json(material)
+def _event_hash(event: Mapping[str, Any]) -> str:
+    return call_ledger.event_hash(event, sha256_json=_sha256_json)
 
 
-def _seal(payload: dict[str, Any]) -> dict[str, Any]:
-    material = dict(payload)
-    material.pop("ledger_sha256", None)
-    material["ledger_sha256"] = _sha256_json(material)
-    return material
+def _seal(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return call_ledger.seal(payload, sha256_json=_sha256_json)
 
 
-@contextmanager
-def _locked(path: Path) -> Iterator[None]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as stream:
-        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+_locked = call_ledger.locked
+
+_LEDGER_DIALECT = call_ledger.LedgerDialect(
+    error=VLLMCompileContractError,
+    id_field="command_id",
+    safe_id=_SAFE_ID,
+    sha256_json=_sha256_json,
+    messages=call_ledger.ReplayMessages(
+        event_not_object="lifecycle event must be an object",
+        event_index="lifecycle event index is invalid",
+        event_chain="lifecycle event chain is broken",
+        event_hash="lifecycle event hash does not verify",
+        event_identity="lifecycle event command identity is invalid",
+        event_type="lifecycle event type is invalid",
+        reserve_lifecycle="lifecycle event lifecycle_id is not in the plan",
+        reserve_replayed="lifecycle reservation was replayed",
+        reserve_duplicate="lifecycle event command identity is duplicated",
+        complete_unknown="lifecycle completion is unknown",
+        complete_replayed="lifecycle completion was replayed",
+        abort_unknown="lifecycle abort is unknown",
+        abort_replayed="lifecycle abort was replayed",
+    ),
+)
+
+
+def _planned_ledger_entry(lifecycle: BudgetLifecycle) -> dict[str, Any]:
+    return {
+        **lifecycle.to_dict(),
+        "status": call_ledger.PLANNED,
+        "command_id": None,
+        "reserved_at": None,
+        "completed_at": None,
+        "aborted_at": None,
+        "actual_seconds": None,
+        "actual_cost_usd": None,
+        "abort_reason": None,
+        "argv_sha256": None,
+    }
+
+
+def _check_reserve_event(
+    raw: Mapping[str, Any], entry: Mapping[str, Any]
+) -> tuple[Decimal, dict[str, Any]]:
+    if raw.get("line_id") != entry["line_id"]:
+        raise VLLMCompileContractError(
+            "lifecycle event line_id does not match the planned lifecycle"
+        )
+    reserved = _decimal(
+        raw.get("reserved_usd"),
+        field="lifecycle event reserved_usd",
+        positive=True,
+    )
+    if reserved != _decimal(
+        entry["ceiling_usd"],
+        field="planned lifecycle ceiling_usd",
+        positive=True,
+    ):
+        raise VLLMCompileContractError(
+            "lifecycle event reservation differs from its planned ceiling"
+        )
+    _timestamp(raw.get("reserved_at"), field="reserved_at")
+    argv_sha256 = raw.get("argv_sha256")
+    if not isinstance(argv_sha256, str) or _SHA256.fullmatch(argv_sha256) is None:
+        raise VLLMCompileContractError("lifecycle reservation argv hash is invalid")
+    return reserved, {"reserved_at": raw["reserved_at"], "argv_sha256": argv_sha256}
+
+
+def _check_complete_event(
+    raw: Mapping[str, Any], entry: Mapping[str, Any]
+) -> dict[str, Any]:
+    _timestamp(raw.get("completed_at"), field="completed_at")
+    actual_seconds = raw.get("actual_seconds")
+    if (
+        isinstance(actual_seconds, bool)
+        or not isinstance(actual_seconds, int)
+        or actual_seconds < 0
+        or actual_seconds > entry["planned_seconds"]
+    ):
+        raise VLLMCompileContractError("lifecycle completion actual_seconds is invalid")
+    actual_cost = _decimal(
+        raw.get("actual_cost_usd"),
+        field="lifecycle event actual_cost_usd",
+    )
+    if actual_cost != _cost_for_seconds(actual_seconds):
+        raise VLLMCompileContractError(
+            "lifecycle completion actual_cost_usd does not match actual_seconds"
+        )
+    if actual_cost > _decimal(
+        entry["ceiling_usd"],
+        field="planned lifecycle ceiling_usd",
+        positive=True,
+    ):
+        raise VLLMCompileContractError(
+            "lifecycle completion actual_cost_usd exceeds the reserved ceiling"
+        )
+    return {
+        "completed_at": raw["completed_at"],
+        "actual_seconds": actual_seconds,
+        "actual_cost_usd": raw["actual_cost_usd"],
+    }
+
+
+def _check_abort_event(
+    raw: Mapping[str, Any], entry: Mapping[str, Any]
+) -> dict[str, Any]:
+    _timestamp(raw.get("aborted_at"), field="aborted_at")
+    reason = raw.get("abort_reason")
+    if not isinstance(reason, str) or not reason:
+        raise VLLMCompileContractError("lifecycle abort reason must be non-empty")
+    return {"aborted_at": raw["aborted_at"], "abort_reason": reason}
 
 
 class LifecycleBudgetLedger:
@@ -1264,18 +1359,7 @@ class LifecycleBudgetLedger:
 
     def _initial_payload(self) -> dict[str, Any]:
         entries = [
-            {
-                **lifecycle.to_dict(),
-                "status": "planned",
-                "command_id": None,
-                "reserved_at": None,
-                "completed_at": None,
-                "aborted_at": None,
-                "actual_seconds": None,
-                "actual_cost_usd": None,
-                "abort_reason": None,
-                "argv_sha256": None,
-            }
+            _planned_ledger_entry(lifecycle)
             for lifecycle in self.plan.budget_lifecycles
         ]
         return {
@@ -1379,142 +1463,17 @@ class LifecycleBudgetLedger:
         return payload
 
     def _replay_events(self, events: Sequence[Any]) -> dict[str, Any]:
-        entries = {
-            lifecycle.lifecycle_id: {
-                **lifecycle.to_dict(),
-                "status": "planned",
-                "command_id": None,
-                "reserved_at": None,
-                "completed_at": None,
-                "aborted_at": None,
-                "actual_seconds": None,
-                "actual_cost_usd": None,
-                "abort_reason": None,
-                "argv_sha256": None,
-            }
-            for lifecycle in self.plan.budget_lifecycles
-        }
-        total = Decimal()
-        previous: str | None = None
-        commands: dict[str, str] = {}
-        for index, raw in enumerate(events, start=1):
-            if not isinstance(raw, dict):
-                raise VLLMCompileContractError("lifecycle event must be an object")
-            if raw.get("index") != index:
-                raise VLLMCompileContractError("lifecycle event index is invalid")
-            if raw.get("previous_event_sha256") != previous:
-                raise VLLMCompileContractError("lifecycle event chain is broken")
-            if raw.get("event_sha256") != _event_hash(raw):
-                raise VLLMCompileContractError("lifecycle event hash does not verify")
-            event_type = raw.get("event_type")
-            command_id = raw.get("command_id")
-            if not isinstance(command_id, str) or not _SAFE_ID.fullmatch(command_id):
-                raise VLLMCompileContractError(
-                    "lifecycle event command identity is invalid"
-                )
-            if event_type == "reserve":
-                lifecycle_id = raw.get("lifecycle_id")
-                line_id = raw.get("line_id")
-                if lifecycle_id not in entries:
-                    raise VLLMCompileContractError(
-                        "lifecycle event lifecycle_id is not in the plan"
-                    )
-                entry = entries[lifecycle_id]
-                if entry["status"] != "planned":
-                    raise VLLMCompileContractError("lifecycle reservation was replayed")
-                if command_id in commands:
-                    raise VLLMCompileContractError(
-                        "lifecycle event command identity is duplicated"
-                    )
-                if line_id != entry["line_id"]:
-                    raise VLLMCompileContractError(
-                        "lifecycle event line_id does not match the planned lifecycle"
-                    )
-                reserved = _decimal(
-                    raw.get("reserved_usd"),
-                    field="lifecycle event reserved_usd",
-                    positive=True,
-                )
-                if reserved != _decimal(
-                    entry["ceiling_usd"],
-                    field="planned lifecycle ceiling_usd",
-                    positive=True,
-                ):
-                    raise VLLMCompileContractError(
-                        "lifecycle event reservation differs from its planned ceiling"
-                    )
-                _timestamp(raw.get("reserved_at"), field="reserved_at")
-                argv_sha256 = raw.get("argv_sha256")
-                if (
-                    not isinstance(argv_sha256, str)
-                    or _SHA256.fullmatch(argv_sha256) is None
-                ):
-                    raise VLLMCompileContractError(
-                        "lifecycle reservation argv hash is invalid"
-                    )
-                entry["status"] = "reserved"
-                entry["command_id"] = command_id
-                entry["reserved_at"] = raw["reserved_at"]
-                entry["argv_sha256"] = argv_sha256
-                commands[command_id] = lifecycle_id
-                total += reserved
-            elif event_type == "complete":
-                if command_id not in commands:
-                    raise VLLMCompileContractError("lifecycle completion is unknown")
-                entry = entries[commands[command_id]]
-                if entry["status"] != "reserved":
-                    raise VLLMCompileContractError("lifecycle completion was replayed")
-                _timestamp(raw.get("completed_at"), field="completed_at")
-                actual_seconds = raw.get("actual_seconds")
-                if (
-                    isinstance(actual_seconds, bool)
-                    or not isinstance(actual_seconds, int)
-                    or actual_seconds < 0
-                    or actual_seconds > entry["planned_seconds"]
-                ):
-                    raise VLLMCompileContractError(
-                        "lifecycle completion actual_seconds is invalid"
-                    )
-                actual_cost = _decimal(
-                    raw.get("actual_cost_usd"),
-                    field="lifecycle event actual_cost_usd",
-                )
-                if actual_cost != _cost_for_seconds(actual_seconds):
-                    raise VLLMCompileContractError(
-                        "lifecycle completion actual_cost_usd does not match "
-                        "actual_seconds"
-                    )
-                if actual_cost > _decimal(
-                    entry["ceiling_usd"],
-                    field="planned lifecycle ceiling_usd",
-                    positive=True,
-                ):
-                    raise VLLMCompileContractError(
-                        "lifecycle completion actual_cost_usd exceeds the "
-                        "reserved ceiling"
-                    )
-                entry["status"] = "completed"
-                entry["completed_at"] = raw["completed_at"]
-                entry["actual_seconds"] = actual_seconds
-                entry["actual_cost_usd"] = raw["actual_cost_usd"]
-            elif event_type == "abort":
-                if command_id not in commands:
-                    raise VLLMCompileContractError("lifecycle abort is unknown")
-                entry = entries[commands[command_id]]
-                if entry["status"] != "reserved":
-                    raise VLLMCompileContractError("lifecycle abort was replayed")
-                _timestamp(raw.get("aborted_at"), field="aborted_at")
-                reason = raw.get("abort_reason")
-                if not isinstance(reason, str) or not reason:
-                    raise VLLMCompileContractError(
-                        "lifecycle abort reason must be non-empty"
-                    )
-                entry["status"] = "aborted"
-                entry["aborted_at"] = raw["aborted_at"]
-                entry["abort_reason"] = reason
-            else:
-                raise VLLMCompileContractError("lifecycle event type is invalid")
-            previous = raw["event_sha256"]
+        entries, total = call_ledger.replay_events(
+            events,
+            entries={
+                lifecycle.lifecycle_id: _planned_ledger_entry(lifecycle)
+                for lifecycle in self.plan.budget_lifecycles
+            },
+            dialect=_LEDGER_DIALECT,
+            check_reserve=_check_reserve_event,
+            check_complete=_check_complete_event,
+            check_abort=_check_abort_event,
+        )
         return {"entries": entries, "reserved_usd": total}
 
     def snapshot(self) -> dict[str, Any]:
@@ -1531,8 +1490,7 @@ class LifecycleBudgetLedger:
         argv: Sequence[str],
         reserved_at: str,
     ) -> dict[str, Any]:
-        if not isinstance(command_id, str) or not _SAFE_ID.fullmatch(command_id):
-            raise VLLMCompileContractError("command_id is not a safe stable identity")
+        call_ledger.require_safe_identity(command_id, dialect=_LEDGER_DIALECT)
         if lifecycle_id not in self._lifecycle_by_id:
             raise VLLMCompileContractError(
                 "reservation lifecycle_id is not in the plan"
@@ -1555,31 +1513,21 @@ class LifecycleBudgetLedger:
         _timestamp(reserved_at, field="reserved_at")
         with _locked(self.lock_path):
             payload = self._read()
-            entries = {
-                entry["lifecycle_id"]: entry
-                for entry in payload["entries"]
-                if isinstance(entry, dict)
-            }
-            entry = entries[lifecycle_id]
-            if entry["status"] != "planned":
-                raise VLLMCompileContractError(
-                    "planned lifecycle is already reserved or completed"
-                )
-            if any(event["command_id"] == command_id for event in payload["events"]):
-                raise VLLMCompileContractError(
-                    f"command {command_id!r} is already reserved"
-                )
+            entry = call_ledger.reservable_entry(
+                payload,
+                lifecycle_id=lifecycle_id,
+                identity=command_id,
+                dialect=_LEDGER_DIALECT,
+            )
             already = _decimal(payload["reserved_usd"], field="ledger reserved_usd")
             if already + ceiling_usd > HARD_CAP_USD:
                 raise VLLMCompileContractError(
                     "pre-command reservation refused: hard cap would be exceeded"
                 )
-            previous = (
-                payload["events"][-1]["event_sha256"] if payload["events"] else None
-            )
+            index, previous = call_ledger.next_link(payload)
             event = {
-                "index": len(payload["events"]) + 1,
-                "event_type": "reserve",
+                "index": index,
+                "event_type": call_ledger.RESERVE,
                 "command_id": command_id,
                 "line_id": line_id,
                 "lifecycle_id": lifecycle_id,
@@ -1588,13 +1536,17 @@ class LifecycleBudgetLedger:
                 "argv_sha256": _sha256_json(list(argv)),
                 "previous_event_sha256": previous,
             }
-            event["event_sha256"] = _event_hash(event)
-            entry["status"] = "reserved"
-            entry["command_id"] = command_id
-            entry["reserved_at"] = reserved_at
-            entry["argv_sha256"] = event["argv_sha256"]
-            payload["events"].append(event)
-            payload["revision"] += 1
+            call_ledger.commit_event(payload, event, sha256_json=_sha256_json)
+            call_ledger.apply_transition(
+                entry,
+                call_ledger.RESERVE,
+                dialect=_LEDGER_DIALECT,
+                identity=command_id,
+                updates={
+                    "reserved_at": reserved_at,
+                    "argv_sha256": event["argv_sha256"],
+                },
+            )
             payload["reserved_usd"] = canonical_decimal(already + ceiling_usd)
             payload["remaining_usd"] = canonical_decimal(
                 HARD_CAP_USD - already - ceiling_usd
@@ -1609,8 +1561,7 @@ class LifecycleBudgetLedger:
         completed_at: str,
         actual_seconds: int,
     ) -> dict[str, Any]:
-        if not isinstance(command_id, str) or not _SAFE_ID.fullmatch(command_id):
-            raise VLLMCompileContractError("command_id is not a safe stable identity")
+        call_ledger.require_safe_identity(command_id, dialect=_LEDGER_DIALECT)
         _timestamp(completed_at, field="completed_at")
         if (
             isinstance(actual_seconds, bool)
@@ -1622,79 +1573,71 @@ class LifecycleBudgetLedger:
             )
         with _locked(self.lock_path):
             payload = self._read()
-            entries = [
-                entry
-                for entry in payload["entries"]
-                if entry["command_id"] == command_id
-            ]
-            if len(entries) != 1:
-                raise VLLMCompileContractError("completion command_id is unknown")
-            entry = entries[0]
-            if entry["status"] != "reserved":
-                raise VLLMCompileContractError(
-                    "completion command_id is not reservable"
-                )
+            entry = call_ledger.settleable_entry(
+                payload,
+                identity=command_id,
+                event_type=call_ledger.COMPLETE,
+                dialect=_LEDGER_DIALECT,
+            )
             if actual_seconds > entry["planned_seconds"]:
                 raise VLLMCompileContractError(
                     "actual_seconds exceeds the planned lifecycle ceiling"
                 )
-            previous = (
-                payload["events"][-1]["event_sha256"] if payload["events"] else None
-            )
+            index, previous = call_ledger.next_link(payload)
             event = {
-                "index": len(payload["events"]) + 1,
-                "event_type": "complete",
+                "index": index,
+                "event_type": call_ledger.COMPLETE,
                 "command_id": command_id,
                 "completed_at": completed_at,
                 "actual_seconds": actual_seconds,
                 "actual_cost_usd": canonical_decimal(_cost_for_seconds(actual_seconds)),
                 "previous_event_sha256": previous,
             }
-            event["event_sha256"] = _event_hash(event)
-            entry["status"] = "completed"
-            entry["completed_at"] = completed_at
-            entry["actual_seconds"] = actual_seconds
-            entry["actual_cost_usd"] = event["actual_cost_usd"]
-            payload["events"].append(event)
-            payload["revision"] += 1
+            call_ledger.commit_event(payload, event, sha256_json=_sha256_json)
+            call_ledger.apply_transition(
+                entry,
+                call_ledger.COMPLETE,
+                dialect=_LEDGER_DIALECT,
+                identity=command_id,
+                updates={
+                    "completed_at": completed_at,
+                    "actual_seconds": actual_seconds,
+                    "actual_cost_usd": event["actual_cost_usd"],
+                },
+            )
             self._write(payload)
             return dict(event)
 
     def abort(self, command_id: str, *, aborted_at: str, reason: str) -> dict[str, Any]:
-        if not isinstance(command_id, str) or not _SAFE_ID.fullmatch(command_id):
-            raise VLLMCompileContractError("command_id is not a safe stable identity")
+        call_ledger.require_safe_identity(command_id, dialect=_LEDGER_DIALECT)
         _timestamp(aborted_at, field="aborted_at")
         if not isinstance(reason, str) or not reason:
             raise VLLMCompileContractError("abort reason must be a non-empty string")
         with _locked(self.lock_path):
             payload = self._read()
-            entries = [
-                entry
-                for entry in payload["entries"]
-                if entry["command_id"] == command_id
-            ]
-            if len(entries) != 1:
-                raise VLLMCompileContractError("abort command_id is unknown")
-            entry = entries[0]
-            if entry["status"] != "reserved":
-                raise VLLMCompileContractError("abort command_id is not reservable")
-            previous = (
-                payload["events"][-1]["event_sha256"] if payload["events"] else None
+            entry = call_ledger.settleable_entry(
+                payload,
+                identity=command_id,
+                event_type=call_ledger.ABORT,
+                dialect=_LEDGER_DIALECT,
             )
+            index, previous = call_ledger.next_link(payload)
             event = {
-                "index": len(payload["events"]) + 1,
-                "event_type": "abort",
+                "index": index,
+                "event_type": call_ledger.ABORT,
                 "command_id": command_id,
                 "aborted_at": aborted_at,
                 "abort_reason": reason,
                 "previous_event_sha256": previous,
             }
-            event["event_sha256"] = _event_hash(event)
-            entry["status"] = "aborted"
-            entry["aborted_at"] = aborted_at
-            entry["abort_reason"] = reason
-            payload["events"].append(event)
-            payload["revision"] += 1
+            call_ledger.commit_event(payload, event, sha256_json=_sha256_json)
+            call_ledger.apply_transition(
+                entry,
+                call_ledger.ABORT,
+                dialect=_LEDGER_DIALECT,
+                identity=command_id,
+                updates={"aborted_at": aborted_at, "abort_reason": reason},
+            )
             self._write(payload)
             return dict(event)
 

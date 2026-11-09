@@ -20,14 +20,12 @@ verifiers over receipts an authorized caller supplies later.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import hashlib
 import inspect
 import json
 import re
 import sys
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, ROUND_UP, Decimal, localcontext
 from pathlib import Path
@@ -40,6 +38,7 @@ from ..._artifact_io import (
     reject_non_finite_json_constant,
 )
 from ...collectors._shared import atomic_write_text
+from .. import call_ledger
 from . import vllm_compile
 from .vllm_compile import (
     ANALYSIS_SEED,
@@ -2591,25 +2590,36 @@ def offline_plan_document() -> dict[str, Any]:
 
 
 def _event_hash(event: Mapping[str, Any]) -> str:
-    material = {key: value for key, value in event.items() if key != "event_sha256"}
-    return _sha256_json(material)
+    return call_ledger.event_hash(event, sha256_json=_sha256_json)
 
 
 def _seal(payload: Mapping[str, Any]) -> dict[str, Any]:
-    material = {key: value for key, value in payload.items() if key != "ledger_sha256"}
-    material["ledger_sha256"] = _sha256_json(material)
-    return material
+    return call_ledger.seal(payload, sha256_json=_sha256_json)
 
 
-@contextmanager
-def _locked(path: Path) -> Iterator[None]:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+", encoding="utf-8") as stream:
-        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+_locked = call_ledger.locked
+
+_LEDGER_DIALECT = call_ledger.LedgerDialect(
+    error=ModalL4ContractError,
+    id_field="call_id",
+    safe_id=_SAFE_ID,
+    sha256_json=_sha256_json,
+    messages=call_ledger.ReplayMessages(
+        event_not_object="ledger event must be an object",
+        event_index="ledger event index is invalid",
+        event_chain="ledger event chain is broken",
+        event_hash="ledger event hash does not verify",
+        event_identity="ledger event call identity is invalid",
+        event_type="ledger event type is invalid",
+        reserve_lifecycle="ledger event lifecycle_id is not in the plan",
+        reserve_replayed="ledger reservation was replayed",
+        reserve_duplicate="ledger call identity is duplicated",
+        complete_unknown="ledger completion is unknown",
+        complete_replayed="ledger completion was replayed",
+        abort_unknown="ledger abort is unknown",
+        abort_replayed="ledger abort was replayed",
+    ),
+)
 
 
 def _planned_ledger_entry(lifecycle: ModalLifecycle) -> dict[str, Any]:
@@ -2660,14 +2670,64 @@ def _initial_ledger_payload(
 def _append_ledger_event(
     payload: dict[str, Any], event: dict[str, Any]
 ) -> dict[str, Any]:
-    event["previous_event_sha256"] = (
-        payload["events"][-1]["event_sha256"] if payload["events"] else None
+    index, previous = call_ledger.next_link(payload)
+    event["previous_event_sha256"] = previous
+    event["index"] = index
+    return call_ledger.commit_event(payload, event, sha256_json=_sha256_json)
+
+
+def _check_reserve_event(
+    raw: Mapping[str, Any], entry: Mapping[str, Any]
+) -> tuple[Decimal, dict[str, Any]]:
+    reserved = _require_decimal(
+        raw.get("reserved_usd"), field="ledger event reserved_usd"
     )
-    event["index"] = len(payload["events"]) + 1
-    event["event_sha256"] = _event_hash(event)
-    payload["events"].append(event)
-    payload["revision"] += 1
-    return event
+    if reserved != _require_decimal(
+        entry["ceiling_usd"], field="planned lifecycle ceiling_usd"
+    ):
+        raise ModalL4ContractError(
+            "ledger reservation differs from its planned ceiling"
+        )
+    _require_timestamp(raw.get("reserved_at"), field="reserved_at")
+    return reserved, {"reserved_at": raw["reserved_at"]}
+
+
+def _check_complete_event(
+    raw: Mapping[str, Any], entry: Mapping[str, Any]
+) -> dict[str, Any]:
+    _require_timestamp(raw.get("completed_at"), field="completed_at")
+    actual_seconds = raw.get("actual_seconds")
+    if (
+        isinstance(actual_seconds, bool)
+        or not isinstance(actual_seconds, int)
+        or actual_seconds < 0
+        or actual_seconds > entry["planned_seconds"]
+    ):
+        raise ModalL4ContractError("ledger completion actual_seconds is invalid")
+    stage = STAGE_BY_ID[entry["stage_id"]]
+    actual_cost = _require_decimal(
+        raw.get("actual_cost_usd"), field="ledger event actual_cost_usd"
+    )
+    if actual_cost != _cost(actual_seconds, stage.rate_usd_per_second):
+        raise ModalL4ContractError(
+            "ledger completion cost does not match its stage rate"
+        )
+    return {
+        "completed_at": raw["completed_at"],
+        "actual_seconds": actual_seconds,
+        "actual_cost_usd": raw["actual_cost_usd"],
+        "observed_duration_provenance": raw.get("duration_provenance"),
+    }
+
+
+def _check_abort_event(
+    raw: Mapping[str, Any], entry: Mapping[str, Any]
+) -> dict[str, Any]:
+    _require_timestamp(raw.get("aborted_at"), field="aborted_at")
+    reason = raw.get("abort_reason")
+    if not isinstance(reason, str) or not reason:
+        raise ModalL4ContractError("ledger abort reason must be non-empty")
+    return {"aborted_at": raw["aborted_at"], "abort_reason": reason}
 
 
 def _replay_ledger_events(
@@ -2685,94 +2745,14 @@ def _replay_ledger_events(
         lifecycle.lifecycle_id: _planned_ledger_entry(lifecycle)
         for lifecycle in lifecycles
     }
-    total = Decimal()
-    previous: str | None = None
-    calls: dict[str, str] = {}
-    for index, raw in enumerate(events, start=1):
-        if not isinstance(raw, dict):
-            raise ModalL4ContractError("ledger event must be an object")
-        if raw.get("index") != index:
-            raise ModalL4ContractError("ledger event index is invalid")
-        if raw.get("previous_event_sha256") != previous:
-            raise ModalL4ContractError("ledger event chain is broken")
-        if raw.get("event_sha256") != _event_hash(raw):
-            raise ModalL4ContractError("ledger event hash does not verify")
-        call_id = raw.get("call_id")
-        if not isinstance(call_id, str) or _SAFE_ID.fullmatch(call_id) is None:
-            raise ModalL4ContractError("ledger event call identity is invalid")
-        event_type = raw.get("event_type")
-        if event_type == "reserve":
-            lifecycle_id = raw.get("lifecycle_id")
-            if lifecycle_id not in entries:
-                raise ModalL4ContractError(
-                    "ledger event lifecycle_id is not in the plan"
-                )
-            entry = entries[lifecycle_id]
-            if entry["status"] != "planned":
-                raise ModalL4ContractError("ledger reservation was replayed")
-            if call_id in calls:
-                raise ModalL4ContractError("ledger call identity is duplicated")
-            reserved = _require_decimal(
-                raw.get("reserved_usd"), field="ledger event reserved_usd"
-            )
-            if reserved != _require_decimal(
-                entry["ceiling_usd"], field="planned lifecycle ceiling_usd"
-            ):
-                raise ModalL4ContractError(
-                    "ledger reservation differs from its planned ceiling"
-                )
-            _require_timestamp(raw.get("reserved_at"), field="reserved_at")
-            entry["status"] = "reserved"
-            entry["call_id"] = call_id
-            entry["reserved_at"] = raw["reserved_at"]
-            calls[call_id] = lifecycle_id
-            total += reserved
-        elif event_type == "complete":
-            if call_id not in calls:
-                raise ModalL4ContractError("ledger completion is unknown")
-            entry = entries[calls[call_id]]
-            if entry["status"] != "reserved":
-                raise ModalL4ContractError("ledger completion was replayed")
-            _require_timestamp(raw.get("completed_at"), field="completed_at")
-            actual_seconds = raw.get("actual_seconds")
-            if (
-                isinstance(actual_seconds, bool)
-                or not isinstance(actual_seconds, int)
-                or actual_seconds < 0
-                or actual_seconds > entry["planned_seconds"]
-            ):
-                raise ModalL4ContractError(
-                    "ledger completion actual_seconds is invalid"
-                )
-            stage = STAGE_BY_ID[entry["stage_id"]]
-            actual_cost = _require_decimal(
-                raw.get("actual_cost_usd"), field="ledger event actual_cost_usd"
-            )
-            if actual_cost != _cost(actual_seconds, stage.rate_usd_per_second):
-                raise ModalL4ContractError(
-                    "ledger completion cost does not match its stage rate"
-                )
-            entry["status"] = "completed"
-            entry["completed_at"] = raw["completed_at"]
-            entry["actual_seconds"] = actual_seconds
-            entry["actual_cost_usd"] = raw["actual_cost_usd"]
-            entry["observed_duration_provenance"] = raw.get("duration_provenance")
-        elif event_type == "abort":
-            if call_id not in calls:
-                raise ModalL4ContractError("ledger abort is unknown")
-            entry = entries[calls[call_id]]
-            if entry["status"] != "reserved":
-                raise ModalL4ContractError("ledger abort was replayed")
-            _require_timestamp(raw.get("aborted_at"), field="aborted_at")
-            reason = raw.get("abort_reason")
-            if not isinstance(reason, str) or not reason:
-                raise ModalL4ContractError("ledger abort reason must be non-empty")
-            entry["status"] = "aborted"
-            entry["aborted_at"] = raw["aborted_at"]
-            entry["abort_reason"] = reason
-        else:
-            raise ModalL4ContractError("ledger event type is invalid")
-        previous = raw["event_sha256"]
+    entries, total = call_ledger.replay_events(
+        events,
+        entries=entries,
+        dialect=_LEDGER_DIALECT,
+        check_reserve=_check_reserve_event,
+        check_complete=_check_complete_event,
+        check_abort=_check_abort_event,
+    )
     return {"entries": entries, "reserved_usd": total}
 
 
@@ -2904,9 +2884,13 @@ def build_completed_ledger_document(
                 "reserved_at": reserved_at,
             },
         )
-        entry["status"] = "reserved"
-        entry["call_id"] = call_id
-        entry["reserved_at"] = reserved_at
+        call_ledger.apply_transition(
+            entry,
+            call_ledger.RESERVE,
+            dialect=_LEDGER_DIALECT,
+            identity=call_id,
+            updates={"reserved_at": reserved_at},
+        )
         payload["reserved_usd"] = canonical_decimal(already + lifecycle.ceiling_usd)
         payload["remaining_usd"] = canonical_decimal(
             HARD_CAP_USD - already - lifecycle.ceiling_usd
@@ -2927,12 +2911,19 @@ def build_completed_ledger_document(
                 "actual_cost_usd": actual_cost,
             },
         )
-        entry["status"] = "completed"
-        entry["completed_at"] = completed_at
-        entry["actual_seconds"] = seconds
-        entry["actual_cost_usd"] = actual_cost
-        entry["observed_duration_provenance"] = (
-            "client_observed_monotonic_ceiling_seconds"
+        call_ledger.apply_transition(
+            entry,
+            call_ledger.COMPLETE,
+            dialect=_LEDGER_DIALECT,
+            identity=call_id,
+            updates={
+                "completed_at": completed_at,
+                "actual_seconds": seconds,
+                "actual_cost_usd": actual_cost,
+                "observed_duration_provenance": (
+                    "client_observed_monotonic_ceiling_seconds"
+                ),
+            },
         )
     return _seal(payload)
 
@@ -3059,25 +3050,19 @@ class ModalApplicationLedger:
         lifecycle_id: str,
         reserved_at: str,
     ) -> dict[str, Any]:
-        if not isinstance(call_id, str) or _SAFE_ID.fullmatch(call_id) is None:
-            raise ModalL4ContractError("call_id is not a safe stable identity")
+        call_ledger.require_safe_identity(call_id, dialect=_LEDGER_DIALECT)
         if lifecycle_id not in self._lifecycle_by_id:
             raise ModalL4ContractError("reservation lifecycle_id is not in the plan")
         _require_timestamp(reserved_at, field="reserved_at")
         lifecycle = self._lifecycle_by_id[lifecycle_id]
         with _locked(self.lock_path):
             payload = self._read()
-            entry = next(
-                item
-                for item in payload["entries"]
-                if item["lifecycle_id"] == lifecycle_id
+            entry = call_ledger.reservable_entry(
+                payload,
+                lifecycle_id=lifecycle_id,
+                identity=call_id,
+                dialect=_LEDGER_DIALECT,
             )
-            if entry["status"] != "planned":
-                raise ModalL4ContractError(
-                    "planned lifecycle is already reserved or completed"
-                )
-            if any(event["call_id"] == call_id for event in payload["events"]):
-                raise ModalL4ContractError(f"call {call_id!r} is already reserved")
             already = _require_decimal(
                 payload["reserved_usd"], field="ledger reserved_usd"
             )
@@ -3096,9 +3081,13 @@ class ModalApplicationLedger:
                     "reserved_at": reserved_at,
                 },
             )
-            entry["status"] = "reserved"
-            entry["call_id"] = call_id
-            entry["reserved_at"] = reserved_at
+            call_ledger.apply_transition(
+                entry,
+                call_ledger.RESERVE,
+                dialect=_LEDGER_DIALECT,
+                identity=call_id,
+                updates={"reserved_at": reserved_at},
+            )
             payload["reserved_usd"] = canonical_decimal(already + lifecycle.ceiling_usd)
             payload["remaining_usd"] = canonical_decimal(
                 HARD_CAP_USD - already - lifecycle.ceiling_usd
@@ -3114,8 +3103,7 @@ class ModalApplicationLedger:
         actual_seconds: int,
         duration_provenance: str = "client_observed_monotonic_ceiling_seconds",
     ) -> dict[str, Any]:
-        if not isinstance(call_id, str) or _SAFE_ID.fullmatch(call_id) is None:
-            raise ModalL4ContractError("call_id is not a safe stable identity")
+        call_ledger.require_safe_identity(call_id, dialect=_LEDGER_DIALECT)
         _require_timestamp(completed_at, field="completed_at")
         if (
             isinstance(actual_seconds, bool)
@@ -3127,14 +3115,12 @@ class ModalApplicationLedger:
             raise ModalL4ContractError("duration_provenance must be a non-empty string")
         with _locked(self.lock_path):
             payload = self._read()
-            matches = [
-                item for item in payload["entries"] if item["call_id"] == call_id
-            ]
-            if len(matches) != 1:
-                raise ModalL4ContractError("completion call_id is unknown")
-            entry = matches[0]
-            if entry["status"] != "reserved":
-                raise ModalL4ContractError("completion call_id is not reservable")
+            entry = call_ledger.settleable_entry(
+                payload,
+                identity=call_id,
+                event_type=call_ledger.COMPLETE,
+                dialect=_LEDGER_DIALECT,
+            )
             if actual_seconds > entry["planned_seconds"]:
                 raise ModalL4ContractError(
                     "actual_seconds exceeds the planned lifecycle ceiling"
@@ -3153,30 +3139,34 @@ class ModalApplicationLedger:
                     ),
                 },
             )
-            entry["status"] = "completed"
-            entry["completed_at"] = completed_at
-            entry["actual_seconds"] = actual_seconds
-            entry["actual_cost_usd"] = event["actual_cost_usd"]
-            entry["observed_duration_provenance"] = duration_provenance
+            call_ledger.apply_transition(
+                entry,
+                call_ledger.COMPLETE,
+                dialect=_LEDGER_DIALECT,
+                identity=call_id,
+                updates={
+                    "completed_at": completed_at,
+                    "actual_seconds": actual_seconds,
+                    "actual_cost_usd": event["actual_cost_usd"],
+                    "observed_duration_provenance": duration_provenance,
+                },
+            )
             self._write(payload)
             return dict(event)
 
     def abort(self, call_id: str, *, aborted_at: str, reason: str) -> dict[str, Any]:
-        if not isinstance(call_id, str) or _SAFE_ID.fullmatch(call_id) is None:
-            raise ModalL4ContractError("call_id is not a safe stable identity")
+        call_ledger.require_safe_identity(call_id, dialect=_LEDGER_DIALECT)
         _require_timestamp(aborted_at, field="aborted_at")
         if not isinstance(reason, str) or not reason:
             raise ModalL4ContractError("abort reason must be a non-empty string")
         with _locked(self.lock_path):
             payload = self._read()
-            matches = [
-                item for item in payload["entries"] if item["call_id"] == call_id
-            ]
-            if len(matches) != 1:
-                raise ModalL4ContractError("abort call_id is unknown")
-            entry = matches[0]
-            if entry["status"] != "reserved":
-                raise ModalL4ContractError("abort call_id is not reservable")
+            entry = call_ledger.settleable_entry(
+                payload,
+                identity=call_id,
+                event_type=call_ledger.ABORT,
+                dialect=_LEDGER_DIALECT,
+            )
             event = self._append(
                 payload,
                 {
@@ -3186,9 +3176,13 @@ class ModalApplicationLedger:
                     "abort_reason": reason,
                 },
             )
-            entry["status"] = "aborted"
-            entry["aborted_at"] = aborted_at
-            entry["abort_reason"] = reason
+            call_ledger.apply_transition(
+                entry,
+                call_ledger.ABORT,
+                dialect=_LEDGER_DIALECT,
+                identity=call_id,
+                updates={"aborted_at": aborted_at, "abort_reason": reason},
+            )
             self._write(payload)
             return dict(event)
 
