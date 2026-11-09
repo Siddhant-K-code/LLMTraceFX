@@ -987,6 +987,7 @@ class HostOrchestrator:
 
         preflight = self.plan.budget_lifecycles[0]
         completed_cells: list[str] = []
+        failure: dict[str, str] | None = None
         resets = iter(
             item for item in self.plan.budget_lifecycles if item.line_id == "reset"
         )
