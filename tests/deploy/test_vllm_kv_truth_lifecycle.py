@@ -22,7 +22,7 @@ import subprocess
 import tarfile
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -33,7 +33,7 @@ from vllm_kv_truth import evidence, lifecycle
 
 VALID_HEAD = "a" * 40
 VALID_NONCE = "c" * 40
-BILLING_STARTED_AT = datetime(2030, 1, 1, tzinfo=timezone.utc)
+BILLING_STARTED_AT = datetime(2030, 1, 1, tzinfo=UTC)
 DERIVED_IMAGE_ID = "sha256:" + "2" * 64
 
 
@@ -645,7 +645,7 @@ class TestBudgetLedger:
         assert cutoffs.stage_budget_ok(now, 0) is False
 
     def test_fresh_vm_absolute_cap_uses_decimal_and_rounds_down(self) -> None:
-        boot = datetime(2026, 9, 6, 9, 43, 25, tzinfo=timezone.utc)
+        boot = datetime(2026, 9, 6, 9, 43, 25, tzinfo=UTC)
         cutoff = lifecycle.absolute_cap_cutoff(boot, Decimal("0.39"), Decimal("5.00"))
         assert lifecycle._canonical_timestamp(cutoff) == ("2026-09-06T22:32:38.846153Z")
 

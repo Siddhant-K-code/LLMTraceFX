@@ -71,7 +71,7 @@ import subprocess
 import tarfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_FLOOR, ROUND_HALF_EVEN, Decimal, InvalidOperation
 from enum import Enum
 from pathlib import Path
@@ -194,14 +194,12 @@ def _parse_utc(value: Any, *, field_name: str) -> datetime:
         ) from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise HostOrchestrationError(f"{field_name} must include a UTC offset")
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def _canonical_timestamp(value: datetime) -> str:
     return (
-        value.astimezone(timezone.utc)
-        .isoformat(timespec="microseconds")
-        .replace("+00:00", "Z")
+        value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
     )
 
 
@@ -442,7 +440,7 @@ SSH_KEYSCAN_ENVIRONMENT = {
 }
 
 
-class HostKeyTrustPolicy(str, Enum):
+class HostKeyTrustPolicy(str, Enum):  # noqa: UP042 - StrEnum changes str()
     PROVIDER_PINNED = "provider_pinned"
     TOFU_UNVERIFIED = "tofu_unverified"
 
@@ -737,7 +735,7 @@ _TOFU_CONFIG_REQUIRED_KEYS = frozenset(
 )
 
 
-class DockerExecutionMode(str, Enum):
+class DockerExecutionMode(str, Enum):  # noqa: UP042 - StrEnum changes str()
     """One preregistered, immutable way to invoke Docker on the remote host."""
 
     DIRECT = "direct"
@@ -1923,7 +1921,7 @@ def enroll_tofu_host_key(
     request_path: Path,
     runner: CommandRunner,
     *,
-    now_fn: NowFn = lambda: datetime.now(timezone.utc),
+    now_fn: NowFn = lambda: datetime.now(UTC),
 ) -> TofuEnrollmentReceipt:
     """Enroll one unauthenticated ED25519 key for one preregistered IP endpoint."""
 
@@ -1986,7 +1984,7 @@ def enroll_tofu_host_key(
         os.close(descriptor)
 
     known_hosts_sha256 = hashlib.sha256(known_hosts_content).hexdigest()
-    observed_at = now_fn().astimezone(timezone.utc)
+    observed_at = now_fn().astimezone(UTC)
     unsealed = {
         "schema_version": TOFU_ENROLLMENT_RECEIPT_SCHEMA_VERSION,
         "policy": HostKeyTrustPolicy.TOFU_UNVERIFIED.value,
@@ -2742,7 +2740,7 @@ def container_name(nonce: str, tag: str) -> str:
     return _require_label(f"kv-truth-{nonce}-{tag}"[:128], field_name="container_name")
 
 
-class OrchestratorState(str, Enum):
+class OrchestratorState(str, Enum):  # noqa: UP042 - StrEnum changes str()
     """The one-attempt run's coarse-grained state machine states."""
 
     PENDING = "pending"
@@ -2786,7 +2784,7 @@ class RemoteOrchestrator:
         config: ProtectedExecutionConfig,
         authorization: RunAuthorization,
         runner: CommandRunner,
-        now_fn: NowFn = lambda: datetime.now(timezone.utc),
+        now_fn: NowFn = lambda: datetime.now(UTC),
     ) -> None:
         self.config = config
         self.authorization = authorization
@@ -3219,8 +3217,8 @@ class RemoteOrchestrator:
             raise HostOrchestrationError("preflight Python version is not 3.12.x")
         if not markers["DOCKER_VERSION"]:
             raise HostOrchestrationError("preflight Docker version is empty")
-        now = datetime.fromtimestamp(int(markers["NOW_EPOCH"]), tz=timezone.utc)
-        boot = datetime.fromtimestamp(int(markers["BOOT_EPOCH"]), tz=timezone.utc)
+        now = datetime.fromtimestamp(int(markers["NOW_EPOCH"]), tz=UTC)
+        boot = datetime.fromtimestamp(int(markers["BOOT_EPOCH"]), tz=UTC)
         if abs((boot - self.authorization.billing_started_at).total_seconds()) > 2:
             raise HostOrchestrationError(
                 "preflight boot time does not match authorization"
