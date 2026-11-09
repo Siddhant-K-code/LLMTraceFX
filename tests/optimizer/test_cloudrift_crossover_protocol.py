@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -21,7 +21,7 @@ def _authorization(
     image_id: str = vllm_compile.DERIVED_IMAGE_ID,
     workspace: Path = Path("."),
 ) -> dict:
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     value = {
         "schema_version": "1",
         "protocol_id": vllm_compile.PROTOCOL_ID,
@@ -493,7 +493,7 @@ def test_late_start_refuses_measurement_but_still_runs_teardown(
     workspace = tmp_path / "workspace"
     for path in (repository, model, state):
         path.mkdir()
-    billing = datetime.now(timezone.utc) - timedelta(
+    billing = datetime.now(UTC) - timedelta(
         seconds=vllm_compile.ACTIVE_PLANNED_SECONDS - 100
     )
     authorization = _authorization(plan, workspace=workspace)
@@ -637,6 +637,75 @@ def test_preflight_failure_still_writes_receipt_and_runs_teardown(
     assert receipt["completed_cell_ids"] == []
     assert receipt["status"] == "incomplete"
     assert receipt["teardown_status"] == "local_cleanup_complete"
+
+
+def _teardown_failure_receipt(tmp_path: Path, *, fail_cell: bool) -> dict:
+    plan = vllm_compile.build_default_plan()
+    repository = tmp_path / "repository"
+    model = tmp_path / "model"
+    state = tmp_path / "state"
+    workspace = tmp_path / "workspace"
+    for path in (repository, model, state):
+        path.mkdir()
+    runner = FakeRunner(
+        head="a" * 40,
+        image_id=vllm_compile.DERIVED_IMAGE_ID,
+        output_dir=workspace / "raw",
+        fail_cell=fail_cell,
+    )
+    host = orchestrator.HostOrchestrator(
+        runner=runner,
+        plan=plan,
+        authorization=orchestrator.ExecutionAuthorization.from_dict(
+            _authorization(plan, workspace=workspace)
+        ),
+        repository=repository,
+        workspace=workspace,
+        model_path=model,
+        state_path=state,
+        image_reference="local-image",
+        **_signature_arguments(tmp_path),
+        environ={},
+    )
+
+    def failing_teardown() -> None:
+        raise orchestrator.CrossoverOrchestratorError("cell cache path is unsafe")
+
+    host._teardown_local = failing_teardown
+    with pytest.raises(orchestrator.CrossoverOrchestratorError, match="incomplete"):
+        host.execute()
+    receipt = json.loads(
+        (workspace / "orchestration-receipt.json").read_text(encoding="utf-8")
+    )
+    assert receipt["orchestration_sha256"] == orchestrator._sha256_json(
+        {key: value for key, value in receipt.items() if key != "orchestration_sha256"}
+    )
+    return receipt
+
+
+def test_teardown_only_failure_records_a_distinct_failure_reason(
+    tmp_path: Path,
+) -> None:
+    receipt = _teardown_failure_receipt(tmp_path, fail_cell=False)
+    assert len(receipt["completed_cell_ids"]) == 32
+    assert receipt["status"] == "incomplete"
+    assert receipt["teardown_status"] == "local_cleanup_incomplete"
+    assert receipt["failure"] == {
+        "type": "CrossoverOrchestratorError",
+        "reason": "teardown_failed",
+    }
+
+
+def test_operation_failure_stays_primary_when_teardown_also_fails(
+    tmp_path: Path,
+) -> None:
+    receipt = _teardown_failure_receipt(tmp_path, fail_cell=True)
+    assert receipt["status"] == "incomplete"
+    assert receipt["teardown_status"] == "local_cleanup_incomplete"
+    assert receipt["failure"] == {
+        "type": "CrossoverOrchestratorError",
+        "reason": "execution_failed",
+    }
 
 
 def test_offline_bundle_is_deterministic_and_tamper_evident(tmp_path: Path) -> None:
