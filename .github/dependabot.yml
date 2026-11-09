@@ -24,6 +24,14 @@ updates:
           - "ruff"
           - "pytest*"
           - "pre-commit"
+      # The mlx extra pins all three exactly, and newer mlx-vlm and mlx-lm
+      # releases require a newer mlx. Bumped one at a time they can never
+      # resolve, so the weekly update fails instead of opening a PR.
+      mlx-runtime:
+        patterns:
+          - "mlx"
+          - "mlx-lm"
+          - "mlx-vlm"
 
   - package-ecosystem: "github-actions"
     directory: "/"
