@@ -1,9 +1,14 @@
 {
   "files": [
     {
-      "bytes": 80841,
+      "bytes": 10023,
+      "path": "llmtracefx/optimizer/lab/call_ledger.py",
+      "sha256": "sha256:ab4ed9ba993078586e93f48499dd9531cb8236728a4986c57cb604fe7686a7db"
+    },
+    {
+      "bytes": 76864,
       "path": "llmtracefx/optimizer/lab/qwen3_8b/vllm_compile.py",
-      "sha256": "sha256:a3e1a7e949af8eb147c25d6ba2ad5ad6655fae9ed87f36ae11d15b249bab71ea"
+      "sha256": "sha256:0b020994acafca975a2cdcbd5e0329b36d28e6850cd1b2930643f985b67c02ba"
     },
     {
       "bytes": 44191,
@@ -16,9 +21,9 @@
       "sha256": "sha256:2910aa436fb89bfb90559ca2ce1d2d3d6364889bc3b409181eee12988435e639"
     },
     {
-      "bytes": 25548,
+      "bytes": 25595,
       "path": "llmtracefx/optimizer/lab/qwen3_8b/cloudrift_crossover_evidence.py",
-      "sha256": "sha256:018715b12728ddcfa7e0efc5028b79f8a17706b9fc2e53e3f85a637988ce70a7"
+      "sha256": "sha256:bde64e068c5eadb158faf4d0b6f8665565f8ad2f39b2bdf613274909e42df99b"
     },
     {
       "bytes": 172167,
@@ -28,5 +33,5 @@
   ],
   "implementation_base_head": "266b42bc7659b3ab147f199f293bfc033324f763",
   "schema_version": "1",
-  "source_set_sha256": "sha256:7ce02c2f10ec729e911ea0cd3fa9f1aa8248a9e3e54779a3de5c82f8ad97bde1"
+  "source_set_sha256": "sha256:29fa52927cf46f49f0c64671256c7eb6a27ad23fb4c4b31732fe70ded585b5fc"
 }

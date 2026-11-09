@@ -49,6 +49,7 @@ BUNDLE_FILES = (
 )
 HASHED_FILES = tuple(sorted(set(BUNDLE_FILES) - {"SHA256SUMS"}))
 SOURCE_FILES = (
+    "llmtracefx/optimizer/lab/call_ledger.py",
     "llmtracefx/optimizer/lab/qwen3_8b/vllm_compile.py",
     "llmtracefx/optimizer/lab/qwen3_8b/cloudrift_crossover.py",
     "llmtracefx/optimizer/lab/qwen3_8b/cloudrift_crossover_runner.py",
