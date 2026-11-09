@@ -59,6 +59,7 @@ from .frontier import (
     machine_state,
 )
 from .manifest import LabManifest
+from .run_owner import current_run_owner, describe_running_state
 
 AUTOPSY_MANIFEST_SCHEMA_VERSION = "1"
 AUTOPSY_JOURNAL_SCHEMA_VERSION = "1"
@@ -1656,6 +1657,7 @@ def run_autopsy(
         "started_at": utc_now_iso(),
         "ended_at": None,
         "status": "running",
+        "owner": current_run_owner(),
         "resumed": False,
         "pre_run_machine_state": machine_state(preflight),
         "result": None,
@@ -1699,7 +1701,9 @@ def verify_autopsy_evidence(
         return {"verified": False, "failures": ["state artifact is missing"]}
     state = _read_json(state_path)
     if state.get("status") == "running":
-        failures.append("state artifact is incomplete")
+        failures.append(
+            "state artifact is incomplete: " + describe_running_state(state)
+        )
     if state.get("autopsy_manifest_hash") != autopsy_manifest_hash(autopsy):
         failures.append("state autopsy manifest binding is stale")
     if state.get("frontier_manifest_hash") != frontier_manifest_hash(frontier):

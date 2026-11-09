@@ -630,3 +630,46 @@ def test_timeout_and_cleanup_failures_stop_without_advancing(
     assert state["results"][0]["status"] == expected_status
     assert state["results"][0]["reason"] == expected_reason
     assert state["results"][1]["status"] == "skipped"
+
+
+def test_running_frontier_state_reports_live_or_abandoned_owner(
+    tmp_path, monkeypatch
+) -> None:
+    from llmtracefx.optimizer.lab import run_owner
+
+    manifest, base = _load()
+    _prepare(monkeypatch)
+    workspace = tmp_path / "workspace"
+    state_path = workspace / "exploratory/state.json"
+    seen: list[dict] = []
+    inner = _launcher(manifest, {}, [])
+
+    def launch(**kwargs):
+        seen.append(json.loads(state_path.read_text(encoding="utf-8")))
+        return inner(**kwargs)
+
+    run_frontier(
+        manifest,
+        base,
+        manifest_path=FRONTIER_MANIFEST_PATH,
+        workspace=workspace,
+        model_path=tmp_path / "model",
+        max_tier="t256",
+        run_mode="exploratory",
+        clean_boot_confirmed=False,
+        resume=True,
+        launcher=launch,
+    )
+    assert seen[0]["status"] == "running"
+    assert seen[0]["owner"] == run_owner.current_run_owner()
+
+    state_path.write_text(json.dumps(seen[0]), encoding="utf-8")
+    monkeypatch.setattr(run_owner, "_pid_is_alive", lambda pid: False)
+    result = verify_frontier_evidence(
+        manifest, workspace=workspace, run_mode="exploratory"
+    )
+    assert result["verified"] is False
+    assert any("was abandoned" in failure for failure in result["failures"])
+    monkeypatch.setattr(run_owner, "_pid_is_alive", lambda pid: True)
+    with pytest.raises(LabError, match="still active"):
+        build_frontier_report(manifest, workspace=workspace, run_mode="exploratory")

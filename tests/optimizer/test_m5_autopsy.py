@@ -1944,3 +1944,44 @@ def test_run_refuses_when_safety_gate_fails(tmp_path, monkeypatch) -> None:
             resume=True,
             launcher=_launcher(manifest, frontier_manifest),
         )
+
+
+def test_running_autopsy_state_reports_an_abandoned_owner(
+    tmp_path, monkeypatch
+) -> None:
+    from llmtracefx.optimizer.lab import run_owner
+
+    manifest, frontier_manifest, base = _load()
+    _prepare(monkeypatch)
+    workspace = tmp_path / "workspace"
+    state_path = workspace / "exploratory" / "state.json"
+    seen: list[dict] = []
+    inner = _launcher(manifest, frontier_manifest)
+
+    def launch(**kwargs):
+        seen.append(json.loads(state_path.read_text(encoding="utf-8")))
+        return inner(**kwargs)
+
+    run_autopsy(
+        manifest,
+        frontier_manifest,
+        base,
+        autopsy_manifest_path=AUTOPSY_MANIFEST_PATH,
+        frontier_manifest_path=None,
+        workspace=workspace,
+        model_path=tmp_path / "model",
+        run_mode="exploratory",
+        clean_boot_confirmed=False,
+        resume=True,
+        launcher=launch,
+    )
+    assert seen[0]["status"] == "running"
+    assert seen[0]["owner"] == run_owner.current_run_owner()
+
+    state_path.write_text(json.dumps(seen[0]), encoding="utf-8")
+    monkeypatch.setattr(run_owner, "_pid_is_alive", lambda pid: False)
+    result = verify_autopsy_evidence(
+        manifest, frontier_manifest, workspace=workspace, run_mode="exploratory"
+    )
+    assert result["verified"] is False
+    assert any("was abandoned" in failure for failure in result["failures"])
