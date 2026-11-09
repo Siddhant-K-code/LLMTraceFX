@@ -210,6 +210,21 @@ relabelled as measurements.
 - **Native Qwen MTP:** emit a capability report and an explicit unsupported
   record when the installed stack cannot produce trustworthy native-MTP
   evidence.
+- **Server-side metrics (vLLM, SGLang, llama.cpp, TGI):** snapshot a Prometheus
+  `/metrics` endpoint before and after a run and diff the two. Server numbers
+  such as queue time and server TTFT are only reported when the window
+  provably contains exactly the requests you sent. Otherwise the window is
+  marked `contaminated`, `incomplete`, `counter_reset`, or `unverifiable`.
+
+### Export to observability tools
+
+`export otlp` writes a record as OpenTelemetry spans in OTLP/JSON, using the
+GenAI semantic conventions (`gen_ai.*`). The Collector `otlpjsonfile` receiver
+can read it, and it can be POSTed to any OTLP/HTTP `/v1/traces` endpoint, so
+Jaeger, Tempo, Phoenix, or Langfuse can show it. `export perfetto` writes a
+Chrome trace for [ui.perfetto.dev](https://ui.perfetto.dev). Both outputs are
+deterministic: IDs derive from the `run_id`, and every timing keeps its
+provenance as a `llmtracefx.*` attribute.
 
 ### Verification and resumability
 
@@ -675,6 +690,45 @@ is a practical methods example. It explains why client buffering, empty SSE
 events, hidden reasoning, and truncated streams change what a time-to-first-
 token number means.
 
+#### Server-side view of the same request
+
+When you run the server yourself, add `--server-metrics-url` to see what the
+engine recorded for the request:
+
+```bash
+uv run llmtracefx-optimizer collect-api \
+  --run-id local-vllm \
+  --provider vllm \
+  --endpoint http://127.0.0.1:8000/v1/chat/completions \
+  --model-id my-model \
+  --prompt-file examples/optimizer/api-smoke-prompt.txt \
+  --output-dir output/local-vllm \
+  --api-key-env VLLM_API_KEY \
+  --server-metrics-url http://127.0.0.1:8000/metrics
+```
+
+`server_metrics_evidence.json` is written next to the record. Its highlights
+appear only when the server's request counter rose by exactly one and nothing
+was queued or running when the window opened. llama.cpp exposes no request
+counter, so its windows are `unverifiable` unless you pass
+`--server-metrics-assume-isolated`. That records the result as
+`operator_asserted`, not as a measurement. For other workflows, use
+`server-metrics snapshot` before and after, then `server-metrics diff
+--expected-requests N`. It exits 2 when the window cannot be attributed.
+
+#### Viewing a run as a trace
+
+```bash
+uv run llmtracefx-optimizer export perfetto \
+  --record output/local-vllm/record.json \
+  --api-evidence output/local-vllm/api_evidence.json \
+  --server-metrics output/local-vllm/server_metrics_evidence.json \
+  --output output/local-vllm/trace.json
+```
+
+Open `trace.json` in [ui.perfetto.dev](https://ui.perfetto.dev). Swap
+`perfetto` for `otlp` to get OTLP/JSON instead.
+
 ### Apple Instruments and Metal
 
 Check support before recording:
@@ -807,6 +861,10 @@ Use `uv run llmtracefx-optimizer --help`,
 The legacy scripts are listed for package inventory only. Do not assume they
 implement a side-effect-free `--help` path.
 
+For how LLMTraceFX compares with other benchmarking and observability tools,
+and the planned next features, see
+[`docs/ecosystem-gap-analysis.md`](docs/ecosystem-gap-analysis.md).
+
 ## Current status and limitations
 
 - The repository contains synthetic fixtures and interface examples, but no
@@ -815,7 +873,10 @@ implement a side-effect-free `--help` path.
   no direct CUDA collector; NVIDIA llama.cpp evidence is imported from captured
   output.
 - API timing is observed at the client. It cannot expose provider queueing,
-  prefill, kernel execution, or server-side clocks.
+  prefill, kernel execution, or server-side clocks. For servers you operate,
+  `--server-metrics-url` adds the engine's own window counters. They are
+  server-wide, so they are reported only for windows that pass the attribution
+  check.
 - Native Qwen MTP execution is not supported by the current MLX-LM path.
   LLMTraceFX records that limitation instead of substituting generic
   draft-model speculation.

@@ -5,7 +5,13 @@ Subcommands:
     run              Execute a configured experiment (warmups + measured reps).
     collect-mlx      Run one local MLX-LM inference and record normalized evidence.
     collect-api      Stream one OpenAI-compatible chat completion (e.g. Z.ai GLM)
-                     and record normalized, credential-free evidence.
+                     and record normalized, credential-free evidence;
+                     optionally bracket it with server /metrics scrapes.
+    server-metrics   Snapshot a Prometheus /metrics endpoint (vLLM, SGLang,
+                     llama.cpp, TGI) and diff two snapshots into window
+                     evidence that refuses to attribute contaminated windows.
+    export           Export a record as OTLP/JSON spans (OpenTelemetry GenAI
+                     conventions) or a Chrome/Perfetto trace timeline.
     native-mtp       Native Qwen MTP capability report / evidence collection.
     instruments      Apple Instruments (xctrace) capability report, dry-run
                      plan, Metal trace recording, and trace import.
@@ -84,6 +90,13 @@ from .compare.report import (
 )
 from .compare.report_html import render_compare_report_html
 from .doctor.speculative import diagnose_speculative_regression
+from .export import (
+    ExportError,
+    build_trace,
+    read_json_artifact,
+    render_chrome_trace_json,
+    render_otlp_json_line,
+)
 from .instruments import (
     METAL_SYSTEM_TRACE_TEMPLATE,
     InstrumentsCommandError,
@@ -123,6 +136,16 @@ from .schema import (
     RepetitionInfo,
     SchemaValidationError,
     utc_now_iso,
+)
+from .server_metrics import (
+    RUNTIME_CHOICES,
+    ServerMetricsError,
+    ServerMetricsSnapshot,
+    capture_settled_after,
+    capture_snapshot,
+    diff_snapshots,
+    validate_metrics_url,
+    write_evidence,
 )
 from .tune.explain import format_report_text
 from .tune.loader import TuneInputError
@@ -420,6 +443,18 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
         )
         return 1
 
+    if args.server_metrics_url is not None:
+        try:
+            metrics_url = validate_metrics_url(args.server_metrics_url)
+        except ServerMetricsError as exc:
+            print(
+                f"Failed to configure API collection: {_api_detail(args, exc)}",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        metrics_url = None
+
     if args.dry_run:
         credential = os.environ.get(config.credential_env_var, "")
         try:
@@ -442,6 +477,8 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
             "credential_env_var_present": bool(credential.strip()),
             "plan": plan.to_dict(),
         }
+        if metrics_url is not None:
+            payload["server_metrics_url"] = metrics_url
         text = json.dumps(payload, indent=2, allow_nan=False)
         # Defence in depth behind the check above: the rendered document is
         # scrubbed rather than trusting every field to have been sanitized
@@ -458,6 +495,30 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
         print(text)
         return 0
 
+    evidence_path = config.output_dir / SERVER_METRICS_EVIDENCE_NAME
+    try:
+        # A file left by an earlier run of this directory must not be read
+        # as describing this one.
+        evidence_path.unlink(missing_ok=True)
+    except OSError as exc:
+        print(
+            f"Failed to remove stale {SERVER_METRICS_EVIDENCE_NAME}: "
+            f"{_api_detail(args, exc)}",
+            file=sys.stderr,
+        )
+        return 1
+    before = None
+    if metrics_url is not None:
+        try:
+            before = capture_snapshot(metrics_url)
+        except ServerMetricsError as exc:
+            print(
+                "Failed to capture server metrics before the request: "
+                f"{_api_detail(args, exc)}",
+                file=sys.stderr,
+            )
+            return 1
+
     try:
         result = collect_openai_stream(config, transport=UrllibStreamingTransport())
     except (OSError, OpenAIStreamCollectorError) as exc:
@@ -466,9 +527,15 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
         )
         return 1
 
+    metrics_status = 0
+    if before is not None and metrics_url is not None:
+        metrics_status = _record_server_metrics_window(
+            args, before, metrics_url, evidence_path
+        )
+
     if result.record.outcome.success:
         print(f"API experiment record written to {config.output_dir / 'record.json'}")
-        return 0
+        return metrics_status
     failure = result.evidence.failure
     detail = (
         "unknown failure"
@@ -477,6 +544,146 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
     )
     print(f"API collection failed: {_scrub_argv_values(detail)}", file=sys.stderr)
     return 1
+
+
+SERVER_METRICS_EVIDENCE_NAME = "server_metrics_evidence.json"
+
+
+def _server_metrics_summary(evidence: dict[str, object]) -> list[str]:
+    attribution = cast(dict[str, object], evidence["attribution"])
+    lines = [
+        f"Server runtime: {evidence['runtime']} ({evidence['runtime_detection']})",
+        f"Attribution: {attribution['status']}: {attribution['reason']}",
+    ]
+    highlights = cast(dict[str, dict[str, object]], evidence["highlights"])
+    for key in sorted(highlights):
+        entry = highlights[key]
+        value = cast(float, entry["value"])
+        lines.append(
+            f"  {key}: {value:.6g} {entry['unit']} "
+            f"[{entry['provenance']}, {entry['statistic']}]"
+        )
+    if not highlights and evidence.get("highlights_withheld_reason"):
+        lines.append("  Highlights withheld; raw deltas are still in the evidence.")
+    return lines
+
+
+def _record_server_metrics_window(
+    args: argparse.Namespace,
+    before: ServerMetricsSnapshot,
+    metrics_url: str,
+    evidence_path: Path,
+) -> int:
+    """Close the scrape window opened before an API request; 0 on success."""
+    try:
+        after = capture_settled_after(
+            before,
+            metrics_url,
+            expected_requests=1,
+            runtime=args.server_metrics_runtime,
+            settle_timeout_seconds=args.server_metrics_settle_timeout,
+        )
+        evidence = diff_snapshots(
+            before,
+            after,
+            expected_requests=1,
+            runtime=args.server_metrics_runtime,
+            assume_isolated=args.server_metrics_assume_isolated,
+        )
+        write_evidence(evidence, evidence_path)
+    except (OSError, ServerMetricsError, ValueError) as exc:
+        print(
+            "API evidence was written, but the server metrics window could not "
+            f"be recorded: {_api_detail(args, exc)}",
+            file=sys.stderr,
+        )
+        return 1
+    for line in _server_metrics_summary(evidence):
+        print(line)
+    print(f"Server metrics evidence written to {evidence_path}")
+    return 0
+
+
+def _cmd_server_metrics_snapshot(args: argparse.Namespace) -> int:
+    try:
+        snapshot = capture_snapshot(args.url, timeout_seconds=args.timeout)
+        snapshot.write_json(Path(args.output))
+    except (OSError, ServerMetricsError) as exc:
+        print(f"Failed to snapshot server metrics: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"Captured {len(snapshot.families)} metric families "
+        f"({snapshot.body_bytes} bytes) from {snapshot.endpoint} "
+        f"at {snapshot.captured_at}"
+    )
+    print(f"Snapshot written to {args.output}")
+    return 0
+
+
+def _cmd_server_metrics_diff(args: argparse.Namespace) -> int:
+    if args.expected_requests < 0:
+        print("--expected-requests must be zero or more", file=sys.stderr)
+        return 1
+    try:
+        before = ServerMetricsSnapshot.read_json(Path(args.before))
+        after = ServerMetricsSnapshot.read_json(Path(args.after))
+        evidence = diff_snapshots(
+            before,
+            after,
+            expected_requests=args.expected_requests,
+            runtime=args.runtime,
+            assume_isolated=args.assume_isolated,
+        )
+        if args.output is not None:
+            write_evidence(evidence, Path(args.output))
+    except (OSError, ServerMetricsError, ValueError) as exc:
+        print(f"Failed to diff server metrics: {exc}", file=sys.stderr)
+        return 1
+    for line in _server_metrics_summary(evidence):
+        print(line)
+    if args.output is not None:
+        print(f"Server metrics evidence written to {args.output}")
+    attribution = cast(dict[str, object], evidence["attribution"])
+    return 0 if attribution["attributable"] else 2
+
+
+def _cmd_export(args: argparse.Namespace) -> int:
+    try:
+        record = ExperimentRecord.read_json(args.record)
+        api_evidence = (
+            None
+            if args.api_evidence is None
+            else read_json_artifact(Path(args.api_evidence))
+        )
+        server_evidence = (
+            None
+            if args.server_metrics is None
+            else read_json_artifact(Path(args.server_metrics))
+        )
+        model = build_trace(
+            record,
+            api_evidence=api_evidence,
+            server_evidence=server_evidence,
+            include_paths=args.include_paths,
+        )
+    except (SchemaValidationError, ExportError) as exc:
+        print(f"Cannot export {args.record}: {exc}", file=sys.stderr)
+        return 1
+    if args.export_command == "otlp":
+        text = render_otlp_json_line(model)
+        label = "OTLP/JSON trace"
+    else:
+        text = render_chrome_trace_json(model)
+        label = "Chrome/Perfetto trace"
+    try:
+        atomic_write_text(Path(args.output), text)
+    except OSError as exc:
+        print(f"Could not write {label} to {args.output}: {exc}", file=sys.stderr)
+        return 1
+    print(f"{label} with {len(model.spans)} spans written to {args.output}")
+    if not args.include_paths:
+        print("Local model paths were reduced to basenames; see --include-paths.")
+    return 0
 
 
 def _cmd_native_mtp_capability_report(args: argparse.Namespace) -> int:
@@ -2709,7 +2916,139 @@ def build_parser() -> argparse.ArgumentParser:
             "without performing any network request"
         ),
     )
+    collect_api_parser.add_argument(
+        "--server-metrics-url",
+        default=None,
+        help=(
+            "Optional Prometheus /metrics URL of the serving engine (vLLM, "
+            "SGLang, llama.cpp --metrics, TGI). It is scraped before and after "
+            "the request and the window is written to "
+            f"{SERVER_METRICS_EVIDENCE_NAME}. Server-side numbers are only "
+            "reported when the window provably contains this one request."
+        ),
+    )
+    collect_api_parser.add_argument(
+        "--server-metrics-runtime",
+        choices=RUNTIME_CHOICES,
+        default="auto",
+        help="Metric profile for --server-metrics-url (default: detect)",
+    )
+    collect_api_parser.add_argument(
+        "--server-metrics-assume-isolated",
+        action="store_true",
+        help=(
+            "For servers with no request counter (llama.cpp), assert that no "
+            "other traffic shared the window. Recorded as operator_asserted, "
+            "never as measured attribution."
+        ),
+    )
+    collect_api_parser.add_argument(
+        "--server-metrics-settle-timeout",
+        type=float,
+        default=2.0,
+        help=(
+            "Seconds to keep re-scraping after the response while the server "
+            "has not yet counted the request"
+        ),
+    )
     collect_api_parser.set_defaults(func=_cmd_collect_api)
+
+    server_metrics_parser = subparsers.add_parser(
+        "server-metrics",
+        help=(
+            "Snapshot a Prometheus /metrics endpoint and diff two snapshots "
+            "into window evidence with an attribution check"
+        ),
+    )
+    server_metrics_subparsers = server_metrics_parser.add_subparsers(
+        dest="server_metrics_command", required=True
+    )
+    sm_snapshot_parser = server_metrics_subparsers.add_parser(
+        "snapshot", help="Scrape one /metrics endpoint into a snapshot JSON file"
+    )
+    sm_snapshot_parser.add_argument(
+        "--url",
+        required=True,
+        help="http(s) /metrics URL with no credentials, query or fragment",
+    )
+    sm_snapshot_parser.add_argument("--output", required=True)
+    sm_snapshot_parser.add_argument(
+        "--timeout", type=float, default=5.0, help="Scrape timeout in seconds"
+    )
+    sm_snapshot_parser.set_defaults(func=_cmd_server_metrics_snapshot)
+    sm_diff_parser = server_metrics_subparsers.add_parser(
+        "diff",
+        help=(
+            "Diff two snapshots. Exits 2 when the window cannot be attributed "
+            "to the expected requests (contaminated, incomplete, reset, or "
+            "unverifiable); the evidence is still written."
+        ),
+    )
+    sm_diff_parser.add_argument("--before", required=True)
+    sm_diff_parser.add_argument("--after", required=True)
+    sm_diff_parser.add_argument(
+        "--expected-requests",
+        type=int,
+        required=True,
+        help="How many requests you sent inside the window",
+    )
+    sm_diff_parser.add_argument("--runtime", choices=RUNTIME_CHOICES, default="auto")
+    sm_diff_parser.add_argument(
+        "--assume-isolated",
+        action="store_true",
+        help=(
+            "Assert the window had no other traffic when the server exposes "
+            "no request counter; recorded as operator_asserted"
+        ),
+    )
+    sm_diff_parser.add_argument("--output", default=None)
+    sm_diff_parser.set_defaults(func=_cmd_server_metrics_diff)
+
+    export_parser = subparsers.add_parser(
+        "export",
+        help=(
+            "Export one ExperimentRecord as OTLP/JSON spans or a Chrome/"
+            "Perfetto trace. Deterministic: IDs derive from run_id."
+        ),
+    )
+    export_subparsers = export_parser.add_subparsers(
+        dest="export_command", required=True
+    )
+    for name, help_text in (
+        (
+            "otlp",
+            "OTLP/JSON (JSON Lines) using the OpenTelemetry GenAI semantic "
+            "conventions; readable by the Collector otlpjsonfile receiver",
+        ),
+        (
+            "perfetto",
+            "Chrome trace event JSON for ui.perfetto.dev or chrome://tracing",
+        ),
+    ):
+        export_format_parser = export_subparsers.add_parser(name, help=help_text)
+        export_format_parser.add_argument(
+            "--record", required=True, help="ExperimentRecord JSON (record.json)"
+        )
+        export_format_parser.add_argument(
+            "--api-evidence",
+            default=None,
+            help="collect-api api_evidence.json for the same run (adds phases)",
+        )
+        export_format_parser.add_argument(
+            "--server-metrics",
+            default=None,
+            help=(
+                f"{SERVER_METRICS_EVIDENCE_NAME} or `server-metrics diff` "
+                "output whose window brackets the run"
+            ),
+        )
+        export_format_parser.add_argument("--output", required=True)
+        export_format_parser.add_argument(
+            "--include-paths",
+            action="store_true",
+            help="Keep local model paths instead of reducing them to basenames",
+        )
+        export_format_parser.set_defaults(func=_cmd_export)
 
     native_mtp_parser = subparsers.add_parser(
         "native-mtp",
