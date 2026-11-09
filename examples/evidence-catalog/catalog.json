@@ -1,5 +1,5 @@
 {
-  "catalog_hash": "sha256:8ea18ca0499b89278d6507d85ae2f49f3230ff8f08fb1e0a23ce71233ad79c99",
+  "catalog_hash": "sha256:6b03ccb679b31be9808128e4d8f427109523091db5d19c13c37837e791e6883b",
   "claim_dimensions": [
     "timing",
     "quality",
@@ -1031,7 +1031,7 @@
       }
     },
     {
-      "artifact_set_hash": "sha256:190e8e5108b7eeff1b152f5002ddbdee61998f1e23355a474f37f91e9059b929",
+      "artifact_set_hash": "sha256:055052e0ebe879b22f15310760ee8ce99a541082defa3f6c2b775ff9607060f7",
       "budget": {
         "authorized_usd": 0.0,
         "inferred_usd": 0.0,
