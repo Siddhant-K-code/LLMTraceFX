@@ -19,7 +19,7 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -310,7 +310,7 @@ def _parse_timestamp(value: Any, field: str) -> datetime:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
 def _sha256_text(value: str) -> str:
@@ -662,7 +662,7 @@ class HostOrchestrator:
         )
 
     def _billing_elapsed_seconds(self) -> int:
-        elapsed = (datetime.now(timezone.utc) - self.billing_started_at).total_seconds()
+        elapsed = (datetime.now(UTC) - self.billing_started_at).total_seconds()
         if elapsed < 0:
             raise CrossoverOrchestratorError("billing start is in the future")
         if elapsed >= ABSOLUTE_CEILING_SECONDS:

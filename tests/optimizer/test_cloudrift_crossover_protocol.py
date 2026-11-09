@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -21,7 +21,7 @@ def _authorization(
     image_id: str = vllm_compile.DERIVED_IMAGE_ID,
     workspace: Path = Path("."),
 ) -> dict:
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     value = {
         "schema_version": "1",
         "protocol_id": vllm_compile.PROTOCOL_ID,
@@ -493,7 +493,7 @@ def test_late_start_refuses_measurement_but_still_runs_teardown(
     workspace = tmp_path / "workspace"
     for path in (repository, model, state):
         path.mkdir()
-    billing = datetime.now(timezone.utc) - timedelta(
+    billing = datetime.now(UTC) - timedelta(
         seconds=vllm_compile.ACTIVE_PLANNED_SECONDS - 100
     )
     authorization = _authorization(plan, workspace=workspace)
