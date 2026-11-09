@@ -216,5 +216,8 @@ pull request per entry and alphabetical placement.
 - NVML or DCGM energy collection.
 - Publishing to PyPI (needed for a PyPI badge and `pip install llmtracefx`).
 - Tagging a `v1` release so the Action can be pinned as `@v1`.
-- Deploying the Space and opening the awesome list pull requests. These
-  publish under the maintainer's accounts, so they are left to the maintainer.
+- Deploying the Space, which needs a Hugging Face account.
+- Following up on the awesome list submissions:
+  tensorchord/Awesome-LLMOps#1136, rafska/awesome-local-llm#364 and
+  antranapp/awesome-mlx#62. These describe only features already on `main`.
+  Once the gate and exports merge, they can be mentioned in follow-up edits.
