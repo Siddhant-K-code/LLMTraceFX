@@ -578,6 +578,12 @@ def run_conversion(
     also written. On any other status -- including a safety-gate refusal
     -- a bounded ``workspace/conversion-failure.json`` is written instead
     and no receipt is produced or implied.
+
+    An existing output path is refused by raising ``ConversionError`` and
+    writes nothing to the workspace. That output usually comes from an
+    earlier attempt, and the earlier attempt's receipt or failure journal
+    in the same workspace is the record for it. Writing a new failure
+    journal here would overwrite that evidence.
     """
     from ...schema import utc_now_iso
 
@@ -614,7 +620,8 @@ def run_conversion(
         return journal
 
     # --- Phase 2: pre-existing-output check, still before any network
-    # activity. Never deletes or overwrites an existing output path. ---
+    # activity. Never deletes or overwrites an existing output path, and
+    # writes no failure journal so the earlier attempt's journal survives. ---
     if output_path.exists():
         raise ConversionError(
             f"conversion output path already exists: {output_path}. This "

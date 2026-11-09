@@ -1072,9 +1072,13 @@ class HostOrchestrator:
                     action=self._teardown_local,
                 )
                 teardown_status = "local_cleanup_complete"
-            except Exception:
+            except Exception as exc:
                 teardown_status = "local_cleanup_incomplete"
                 status = "incomplete"
+                # An earlier operation failure stays the primary reason;
+                # teardown_status still records the cleanup failure.
+                if failure is None:
+                    failure = {"type": type(exc).__name__, "reason": "teardown_failed"}
 
         receipt = {
             "schema_version": ORCHESTRATOR_SCHEMA_VERSION,

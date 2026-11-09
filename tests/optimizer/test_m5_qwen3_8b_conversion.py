@@ -628,6 +628,30 @@ def test_run_conversion_refuses_preexisting_output_without_deleting_it(
     assert (output_path / "keep-me.bin").read_bytes() == b"user data"
 
 
+def test_preexisting_output_refusal_keeps_earlier_attempt_journal(
+    tmp_path, monkeypatch
+) -> None:
+    manifest, source_path, workspace = _prepare_offline_conversion(
+        tmp_path, monkeypatch
+    )
+    output_path = tmp_path / "output"
+    output_path.mkdir()
+    workspace.mkdir()
+    earlier_failure = workspace / "conversion-failure.json"
+    earlier_failure.write_text('{"status": "timeout"}\n', encoding="utf-8")
+    before = sorted(path.name for path in workspace.iterdir())
+
+    with pytest.raises(conv.ConversionError, match="already exists"):
+        conv.run_conversion(
+            manifest,
+            source_path=source_path,
+            output_path=output_path,
+            workspace=workspace,
+        )
+    assert earlier_failure.read_text(encoding="utf-8") == '{"status": "timeout"}\n'
+    assert sorted(path.name for path in workspace.iterdir()) == before
+
+
 def test_run_conversion_never_retries_automatically(tmp_path, monkeypatch) -> None:
     manifest, source_path, workspace = _prepare_offline_conversion(
         tmp_path, monkeypatch
