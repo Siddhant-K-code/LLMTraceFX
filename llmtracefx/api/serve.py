@@ -1,61 +1,79 @@
 """
 FastAPI server for LLMTraceFX web endpoints
 """
-from ..brand import LOCKUP_SVG, TOKENS_CSS
-import asyncio
-import json
-import tempfile
-import os
-from typing import Dict, List, Any, Optional
-from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
-from fastapi.staticfiles import StaticFiles
+import json
+import os
+import tempfile
+from dataclasses import dataclass
+from typing import Any, Literal
+
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from ..hardware import hardware_profiles, normalize_hardware_name
-from ..profiler.trace_parser import TraceParser
-from ..profiler.gpu_analyzer import GPUAnalyzer, TokenAnalysis
+from ..brand import LOCKUP_SVG, TOKENS_CSS
 from ..explainer.claude import ClaudeExplainer
+from ..hardware import hardware_profiles, normalize_hardware_name
+from ..profiler.gpu_analyzer import GPUAnalyzer, GPUMetrics, TokenAnalysis
+from ..profiler.trace_parser import Operation, TraceParser
 from ..visualize.flame import FlameGraphGenerator
+
+# Lifecycle of an analysis. Metrics are ready as soon as an analysis exists.
+# "processing_explanations" is the only non-terminal status and is set only
+# while the background Claude task is running. "explanations_failed" means the
+# metrics are valid but explanation generation did not succeed; the reason is
+# returned in AnalysisResponse.error.
+AnalysisStatus = Literal["processing_explanations", "completed", "explanations_failed"]
+
+
+@dataclass
+class AnalysisState:
+    """Explicit status record for one analysis."""
+
+    status: AnalysisStatus
+    error: str | None = None
 
 
 class AnalysisRequest(BaseModel):
     """Request model for trace analysis"""
-    trace_data: Dict[str, Any]
+
+    trace_data: dict[str, Any]
     gpu_type: str = "A10G"
     enable_claude: bool = True
 
 
 class AnalysisResponse(BaseModel):
     """Response model for trace analysis"""
+
     analysis_id: str
     total_tokens: int
     total_latency_ms: float
     avg_performance_score: float
-    bottleneck_summary: Dict[str, int]
-    status: str
+    bottleneck_summary: dict[str, int]
+    status: AnalysisStatus
+    error: str | None = None
 
 
 class TokenDetailResponse(BaseModel):
     """Response model for token detail"""
+
     token_id: int
     token_text: str
     total_latency_ms: float
     performance_score: float
     bottleneck_type: str
-    optimization_flags: List[str]
-    operations: List[Dict[str, Any]]
-    gpu_metrics: Dict[str, Any]
-    claude_explanation: Optional[str] = None
+    optimization_flags: list[str]
+    operations: list[dict[str, Any]]
+    gpu_metrics: dict[str, Any]
+    claude_explanation: str | None = None
 
 
 app = FastAPI(
     title="LLMTraceFX API",
     description="GPU-level LLM inference profiler",
-    version="1.1.0"
+    version="1.1.0",
 )
 
 # Add CORS middleware
@@ -67,10 +85,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global state for storing analyses
-analyses_store: Dict[str, List[TokenAnalysis]] = {}
-explanations_store: Dict[str, Dict[int, str]] = {}
-gpu_results_store: Dict[str, Dict[str, Any]] = {}  # Store GPU results for dashboard/export
+# Global state for storing analyses. Every analysis, CPU or GPU, has an entry in
+# analyses_store and analysis_states.
+analyses_store: dict[str, list[TokenAnalysis]] = {}
+analysis_states: dict[str, AnalysisState] = {}
+explanations_store: dict[str, dict[int, str]] = {}
+# Raw Modal results, used to serve the GPU-rendered dashboard and export
+gpu_results_store: dict[str, dict[str, Any]] = {}
 
 # Initialize components
 parser = TraceParser()
@@ -78,6 +99,7 @@ analyzer = GPUAnalyzer()
 visualizer = FlameGraphGenerator()
 
 # Initialize Claude explainer if API key is available
+explainer: ClaudeExplainer | None
 try:
     explainer = ClaudeExplainer()
 except ValueError:
@@ -85,7 +107,7 @@ except ValueError:
 
 
 @app.get("/", response_class=HTMLResponse)
-async def root():
+async def root() -> str:
     """Root endpoint with API documentation"""
     return f"""
     <!DOCTYPE html>
@@ -266,7 +288,7 @@ async def root():
 
 
 @app.get("/hardware")
-async def list_hardware():
+async def list_hardware() -> dict[str, Any]:
     """List supported hardware profiles."""
     return {"hardware": hardware_profiles()}
 
@@ -276,231 +298,180 @@ async def upload_trace(
     file: UploadFile = File(...),
     gpu_type: str = "A10G",
     enable_claude: bool = True,
-    background_tasks: BackgroundTasks = BackgroundTasks()
-):
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+) -> AnalysisResponse:
     """Upload and analyze trace file"""
     try:
         gpu_type = _validate_hardware(gpu_type)
         # Read uploaded file
         content = await file.read()
-        
+
         # Create temporary file
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tmp:
-            tmp.write(content.decode('utf-8'))
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as tmp:
+            tmp.write(content.decode("utf-8"))
             tmp_path = tmp.name
-        
+
         try:
             # Parse trace file
             tokens = parser.parse_trace_file(tmp_path)
             _require_tokens(tokens)
-            
+
             # Analyze tokens
             analyzer_instance = GPUAnalyzer(gpu_type)
             analyses = analyzer_instance.analyze_sequence(tokens)
-            
-            # Generate analysis ID
-            analysis_id = f"analysis_{len(analyses_store)}"
-            
-            # Store results
-            analyses_store[analysis_id] = analyses
-            
-            # Schedule Claude explanations in background if enabled
+
+            analysis_id = _register_analysis(analyses, enable_claude)
             if enable_claude:
-                background_tasks.add_task(generate_claude_explanations, analysis_id, analyses)
-            
-            # Calculate summary stats
-            total_latency = sum(a.total_latency_ms for a in analyses)
-            avg_performance = sum(a.performance_score for a in analyses) / len(analyses)
-            
-            bottleneck_summary = {}
-            for analysis in analyses:
-                bottleneck_summary[analysis.bottleneck_type] = bottleneck_summary.get(analysis.bottleneck_type, 0) + 1
-            
-            return AnalysisResponse(
-                analysis_id=analysis_id,
-                total_tokens=len(analyses),
-                total_latency_ms=total_latency,
-                avg_performance_score=avg_performance,
-                bottleneck_summary=bottleneck_summary,
-                status="completed" if not enable_claude else "processing_explanations"
-            )
-            
+                background_tasks.add_task(
+                    generate_claude_explanations, analysis_id, analyses
+                )
+
+            return _build_response(analysis_id)
+
         finally:
             # Clean up temp file
             os.unlink(tmp_path)
-            
+
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing trace: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error processing trace: {str(e)}"
+        ) from e
 
 
 @app.post("/analyze-trace", response_model=AnalysisResponse)
 async def analyze_trace(
-    request: AnalysisRequest,
-    background_tasks: BackgroundTasks = BackgroundTasks()
-):
+    request: AnalysisRequest, background_tasks: BackgroundTasks = BackgroundTasks()
+) -> AnalysisResponse:
     """Analyze trace data directly - uses GPU when available"""
     try:
         gpu_type = _validate_hardware(request.gpu_type)
         # Check if we should use Modal GPU functions
         try:
             # Try to import Modal and get the GPU function
-            import modal
-            
+            import modal  # noqa: F401
+
             # Try to get Modal app and function
             try:
                 from llmtracefx.modal_app import app as modal_app
-                
+
                 # Call the GPU function remotely
                 gpu_result = modal_app.analyze_trace_modal.remote(
                     trace_data=request.trace_data,
                     gpu_type=gpu_type,
-                    enable_claude=request.enable_claude
+                    enable_claude=request.enable_claude,
                 )
-                
+
                 # Check if successful and has required fields
-                if gpu_result and gpu_result.get("status") == "completed" and "total_tokens" in gpu_result:
-                    # Generate analysis ID and store the results for later retrieval
-                    analysis_id = f"analysis_{len(analyses_store)}"
-                    
-                    # Create dummy analyses for storage (we'll reconstruct from GPU result when needed)
-                    # This is a simplified approach - in production you'd want to store full analysis objects
-                    analyses_store[analysis_id] = []  # Placeholder
-                    
-                    # Store GPU results for dashboard/export
+                if (
+                    gpu_result
+                    and gpu_result.get("status") == "completed"
+                    and "export_json" in gpu_result
+                ):
+                    # Rebuild the per-token analyses from the GPU export so the
+                    # summary, token, flame and explain endpoints serve the
+                    # real GPU results.
+                    gpu_analyses = _analyses_from_export(gpu_result["export_json"])
+                    _require_tokens(gpu_analyses)
+
+                    # Modal generates explanations synchronously, so the
+                    # analysis is already finished.
+                    analysis_id = _register_analysis(
+                        gpu_analyses, explanations_pending=False
+                    )
                     gpu_results_store[analysis_id] = gpu_result
-                    
-                    # Store explanations if available
                     if gpu_result.get("explanations"):
                         explanations_store[analysis_id] = gpu_result["explanations"]
-                    
-                    return AnalysisResponse(
-                        analysis_id=analysis_id,
-                        total_tokens=gpu_result["total_tokens"],
-                        total_latency_ms=gpu_result["total_latency_ms"],
-                        avg_performance_score=gpu_result["avg_performance_score"],
-                        bottleneck_summary=gpu_result["bottleneck_summary"],
-                        status=gpu_result["status"]
-                    )
+
+                    return _build_response(analysis_id)
                 elif gpu_result and gpu_result.get("status") == "error":
-                    print(f"GPU analysis failed: {gpu_result.get('error')}, using CPU fallback")
+                    print(
+                        f"GPU analysis failed: {gpu_result.get('error')}, "
+                        "using CPU fallback"
+                    )
                 else:
                     print("GPU analysis returned unexpected result, using CPU fallback")
-                    
+
             except Exception as gpu_error:
                 # Log GPU error but continue with CPU fallback
                 print(f"GPU analysis failed: {gpu_error}, using CPU fallback")
-                    
+
         except ImportError:
             # Modal not available, use local processing
             print("Modal not available, using CPU processing")
-        
-        # CPU fallback processing (original code)
-        # Parse trace data
+
+        # CPU fallback processing
         tokens = parser.parse_trace_data(request.trace_data)
         _require_tokens(tokens)
-        
-        # Analyze tokens
+
         analyzer_instance = GPUAnalyzer(gpu_type)
         analyses = analyzer_instance.analyze_sequence(tokens)
-        
-        # Generate analysis ID
-        analysis_id = f"analysis_{len(analyses_store)}"
-        
-        # Store results
-        analyses_store[analysis_id] = analyses
-        
-        # Schedule Claude explanations in background if enabled
+
+        analysis_id = _register_analysis(analyses, request.enable_claude)
         if request.enable_claude:
-            background_tasks.add_task(generate_claude_explanations, analysis_id, analyses)
-        
-        # Calculate summary stats
-        total_latency = sum(a.total_latency_ms for a in analyses)
-        avg_performance = sum(a.performance_score for a in analyses) / len(analyses)
-        
-        bottleneck_summary = {}
-        for analysis in analyses:
-            bottleneck_summary[analysis.bottleneck_type] = bottleneck_summary.get(analysis.bottleneck_type, 0) + 1
-        
-        return AnalysisResponse(
-            analysis_id=analysis_id,
-            total_tokens=len(analyses),
-            total_latency_ms=total_latency,
-            avg_performance_score=avg_performance,
-            bottleneck_summary=bottleneck_summary,
-            status="completed" if not request.enable_claude else "processing_explanations"
-        )
-        
+            background_tasks.add_task(
+                generate_claude_explanations, analysis_id, analyses
+            )
+
+        return _build_response(analysis_id)
+
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error analyzing trace: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error analyzing trace: {str(e)}"
+        ) from e
 
 
 @app.get("/analysis/{analysis_id}", response_model=AnalysisResponse)
-async def get_analysis(analysis_id: str):
+async def get_analysis(analysis_id: str) -> AnalysisResponse:
     """Get analysis summary"""
     if analysis_id not in analyses_store:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    
-    analyses = analyses_store[analysis_id]
-    
-    # Calculate summary stats
-    total_latency = sum(a.total_latency_ms for a in analyses)
-    avg_performance = sum(a.performance_score for a in analyses) / len(analyses)
-    
-    bottleneck_summary = {}
-    for analysis in analyses:
-        bottleneck_summary[analysis.bottleneck_type] = bottleneck_summary.get(analysis.bottleneck_type, 0) + 1
-    
-    # Check if Claude explanations are available
-    has_explanations = analysis_id in explanations_store
-    
-    return AnalysisResponse(
-        analysis_id=analysis_id,
-        total_tokens=len(analyses),
-        total_latency_ms=total_latency,
-        avg_performance_score=avg_performance,
-        bottleneck_summary=bottleneck_summary,
-        status="completed" if has_explanations else "processing_explanations"
-    )
+
+    return _build_response(analysis_id)
 
 
 @app.get("/token/{analysis_id}/{token_id}", response_model=TokenDetailResponse)
-async def get_token_detail(analysis_id: str, token_id: int):
+async def get_token_detail(analysis_id: str, token_id: int) -> TokenDetailResponse:
     """Get detailed token analysis"""
     if analysis_id not in analyses_store:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    
+
     analyses = analyses_store[analysis_id]
-    
+
     # Find token analysis
     token_analysis = None
     for analysis in analyses:
         if analysis.token_id == token_id:
             token_analysis = analysis
             break
-    
+
     if not token_analysis:
         raise HTTPException(status_code=404, detail="Token not found")
-    
+
     # Get Claude explanation if available
     claude_explanation = None
-    if analysis_id in explanations_store and token_id in explanations_store[analysis_id]:
+    if (
+        analysis_id in explanations_store
+        and token_id in explanations_store[analysis_id]
+    ):
         claude_explanation = explanations_store[analysis_id][token_id]
-    
+
     # Format operations
     operations = []
     for op in token_analysis.operations:
-        operations.append({
-            "name": op.name,
-            "duration": op.duration,
-            "start_time": op.start_time,
-            "dependencies": op.dependencies,
-            "metadata": op.metadata
-        })
-    
+        operations.append(
+            {
+                "name": op.name,
+                "duration": op.duration,
+                "start_time": op.start_time,
+                "dependencies": op.dependencies,
+                "metadata": op.metadata,
+            }
+        )
+
     return TokenDetailResponse(
         token_id=token_analysis.token_id,
         token_text=token_analysis.token_text,
@@ -518,84 +489,104 @@ async def get_token_detail(analysis_id: str, token_id: int):
             "memory_bandwidth_gb_s": token_analysis.gpu_metrics.memory_bandwidth_gb_s,
             "compute_utilization": token_analysis.gpu_metrics.compute_utilization,
             "occupancy_label": token_analysis.gpu_metrics.occupancy_label,
-            "metrics_source": token_analysis.gpu_metrics.metrics_source
+            "metrics_source": token_analysis.gpu_metrics.metrics_source,
         },
-        claude_explanation=claude_explanation
+        claude_explanation=claude_explanation,
     )
 
 
 @app.get("/explain/{analysis_id}/{token_id}")
-async def get_token_explanation(analysis_id: str, token_id: int):
+async def get_token_explanation(analysis_id: str, token_id: int) -> dict[str, str]:
     """Get Claude AI explanation for token"""
     if analysis_id not in analyses_store:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    
+
     if analysis_id not in explanations_store:
+        state = analysis_states[analysis_id]
+        if state.status == "explanations_failed":
+            raise HTTPException(
+                status_code=404,
+                detail=f"Explanation generation failed: {state.error}",
+            )
         raise HTTPException(status_code=404, detail="Explanations not available yet")
-    
+
     if token_id not in explanations_store[analysis_id]:
         raise HTTPException(status_code=404, detail="Token explanation not found")
-    
+
     return {"explanation": explanations_store[analysis_id][token_id]}
 
 
 @app.get("/dashboard/{analysis_id}", response_class=HTMLResponse)
-async def get_dashboard(analysis_id: str):
+async def get_dashboard(analysis_id: str) -> HTMLResponse:
     """Get HTML dashboard"""
     if analysis_id not in analyses_store:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    
+
     # Check if we have GPU-generated dashboard
-    if analysis_id in gpu_results_store and "dashboard_html" in gpu_results_store[analysis_id]:
+    if (
+        analysis_id in gpu_results_store
+        and "dashboard_html" in gpu_results_store[analysis_id]
+    ):
         return HTMLResponse(content=gpu_results_store[analysis_id]["dashboard_html"])
-    
+
     # Fallback to local generation
     analyses = analyses_store[analysis_id]
-    
+
     try:
         dashboard_html = visualizer.generate_comprehensive_dashboard(analyses)
         return HTMLResponse(content=dashboard_html)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating dashboard: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error generating dashboard: {str(e)}"
+        ) from e
 
 
 @app.get("/export/{analysis_id}")
-async def export_analysis(analysis_id: str):
+async def export_analysis(analysis_id: str) -> JSONResponse:
     """Export analysis data as JSON"""
     if analysis_id not in analyses_store:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    
+
     # Check if we have GPU-generated export data
-    if analysis_id in gpu_results_store and "export_json" in gpu_results_store[analysis_id]:
-        return JSONResponse(content=json.loads(gpu_results_store[analysis_id]["export_json"]))
-    
+    if (
+        analysis_id in gpu_results_store
+        and "export_json" in gpu_results_store[analysis_id]
+    ):
+        return JSONResponse(
+            content=json.loads(gpu_results_store[analysis_id]["export_json"])
+        )
+
     # Fallback to local generation
     analyses = analyses_store[analysis_id]
-    
+
     try:
         json_data = visualizer.export_data_json(analyses)
         return JSONResponse(content=json.loads(json_data))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error exporting data: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error exporting data: {str(e)}"
+        ) from e
 
 
 @app.get("/flame/{analysis_id}", response_class=HTMLResponse)
-async def get_flame_graph(analysis_id: str):
+async def get_flame_graph(analysis_id: str) -> HTMLResponse:
     """Get flame graph visualization"""
     if analysis_id not in analyses_store:
         raise HTTPException(status_code=404, detail="Analysis not found")
-    
+
     analyses = analyses_store[analysis_id]
-    
+
     try:
         flame_html = visualizer.generate_token_flame_graph(analyses)
         return HTMLResponse(content=flame_html)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error generating flame graph: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Error generating flame graph: {str(e)}"
+        ) from e
 
 
 @app.get("/health")
-async def health_check():
+async def health_check() -> dict[str, Any]:
     """Health check endpoint"""
     return {"status": "healthy", "analyses_count": len(analyses_store)}
 
@@ -609,38 +600,154 @@ def _validate_hardware(gpu_type: str) -> str:
 
 def _require_tokens(tokens: list[Any]) -> None:
     if not tokens:
-        raise HTTPException(
-            status_code=400, detail="Trace does not contain any tokens"
+        raise HTTPException(status_code=400, detail="Trace does not contain any tokens")
+
+
+def _register_analysis(
+    analyses: list[TokenAnalysis], explanations_pending: bool
+) -> str:
+    """Store analyses under a new ID with an explicit initial status."""
+    analysis_id = f"analysis_{len(analyses_store)}"
+    analyses_store[analysis_id] = analyses
+    analysis_states[analysis_id] = AnalysisState(
+        status="processing_explanations" if explanations_pending else "completed"
+    )
+    return analysis_id
+
+
+def _build_response(analysis_id: str) -> AnalysisResponse:
+    """Summarize a stored analysis together with its current status."""
+    analyses = analyses_store[analysis_id]
+    state = analysis_states[analysis_id]
+
+    total_latency = sum(a.total_latency_ms for a in analyses)
+    avg_performance = sum(a.performance_score for a in analyses) / len(analyses)
+
+    bottleneck_summary: dict[str, int] = {}
+    for analysis in analyses:
+        bottleneck_summary[analysis.bottleneck_type] = (
+            bottleneck_summary.get(analysis.bottleneck_type, 0) + 1
         )
 
+    return AnalysisResponse(
+        analysis_id=analysis_id,
+        total_tokens=len(analyses),
+        total_latency_ms=total_latency,
+        avg_performance_score=avg_performance,
+        bottleneck_summary=bottleneck_summary,
+        status=state.status,
+        error=state.error,
+    )
 
-async def generate_claude_explanations(analysis_id: str, analyses: List[TokenAnalysis]):
-    """Background task to generate Claude explanations"""
+
+def _analyses_from_export(export_json: str) -> list[TokenAnalysis]:
+    """Rebuild TokenAnalysis objects from FlameGraphGenerator.export_data_json.
+
+    The export carries every field the API serves. Operation dependencies and
+    metadata are not exported, so they come back empty.
+    """
+    analyses = []
+    for record in json.loads(export_json):
+        metrics = record["gpu_metrics"]
+        analyses.append(
+            TokenAnalysis(
+                token_id=record["token_id"],
+                token_text=record["token_text"],
+                total_latency_ms=record["total_latency_ms"],
+                operations=[
+                    Operation(
+                        name=op["name"],
+                        start_time=op["start_time"],
+                        duration=op["duration"],
+                    )
+                    for op in record["operations"]
+                ],
+                gpu_metrics=GPUMetrics(
+                    stall_pct=metrics["stall_pct"],
+                    launch_delay_ms=metrics["launch_delay_ms"],
+                    memory_latency_ms=metrics["memory_latency_ms"],
+                    sm_occupancy_pct=metrics["sm_occupancy_pct"],
+                    cache_hit_rate=metrics["cache_hit_rate"],
+                    memory_bandwidth_gb_s=metrics["memory_bandwidth_gb_s"],
+                    compute_utilization=metrics["compute_utilization"],
+                    occupancy_label=metrics["occupancy_label"],
+                    metrics_source=metrics["metrics_source"],
+                ),
+                bottleneck_type=record["bottleneck_type"],
+                optimization_flags=record["optimization_flags"],
+                performance_score=record["performance_score"],
+            )
+        )
+    return analyses
+
+
+def _fail_explanations(analysis_id: str, reason: str) -> None:
+    analysis_states[analysis_id] = AnalysisState(
+        status="explanations_failed", error=reason
+    )
+
+
+async def generate_claude_explanations(
+    analysis_id: str, analyses: list[TokenAnalysis]
+) -> None:
+    """Background task to generate Claude explanations.
+
+    Always leaves the analysis in a terminal status: "completed" when at least
+    one token was explained, otherwise "explanations_failed" with a reason.
+    """
     try:
-        explanations = {}
-        
-        # Generate explanations for each token
+        if explainer is None:
+            _fail_explanations(
+                analysis_id,
+                "Claude explainer is not configured. Set CLAUDE_API_KEY.",
+            )
+            return
+
+        explanations: dict[int, str] = {}
+        first_error: str | None = None
+        failures = 0
+
         for analysis in analyses:
             try:
                 explanation = await explainer.explain_token_performance(analysis)
-                explanations[analysis.token_id] = explainer.format_explanation_for_display(explanation)
+                explanations[analysis.token_id] = (
+                    explainer.format_explanation_for_display(explanation)
+                )
             except Exception as e:
-                explanations[analysis.token_id] = f"Error generating explanation: {str(e)}"
-        
-        # Store explanations
+                failures += 1
+                if first_error is None:
+                    first_error = str(e)
+                explanations[analysis.token_id] = (
+                    f"Error generating explanation: {str(e)}"
+                )
+
         explanations_store[analysis_id] = explanations
-        
+
+        if analyses and failures == len(analyses):
+            _fail_explanations(
+                analysis_id,
+                f"Explanation generation failed for all {failures} tokens: "
+                f"{first_error}",
+            )
+        else:
+            analysis_states[analysis_id] = AnalysisState(status="completed")
+
     except Exception as e:
-        # Store error message for all tokens
-        explanations_store[analysis_id] = {
-            analysis.token_id: f"Error generating explanations: {str(e)}"
-            for analysis in analyses
-        }
+        _fail_explanations(analysis_id, f"Error generating explanations: {str(e)}")
+    finally:
+        # Covers cancellation and anything else that skipped the paths above,
+        # so the analysis never stays in "processing_explanations".
+        state = analysis_states.get(analysis_id)
+        if state is None or state.status == "processing_explanations":
+            _fail_explanations(
+                analysis_id, "Explanation task stopped before it finished"
+            )
 
 
-def main():
+def main() -> None:
     """Main function for CLI entry point"""
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
