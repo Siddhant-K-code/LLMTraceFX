@@ -4094,7 +4094,27 @@ class RemoteOrchestrator:
         )
 
     def stage_teardown(self, local_bundle_dir: Path) -> StageOutcome:
+        """Run teardown and set the terminal state.
+
+        The state ends COMPLETE only when teardown succeeds and no earlier
+        outcome failed. Otherwise it ends FAILED."""
+
+        earlier_failure = any(not outcome.ok for outcome in self.outcomes)
         self.state = OrchestratorState.TEARDOWN
+        try:
+            self._execute_teardown(local_bundle_dir)
+        except BaseException as exc:  # noqa: BLE001 - re-raised below
+            self.state = OrchestratorState.FAILED
+            self._record("teardown", False, detail=type(exc).__name__)
+            raise
+        self._record("teardown", True)
+        self.state = (
+            OrchestratorState.FAILED if earlier_failure else OrchestratorState.COMPLETE
+        )
+        print("SAFE TO TERMINATE INSTANCE NOW")
+        return self.outcomes[-1]
+
+    def _execute_teardown(self, local_bundle_dir: Path) -> None:
         nonce = self.authorization.nonce
         label_filter = f"label={docker_run_label(nonce)}"
         running_containers = self.docker.shell("ps", "-q", "--filter", label_filter)
@@ -4247,10 +4267,6 @@ class RemoteOrchestrator:
             residual_containers=residual_containers,
             residual_gpu_processes=residual_gpu_processes,
         )
-        self._record("teardown", True)
-        self.state = OrchestratorState.COMPLETE
-        print("SAFE TO TERMINATE INSTANCE NOW")
-        return self.outcomes[-1]
 
     def _verify_teardown_output(self, stdout: str) -> tuple[int, int]:
         markers = dict(
@@ -4346,6 +4362,15 @@ class RemoteOrchestrator:
             finally:
                 for signum, previous_handler in installed_handlers.items():
                     signal.signal(signum, previous_handler)
+        if pending_teardown_signals and failure is None:
+            # A signal deferred during teardown still fails the run.
+            self._record("run", False, detail="HostOrchestrationError")
+        if (
+            failure is not None
+            or teardown_failure is not None
+            or pending_teardown_signals
+        ):
+            self.state = OrchestratorState.FAILED
         signal_number = (
             pending_teardown_signals[-1]
             if pending_teardown_signals

@@ -2189,7 +2189,68 @@ xargs() { cat >/dev/null; }
             orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
         descriptions = {call.description for call in runner.calls}
         assert "stage_teardown_cleanup" in descriptions
-        assert orchestrator.state == lifecycle.OrchestratorState.COMPLETE
+        assert orchestrator.state is lifecycle.OrchestratorState.FAILED
+        assert [(o.stage, o.ok) for o in orchestrator.outcomes][-2:] == [
+            ("run", False),
+            ("teardown", True),
+        ]
+
+    def test_stage_failure_with_teardown_failure_ends_failed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        runner = FakeCommandRunner(
+            fail_stages=frozenset({"stage_canary", "stage_teardown_cleanup"})
+        )
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(lifecycle.HostOrchestrationError) as caught:
+            orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        assert isinstance(caught.value.__cause__, lifecycle.HostOrchestrationError)
+        assert orchestrator.state is lifecycle.OrchestratorState.FAILED
+        assert [(o.stage, o.ok) for o in orchestrator.outcomes][-2:] == [
+            ("run", False),
+            ("teardown", False),
+        ]
+        assert "SAFE TO TERMINATE INSTANCE NOW" not in capsys.readouterr().out
+
+    def test_teardown_failure_after_successful_stages_ends_failed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        runner = FakeCommandRunner(fail_stages=frozenset({"stage_teardown_cleanup"}))
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        with pytest.raises(lifecycle.HostOrchestrationError):
+            orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        assert orchestrator.state is lifecycle.OrchestratorState.FAILED
+        assert orchestrator.outcomes[-1] == lifecycle.StageOutcome(
+            stage="teardown", ok=False, detail="HostOrchestrationError"
+        )
+        assert all(o.ok for o in orchestrator.outcomes[:-1])
+        assert "SAFE TO TERMINATE INSTANCE NOW" not in capsys.readouterr().out
+
+    def test_full_success_ends_complete_after_teardown(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        runner = FakeCommandRunner()
+        orchestrator = lifecycle.RemoteOrchestrator(
+            config=_config(tmp_path),
+            authorization=_authorization(),
+            runner=runner,
+            now_fn=lambda: BILLING_STARTED_AT,
+        )
+        outcomes = orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
+        assert orchestrator.state is lifecycle.OrchestratorState.COMPLETE
+        assert outcomes[-1] == lifecycle.StageOutcome(stage="teardown", ok=True)
+        assert all(o.ok for o in outcomes)
+        assert "SAFE TO TERMINATE INSTANCE NOW" in capsys.readouterr().out
 
     @pytest.mark.parametrize(
         "failed_description",
@@ -2295,7 +2356,7 @@ xargs() { cat >/dev/null; }
         )
         assert "finish_teardown" in (cleanup.input_text or "")
         assert "sudo -n shutdown -h +1" in (cleanup.input_text or "")
-        assert orchestrator.state == lifecycle.OrchestratorState.TEARDOWN
+        assert orchestrator.state is lifecycle.OrchestratorState.FAILED
 
     def test_teardown_reports_shutdown_failure_from_same_session(
         self, tmp_path: Path
@@ -2607,7 +2668,11 @@ xargs() { cat >/dev/null; }
             with pytest.raises(lifecycle.HostOrchestrationError) as caught:
                 orchestrator.run(local_evidence_bundle_dir=tmp_path / "bundle")
         assert caught.value.signal_number == lifecycle.signal.SIGTERM
-        assert orchestrator.state == lifecycle.OrchestratorState.COMPLETE
+        assert orchestrator.state is lifecycle.OrchestratorState.FAILED
+        assert [(o.stage, o.ok) for o in orchestrator.outcomes][-2:] == [
+            ("teardown", True),
+            ("run", False),
+        ]
 
     def test_refuses_to_start_when_budget_reserve_is_exhausted(
         self, tmp_path: Path
