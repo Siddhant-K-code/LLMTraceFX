@@ -135,6 +135,9 @@ PLAN_SHA256_VAR = "LLMTRACEFX_MODAL_L4_PLAN_SHA256"
 # tree moves, are both handled without importing the provider package here.
 TIMEOUT_EXCEPTION_NAMES = ("FunctionTimeoutError", "ExecTimeoutError", "TimeoutError")
 PREEMPTION_EXCEPTION_NAMES = ("SandboxTerminatedError", "ResourceExhaustedError")
+# Terminal statuses a raised run keeps. Any other status, including
+# ``running`` and ``complete``, becomes ``failed`` when the run raises.
+_RAISED_TERMINAL_STATUSES = ("failed", "refused", "invalidated")
 
 
 class ModalExecutionError(ModalL4ContractError):
@@ -1129,11 +1132,13 @@ class ModalOrchestrator:
             with app_module.app.run():
                 app_module.app.set_tags(app_module.APP_TAGS)
                 self._run_sequence(functions)
-        except ModalExecutionError:
-            raise
         except BaseException as exc:  # noqa: BLE001 - teardown owns every exit
-            self.status = "failed"
-            self.failure = f"{type(exc).__name__}"
+            # A raised run never ends as running or complete. A refusal or
+            # invalidation recorded before the raise is the more specific
+            # terminal status, so it is kept.
+            if self.status not in _RAISED_TERMINAL_STATUSES:
+                self.status = "failed"
+                self.failure = f"{type(exc).__name__}"
             raise
         finally:
             self.teardown = self._tear_down(modal_module, app_module)

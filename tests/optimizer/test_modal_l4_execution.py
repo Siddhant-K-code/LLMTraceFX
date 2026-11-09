@@ -2175,6 +2175,103 @@ class TestOutstandingCallTeardown:
         assert ("cancel", "verify_stage") in app_module.app.log
 
 
+def _assert_no_run_receipt(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    assert not (workspace / "orchestration-receipt.json").exists()
+    assert not (workspace / execute_module.REFUSAL_RECEIPT_FILE).exists()
+
+
+class TestRaisedRunStatus:
+    """A run that raises after it starts always ends in a terminal status."""
+
+    @pytest.mark.parametrize("site", ("app_run", "set_tags", "run_sequence"))
+    def test_a_modal_execution_error_ends_the_run_as_failed(
+        self,
+        tmp_path: Path,
+        app_module: Any,
+        fake_modal: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        site: str,
+    ) -> None:
+        orchestrator = _orchestrator(tmp_path, app_module, fake_modal)
+        _script(app_module, _Receipts())
+        error = execute_module.ModalExecutionError(f"raised from {site}")
+
+        def raise_error(*args: Any, **kwargs: Any) -> None:
+            raise error
+
+        if site == "app_run":
+            app_module.app.enter_error = error
+        elif site == "set_tags":
+            monkeypatch.setattr(app_module.app, "set_tags", raise_error)
+        else:
+            monkeypatch.setattr(orchestrator, "_reserve", raise_error)
+        with pytest.raises(execute_module.ModalExecutionError, match=site):
+            orchestrator.execute()
+        assert orchestrator.status == "failed"
+        assert orchestrator.failure == "ModalExecutionError"
+        assert orchestrator.teardown is not None
+        _assert_no_run_receipt(tmp_path)
+
+    @pytest.mark.parametrize("status", ("refused", "invalidated"))
+    @pytest.mark.parametrize(
+        "error",
+        (
+            execute_module.ModalExecutionError("raised after status"),
+            RuntimeError("raised after status"),
+        ),
+        ids=("modal_execution_error", "runtime_error"),
+    )
+    def test_a_status_set_before_the_raise_is_kept(
+        self,
+        tmp_path: Path,
+        app_module: Any,
+        fake_modal: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        status: str,
+        error: BaseException,
+    ) -> None:
+        orchestrator = _orchestrator(tmp_path, app_module, fake_modal)
+        _script(app_module, _Receipts())
+
+        def set_status_then_raise(functions: Any) -> None:
+            del functions
+            orchestrator.status = status
+            orchestrator.failure = "specific failure"
+            raise error
+
+        monkeypatch.setattr(orchestrator, "_run_sequence", set_status_then_raise)
+        with pytest.raises(type(error), match="raised after status"):
+            orchestrator.execute()
+        assert orchestrator.status == status
+        assert orchestrator.failure == "specific failure"
+        assert orchestrator.teardown is not None
+        _assert_no_run_receipt(tmp_path)
+
+    def test_a_raise_after_a_complete_sequence_ends_as_failed(
+        self,
+        tmp_path: Path,
+        app_module: Any,
+        fake_modal: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        orchestrator = _orchestrator(tmp_path, app_module, fake_modal)
+        _script(app_module, _Receipts())
+        run_sequence = orchestrator._run_sequence
+
+        def complete_then_raise(functions: Any) -> None:
+            run_sequence(functions)
+            assert orchestrator.status == "complete"
+            raise execute_module.ModalExecutionError("raised after complete")
+
+        monkeypatch.setattr(orchestrator, "_run_sequence", complete_then_raise)
+        with pytest.raises(execute_module.ModalExecutionError):
+            orchestrator.execute()
+        assert orchestrator.status == "failed"
+        assert orchestrator.failure == "ModalExecutionError"
+        _assert_no_run_receipt(tmp_path)
+
+
 class TestHeadroomSignatureGate:
     def test_a_signed_headroom_receipt_requires_both_signature_paths(
         self, tmp_path: Path, app_module: Any, fake_modal: Any
