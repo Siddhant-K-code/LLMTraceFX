@@ -231,3 +231,60 @@ def test_gpu_result_without_export_falls_back_to_cpu(monkeypatch):
     assert summary["status"] == "completed"
     assert summary["total_tokens"] == 2
     assert summary["total_latency_ms"] > 0
+
+
+def _post_gpu(
+    monkeypatch, explanations: dict[int, str], enable_claude: bool
+) -> tuple[TestClient, dict[str, Any]]:
+    gpu_result = _gpu_result()
+    gpu_result["explanations"] = explanations
+    _install_fake_modal(monkeypatch, gpu_result)
+    client = TestClient(app)
+    return client, _post(client, enable_claude=enable_claude)
+
+
+def test_gpu_claude_requested_but_none_returned_reports_failed(monkeypatch):
+    client, created = _post_gpu(monkeypatch, {}, enable_claude=True)
+    analysis_id = created["analysis_id"]
+    assert created["status"] == "explanations_failed"
+    assert "CLAUDE_API_KEY" in created["error"]
+
+    summary = client.get(f"/analysis/{analysis_id}").json()
+    assert summary["status"] == "explanations_failed"
+    assert summary["total_tokens"] == 2
+
+    explanation = client.get(f"/explain/{analysis_id}/1")
+    assert explanation.status_code == 404
+    assert "not available yet" not in explanation.json()["detail"]
+    assert "CLAUDE_API_KEY" in explanation.json()["detail"]
+
+
+def test_gpu_claude_all_tokens_failed_reports_failed(monkeypatch):
+    explanations = {1: "Error: Claude API error 401", 2: "Error: Claude API error 401"}
+    client, created = _post_gpu(monkeypatch, explanations, enable_claude=True)
+    assert created["status"] == "explanations_failed"
+    assert created["error"] == (
+        "Explanation generation failed for all 2 tokens: Claude API error 401"
+    )
+
+    explanation = client.get(f"/explain/{created['analysis_id']}/1")
+    assert explanation.json() == {"explanation": "Error: Claude API error 401"}
+
+
+def test_gpu_claude_some_tokens_succeeded_reports_completed(monkeypatch):
+    explanations = {1: "gpu explanation 1", 2: "Error: Claude API error 529"}
+    client, created = _post_gpu(monkeypatch, explanations, enable_claude=True)
+    assert created["status"] == "completed"
+    assert created["error"] is None
+
+    explanation = client.get(f"/explain/{created['analysis_id']}/1")
+    assert explanation.json() == {"explanation": "gpu explanation 1"}
+
+
+def test_gpu_claude_not_requested_reports_completed(monkeypatch):
+    client, created = _post_gpu(monkeypatch, {}, enable_claude=False)
+    assert created["status"] == "completed"
+    assert created["error"] is None
+
+    summary = client.get(f"/analysis/{created['analysis_id']}").json()
+    assert summary["status"] == "completed"
