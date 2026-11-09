@@ -24,6 +24,14 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/Siddhant-K-code/LLMTraceFX/actions/workflows/ci.yml"><img src="https://github.com/Siddhant-K-code/LLMTraceFX/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="https://github.com/Siddhant-K-code/LLMTraceFX/actions/workflows/codeql.yml"><img src="https://github.com/Siddhant-K-code/LLMTraceFX/actions/workflows/codeql.yml/badge.svg?branch=main" alt="CodeQL status"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue" alt="Python 3.11, 3.12, 3.13">
+  <a href="#perf-gate-in-ci"><img src="https://img.shields.io/badge/GitHub%20Action-perf%20gate-orange?logo=githubactions&amp;logoColor=white" alt="GitHub Action: perf gate"></a>
+</p>
+
+<p align="center">
   <img src="assets/brand/social-preview.png" alt="LLMTraceFX evidence and optimization report preview using synthetic example data" width="820">
 </p>
 
@@ -225,6 +233,15 @@ Jaeger, Tempo, Phoenix, or Langfuse can show it. `export perfetto` writes a
 Chrome trace for [ui.perfetto.dev](https://ui.perfetto.dev). Both outputs are
 deterministic: IDs derive from the `run_id`, and every timing keeps its
 provenance as a `llmtracefx.*` attribute.
+
+### Perf gate
+
+`gate` compares candidate records with baseline records of the same model,
+workload, and platform, and exits 0 (pass), 1 (regression), or 2
+(inconclusive). It reports inconclusive instead of guessing when a side has too
+few runs, when runs are not comparable, when the metric's unit or provenance
+differs, or when the difference is within run-to-run noise. The same check
+ships as a GitHub Action; see [Perf gate in CI](#perf-gate-in-ci).
 
 ### Verification and resumability
 
@@ -799,6 +816,37 @@ uv run llmtracefx-optimizer workloads run-api \
 Then run `tune`, `tune-report`, or `optimize` against the verified result
 directory. The example policy files under `examples/optimizer/` are labelled
 examples and contain no benchmark claim.
+
+## Perf gate in CI
+
+Commit baseline `record.json` files for a workload, produce candidate records
+in your own job (on the hardware you care about, since hosted runners have no
+GPU or Apple silicon), then gate the pull request:
+
+```yaml
+- uses: Siddhant-K-code/LLMTraceFX@main
+  with:
+    baseline: perf/baseline          # files or directories of record.json
+    candidate: output/candidate
+    metric: decode_tokens_per_second # or total, prefill, decode, ...
+    max-regression: "0.05"           # fail beyond 5% worse
+    min-repetitions: "3"
+```
+
+The action needs only the standard library, so it installs nothing beyond
+Python. It writes a Markdown table to the job summary and exposes `verdict`
+(`pass`, `regression`, or `inconclusive`) and `report` (JSON path) as
+outputs. Set `fail-on-inconclusive: "false"` to report without failing when
+the runs are too few or too noisy to decide. Pin a commit SHA rather than
+`@main` for reproducible CI.
+
+The same check runs locally:
+
+```bash
+uv run llmtracefx-optimizer gate \
+  --baseline perf/baseline --candidate output/candidate \
+  --metric total --max-regression 0.05 --output gate.json
+```
 
 ## KV-cache truth auditing
 

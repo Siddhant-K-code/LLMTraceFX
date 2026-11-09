@@ -12,6 +12,8 @@ Subcommands:
                      evidence that refuses to attribute contaminated windows.
     export           Export a record as OTLP/JSON spans (OpenTelemetry GenAI
                      conventions) or a Chrome/Perfetto trace timeline.
+    gate             CI performance gate: compare candidate runs with
+                     baseline runs; exit 0 pass, 1 regression, 2 inconclusive.
     native-mtp       Native Qwen MTP capability report / evidence collection.
     instruments      Apple Instruments (xctrace) capability report, dry-run
                      plan, Metal trace recording, and trace import.
@@ -97,6 +99,7 @@ from .export import (
     render_chrome_trace_json,
     render_otlp_json_line,
 )
+from .gate import METRIC_CHOICES, GateInputError, evaluate_gate, load_records
 from .instruments import (
     METAL_SYSTEM_TRACE_TEMPLATE,
     InstrumentsCommandError,
@@ -684,6 +687,35 @@ def _cmd_export(args: argparse.Namespace) -> int:
     if not args.include_paths:
         print("Local model paths were reduced to basenames; see --include-paths.")
     return 0
+
+
+def _cmd_gate(args: argparse.Namespace) -> int:
+    try:
+        baseline = load_records(args.baseline)
+        candidate = load_records(args.candidate)
+        report = evaluate_gate(
+            baseline,
+            candidate,
+            metric=args.metric,
+            max_regression=args.max_regression,
+            min_repetitions=args.min_repetitions,
+        )
+    except (GateInputError, ValueError) as exc:
+        print(f"gate: {exc}", file=sys.stderr)
+        return 2
+    print(f"{report.verdict.value}: {report.reason}")
+    for item in report.excluded:
+        print(f"  excluded {item}")
+    try:
+        if args.output is not None:
+            report.write_json(Path(args.output))
+        if args.summary_markdown is not None:
+            with open(args.summary_markdown, "a", encoding="utf-8") as handle:
+                handle.write(report.to_markdown())
+    except OSError as exc:
+        print(f"gate: could not write report: {exc}", file=sys.stderr)
+        return 2
+    return report.exit_code
 
 
 def _cmd_native_mtp_capability_report(args: argparse.Namespace) -> int:
@@ -3003,6 +3035,56 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sm_diff_parser.add_argument("--output", default=None)
     sm_diff_parser.set_defaults(func=_cmd_server_metrics_diff)
+
+    gate_parser = subparsers.add_parser(
+        "gate",
+        help=(
+            "CI performance gate: compare candidate records with baseline "
+            "records of the same workload and platform. Exit 0 pass, "
+            "1 regression, 2 inconclusive (too few runs, not comparable, "
+            "or within noise)."
+        ),
+    )
+    gate_parser.add_argument(
+        "--baseline",
+        nargs="+",
+        required=True,
+        help="Baseline record.json files or directories (searched recursively)",
+    )
+    gate_parser.add_argument(
+        "--candidate",
+        nargs="+",
+        required=True,
+        help="Candidate record.json files or directories (searched recursively)",
+    )
+    gate_parser.add_argument(
+        "--metric",
+        choices=METRIC_CHOICES,
+        default="total",
+        help=(
+            "timing.<phase> latency (lower is better) or "
+            "decode_tokens_per_second (higher is better); default total"
+        ),
+    )
+    gate_parser.add_argument(
+        "--max-regression",
+        type=float,
+        default=0.05,
+        help="Allowed relative regression before failing (default 0.05 = 5%%)",
+    )
+    gate_parser.add_argument(
+        "--min-repetitions",
+        type=int,
+        default=3,
+        help="Usable runs required on each side (default 3, minimum 2)",
+    )
+    gate_parser.add_argument("--output", default=None, help="JSON report path")
+    gate_parser.add_argument(
+        "--summary-markdown",
+        default=None,
+        help="Append a Markdown summary, e.g. $GITHUB_STEP_SUMMARY",
+    )
+    gate_parser.set_defaults(func=_cmd_gate)
 
     export_parser = subparsers.add_parser(
         "export",

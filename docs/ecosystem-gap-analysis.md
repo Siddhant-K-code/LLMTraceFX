@@ -93,6 +93,8 @@ Importers for `vllm bench serve --save-result` JSON and AIPerf
 
 Ranked by expected return for effort:
 
+Items 1, 4 (CI badges only) and 5 are now built; see below.
+
 1. **Publish a perf gate GitHub Action** that runs a pinned workload, compares
    against a committed baseline and fails a pull request on regression. A
    similar action (`waynehacking8/inference-perf-gate`) shows demand but has
@@ -161,10 +163,58 @@ record phase durations, so their phases are laid out back to back and marked
 `llmtracefx.span.placement=sequential_from_durations`. That layout is an
 assumption, not a measurement.
 
+### `gate` and the perf gate Action
+
+`gate` compares candidate records with baseline records and exits 0 (pass),
+1 (regression) or 2 (inconclusive). Both groups must share the model,
+quantization, runtime name and backend, platform, workload hash and token
+counts. The runtime version and config hash may differ, because those are
+usually what the pull request changes. The metric's unit and provenance must
+match on both sides. A regression is reported only when the relative change
+exceeds `--max-regression` and the absolute difference exceeds the summed
+population standard deviations of the two groups. Otherwise a worse result
+is inconclusive and the report asks for more runs. `decode_tokens_per_second`
+is derived from `timing.decode` and the generated token count, and it is
+labelled `derived_from_<provenance>`.
+
+`action.yml` at the repository root wraps the command as a composite action.
+The gate imports only the standard library, so the action installs nothing
+beyond Python. It writes a Markdown table to the job summary and exposes
+`verdict` and `report` outputs. The `perf gate action self-test` CI job runs
+the action against committed fixtures and checks all three verdicts.
+
+### Evidence viewer Space
+
+`spaces/evidence-viewer/` is a Gradio app for Hugging Face Spaces. It shows a
+record's measurements with their provenance and its span tree, and it offers
+the Perfetto and OTLP exports for download. The logic lives in `viewer.py`,
+which does not import Gradio and is tested in CI. The bundled example record
+is synthetic. The README in that directory has the deploy commands.
+
+### README badges
+
+CI, CodeQL, license, supported Python versions and a link to the perf gate.
+There is no PyPI badge because the package is not on PyPI yet.
+
+### Awesome list entries (drafts)
+
+One line per list, in each list's existing format. Each list asks for one
+pull request per entry and alphabetical placement.
+
+- `tensorchord/Awesome-LLMOps`, Observability section:
+  `| [LLMTraceFX](https://github.com/Siddhant-K-code/LLMTraceFX) | Evidence-first LLM inference measurement: provenance on every metric, OTLP/Perfetto export, server /metrics attribution and a CI perf gate. | ![GitHub Badge](https://img.shields.io/github/stars/Siddhant-K-code/LLMTraceFX.svg?style=flat-square) |`
+- `rafska/Awesome-local-LLM`, Explorers, Benchmarks, Leaderboards:
+  `- [LLMTraceFX](https://github.com/Siddhant-K-code/LLMTraceFX) - measures local MLX, llama.cpp and OpenAI-compatible inference with per-value provenance and correctness-checked workloads, and gates regressions in CI.`
+- `antranapp/awesome-mlx`, next to `mlx-bench`:
+  `- [LLMTraceFX](https://github.com/Siddhant-K-code/LLMTraceFX): MLX-LM and Apple Instruments (Metal) evidence collection with provenance, Perfetto export and a regression gate.`
+
 ## Follow ups not built here
 
 - OTLP metrics export (histograms for TTFT and duration).
 - Concurrency sweeps, goodput and trace replay.
 - Importers for `vllm bench serve` and AIPerf exports.
 - NVML or DCGM energy collection.
-- A perf gate Action and the awesome list submissions above.
+- Publishing to PyPI (needed for a PyPI badge and `pip install llmtracefx`).
+- Tagging a `v1` release so the Action can be pinned as `@v1`.
+- Deploying the Space and opening the awesome list pull requests. These
+  publish under the maintainer's accounts, so they are left to the maintainer.

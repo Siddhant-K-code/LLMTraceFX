@@ -1,0 +1,91 @@
+{
+  "schema_version": "1",
+  "run_id": "candidate-regressed-2",
+  "started_at": "2025-01-01T00:00:00Z",
+  "ended_at": null,
+  "platform": {
+    "os_name": "Darwin",
+    "os_version": "24.0",
+    "architecture": "arm64",
+    "cpu_model": null,
+    "cpu_cores": null,
+    "total_memory_gb": null,
+    "accelerator": null
+  },
+  "model": {
+    "model_id": "Qwen/Qwen3.8-27B",
+    "model_revision": null,
+    "tokenizer_revision": null,
+    "quantization": "Q4_K_M",
+    "model_family": null
+  },
+  "runtime": {
+    "name": "llama.cpp",
+    "version": "b1234",
+    "backend": "Metal",
+    "git_revision": null,
+    "provider": null
+  },
+  "command": {
+    "argv": [
+      "llama-cli",
+      "-m",
+      "model.gguf"
+    ],
+    "config_hash": null,
+    "workload_hash": "fixture-workload"
+  },
+  "repetition": {
+    "warmup_repetitions": 1,
+    "measured_repetitions": 3,
+    "repetition_index": 0,
+    "seed": null
+  },
+  "tokens": {
+    "input_tokens": 50,
+    "context_tokens": null,
+    "generated_tokens": 200,
+    "provenance": null
+  },
+  "timing": {
+    "model_load": null,
+    "tokenize": null,
+    "prefill": null,
+    "decode": {
+      "value": 940.0,
+      "provenance": "measured_native",
+      "unit": "ms"
+    },
+    "total": {
+      "value": 1175.0,
+      "provenance": "measured_native",
+      "unit": "ms"
+    }
+  },
+  "speculative": {
+    "enabled": false,
+    "method": null,
+    "configured_depth": null,
+    "proposed_tokens": null,
+    "accepted_tokens": null,
+    "verification_time": null
+  },
+  "memory": {
+    "active": null,
+    "cache": null,
+    "peak": null,
+    "wired": null
+  },
+  "power": {
+    "average_power": null,
+    "energy": null
+  },
+  "instruments": null,
+  "outcome": {
+    "success": true,
+    "quality_score": null,
+    "quality_metric": null,
+    "notes": null
+  },
+  "error": null
+}
