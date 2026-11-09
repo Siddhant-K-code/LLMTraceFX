@@ -24,14 +24,16 @@ updates:
           - "ruff"
           - "pytest*"
           - "pre-commit"
-      # The mlx extra pins all three exactly, and newer mlx-vlm and mlx-lm
-      # releases require a newer mlx. Bumped one at a time they can never
-      # resolve, so the weekly update fails instead of opening a PR.
-      mlx-runtime:
-        patterns:
-          - "mlx"
-          - "mlx-lm"
-          - "mlx-vlm"
+    # The MLX runtime is a certified pin, not a routine dependency. The cache
+    # audit refuses any mlx/mlx-lm but the pinned pair, expected.py models
+    # that mlx-lm's prompt cache, and the reference bundle and lab
+    # manifests record these exact versions. Upgrading means re-certifying
+    # that evidence by hand, so Dependabot must not propose it. This also
+    # suppresses security-update PRs for these packages; alerts still show.
+    ignore:
+      - dependency-name: "mlx"
+      - dependency-name: "mlx-lm"
+      - dependency-name: "mlx-vlm"
 
   - package-ecosystem: "github-actions"
     directory: "/"
