@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 import types
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -40,7 +40,7 @@ CELL_IDS = [cell.cell_id for cell in modal.crossover_schedule()]
 AUTHORIZED_AT = "2026-09-04T19:52:50.511+05:30"
 NOT_BEFORE = "2026-09-04T14:00:00+00:00"
 EXPIRES_AT = "2026-09-04T18:00:00+00:00"
-WITHIN_WINDOW = datetime(2026, 9, 4, 14, 30, 0, tzinfo=timezone.utc)
+WITHIN_WINDOW = datetime(2026, 9, 4, 14, 30, 0, tzinfo=UTC)
 # The signed headroom receipt must cover the whole authorization window and be
 # fresh at the moment of the check, so its window brackets [NOT_BEFORE,
 # EXPIRES_AT) and contains WITHIN_WINDOW.
@@ -1617,7 +1617,7 @@ class TestExecutionWindow:
         assert window["expires_at"] == EXPIRES_AT
 
     def test_an_approval_before_its_window_is_refused(self) -> None:
-        early = datetime(2026, 9, 4, 13, 59, 59, tzinfo=timezone.utc)
+        early = datetime(2026, 9, 4, 13, 59, 59, tzinfo=UTC)
         with pytest.raises(execute_module.ModalExecutionError, match="not yet valid"):
             execute_module.verify_execution_window(_windowed_authorization(), now=early)
 
@@ -1625,8 +1625,8 @@ class TestExecutionWindow:
         # At expires_at and any later instant the approval is dead, so a stale
         # or replayed approval can never re-authorize a run.
         for now in (
-            datetime(2026, 9, 4, 18, 0, 0, tzinfo=timezone.utc),
-            datetime(2026, 9, 6, 9, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 9, 4, 18, 0, 0, tzinfo=UTC),
+            datetime(2026, 9, 6, 9, 0, 0, tzinfo=UTC),
         ):
             with pytest.raises(execute_module.ModalExecutionError, match="has expired"):
                 execute_module.verify_execution_window(
@@ -1672,7 +1672,7 @@ class TestExecutionWindow:
         def forbidden_fetcher(url: str) -> bytes:
             raise AssertionError("no official-rate fetch before the window check")
 
-        expired = datetime(2026, 9, 6, 0, 0, 0, tzinfo=timezone.utc)
+        expired = datetime(2026, 9, 6, 0, 0, 0, tzinfo=UTC)
         with pytest.raises(execute_module.ModalExecutionError, match="has expired"):
             execute_module.preflight(
                 workspace=workspace,
@@ -2173,6 +2173,103 @@ class TestOutstandingCallTeardown:
         document = _run(tmp_path, app_module, fake_modal)
         assert document["status"] == "invalidated"
         assert ("cancel", "verify_stage") in app_module.app.log
+
+
+def _assert_no_run_receipt(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    assert not (workspace / "orchestration-receipt.json").exists()
+    assert not (workspace / execute_module.REFUSAL_RECEIPT_FILE).exists()
+
+
+class TestRaisedRunStatus:
+    """A run that raises after it starts always ends in a terminal status."""
+
+    @pytest.mark.parametrize("site", ("app_run", "set_tags", "run_sequence"))
+    def test_a_modal_execution_error_ends_the_run_as_failed(
+        self,
+        tmp_path: Path,
+        app_module: Any,
+        fake_modal: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        site: str,
+    ) -> None:
+        orchestrator = _orchestrator(tmp_path, app_module, fake_modal)
+        _script(app_module, _Receipts())
+        error = execute_module.ModalExecutionError(f"raised from {site}")
+
+        def raise_error(*args: Any, **kwargs: Any) -> None:
+            raise error
+
+        if site == "app_run":
+            app_module.app.enter_error = error
+        elif site == "set_tags":
+            monkeypatch.setattr(app_module.app, "set_tags", raise_error)
+        else:
+            monkeypatch.setattr(orchestrator, "_reserve", raise_error)
+        with pytest.raises(execute_module.ModalExecutionError, match=site):
+            orchestrator.execute()
+        assert orchestrator.status == "failed"
+        assert orchestrator.failure == "ModalExecutionError"
+        assert orchestrator.teardown is not None
+        _assert_no_run_receipt(tmp_path)
+
+    @pytest.mark.parametrize("status", ("refused", "invalidated"))
+    @pytest.mark.parametrize(
+        "error",
+        (
+            execute_module.ModalExecutionError("raised after status"),
+            RuntimeError("raised after status"),
+        ),
+        ids=("modal_execution_error", "runtime_error"),
+    )
+    def test_a_status_set_before_the_raise_is_kept(
+        self,
+        tmp_path: Path,
+        app_module: Any,
+        fake_modal: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        status: str,
+        error: BaseException,
+    ) -> None:
+        orchestrator = _orchestrator(tmp_path, app_module, fake_modal)
+        _script(app_module, _Receipts())
+
+        def set_status_then_raise(functions: Any) -> None:
+            del functions
+            orchestrator.status = status
+            orchestrator.failure = "specific failure"
+            raise error
+
+        monkeypatch.setattr(orchestrator, "_run_sequence", set_status_then_raise)
+        with pytest.raises(type(error), match="raised after status"):
+            orchestrator.execute()
+        assert orchestrator.status == status
+        assert orchestrator.failure == "specific failure"
+        assert orchestrator.teardown is not None
+        _assert_no_run_receipt(tmp_path)
+
+    def test_a_raise_after_a_complete_sequence_ends_as_failed(
+        self,
+        tmp_path: Path,
+        app_module: Any,
+        fake_modal: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        orchestrator = _orchestrator(tmp_path, app_module, fake_modal)
+        _script(app_module, _Receipts())
+        run_sequence = orchestrator._run_sequence
+
+        def complete_then_raise(functions: Any) -> None:
+            run_sequence(functions)
+            assert orchestrator.status == "complete"
+            raise execute_module.ModalExecutionError("raised after complete")
+
+        monkeypatch.setattr(orchestrator, "_run_sequence", complete_then_raise)
+        with pytest.raises(execute_module.ModalExecutionError):
+            orchestrator.execute()
+        assert orchestrator.status == "failed"
+        assert orchestrator.failure == "ModalExecutionError"
+        _assert_no_run_receipt(tmp_path)
 
 
 class TestHeadroomSignatureGate:
