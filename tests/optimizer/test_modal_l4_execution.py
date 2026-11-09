@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 import types
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -40,7 +40,7 @@ CELL_IDS = [cell.cell_id for cell in modal.crossover_schedule()]
 AUTHORIZED_AT = "2026-09-04T19:52:50.511+05:30"
 NOT_BEFORE = "2026-09-04T14:00:00+00:00"
 EXPIRES_AT = "2026-09-04T18:00:00+00:00"
-WITHIN_WINDOW = datetime(2026, 9, 4, 14, 30, 0, tzinfo=timezone.utc)
+WITHIN_WINDOW = datetime(2026, 9, 4, 14, 30, 0, tzinfo=UTC)
 # The signed headroom receipt must cover the whole authorization window and be
 # fresh at the moment of the check, so its window brackets [NOT_BEFORE,
 # EXPIRES_AT) and contains WITHIN_WINDOW.
@@ -1617,7 +1617,7 @@ class TestExecutionWindow:
         assert window["expires_at"] == EXPIRES_AT
 
     def test_an_approval_before_its_window_is_refused(self) -> None:
-        early = datetime(2026, 9, 4, 13, 59, 59, tzinfo=timezone.utc)
+        early = datetime(2026, 9, 4, 13, 59, 59, tzinfo=UTC)
         with pytest.raises(execute_module.ModalExecutionError, match="not yet valid"):
             execute_module.verify_execution_window(_windowed_authorization(), now=early)
 
@@ -1625,8 +1625,8 @@ class TestExecutionWindow:
         # At expires_at and any later instant the approval is dead, so a stale
         # or replayed approval can never re-authorize a run.
         for now in (
-            datetime(2026, 9, 4, 18, 0, 0, tzinfo=timezone.utc),
-            datetime(2026, 9, 6, 9, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 9, 4, 18, 0, 0, tzinfo=UTC),
+            datetime(2026, 9, 6, 9, 0, 0, tzinfo=UTC),
         ):
             with pytest.raises(execute_module.ModalExecutionError, match="has expired"):
                 execute_module.verify_execution_window(
@@ -1672,7 +1672,7 @@ class TestExecutionWindow:
         def forbidden_fetcher(url: str) -> bytes:
             raise AssertionError("no official-rate fetch before the window check")
 
-        expired = datetime(2026, 9, 6, 0, 0, 0, tzinfo=timezone.utc)
+        expired = datetime(2026, 9, 6, 0, 0, 0, tzinfo=UTC)
         with pytest.raises(execute_module.ModalExecutionError, match="has expired"):
             execute_module.preflight(
                 workspace=workspace,

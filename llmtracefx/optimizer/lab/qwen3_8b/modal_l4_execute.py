@@ -33,7 +33,7 @@ import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -145,7 +145,7 @@ class ModalExecutionError(ModalL4ContractError):
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
 def _parse_utc_timestamp(value: Any, *, field: str) -> datetime:
@@ -170,7 +170,7 @@ def _parse_utc_timestamp(value: Any, *, field: str) -> datetime:
         raise ModalExecutionError(
             f"authorization {field} must be an explicit UTC timestamp"
         )
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def _sha256_text(value: str) -> str:
@@ -652,7 +652,7 @@ def verify_execution_window(
 
     if now.tzinfo is None or now.utcoffset() is None:
         raise ModalExecutionError("current time must be timezone-aware")
-    now_utc = now.astimezone(timezone.utc)
+    now_utc = now.astimezone(UTC)
     not_before, expires_at = authorization.execution_window()
     if now_utc < not_before:
         raise ModalExecutionError(
@@ -746,7 +746,7 @@ def verify_signed_headroom_receipt(
         )
     if now.tzinfo is None or now.utcoffset() is None:
         raise ModalExecutionError("current time must be timezone-aware")
-    now_utc = now.astimezone(timezone.utc)
+    now_utc = now.astimezone(UTC)
     if not confirmed_at <= now_utc < receipt_expires_at:
         raise ModalExecutionError(
             "headroom receipt is not fresh; refusing a stale or premature "
@@ -1645,7 +1645,7 @@ def preflight(
     # Bounded execution window: after the signature is verified, but before any
     # network fetch or SDK import, refuse an approval that is not yet valid or
     # has expired so a stale or replayed approval cannot start a run.
-    now = now_utc if now_utc is not None else datetime.now(timezone.utc)
+    now = now_utc if now_utc is not None else datetime.now(UTC)
     execution_window = verify_execution_window(authorization, now=now)
     if (
         _sha256_json(attestation)
