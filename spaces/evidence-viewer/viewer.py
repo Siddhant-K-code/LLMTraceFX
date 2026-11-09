@@ -6,8 +6,10 @@ Kept separate from ``app.py`` so it can be tested without Gradio.
 from __future__ import annotations
 
 import json
+import os
 import re
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +27,7 @@ from llmtracefx.optimizer.schema import (
 )
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+EXAMPLES_DIR = Path(__file__).resolve().parent / "examples"
 
 
 class ViewerError(ValueError):
@@ -40,18 +43,38 @@ class ViewerResult:
     otlp_path: Path
 
 
-def _read_text(path: str | Path, label: str) -> str:
-    file = Path(path)
-    if file.stat().st_size > MAX_UPLOAD_BYTES:
+def default_allowed_roots() -> tuple[Path, ...]:
+    """Directories uploads may come from: Gradio's upload cache and examples."""
+    gradio_tmp = os.environ.get("GRADIO_TEMP_DIR") or os.path.join(
+        tempfile.gettempdir(), "gradio"
+    )
+    return (EXAMPLES_DIR, Path(gradio_tmp))
+
+
+def _read_text(path: str | Path, label: str, roots: Sequence[str | Path]) -> str:
+    resolved = os.path.realpath(path)
+    allowed = False
+    for root in roots:
+        base = os.path.realpath(root)
+        if resolved.startswith(base + os.sep):
+            allowed = True
+            break
+    if not allowed:
+        raise ViewerError(f"{label} is outside the upload directory")
+    with open(resolved, "rb") as handle:
+        data = handle.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
         raise ViewerError(f"{label} is larger than {MAX_UPLOAD_BYTES} bytes")
-    return file.read_text(encoding="utf-8")
+    return data.decode("utf-8")
 
 
-def _read_mapping(path: str | Path | None, label: str) -> dict[str, Any] | None:
+def _read_mapping(
+    path: str | Path | None, label: str, roots: Sequence[str | Path]
+) -> dict[str, Any] | None:
     if path is None:
         return None
     try:
-        data = json.loads(_read_text(path, label))
+        data = json.loads(_read_text(path, label, roots))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ViewerError(f"{label} is not readable JSON: {exc}") from exc
     if not isinstance(data, dict):
@@ -83,9 +106,13 @@ def render(
     server_metrics_path: str | Path | None = None,
     *,
     output_dir: Path | None = None,
+    allowed_roots: Sequence[str | Path] | None = None,
 ) -> ViewerResult:
+    roots = default_allowed_roots() if allowed_roots is None else allowed_roots
     try:
-        record = ExperimentRecord.from_json(_read_text(record_path, "record.json"))
+        record = ExperimentRecord.from_json(
+            _read_text(record_path, "record.json", roots)
+        )
     except (OSError, UnicodeDecodeError, SchemaValidationError) as exc:
         raise ViewerError(
             f"record.json is not a valid ExperimentRecord: {exc}"
@@ -93,8 +120,8 @@ def render(
     try:
         model = build_trace(
             record,
-            api_evidence=_read_mapping(api_evidence_path, "API evidence"),
-            server_evidence=_read_mapping(server_metrics_path, "server metrics"),
+            api_evidence=_read_mapping(api_evidence_path, "API evidence", roots),
+            server_evidence=_read_mapping(server_metrics_path, "server metrics", roots),
         )
     except ExportError as exc:
         raise ViewerError(str(exc)) from exc

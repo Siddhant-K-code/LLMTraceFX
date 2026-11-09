@@ -397,8 +397,8 @@ def test_snapshot_cli_refuses_a_credentialed_url_without_scraping(
 STREAM = [
     b'data: {"id":"c1","model":"m","choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n',
     b'data: {"id":"c1","choices":[{"index":0,"delta":{"content":""},'
-    b'"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,'
-    b'"total_tokens":6}}\n\n',
+    + b'"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,'
+    + b'"total_tokens":6}}\n\n',
     b"data: [DONE]\n\n",
 ]
 
