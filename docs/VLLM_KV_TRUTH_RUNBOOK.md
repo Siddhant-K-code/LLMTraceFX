@@ -313,13 +313,13 @@ uv venv --python 3.12 "$run_venv"
 uv pip install \
   --python "$run_venv/bin/python" \
   --no-deps \
-  "$build_dir/llmtracefx-1.5.0-py3-none-any.whl"
+  "$build_dir/llmtracefx-1.6.0-py3-none-any.whl"
 
 /usr/bin/env -i PATH=/usr/bin:/bin:/usr/local/bin LANG=C LC_ALL=C \
   "$run_venv/bin/python" -I -S -B \
   "$run_venv/bin/run-vllm-kv-truth-clean-env.py" \
   record-trust \
-  --wheel "$build_dir/llmtracefx-1.5.0-py3-none-any.whl" \
+  --wheel "$build_dir/llmtracefx-1.6.0-py3-none-any.whl" \
   --output "$manifest"
 
 case "$(uname -s)" in
@@ -431,7 +431,7 @@ the single enrollment command:
   /absolute/protected/kv-truth-venv/bin/python -I -S -B \
   /absolute/protected/kv-truth-venv/bin/run-vllm-kv-truth-clean-env.py \
   enroll-tofu \
-  --wheel /absolute/protected/build-output/llmtracefx-1.5.0-py3-none-any.whl \
+  --wheel /absolute/protected/build-output/llmtracefx-1.6.0-py3-none-any.whl \
   --trusted-manifest /absolute/protected/kv-truth-launch-manifest.json \
   --trusted-manifest-sha256 <RECORDED_64_HEX_MANIFEST_SHA256> \
   --enrollment-request /protected/path/tofu/tofu-enrollment-request.json
@@ -477,7 +477,7 @@ Run the offline environment preflight first:
   /absolute/protected/kv-truth-venv/bin/python -I -S -B \
   /absolute/protected/kv-truth-venv/bin/run-vllm-kv-truth-clean-env.py \
   preflight \
-  --wheel /absolute/protected/build-output/llmtracefx-1.5.0-py3-none-any.whl \
+  --wheel /absolute/protected/build-output/llmtracefx-1.6.0-py3-none-any.whl \
   --trusted-manifest /absolute/protected/kv-truth-launch-manifest.json \
   --trusted-manifest-sha256 <RECORDED_64_HEX_MANIFEST_SHA256>
 ```
@@ -510,7 +510,7 @@ authorization, remaining reserve, and fresh temporary key, execute:
   /absolute/protected/kv-truth-venv/bin/python -I -S -B \
   /absolute/protected/kv-truth-venv/bin/run-vllm-kv-truth-clean-env.py \
   run \
-  --wheel /absolute/protected/build-output/llmtracefx-1.5.0-py3-none-any.whl \
+  --wheel /absolute/protected/build-output/llmtracefx-1.6.0-py3-none-any.whl \
   --trusted-manifest /absolute/protected/kv-truth-launch-manifest.json \
   --trusted-manifest-sha256 <RECORDED_64_HEX_MANIFEST_SHA256> \
   --execution-config /protected/path/execution-config.json \
