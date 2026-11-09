@@ -459,3 +459,53 @@ def test_shareable_report_and_chart_are_deterministic_and_private(
 def test_shareable_artifacts_reject_private_values(private_value) -> None:
     with pytest.raises(LabError, match="private"):
         assert_shareable({"value": private_value})
+
+
+def _mark_state_running(state_path: Path) -> None:
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["status"] = "running"
+    state.pop("ended_at", None)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("alive", "expected"),
+    [(False, "was abandoned"), (True, "still active"), (None, "cannot be checked")],
+)
+def test_running_state_reports_live_or_abandoned_owner(
+    tmp_path, monkeypatch, alive, expected
+) -> None:
+    from llmtracefx.optimizer.lab import run_owner
+
+    manifest = LabManifest.read_json(MANIFEST_PATH)
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr(
+        "llmtracefx.optimizer.lab.core.verify_model",
+        lambda *args, **kwargs: {"verified": True},
+    )
+    monkeypatch.setattr(
+        "llmtracefx.optimizer.lab.core.assess_safety",
+        lambda *args, **kwargs: _safe_decision(),
+    )
+    monkeypatch.setattr("llmtracefx.optimizer.lab.core.MLXVLMRuntime", FakeRuntime)
+    FakeRuntime.peak_bytes = 1024**3
+    FakeRuntime.fail_generation = False
+    state = run_lab(
+        manifest,
+        workspace=workspace,
+        model_path=model_path,
+        max_tier="2k",
+        resume=True,
+    )
+    assert state["owner"] == run_owner.current_run_owner()
+
+    _mark_state_running(workspace / "state.json")
+    monkeypatch.setattr(run_owner, "_pid_is_alive", lambda pid: alive)
+    with pytest.raises(LabError, match="report generation is refused") as excinfo:
+        build_shareable_report(manifest, workspace=workspace)
+    assert expected in str(excinfo.value)
+    verification = verify_evidence(manifest, workspace=workspace)
+    assert verification["verified"] is False
+    assert expected in verification["failures"][0]

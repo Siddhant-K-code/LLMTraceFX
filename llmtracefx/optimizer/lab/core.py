@@ -40,6 +40,7 @@ from ..workloads.verify import (
     execute_row,
 )
 from .manifest import LabManifest, LabManifestError
+from .run_owner import current_run_owner, describe_running_state
 
 LAB_REPORT_SCHEMA_VERSION = "1"
 MODEL_VERIFICATION_SCHEMA_VERSION = "1"
@@ -491,6 +492,7 @@ def run_lab(
         "lab_id": manifest.lab_id,
         "started_at": utc_now_iso(),
         "status": "running",
+        "owner": current_run_owner(),
         "requested_max_tier": max_tier,
         "preflight": preflight.to_dict(),
         "tiers": [],
@@ -1010,7 +1012,8 @@ def build_shareable_report(manifest: LabManifest, *, workspace: Path) -> dict[st
     )
     if state.get("status") == "running":
         raise LabError(
-            "current lab execution is incomplete; report generation is refused"
+            "current lab execution is incomplete; report generation is refused: "
+            + describe_running_state(state)
         )
     allowed_tiers, measured_run_ids, warmup_run_ids = _current_state_scope(
         manifest, state
@@ -1671,7 +1674,8 @@ def verify_evidence(manifest: LabManifest, *, workspace: Path) -> dict[str, Any]
             "verified": False,
             "records_checked": 0,
             "failures": [
-                "current lab execution is incomplete; verification is refused"
+                "current lab execution is incomplete; verification is refused: "
+                + describe_running_state(state)
             ],
         }
     allowed_tiers, measured_run_ids, warmup_run_ids = _current_state_scope(

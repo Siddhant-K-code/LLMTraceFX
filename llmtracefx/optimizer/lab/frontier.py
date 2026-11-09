@@ -39,6 +39,7 @@ from .core import (
     verify_model,
 )
 from .manifest import LabManifest
+from .run_owner import current_run_owner, describe_running_state
 
 FRONTIER_MANIFEST_SCHEMA_VERSION = "1"
 FRONTIER_STATE_SCHEMA_VERSION = "1"
@@ -817,6 +818,7 @@ def run_frontier(
         "started_at": utc_now_iso(),
         "ended_at": None,
         "status": "running",
+        "owner": current_run_owner(),
         "requested_max_tier": max_tier,
         "pre_run_machine_state": machine_state(preflight),
         "results": [],
@@ -988,7 +990,9 @@ def verify_frontier_evidence(
         return {"verified": False, "failures": ["state artifact is missing"]}
     state = _read_json(state_path)
     if state.get("status") == "running":
-        failures.append("state artifact is incomplete")
+        failures.append(
+            "state artifact is incomplete: " + describe_running_state(state)
+        )
     if state.get("frontier_manifest_hash") != frontier_manifest_hash(frontier):
         failures.append("state manifest binding is stale")
     if state.get("run_mode") != run_mode:

@@ -1215,3 +1215,33 @@ def test_packaged_resources_load_from_external_cwd(tmp_path, monkeypatch) -> Non
     assert template_source.startswith("package:llmtracefx.optimizer.lab.qwen3_8b/")
     assert conversion.source.official_id == "Qwen/Qwen3-8B"
     assert template.to_dict()["model"]["model_family"] == "qwen3"
+
+
+def test_running_benchmark_state_reports_an_abandoned_owner(
+    tmp_path, monkeypatch
+) -> None:
+    from llmtracefx.optimizer.lab import run_owner
+
+    manifest, manifest_path = _bound_manifest(tmp_path)
+    _prepare(monkeypatch)
+    (tmp_path / "model").mkdir(exist_ok=True)
+    workspace = tmp_path / "workspace"
+    state = bm.run_benchmark(
+        manifest,
+        manifest_path=manifest_path,
+        workspace=workspace,
+        model_path=tmp_path / "model",
+        max_tier="2k",
+        launcher=_in_process_launcher(manifest),
+    )
+    assert state["owner"] == run_owner.current_run_owner()
+
+    state_path = workspace / "state.json"
+    crashed = json.loads(state_path.read_text(encoding="utf-8"))
+    crashed["status"] = "running"
+    state_path.write_text(json.dumps(crashed), encoding="utf-8")
+    monkeypatch.setattr(run_owner, "_pid_is_alive", lambda pid: False)
+    with pytest.raises(LabError, match="report generation is refused") as excinfo:
+        build_control_report(manifest, workspace=workspace)
+    assert "was abandoned" in str(excinfo.value)
+    assert "rerun to replace state.json" in str(excinfo.value)

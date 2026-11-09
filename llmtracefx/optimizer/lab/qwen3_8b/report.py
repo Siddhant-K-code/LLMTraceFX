@@ -45,6 +45,7 @@ from ..core import (
     verify_evidence,
 )
 from ..manifest import LabManifest
+from ..run_owner import describe_running_state
 
 CONTROL_REPORT_SCHEMA_VERSION = "1"
 
@@ -95,7 +96,8 @@ def build_control_report(manifest: LabManifest, *, workspace: Path) -> dict[str,
     )
     if state.get("status") == "running":
         raise LabError(
-            "current benchmark run is incomplete; report generation is refused"
+            "current benchmark run is incomplete; report generation is refused: "
+            + describe_running_state(state)
         )
     allowed_tiers, measured_run_ids, warmup_run_ids = _current_state_scope(
         manifest, state

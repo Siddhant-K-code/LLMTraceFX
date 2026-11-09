@@ -55,6 +55,7 @@ from ..core import (
 )
 from ..frontier import _clean_process_group
 from ..manifest import LabManifest
+from ..run_owner import current_run_owner
 from .runtime import Qwen3ChatMLXLMRuntime
 
 BENCHMARK_STATE_SCHEMA_VERSION = "1"
@@ -506,6 +507,7 @@ def run_benchmark(
         "clean_boot_confirmed": clean_boot_confirmed,
         "started_at": utc_now_iso(),
         "status": "running",
+        "owner": current_run_owner(),
         "requested_max_tier": max_tier,
         "preflight": preflight.to_dict(),
         "tiers": [],
