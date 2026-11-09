@@ -13,6 +13,7 @@ Nothing here authenticates, connects, or needs the real SDK installed.
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
 import pytest
@@ -322,7 +323,14 @@ def test_a_remote_container_can_rebuild_the_plan_from_the_image_alone() -> None:
     importing with *only* what the image sets plus the secret, which is
     exactly what a worker sees.
     """
-    with imported_app(valid_environ()) as (module, fake):
+    # The entrypoint bakes today's date into the image, so the quote must
+    # be fresh today, as it would be for a real deploy. The fixed dates in
+    # ``valid_environ`` would go stale and fail this test on the calendar.
+    today = date.today().isoformat()
+    fresh = valid_environ(
+        LLMTRACEFX_GLM_PRICE_EFFECTIVE_DATE=today, LLMTRACEFX_GLM_AS_OF=today
+    )
+    with imported_app(fresh) as (module, fake):
         baked = dict(module.BAKED_ENVIRONMENT)
         local_plan = module.PLAN
         images = {
