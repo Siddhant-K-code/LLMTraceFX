@@ -52,14 +52,9 @@ def default_allowed_roots() -> tuple[Path, ...]:
 
 
 def _read_text(path: str | Path, label: str, roots: Sequence[str | Path]) -> str:
+    prefixes = tuple(os.path.realpath(root) + os.sep for root in roots)
     resolved = os.path.realpath(path)
-    allowed = False
-    for root in roots:
-        base = os.path.realpath(root)
-        if resolved.startswith(base + os.sep):
-            allowed = True
-            break
-    if not allowed:
+    if not resolved.startswith(prefixes):
         raise ViewerError(f"{label} is outside the upload directory")
     with open(resolved, "rb") as handle:
         data = handle.read(MAX_UPLOAD_BYTES + 1)
