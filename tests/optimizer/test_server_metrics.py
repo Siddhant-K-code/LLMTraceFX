@@ -285,6 +285,129 @@ def test_llama_cpp_has_no_request_counter_so_attribution_needs_an_assertion() ->
     assert asserted["highlights"]["prompt_tokens"]["value"] == 20
 
 
+def tgi_body(
+    *,
+    started: int,
+    finished: int,
+    succeeded: int,
+    queued: int = 0,
+    running: int = 0,
+) -> bytes:
+    # TGI counts a request when it starts and records its duration and
+    # success when it finishes.
+    return (
+        "# TYPE tgi_request_count counter\n"
+        f"tgi_request_count {started}\n"
+        "# TYPE tgi_request_success counter\n"
+        f"tgi_request_success {succeeded}\n"
+        "# TYPE tgi_request_duration histogram\n"
+        f'tgi_request_duration_bucket{{le="1.0"}} {finished}\n'
+        f'tgi_request_duration_bucket{{le="+Inf"}} {finished}\n'
+        f"tgi_request_duration_count {finished}\n"
+        f"tgi_request_duration_sum {finished * 0.5}\n"
+        "# TYPE tgi_queue_size gauge\n"
+        f"tgi_queue_size {queued}\n"
+        "# TYPE tgi_batch_current_size gauge\n"
+        f"tgi_batch_current_size {running}\n"
+    ).encode()
+
+
+def test_tgi_request_already_running_at_the_before_scrape_is_contamination() -> None:
+    # A foreign request is running (not queued) at the before scrape and
+    # finishes in the window. tgi_request_count moves by exactly one, ours.
+    before = snap(tgi_body(started=10, finished=8, succeeded=8, running=1))
+    after = snap(
+        tgi_body(started=11, finished=10, succeeded=10), "2026-01-01T00:00:01Z"
+    )
+    evidence = diff_snapshots(before, after, expected_requests=1)
+    assert evidence["runtime"] == "tgi"
+    assert evidence["attribution"]["observed_requests"] == 1
+    assert evidence["attribution"]["in_flight_before"] == 1
+    assert evidence["attribution"]["status"] == "contaminated"
+    assert evidence["highlights"] == {}
+
+
+def test_finish_time_families_must_agree_with_the_start_counter() -> None:
+    # Same overlap, but with no gauge evidence of it: the duration histogram
+    # and success counter still expose the extra finished request.
+    before = snap(tgi_body(started=10, finished=9, succeeded=9))
+    after = snap(
+        tgi_body(started=11, finished=11, succeeded=11), "2026-01-01T00:00:01Z"
+    )
+    evidence = diff_snapshots(before, after, expected_requests=1)
+    attribution = evidence["attribution"]
+    assert attribution["status"] == "contaminated"
+    assert "tgi_request_duration counted 2" in attribution["reason"]
+    assert attribution["request_checks"] == [
+        {"family": "tgi_request_count", "observed": 1},
+        {"family": "tgi_request_duration", "observed": 2},
+        {"family": "tgi_request_success", "observed": 2},
+    ]
+    assert evidence["highlights"] == {}
+
+
+def test_tgi_window_is_attributed_when_every_request_family_agrees() -> None:
+    before = snap(tgi_body(started=10, finished=10, succeeded=10))
+    after = snap(
+        tgi_body(started=11, finished=11, succeeded=11), "2026-01-01T00:00:01Z"
+    )
+    evidence = diff_snapshots(before, after, expected_requests=1)
+    assert evidence["attribution"]["status"] == "attributed"
+    assert evidence["highlights"]["e2e_latency"]["value"] == pytest.approx(500.0)
+    assert evidence["highlights"]["successful_requests"]["value"] == 1
+
+
+def test_a_lagging_success_counter_downgrades_a_vllm_window() -> None:
+    def with_success(body: bytes, count: int) -> bytes:
+        return (
+            body
+            + (
+                "# TYPE vllm:request_success_total counter\n"
+                f'vllm:request_success_total{{finished_reason="stop"}} {count}\n'
+            ).encode()
+        )
+
+    before = snap(with_success(vllm_body(requests=3, ttft_sum=0.09, generated=100), 3))
+    lagging = snap(
+        with_success(vllm_body(requests=4, ttft_sum=0.12, generated=150), 3),
+        "2026-01-01T00:00:01Z",
+    )
+    evidence = diff_snapshots(before, lagging, expected_requests=1)
+    assert evidence["attribution"]["status"] == "incomplete"
+    assert "vllm:request_success counted 0" in evidence["attribution"]["reason"]
+
+    agreeing = snap(
+        with_success(vllm_body(requests=4, ttft_sum=0.12, generated=150), 4),
+        "2026-01-01T00:00:01Z",
+    )
+    assert (
+        diff_snapshots(before, agreeing, expected_requests=1)["attribution"]["status"]
+        == "attributed"
+    )
+
+
+def test_settled_capture_waits_for_finish_time_families() -> None:
+    before = snap(tgi_body(started=10, finished=10, succeeded=10))
+    bodies = iter(
+        [
+            tgi_body(started=11, finished=10, succeeded=10),
+            tgi_body(started=11, finished=11, succeeded=11),
+        ]
+    )
+    ticks = iter(float(i) for i in range(100))
+    after = capture_settled_after(
+        before,
+        URL,
+        expected_requests=1,
+        settle_timeout_seconds=10.0,
+        fetcher=lambda url, timeout: (next(bodies), None),
+        clock=lambda: next(ticks),
+        sleep=lambda seconds: None,
+    )
+    evidence = diff_snapshots(before, after, expected_requests=1)
+    assert evidence["attribution"]["status"] == "attributed"
+
+
 def test_runtime_detection_uses_metric_prefixes() -> None:
     assert detect_runtime(["sglang:num_requests", "process_cpu_seconds"]) == "sglang"
     assert detect_runtime(["vllm:num_requests_running"]) == "vllm"
@@ -372,6 +495,29 @@ def test_diff_cli_exits_zero_when_attributed_and_two_when_not(
     assert code == 2
     assert "Highlights withheld" in out
     assert json.loads(output.read_text())["attribution"]["status"] == "incomplete"
+
+
+@pytest.mark.parametrize("count", ["0", "-1"])
+def test_diff_cli_requires_at_least_one_expected_request(
+    tmp_path: Path, count: str
+) -> None:
+    before, after = tmp_path / "before.json", tmp_path / "after.json"
+    BEFORE.write_json(before)
+    ONE_MORE.write_json(after)
+    code, _, err = run_cli(
+        [
+            "server-metrics",
+            "diff",
+            "--before",
+            str(before),
+            "--after",
+            str(after),
+            "--expected-requests",
+            count,
+        ]
+    )
+    assert code == 1
+    assert "--expected-requests must be at least 1" in err
 
 
 def test_snapshot_cli_refuses_a_credentialed_url_without_scraping(

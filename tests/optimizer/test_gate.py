@@ -77,6 +77,17 @@ def test_regression_within_noise_is_inconclusive():
     assert "noise" in report.reason
 
 
+def test_noisy_candidate_cannot_pass_by_chance():
+    # Mean is 3.3% worse, inside the 5% allowance, but the spread is huge.
+    report = evaluate_gate(
+        runs("b", [1000.0, 1000.0, 1000.0]), runs("c", [10.0, 3000.0, 90.0])
+    )
+    assert report.verdict is GateVerdict.INCONCLUSIVE
+    assert report.exit_code == 2
+    assert report.delta_pct == pytest.approx(1 / 30)
+    assert "larger than the allowed regression" in report.reason
+
+
 def test_too_few_runs_is_inconclusive():
     report = evaluate_gate(runs("b", BASE[:2]), runs("c", BASE))
     assert report.verdict is GateVerdict.INCONCLUSIVE

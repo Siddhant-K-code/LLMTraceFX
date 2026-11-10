@@ -4,8 +4,9 @@ Compares candidate runs against committed baseline runs of the same
 workload on the same platform and decides ``pass``, ``regression`` or
 ``inconclusive``. It refuses to call a direction when the groups are not
 comparable, when a group has too few repetitions, when the metric was
-measured with different provenance or units, or when the delta is smaller
-than the run-to-run noise. That keeps a noisy CI runner from failing, or
+measured with different provenance or units, when the delta is smaller
+than the run-to-run noise, or, before passing, when the combined noise is
+larger than the allowed regression. That keeps a noisy CI runner from failing, or
 passing, a pull request by chance.
 
 The runtime version and configuration hash are allowed to differ between
@@ -310,8 +311,19 @@ def evaluate_gate(
     delta_pct = worse_by / b_mean
     stats.update(delta=c_mean - b_mean, delta_pct=delta_pct)
     unit = stats["unit"]
+    noise = b_sd + c_sd
 
     if delta_pct <= max_regression:
+        allowance = max_regression * b_mean
+        if noise > allowance:
+            return inconclusive(
+                f"candidate looks {abs(delta_pct):.1%} "
+                f"{'better' if worse_by < 0 else 'worse'}, but the combined "
+                f"run-to-run noise ({noise:.6g} {unit}) is larger than the "
+                f"allowed regression ({allowance:.6g} {unit}), so a pass could "
+                "be chance; collect more runs or reduce noise",
+                **stats,
+            )
         change = "better" if worse_by < 0 else "worse"
         return GateReport(
             verdict=GateVerdict.PASS,
@@ -323,7 +335,6 @@ def evaluate_gate(
             **context,
             **stats,
         )
-    noise = b_sd + c_sd
     if worse_by <= noise:
         return inconclusive(
             f"candidate looks {delta_pct:.1%} worse, but the difference "

@@ -624,8 +624,8 @@ def _cmd_server_metrics_snapshot(args: argparse.Namespace) -> int:
 
 
 def _cmd_server_metrics_diff(args: argparse.Namespace) -> int:
-    if args.expected_requests < 0:
-        print("--expected-requests must be zero or more", file=sys.stderr)
+    if args.expected_requests < 1:
+        print("--expected-requests must be at least 1", file=sys.stderr)
         return 1
     try:
         before = ServerMetricsSnapshot.read_json(Path(args.before))
@@ -3022,7 +3022,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--expected-requests",
         type=int,
         required=True,
-        help="How many requests you sent inside the window",
+        help="How many requests you sent inside the window (at least 1)",
     )
     sm_diff_parser.add_argument("--runtime", choices=RUNTIME_CHOICES, default="auto")
     sm_diff_parser.add_argument(

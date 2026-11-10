@@ -240,8 +240,9 @@ provenance as a `llmtracefx.*` attribute.
 workload, and platform, and exits 0 (pass), 1 (regression), or 2
 (inconclusive). It reports inconclusive instead of guessing when a side has too
 few runs, when runs are not comparable, when the metric's unit or provenance
-differs, or when the difference is within run-to-run noise. The same check
-ships as a GitHub Action; see [Perf gate in CI](#perf-gate-in-ci).
+differs, when the difference is within run-to-run noise, or when the noise is
+larger than the allowed regression, so a noisy runner cannot pass by chance.
+The same check ships as a GitHub Action; see [Perf gate in CI](#perf-gate-in-ci).
 
 ### Verification and resumability
 

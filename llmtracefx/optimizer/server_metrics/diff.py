@@ -81,7 +81,12 @@ class RuntimeProfile:
     family_prefix: str | None
     request_counters: tuple[tuple[str, str], ...] = ()
     """``(family, kind)`` in preference order. ``kind`` is ``histogram`` (use
-    the ``_count`` delta) or ``counter``."""
+    the ``_count`` delta) or ``counter``. The first present family is reported
+    as the observed request count, and every present family must count
+    exactly the expected requests. Some runtimes count a request when it
+    starts and record its duration and outcome when it finishes, so a
+    foreign request already running at the before scrape can leave the start
+    counter exact while the finish-time families count it in the window."""
     in_flight_gauges: tuple[str, ...] = ()
     histograms: tuple[HistogramHighlight, ...] = ()
     counters: tuple[CounterHighlight, ...] = ()
@@ -211,8 +216,11 @@ PROFILES: dict[str, RuntimeProfile] = {
         request_counters=(
             ("tgi_request_count", "counter"),
             ("tgi_request_duration", "histogram"),
+            ("tgi_request_success", "counter"),
         ),
-        in_flight_gauges=("tgi_queue_size",),
+        # tgi_queue_size counts only queued requests; tgi_batch_current_size
+        # counts the ones already running.
+        in_flight_gauges=("tgi_queue_size", "tgi_batch_current_size"),
         histograms=(
             HistogramHighlight("e2e_latency", "tgi_request_duration"),
             HistogramHighlight("queue_time", "tgi_request_queue_duration"),
@@ -567,21 +575,22 @@ def diff_snapshots(
                     }
                 )
 
-    observed: float | None = None
-    request_counter: str | None = None
+    request_checks: list[tuple[str, float]] = []
     for family_name, kind in profile.request_counters:
         if family_name not in after.families:
             continue
-        request_counter = family_name
         if kind == "histogram":
-            observed = math.fsum(
+            count = math.fsum(
                 row["count_delta"] for row in histograms if row["family"] == family_name
             )
         else:
-            observed = math.fsum(
+            count = math.fsum(
                 row["delta"] for row in counters if row["family"] == family_name
             )
-        break
+        request_checks.append((family_name, count))
+    request_counter, observed = request_checks[0] if request_checks else (None, None)
+    over = [(f, c) for f, c in request_checks if c > expected_requests]
+    under = [(f, c) for f, c in request_checks if c < expected_requests]
 
     in_flight_before = math.fsum(
         _family_total(before.families.get(g), None) or 0.0
@@ -597,10 +606,10 @@ def diff_snapshots(
         reason = "a counter went backwards or a series vanished: " + "; ".join(
             state.resets[:5]
         )
-    elif observed is not None and observed > expected_requests:
+    elif over:
         status = CONTAMINATED
         reason = (
-            f"{request_counter} counted {observed:g} requests in the window, "
+            f"{over[0][0]} counted {over[0][1]:g} requests in the window, "
             f"more than the {expected_requests} expected"
         )
     elif in_flight_before > 0:
@@ -609,10 +618,10 @@ def diff_snapshots(
             f"{in_flight_before:g} requests were already in flight at the before "
             "snapshot, so their work may land in this window"
         )
-    elif observed is not None and observed < expected_requests:
+    elif under:
         status = INCOMPLETE
         reason = (
-            f"{request_counter} counted {observed:g} requests in the window, "
+            f"{under[0][0]} counted {under[0][1]:g} requests in the window, "
             f"fewer than the {expected_requests} expected"
         )
     elif in_flight_after > 0:
@@ -621,11 +630,12 @@ def diff_snapshots(
             f"{in_flight_after:g} requests were still in flight at the after "
             "snapshot, so the window did not close cleanly"
         )
-    elif observed is not None:
+    elif request_checks:
         status = ATTRIBUTED
         reason = (
-            f"{request_counter} counted exactly {_requests(expected_requests)} "
-            "in the window and nothing was in flight at either edge"
+            f"{', '.join(f for f, _ in request_checks)} each counted exactly "
+            f"{_requests(expected_requests)} in the window and nothing was in "
+            "flight at either edge"
         )
     elif assume_isolated:
         status = OPERATOR_ASSERTED
@@ -712,6 +722,9 @@ def diff_snapshots(
             "expected_requests": expected_requests,
             "observed_requests": None if observed is None else _as_count(observed),
             "request_counter": request_counter,
+            "request_checks": [
+                {"family": f, "observed": _as_count(c)} for f, c in request_checks
+            ],
             "in_flight_before": in_flight_before if profile.in_flight_gauges else None,
             "in_flight_after": in_flight_after if profile.in_flight_gauges else None,
             "assume_isolated": assume_isolated,
@@ -754,9 +767,9 @@ def capture_settled_after(
             before, after, expected_requests=expected_requests, runtime=runtime
         )
         attribution = evidence["attribution"]
-        observed = attribution["observed_requests"]
-        settled = not attribution["in_flight_after"] and (
-            observed is None or observed >= expected_requests
+        settled = not attribution["in_flight_after"] and all(
+            check["observed"] >= expected_requests
+            for check in attribution["request_checks"]
         )
         if settled or clock() >= deadline:
             return after
