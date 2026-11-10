@@ -133,9 +133,17 @@ def _strings(value: Any, context: str) -> tuple[str, ...]:
     )
 
 
+def _all_plain_integers(values: Any, minimum: int = 0) -> bool:
+    # Fast path for large token arrays. Callers fall back to per-item _integer
+    # checks when this is False, so error messages are unchanged.
+    return not values or (set(map(type, values)) == {int} and min(values) >= minimum)
+
+
 def _integers(value: Any, context: str) -> tuple[int, ...]:
     if not isinstance(value, list):
         raise SchemaValidationError(f"{context} must be an array")
+    if _all_plain_integers(value):
+        return tuple(value)
     return tuple(
         _integer(item, f"{context}[{index}]") for index, item in enumerate(value)
     )
@@ -333,8 +341,9 @@ class RequestSpec:
                 raise SchemaValidationError(
                     "RequestSpec.input_token_count is inconsistent"
                 )
-            for index, token in enumerate(self.input_token_ids):
-                _integer(token, f"RequestSpec.input_token_ids[{index}]")
+            if not _all_plain_integers(self.input_token_ids):
+                for index, token in enumerate(self.input_token_ids):
+                    _integer(token, f"RequestSpec.input_token_ids[{index}]")
         _integer(self.output_tokens, "RequestSpec.output_tokens", minimum=1)
         if self.mutation_position is not None:
             position = _integer(self.mutation_position, "RequestSpec.mutation_position")
