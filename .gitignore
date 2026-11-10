@@ -139,7 +139,6 @@ cython_debug/
 .vscode/
 
 # LLMTraceFX specific
-.agent-traces/
 # output/
 # *.html
 # *.json

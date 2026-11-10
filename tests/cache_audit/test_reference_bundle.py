@@ -1268,6 +1268,43 @@ def test_repository_chronology_rejects_dirty_worktree(tmp_path: Path) -> None:
     )
     with pytest.raises(CacheAuditBundleError, match="worktree is dirty"):
         _verify_manifest_chronology(manifest, repository=repository)
+    assert (
+        _verify_manifest_chronology(
+            manifest,
+            repository=repository,
+            require_clean_worktree=False,
+        )
+        == "verified"
+    )
+
+
+def test_verify_bundle_requires_clean_worktree_only_for_other_packages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    run_audit(
+        adapter=ReferenceCacheAdapter(),
+        requests=adversarial_requests()[:1],
+        cache_config=CacheConfig(namespace_id="synthetic", cache_type="token_trie"),
+        output_dir=bundle_dir,
+        backend_version="1",
+        model_id="synthetic-tiny-model",
+        tokenizer_id="integer-tokenizer-v1",
+        created_at="2026-01-01T00:00:00Z",
+    )
+    calls: list[bool] = []
+
+    def chronology(*_args: object, require_clean_worktree: bool) -> str:
+        calls.append(require_clean_worktree)
+        return "verified"
+
+    monkeypatch.setattr(cache_bundle, "_verify_manifest_chronology", chronology)
+    verify_bundle(bundle_dir)
+    monkeypatch.setattr(
+        cache_bundle, "package_source_digest", lambda: "sha256:" + "0" * 64
+    )
+    verify_bundle(bundle_dir)
+    assert calls == [False, True]
 
 
 def _blobless_partial_clone(

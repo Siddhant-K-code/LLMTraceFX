@@ -904,28 +904,9 @@ def _git_package_digest(repository: Path, commit: str) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def _verify_manifest_chronology(
-    manifest: AuditManifest,
-    *,
-    repository: Path | None = None,
-) -> str:
-    captured_at = _timestamp(manifest.created_at, "created_at")
-    generated_at = _timestamp(manifest.generated_at, "generated_at")
-    if generated_at < captured_at:
-        raise CacheAuditBundleError("bundle generation predates evidence capture")
-    if manifest.generator_commit is None:
-        return "unavailable"
-    if manifest.generator_commit_at is None:
-        raise CacheAuditBundleError("generator commit timestamp is unavailable")
-    recorded_commit_at = _timestamp(
-        manifest.generator_commit_at,
-        "generator_commit_at",
-    )
-    if generated_at < recorded_commit_at:
-        raise CacheAuditBundleError("bundle generation predates generator commit")
-    repository = repository or Path(__file__).resolve().parents[2]
-    if not (repository / ".git").exists():
-        return "unavailable"
+def _require_clean_worktree(repository: Path, commit: str) -> None:
+    """Refuse a dirty tracked worktree unless the commit is legitimately absent."""
+
     status = subprocess.run(
         [
             *_GIT_COMMAND,
@@ -951,7 +932,7 @@ def _verify_manifest_chronology(
                     str(repository),
                     "cat-file",
                     "-t",
-                    manifest.generator_commit,
+                    commit,
                 ],
                 capture_output=True,
                 check=False,
@@ -959,10 +940,37 @@ def _verify_manifest_chronology(
                 env=_GIT_ENV,
             )
             if object_type.returncode != 0:
-                return "unavailable"
-            if _package_objects_missing(repository, manifest.generator_commit):
-                return "unavailable"
+                return
+            if _package_objects_missing(repository, commit):
+                return
         raise CacheAuditBundleError("repository worktree is dirty")
+
+
+def _verify_manifest_chronology(
+    manifest: AuditManifest,
+    *,
+    repository: Path | None = None,
+    require_clean_worktree: bool = True,
+) -> str:
+    captured_at = _timestamp(manifest.created_at, "created_at")
+    generated_at = _timestamp(manifest.generated_at, "generated_at")
+    if generated_at < captured_at:
+        raise CacheAuditBundleError("bundle generation predates evidence capture")
+    if manifest.generator_commit is None:
+        return "unavailable"
+    if manifest.generator_commit_at is None:
+        raise CacheAuditBundleError("generator commit timestamp is unavailable")
+    recorded_commit_at = _timestamp(
+        manifest.generator_commit_at,
+        "generator_commit_at",
+    )
+    if generated_at < recorded_commit_at:
+        raise CacheAuditBundleError("bundle generation predates generator commit")
+    repository = repository or Path(__file__).resolve().parents[2]
+    if not (repository / ".git").exists():
+        return "unavailable"
+    if require_clean_worktree:
+        _require_clean_worktree(repository, manifest.generator_commit)
     object_type = subprocess.run(
         [
             *_GIT_COMMAND,
@@ -1493,7 +1501,12 @@ def verify_bundle(bundle_dir: Path, *, data_only: bool = False) -> dict[str, Any
     current_package_matches = (
         manifest.generator_package_digest == package_source_digest()
     )
-    repository_chronology_corroboration = _verify_manifest_chronology(manifest)
+    # A dirty tracked worktree matters only when Git corroboration is what
+    # admits a bundle from a different package; otherwise keep main's behavior.
+    repository_chronology_corroboration = _verify_manifest_chronology(
+        manifest,
+        require_clean_worktree=not current_package_matches,
+    )
     if (
         not current_package_matches
         and repository_chronology_corroboration != "verified"
