@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 from collections.abc import Callable
@@ -4092,6 +4094,98 @@ def test_run_ledger_rejects_continuation_after_interrupt_origin(
 
     with pytest.raises(RealMLXExperimentError, match="continued after an aborting"):
         real_mlx_module._verify_run_ledger(ledger)
+
+
+def _send_sigint() -> None:
+    os.kill(os.getpid(), signal.SIGINT)
+
+
+class _ExitedProcess(_RunningProcess):
+    def poll(self) -> int:
+        return 0
+
+
+def _interrupt_on_call(
+    function: Callable[..., Any], call_number: int, ledger: Path | None = None
+) -> Callable[..., Any]:
+    """Send SIGINT on the Nth call made after the run ledger exists."""
+
+    calls = [0]
+
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        if ledger is None or ledger.exists():
+            calls[0] += 1
+            if calls[0] == call_number:
+                _send_sigint()
+        return function(*args, **kwargs)
+
+    return wrapped
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGINT"), reason="requires SIGINT")
+@pytest.mark.parametrize(
+    ("stage", "expected_first"),
+    [
+        ("preflight_observation", "supervisor_aborted_before_start"),
+        ("source_validation", "supervisor_aborted_before_start"),
+        ("child_monitoring", "supervisor_aborted"),
+        ("postflight_observation", "invalid_complete_artifact"),
+        ("replicate_verification", "invalid_complete_artifact"),
+    ],
+)
+def test_run_all_sigint_at_any_stage_finalizes_every_replicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    expected_first: str,
+) -> None:
+    inputs = _supervisor_inputs(tmp_path, monkeypatch)
+    ledger = inputs["output_workspace"] / "run-ledger.jsonl"
+    process_class: type[_RunningProcess] = _ExitedProcess
+
+    def reject(*_args: Any, **_kwargs: Any) -> None:
+        raise ValueError("fake staging artifact")
+
+    verify = reject
+    if stage == "preflight_observation":
+        monkeypatch.setattr(
+            real_mlx_module,
+            "_machine_observation",
+            _interrupt_on_call(real_mlx_module._machine_observation, 1, ledger),
+        )
+    elif stage == "source_validation":
+        monkeypatch.setattr(
+            real_mlx_module,
+            "_validate_supervisor_source",
+            _interrupt_on_call(real_mlx_module._validate_supervisor_source, 1, ledger),
+        )
+    elif stage == "child_monitoring":
+
+        class InterruptedProcess(_RunningProcess):
+            def poll(self) -> None:
+                _send_sigint()
+                return None
+
+        process_class = InterruptedProcess
+    elif stage == "postflight_observation":
+        monkeypatch.setattr(
+            real_mlx_module,
+            "_machine_observation",
+            _interrupt_on_call(real_mlx_module._machine_observation, 2, ledger),
+        )
+    else:
+        verify = _interrupt_on_call(reject, 1)
+    monkeypatch.setattr(real_mlx_module.subprocess, "Popen", process_class)
+    monkeypatch.setattr(real_mlx_module, "verify_replicate", verify)
+    previous_handler = signal.getsignal(signal.SIGINT)
+
+    result = real_mlx_module.run_all_replicates(**inputs)
+
+    assert signal.getsignal(signal.SIGINT) is previous_handler
+    assert result["complete_replicates"] == 0
+    reasons = _finalized_reasons(inputs["output_workspace"])
+    assert reasons == [expected_first, *["supervisor_aborted_before_start"] * 5]
+    real_mlx_module._verify_run_ledger(inputs["output_workspace"] / "run-ledger.jsonl")
 
 
 def test_run_all_records_a_missed_monitor_cadence(

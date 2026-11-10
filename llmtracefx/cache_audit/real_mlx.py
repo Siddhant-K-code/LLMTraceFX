@@ -24,9 +24,11 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from importlib import metadata
@@ -7039,12 +7041,56 @@ def run_all_replicates(
     return result
 
 
+class _DeferredInterrupt:
+    """Records a SIGINT so the supervisor can stop at a ledger-safe point."""
+
+    def __init__(self) -> None:
+        self.requested = False
+
+
+@contextmanager
+def _deferred_sigint() -> Iterator[_DeferredInterrupt]:
+    state = _DeferredInterrupt()
+    if threading.current_thread() is not threading.main_thread():
+        yield state
+        return
+
+    def request(_signum: int, _frame: object) -> None:
+        state.requested = True
+
+    previous = signal.signal(signal.SIGINT, request)
+    try:
+        yield state
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
 def _run_all_replicates_after_consumption(
     *,
     preflight_state: _RunPreflight,
     expected_commit: str,
     run_attempt: int,
     attempt_marker_digest: str,
+) -> dict[str, Any]:
+    # Ctrl-C only sets a flag here. The supervisor records it at the next
+    # ledger-safe point, so every planned ID is still finalized exactly once.
+    with _deferred_sigint() as interrupt:
+        return _supervise_replicates(
+            preflight_state=preflight_state,
+            expected_commit=expected_commit,
+            run_attempt=run_attempt,
+            attempt_marker_digest=attempt_marker_digest,
+            interrupt=interrupt,
+        )
+
+
+def _supervise_replicates(
+    *,
+    preflight_state: _RunPreflight,
+    expected_commit: str,
+    run_attempt: int,
+    attempt_marker_digest: str,
+    interrupt: _DeferredInterrupt,
 ) -> dict[str, Any]:
     workload = preflight_state.workload_path
     model_dir = preflight_state.model_dir
@@ -7101,6 +7147,12 @@ def _run_all_replicates_after_consumption(
         )
         ledger_sequence += 1
 
+        # An interrupt after a passed preflight originates the abort here. One
+        # that arrives after a failed preflight is recorded by the next ID.
+        if reason is None and interrupt.requested:
+            reason = "supervisor_aborted_before_start"
+            abort_remaining = True
+
         if reason is None:
             try:
                 _reject_import_shadows(output_workspace)
@@ -7109,6 +7161,10 @@ def _run_all_replicates_after_consumption(
             except (CacheAuditBundleError, OSError, RealMLXExperimentError):
                 reason = "source_validation_failed"
                 abort_remaining = True
+
+        if reason is None and interrupt.requested:
+            reason = "supervisor_aborted_before_start"
+            abort_remaining = True
 
         if reason is None:
             instance_id = secrets.token_hex(16)
@@ -7164,6 +7220,10 @@ def _run_all_replicates_after_consumption(
                     next_monitor = time.monotonic() + MONITOR_INTERVAL_SECONDS
                     previous_monitor_elapsed = 0.0
                     while process.poll() is None:
+                        if interrupt.requested:
+                            reason = "supervisor_aborted"
+                            abort_remaining = True
+                            break
                         now = time.monotonic()
                         if now - child_started >= CHILD_TIMEOUT_SECONDS:
                             reason = "child_timeout"

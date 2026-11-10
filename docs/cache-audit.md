@@ -442,7 +442,12 @@ Failed IDs retain bounded private logs and
 partial artifacts in `private-artifacts/`, receive exactly one failed marker,
 and are never replaced. Failed process-group cleanup, a surviving orphan, or an
 operator interrupt aborts all later launches while still finalizing every
-planned ID exactly once. An unexpected supervisor error outside those paths,
+planned ID exactly once. During `run-all` the supervisor handles Ctrl-C
+(SIGINT) by setting a flag and recording it at the next ledger-safe point: a
+running child is stopped with `supervisor_aborted`, and a replicate that has
+not launched is finalized with `supervisor_aborted_before_start`. If the
+interrupt arrives after a child has exited, that replicate finishes normally
+and the next ID records the abort. An unexpected supervisor error outside those paths,
 such as a failed ledger write, stops the run without terminal rows; the ledger
 then fails verification and the attempt marker is finalized as failed.
 All six preregistered process replicates must complete and validate structurally. Any per-replicate
