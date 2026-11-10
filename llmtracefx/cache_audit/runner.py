@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import re
-import subprocess
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -15,9 +14,8 @@ from pathlib import Path
 
 from .adapters.base import CacheAuditAdapter
 from .bundle import (
-    _GIT_COMMAND,
-    _GIT_ENV,
     _git_package_digest,
+    _run_git,
     package_source_digest,
     write_bundle,
 )
@@ -69,21 +67,16 @@ def _trusted_source_commit(
         or re.fullmatch(r"[0-9a-f]{40}", trusted_commit) is None
     ):
         return None, None
-    result = subprocess.run(
-        [
-            *_GIT_COMMAND,
-            "-C",
-            str(Path(repository_text).resolve()),
+    try:
+        result = _run_git(
+            Path(repository_text).resolve(),
             "show",
             "-s",
             "--format=%H%n%cI",
             trusted_commit,
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-        env=_GIT_ENV,
-    )
+        )
+    except ValueError:
+        return None, None
     lines = result.stdout.splitlines()
     if result.returncode != 0 or len(lines) != 2 or lines[0] != trusted_commit:
         return None, None
@@ -93,22 +86,17 @@ def _trusted_source_commit(
 @lru_cache(maxsize=1)
 def _stable_source_commit() -> tuple[str | None, str | None]:
     repository = Path(__file__).resolve().parents[2]
-    result = subprocess.run(
-        [
-            *_GIT_COMMAND,
-            "-C",
-            str(repository),
+    try:
+        result = _run_git(
+            repository,
             "log",
             "--format=%H%x09%cI",
             "HEAD",
             "--",
             "llmtracefx",
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-        env=_GIT_ENV,
-    )
+        )
+    except ValueError:
+        return None, None
     if result.returncode != 0:
         return None, None
     current_digest = package_source_digest()

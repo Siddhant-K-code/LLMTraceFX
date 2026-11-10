@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import shutil
 import subprocess
 from collections import Counter
 from collections.abc import Sequence
@@ -70,7 +72,7 @@ PUBLIC_SAFE_LIMITATION_CODES = frozenset(
         "exact_empty_remainder_unsupported",
     }
 )
-_GIT_ENV = {
+_TRUSTED_GIT_ENV = {
     "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
     "HOME": "/dev/null",
     "LC_ALL": "C",
@@ -81,7 +83,7 @@ _GIT_ENV = {
     "GIT_NO_REPLACE_OBJECTS": "1",
     "GIT_OPTIONAL_LOCKS": "0",
 }
-_GIT_COMMAND = (
+_TRUSTED_GIT_COMMAND = (
     "/usr/bin/git",
     "--no-replace-objects",
     "-c",
@@ -91,10 +93,53 @@ _GIT_COMMAND = (
     "-c",
     "core.attributesFile=/dev/null",
 )
+_USER_GIT_OVERRIDES = {
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_OPTIONAL_LOCKS": "0",
+}
 
 
 class CacheAuditBundleError(ValueError):
     """Raised when a cache-audit evidence bundle fails closed."""
+
+
+class GitUnavailableError(CacheAuditBundleError):
+    """Raised when the Git executable cannot be started."""
+
+
+def _git_invocation() -> tuple[tuple[str, ...], dict[str, str]]:
+    """Return the Git command and environment for repository corroboration.
+
+    The trusted real-MLX bootstrap uses a fixed Git with no user configuration.
+    Other callers use Git from PATH with their own configuration, such as
+    safe.directory, and with inherited GIT_* overrides removed.
+    """
+
+    if os.environ.get("LLMTRACEFX_TRUSTED_BOOTSTRAP") == "1":
+        return _TRUSTED_GIT_COMMAND, dict(_TRUSTED_GIT_ENV)
+    environment = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    environment.update(_USER_GIT_OVERRIDES)
+    executable = shutil.which("git", path=environment.get("PATH")) or "git"
+    return (executable, "--no-replace-objects"), environment
+
+
+def _run_git(
+    repository: Path | str, *arguments: str, text: bool = True
+) -> subprocess.CompletedProcess[Any]:
+    command, environment = _git_invocation()
+    try:
+        return subprocess.run(
+            [*command, "-C", str(repository), *arguments],
+            capture_output=True,
+            check=False,
+            text=text,
+            env=environment,
+        )
+    except OSError as exc:
+        raise GitUnavailableError("git is unavailable") from exc
 
 
 def package_source_digest() -> str:
@@ -778,38 +823,22 @@ def _timestamp(value: str, field: str) -> datetime:
 
 
 def _repository_is_incomplete(repository: Path) -> bool:
-    shallow = subprocess.run(
-        [
-            *_GIT_COMMAND,
-            "-C",
-            str(repository),
-            "rev-parse",
-            "--is-shallow-repository",
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-        env=_GIT_ENV,
+    shallow = _run_git(
+        repository,
+        "rev-parse",
+        "--is-shallow-repository",
     )
     shallow_value = shallow.stdout.strip()
     if shallow.returncode != 0 or shallow_value not in {"true", "false"}:
         raise CacheAuditBundleError("repository has invalid shallow-checkout metadata")
     if shallow_value == "true":
         return True
-    partial = subprocess.run(
-        [
-            *_GIT_COMMAND,
-            "-C",
-            str(repository),
-            "config",
-            "--type=bool",
-            "--get-regexp",
-            r"^remote\..*\.promisor$",
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-        env=_GIT_ENV,
+    partial = _run_git(
+        repository,
+        "config",
+        "--type=bool",
+        "--get-regexp",
+        r"^remote\..*\.promisor$",
     )
     if partial.returncode not in {0, 1}:
         raise CacheAuditBundleError("repository has invalid partial-clone metadata")
@@ -822,22 +851,14 @@ def _repository_is_incomplete(repository: Path) -> bool:
 
 
 def _package_objects_missing(repository: Path, commit: str) -> bool:
-    result = subprocess.run(
-        [
-            *_GIT_COMMAND,
-            "-C",
-            str(repository),
-            "rev-list",
-            "--objects",
-            "--missing=print",
-            commit,
-            "--",
-            "llmtracefx",
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-        env=_GIT_ENV,
+    result = _run_git(
+        repository,
+        "rev-list",
+        "--objects",
+        "--missing=print",
+        commit,
+        "--",
+        "llmtracefx",
     )
     if result.returncode != 0:
         raise CacheAuditBundleError(
@@ -847,21 +868,15 @@ def _package_objects_missing(repository: Path, commit: str) -> bool:
 
 
 def _git_package_digest(repository: Path, commit: str) -> str:
-    listing = subprocess.run(
-        [
-            *_GIT_COMMAND,
-            "-C",
-            str(repository),
-            "ls-tree",
-            "-r",
-            "--name-only",
-            commit,
-            "--",
-            "llmtracefx",
-        ],
-        capture_output=True,
-        check=False,
-        env=_GIT_ENV,
+    listing = _run_git(
+        repository,
+        "ls-tree",
+        "-r",
+        "--name-only",
+        commit,
+        "--",
+        "llmtracefx",
+        text=False,
     )
     if listing.returncode != 0:
         raise CacheAuditBundleError("generator commit package tree is unavailable")
@@ -879,17 +894,11 @@ def _git_package_digest(repository: Path, commit: str) -> str:
         raise CacheAuditBundleError("generator commit package tree is invalid")
     digest = hashlib.sha256()
     for relative_text in paths:
-        result = subprocess.run(
-            [
-                *_GIT_COMMAND,
-                "-C",
-                str(repository),
-                "show",
-                f"{commit}:llmtracefx/{relative_text}",
-            ],
-            capture_output=True,
-            check=False,
-            env=_GIT_ENV,
+        result = _run_git(
+            repository,
+            "show",
+            f"{commit}:llmtracefx/{relative_text}",
+            text=False,
         )
         if result.returncode != 0:
             raise CacheAuditBundleError(
@@ -907,37 +916,21 @@ def _git_package_digest(repository: Path, commit: str) -> str:
 def _require_clean_worktree(repository: Path, commit: str) -> None:
     """Refuse a dirty tracked worktree unless the commit is legitimately absent."""
 
-    status = subprocess.run(
-        [
-            *_GIT_COMMAND,
-            "-C",
-            str(repository),
-            "status",
-            "--porcelain=v1",
-            "--untracked-files=no",
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-        env=_GIT_ENV,
+    status = _run_git(
+        repository,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=no",
     )
     if status.returncode != 0:
         raise CacheAuditBundleError("repository status is unavailable")
     if status.stdout:
         if _repository_is_incomplete(repository):
-            object_type = subprocess.run(
-                [
-                    *_GIT_COMMAND,
-                    "-C",
-                    str(repository),
-                    "cat-file",
-                    "-t",
-                    commit,
-                ],
-                capture_output=True,
-                check=False,
-                text=True,
-                env=_GIT_ENV,
+            object_type = _run_git(
+                repository,
+                "cat-file",
+                "-t",
+                commit,
             )
             if object_type.returncode != 0:
                 return
@@ -969,21 +962,34 @@ def _verify_manifest_chronology(
     repository = repository or Path(__file__).resolve().parents[2]
     if not (repository / ".git").exists():
         return "unavailable"
+    try:
+        return _corroborate_commit_chronology(
+            manifest,
+            repository,
+            recorded_commit_at,
+            require_clean_worktree=require_clean_worktree,
+        )
+    except GitUnavailableError:
+        # Same as having no repository: a different package is then refused.
+        return "unavailable"
+
+
+def _corroborate_commit_chronology(
+    manifest: AuditManifest,
+    repository: Path,
+    recorded_commit_at: datetime,
+    *,
+    require_clean_worktree: bool,
+) -> str:
+    if manifest.generator_commit is None:
+        return "unavailable"
     if require_clean_worktree:
         _require_clean_worktree(repository, manifest.generator_commit)
-    object_type = subprocess.run(
-        [
-            *_GIT_COMMAND,
-            "-C",
-            str(repository),
-            "cat-file",
-            "-t",
-            manifest.generator_commit,
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-        env=_GIT_ENV,
+    object_type = _run_git(
+        repository,
+        "cat-file",
+        "-t",
+        manifest.generator_commit,
     )
     if object_type.returncode != 0:
         if _repository_is_incomplete(repository):
@@ -991,20 +997,12 @@ def _verify_manifest_chronology(
         raise CacheAuditBundleError("generator commit is unavailable for chronology")
     if object_type.stdout.strip() != "commit":
         raise CacheAuditBundleError("generator object is not a commit")
-    result = subprocess.run(
-        [
-            *_GIT_COMMAND,
-            "-C",
-            str(repository),
-            "show",
-            "-s",
-            "--format=%cI",
-            manifest.generator_commit,
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-        env=_GIT_ENV,
+    result = _run_git(
+        repository,
+        "show",
+        "-s",
+        "--format=%cI",
+        manifest.generator_commit,
     )
     if result.returncode != 0:
         raise CacheAuditBundleError("generator commit is unavailable for chronology")

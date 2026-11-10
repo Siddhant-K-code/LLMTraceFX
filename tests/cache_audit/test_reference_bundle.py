@@ -114,7 +114,7 @@ def test_public_demo_is_deterministic_and_standalone_verifiable(
     assert first_files == second_files
 
 
-def test_bundle_git_uses_absolute_binary_minimal_env_and_disabled_features(
+def test_bundle_git_is_hardened_only_under_trusted_bootstrap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     commands: list[tuple[list[str], dict[str, object]]] = []
@@ -124,15 +124,94 @@ def test_bundle_git_uses_absolute_binary_minimal_env_and_disabled_features(
         return type("Completed", (), {"returncode": 0, "stdout": "false\n"})()
 
     monkeypatch.setattr(cache_bundle.subprocess, "run", run)
+    monkeypatch.setenv("LLMTRACEFX_TRUSTED_BOOTSTRAP", "1")
     assert cache_bundle._repository_is_incomplete(tmp_path) is False
     command, kwargs = commands[0]
     assert command[0] == "/usr/bin/git"
     assert "core.fsmonitor=false" in command
     assert "core.hooksPath=/dev/null" in command
     assert "core.attributesFile=/dev/null" in command
-    assert kwargs["env"] == cache_bundle._GIT_ENV
+    assert kwargs["env"] == cache_bundle._TRUSTED_GIT_ENV
     # Historical portable wrappers remain byte-stable; new in-package Git
     # chronology checks use the hardened command and environment above.
+
+
+def test_bundle_git_uses_path_git_and_user_config_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    real_git = shutil.which("git")
+    assert real_git is not None
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "git").symlink_to(real_git)
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_text("[llmtracefx]\n\tprobe = user\n")
+    repository = tmp_path / "repository"
+    subprocess.run(
+        ["git", "init", "-q", str(repository)],
+        check=True,
+        env=_fixture_git_environment(),
+    )
+    monkeypatch.delenv("LLMTRACEFX_TRUSTED_BOOTSTRAP", raising=False)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "elsewhere"))
+    monkeypatch.setenv("GIT_OPTIONAL_LOCKS", "1")
+
+    command, environment = cache_bundle._git_invocation()
+    assert command == (str(bin_dir / "git"), "--no-replace-objects")
+    assert environment["HOME"] == str(home)
+    assert "GIT_DIR" not in environment
+    assert environment["GIT_OPTIONAL_LOCKS"] == "0"
+    # User configuration such as safe.directory stays in effect.
+    probe = cache_bundle._run_git(repository, "config", "--get", "llmtracefx.probe")
+    assert (probe.returncode, probe.stdout) == (0, "user\n")
+    assert cache_bundle._repository_is_incomplete(repository) is False
+
+    monkeypatch.setenv("LLMTRACEFX_TRUSTED_BOOTSTRAP", "1")
+    if Path("/usr/bin/git").is_file():
+        trusted = cache_bundle._run_git(
+            repository, "config", "--get", "llmtracefx.probe"
+        )
+        assert trusted.returncode == 1
+
+
+def test_missing_git_makes_chronology_unavailable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import llmtracefx.cache_audit.runner as cache_runner
+
+    repository, manifest, _ = _hermetic_chronology_fixture(tmp_path)
+
+    def missing(*_args: object, **_kwargs: object) -> object:
+        raise FileNotFoundError("git")
+
+    monkeypatch.delenv("LLMTRACEFX_TRUSTED_BOOTSTRAP", raising=False)
+    monkeypatch.setattr(cache_bundle.subprocess, "run", missing)
+    with pytest.raises(cache_bundle.GitUnavailableError):
+        cache_bundle._run_git(repository, "status")
+    for require_clean_worktree in (True, False):
+        assert (
+            _verify_manifest_chronology(
+                manifest,
+                repository=repository,
+                require_clean_worktree=require_clean_worktree,
+            )
+            == "unavailable"
+        )
+    cache_runner._stable_source_commit.cache_clear()
+    cache_runner._trusted_source_commit.cache_clear()
+    try:
+        assert cache_runner._stable_source_commit() == (None, None)
+        assert cache_runner._trusted_source_commit(str(repository), "a" * 40) == (
+            None,
+            None,
+        )
+    finally:
+        cache_runner._stable_source_commit.cache_clear()
+        cache_runner._trusted_source_commit.cache_clear()
 
 
 def test_bundle_round_trip_and_tamper_detection(tmp_path: Path) -> None:
