@@ -1,0 +1,274 @@
+{
+  "anyio": {
+    "distribution": "anyio",
+    "file_count": 48,
+    "total_bytes": 394205,
+    "tree_sha256": "sha256:87a1df6d8a2e79ff42f96f137337b9a9ce240cd23baa5e07cd93416c65705485",
+    "trusted_root": "purelib",
+    "version": "4.9.0"
+  },
+  "certifi": {
+    "distribution": "certifi",
+    "file_count": 11,
+    "total_bytes": 291014,
+    "tree_sha256": "sha256:f2233c2a757983e7aa4db7ff3e9e45abc407c46c4feeea0233abd7c0b7617c64",
+    "trusted_root": "purelib",
+    "version": "2025.7.9"
+  },
+  "click": {
+    "distribution": "click",
+    "file_count": 22,
+    "total_bytes": 353716,
+    "tree_sha256": "sha256:1d38f37371d31551f82dbd9372efde75f471ccaf19d13fdfcd944d3b66cef849",
+    "trusted_root": "purelib",
+    "version": "8.1.8"
+  },
+  "filelock": {
+    "distribution": "filelock",
+    "file_count": 27,
+    "total_bytes": 352380,
+    "tree_sha256": "sha256:54f83ff9a83baba08bf89591a1af8da1646a4b73f362e0cc8e91b74e51de474c",
+    "trusted_root": "purelib",
+    "version": "3.32.4"
+  },
+  "fsspec": {
+    "distribution": "fsspec",
+    "file_count": 62,
+    "total_bytes": 747381,
+    "tree_sha256": "sha256:57ffc523fdd518e11fd21a5d80f6af7cdd349b3b9501ea5ef28889755d978079",
+    "trusted_root": "purelib",
+    "version": "2026.7.0"
+  },
+  "h11": {
+    "distribution": "h11",
+    "file_count": 18,
+    "total_bytes": 102693,
+    "tree_sha256": "sha256:bb6eecfc5f632065d29b429eee159d329e096f51bc92dde7bc7b7351f2bee9d5",
+    "trusted_root": "purelib",
+    "version": "0.16.0"
+  },
+  "hf-xet": {
+    "distribution": "hf-xet",
+    "file_count": 8,
+    "total_bytes": 8151696,
+    "tree_sha256": "sha256:936853b48f85ac9c6171e94d94e8dd22f4f77044622f86837f398524c77a68cc",
+    "trusted_root": "purelib",
+    "version": "1.6.0"
+  },
+  "httpcore": {
+    "distribution": "httpcore",
+    "file_count": 37,
+    "total_bytes": 285071,
+    "tree_sha256": "sha256:3d5ca8c30ecd0804b8cc70ec4b63f9484f9d7892984dd91a140097ef83333980",
+    "trusted_root": "purelib",
+    "version": "1.0.9"
+  },
+  "httpx": {
+    "distribution": "httpx",
+    "file_count": 30,
+    "total_bytes": 293082,
+    "tree_sha256": "sha256:3f77ceb7c2685a2250880d0b04ff31ec252a4ffbed012a074aeb7d789de1d994",
+    "trusted_root": "purelib",
+    "version": "0.28.1"
+  },
+  "huggingface-hub": {
+    "distribution": "huggingface-hub",
+    "file_count": 185,
+    "total_bytes": 2623015,
+    "tree_sha256": "sha256:1c31fd7f5ec0cc34d5c3dd4b73029dfebdd9659bb4684a1eaccb1771c5204f0c",
+    "trusted_root": "purelib",
+    "version": "1.13.0"
+  },
+  "idna": {
+    "distribution": "idna",
+    "file_count": 14,
+    "total_bytes": 336908,
+    "tree_sha256": "sha256:b537907767955fa09af93de1695f25073c6a4a0f8c5557ae2ae4d11d85966b64",
+    "trusted_root": "purelib",
+    "version": "3.15"
+  },
+  "jinja2": {
+    "distribution": "jinja2",
+    "file_count": 32,
+    "total_bytes": 494554,
+    "tree_sha256": "sha256:9ac5183fd1956961c09ce12bfc2c31b579356087b17f791e9e8900015d8474a0",
+    "trusted_root": "purelib",
+    "version": "3.1.6"
+  },
+  "markdown-it-py": {
+    "distribution": "markdown-it-py",
+    "file_count": 75,
+    "total_bytes": 223069,
+    "tree_sha256": "sha256:e5cb4672c059bcb9e3ef98536c14e0c1c7910d8aad4ee60a30a1c8f5dca4bc0b",
+    "trusted_root": "purelib",
+    "version": "3.0.0"
+  },
+  "markupsafe": {
+    "distribution": "markupsafe",
+    "file_count": 12,
+    "total_bytes": 73810,
+    "tree_sha256": "sha256:9b1c22a7af2761ae6e7bfa7ec81bf4689b113f62a6e3cea12b65e4ade305e794",
+    "trusted_root": "purelib",
+    "version": "3.0.2"
+  },
+  "mdurl": {
+    "distribution": "mdurl",
+    "file_count": 12,
+    "total_bytes": 22522,
+    "tree_sha256": "sha256:12abade009143fcb3a65ad362af5e3205f3821afcec1ebabb922b34775fa808d",
+    "trusted_root": "purelib",
+    "version": "0.1.2"
+  },
+  "mlx": {
+    "distribution": "mlx",
+    "file_count": 49,
+    "total_bytes": 2112339,
+    "tree_sha256": "sha256:5491c170b3bc0581dfa6eadf6bf267b80e7daa867ee52f424545e36d6d8aa803",
+    "trusted_root": "purelib",
+    "version": "0.32.2"
+  },
+  "mlx-lm": {
+    "distribution": "mlx-lm",
+    "file_count": 174,
+    "total_bytes": 1542905,
+    "tree_sha256": "sha256:d1d9cec3e84c2bde0bc908f57a09f63bf4f395e536440362460df85412b8975b",
+    "trusted_root": "purelib",
+    "version": "0.31.3"
+  },
+  "mlx-metal": {
+    "distribution": "mlx-metal",
+    "file_count": 406,
+    "total_bytes": 209227654,
+    "tree_sha256": "sha256:f559a8d48a63375b349eeedb301ee7207c222f6d30e0540b8ef8072707f849c4",
+    "trusted_root": "purelib",
+    "version": "0.32.2"
+  },
+  "numpy": {
+    "distribution": "numpy",
+    "file_count": 874,
+    "total_bytes": 18899172,
+    "tree_sha256": "sha256:aba85b9a8b654d9ce9c3dfd3066ae536945d3c0ec3e2487cb6f1e899e8542cc6",
+    "trusted_root": "purelib",
+    "version": "2.2.6"
+  },
+  "packaging": {
+    "distribution": "packaging",
+    "file_count": 30,
+    "total_bytes": 496842,
+    "tree_sha256": "sha256:3205bbba91fa4ba4eed894b4c988e23c2a8d6b5201704899fcfa68ad0fef6333",
+    "trusted_root": "purelib",
+    "version": "26.3"
+  },
+  "protobuf": {
+    "distribution": "protobuf",
+    "file_count": 60,
+    "total_bytes": 1576452,
+    "tree_sha256": "sha256:a2a02d7dee7b89761b29a1a041e4f91cabcffc67738afef124b206c1943fb460",
+    "trusted_root": "purelib",
+    "version": "6.33.5"
+  },
+  "pygments": {
+    "distribution": "pygments",
+    "file_count": 346,
+    "total_bytes": 4490949,
+    "tree_sha256": "sha256:b35fd4d7830280d0c1133fd670fc00168853fbcbade26d18d3eea266b4fe1111",
+    "trusted_root": "purelib",
+    "version": "2.20.0"
+  },
+  "pyyaml": {
+    "distribution": "pyyaml",
+    "file_count": 25,
+    "total_bytes": 580920,
+    "tree_sha256": "sha256:e4cd74b2e78cefa190cb47bd6e8786ff0fde1d4faf4ebb0ab0fd54ec8ae5841c",
+    "trusted_root": "purelib",
+    "version": "6.0.2"
+  },
+  "regex": {
+    "distribution": "regex",
+    "file_count": 11,
+    "total_bytes": 1249837,
+    "tree_sha256": "sha256:f0c0045f4c4e8c068e320b9273f9feecfb292c128c9a62c5d4491efcbf515599",
+    "trusted_root": "purelib",
+    "version": "2026.7.19"
+  },
+  "rich": {
+    "distribution": "rich",
+    "file_count": 84,
+    "total_bytes": 953596,
+    "tree_sha256": "sha256:9b84176bd8bf5b10a7f54a24b10d4e0f87323bdcf28d4f3df39443d5fcbb0f09",
+    "trusted_root": "purelib",
+    "version": "14.0.0"
+  },
+  "safetensors": {
+    "distribution": "safetensors",
+    "file_count": 16,
+    "total_bytes": 1211816,
+    "tree_sha256": "sha256:c56675286787f0bc66c550a30ef2f75b3d6e76ed7dce06df9afec657a3f61651",
+    "trusted_root": "purelib",
+    "version": "0.8.0"
+  },
+  "sentencepiece": {
+    "distribution": "sentencepiece",
+    "file_count": 17,
+    "total_bytes": 3509818,
+    "tree_sha256": "sha256:0e1cf01d92aa01788976bf7d9a0719cc940e5c00f6e9aeace909742519922324",
+    "trusted_root": "purelib",
+    "version": "0.2.2"
+  },
+  "shellingham": {
+    "distribution": "shellingham",
+    "file_count": 14,
+    "total_bytes": 17427,
+    "tree_sha256": "sha256:94d653c73cd7cf46fe86bc40b2bbd051d97a443ff4e2c34381d71f5a5eb4b75b",
+    "trusted_root": "purelib",
+    "version": "1.5.4"
+  },
+  "sniffio": {
+    "distribution": "sniffio",
+    "file_count": 14,
+    "total_bytes": 21891,
+    "tree_sha256": "sha256:7f5b5ceaa2f5861ea846dee393acdd54a319e1884fdb687561c581f5fa398876",
+    "trusted_root": "purelib",
+    "version": "1.3.1"
+  },
+  "tokenizers": {
+    "distribution": "tokenizers",
+    "file_count": 33,
+    "total_bytes": 8879673,
+    "tree_sha256": "sha256:cfaddde0081fc7526450816b663df8b519857b959f836747bbde79c087b27fae",
+    "trusted_root": "purelib",
+    "version": "0.23.1"
+  },
+  "tqdm": {
+    "distribution": "tqdm",
+    "file_count": 40,
+    "total_bytes": 230550,
+    "tree_sha256": "sha256:032987a10201f8e4d4b76e325d66c5529af208d7248afa40f9c7c2d532b7f424",
+    "trusted_root": "purelib",
+    "version": "4.70.0"
+  },
+  "transformers": {
+    "distribution": "transformers",
+    "file_count": 2645,
+    "total_bytes": 48341152,
+    "tree_sha256": "sha256:aeff4b773e6cf7e6aa1b0f15138e982a69f0dce8d75aef0e40773281b8318711",
+    "trusted_root": "purelib",
+    "version": "5.16.1"
+  },
+  "typer": {
+    "distribution": "typer",
+    "file_count": 23,
+    "total_bytes": 188023,
+    "tree_sha256": "sha256:e8ad1d656bb885e3ab0431ac832fd7ffc6d1fcf625c8015d85acdb95d5a9fdf7",
+    "trusted_root": "purelib",
+    "version": "0.16.0"
+  },
+  "typing-extensions": {
+    "distribution": "typing-extensions",
+    "file_count": 6,
+    "total_bytes": 174423,
+    "tree_sha256": "sha256:898930c9b35c069bce415bcc3a7134fb6850825410473a5d32dd051cb1347d00",
+    "trusted_root": "purelib",
+    "version": "4.14.1"
+  }
+}

@@ -209,8 +209,12 @@ Verification reports `repository_chronology_corroboration` as `verified` when
 the exact generator commit is available and its timestamp and package tree
 match. It reports `unavailable` for an installed package without Git metadata
 or a shallow/partial checkout missing that object; the checksum-bound embedded
-timestamps and exact package digest remain mandatory. An available but
-conflicting Git object, timestamp, or tree always fails verification. Git
+timestamps and exact package digest remain mandatory. A later trusted verifier
+may have a different current package digest; that is accepted only when the
+recorded generator commit is available and its exact package tree independently
+matches the manifest digest. An available but conflicting Git object,
+timestamp, or tree always fails verification, and so does a dirty tracked
+worktree on that different-package path. Git
 corroboration disables replacement objects and lazy network fetching, and only
 an explicitly configured promisor remote can establish a partial checkout.
 
@@ -237,11 +241,17 @@ uv run llmtracefx-cache-audit run --backend reference --output-dir private-audit
 uv run llmtracefx-cache-audit sanitize private-audit --output-dir public-audit
 ```
 
-The redacted bundle removes exact input/output token arrays, replaces
-request, pair, namespace, model, tokenizer, runtime, and limitation identifiers,
-replaces every evidence/timing scope and timing exclusion with fixed public
-constants, normalizes retained timing measurements to seconds, and downgrades
-identity-dependent verdicts to `attested_only` or `unsupported`.
+The redacted bundle removes exact input/output token arrays, replaces request,
+pair, namespace, model, tokenizer, and runtime identifiers, replaces every
+evidence/timing scope and timing exclusion with fixed public constants,
+normalizes retained timing measurements to seconds, and downgrades
+identity-dependent verdicts to `attested_only` or `unsupported`. Limitation
+identifiers are redacted except for the closed, non-identifying MLX refusal
+codes `quantized_cache_unsupported`, `rotating_cache_unsupported`,
+`non_trimmable_cache_reuse_unsupported`, and
+`exact_empty_remainder_unsupported`; those four remain only so the public
+verifier can reconstruct the exact terminal stage boundary. Their messages
+remain redacted.
 They also exclude prompts, native cache hashes, cache tensors, salts,
 credentials, host/account identities, and local paths. Sanitization is followed
 by complete bundle verification.
@@ -258,3 +268,316 @@ publishable from the reference control. A later MLX result may make a timing or
 memory claim only when its own claim-matrix cell has compatible raw paired
 samples. vLLM and MLX are never ranked as interchangeable cache
 implementations.
+
+## Private real-MLX experiment
+
+`llmtracefx-real-mlx-cache-audit` remains the public help/test entry point. Every
+canonical command must instead use a SHA-256-checked external copy extracted
+with hardened `git show` from the expected commit:
+`EXTERNAL_VENV/bin/python -I -S /external/trusted-bootstrap.py
+--trusted-repo-root /absolute/repo ...`. Extract it from a checkout, for example
+`git -C /absolute/repo show <expected-commit>:scripts/run-real-mlx-cache-audit-trusted.py
+> /external/trusted-bootstrap.py`. The wheel does not install this script:
+installers rewrite its shebang, and the bootstrap refuses to run unless its
+bytes match the committed file. The bootstrap derives the one allowed
+`site-packages` root from that interpreter, authenticates its own running bytes
+against the commit, reads the frozen runtime identity through `git show`, and
+keeps site startup disabled. `compile`, `calibrate`, `preflight`, `run-all`,
+`replicate`, `aggregate`, `sanitize`, and `verify` all require this wrapper,
+the bootstrap-only absolute repository argument, and an exact
+`--expected-commit`; only capability inspection and help may use the console
+entry point directly. The repository argument is removed before canonical
+argument dispatch.
+The wrapper verifies the repository HEAD, then imports project code only from
+a private, read-only `git archive` snapshot outside both the repository and
+output. The dependencies-only venv and output workspace must not contain one
+another. They may be siblings under a common parent; only package files
+actually beneath the output workspace are rejected.
+For `aggregate`, `sanitize`, and `verify`, dispatch carries that trusted commit
+and the read-only snapshot package digest through to the operation. The source
+run ledger must bind both values exactly before any aggregate derivation or
+verification; private and public contracts and indexes retain the same binding.
+It never downloads a model. The pinned artifact is the eight-file local
+self-conversion of `Qwen/Qwen3-4B` revision
+`1cfa9a7208912126459214e8b04321603b3df60c` (Apache-2.0), produced with
+`mlx-lm==0.31.3` revision
+`ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd` using affine 4-bit quantization
+and group size 64. `compile` copies and re-verifies that contract in a private
+temporary snapshot, loads only its tokenizer, and freezes both lanes:
+
+- `1k`: 1025-token base and 513-token eviction prompts;
+- `4k`: 4097-token base and 2049-token eviction prompts.
+
+Each lane contains exactly seven cases: cold/exact/duplicate,
+interior mutation at index 137, allocation-step mutation at index 256,
+same-length different IDs, suffix-only change, namespace isolation, and
+capacity eviction. The same-length different-ID case is an early-divergence
+same-length case; it does not promise zero reuse. Index 256 is an allocation-step
+boundary probe, not a block cache claim. The suffix case mutates tokens
+`len-32:len-16` while preserving the final 16 generation-template tokens. No
+directional shorter/longer prompt claim is made. Namespace isolation means
+harness-enforced cache-key separation; it is not a claim that MLX provides
+native tenant isolation.
+
+`calibrate` runs each lane's eight distinct valid arrays (`base`,
+`different_ids`, both mutation arrays, `suffix_change`, and eviction A/B/C)
+once in separate fresh caches, plus a second fresh-cache base repeat. This is
+nine adapters per lane and 18 total. Every result must contain exactly three
+tokens, decode exactly to `CACHE_OK`, match its fresh-cache baseline, and the
+two base results must be byte-for-byte stable. The deterministic
+`calibration_outputs` mapping is frozen in each lane; calibration output is
+never appended to a prompt. Because every workload array has the same fixed
+target, this output agreement does not distinguish arrays and is not
+independent corroboration of cache reuse.
+
+After the calibrated workload digests have been reviewed and pinned, `run-all`
+is the canonical execution path:
+
+```console
+EXTERNAL_VENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo \
+  compile --model-dir MODEL --output workload.json \
+  --expected-commit FULL_40_CHARACTER_GIT_SHA
+EXTERNAL_VENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo \
+  calibrate --model-dir MODEL \
+  --workload workload.json --output calibrated.json \
+  --expected-commit FULL_40_CHARACTER_GIT_SHA
+EXTERNAL_VENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo \
+  run-all --model-dir MODEL \
+  --workload calibrated.json --expected-commit FULL_40_CHARACTER_GIT_SHA \
+  --output-workspace /Users/siddhant-git-ai/.cache/llmtracefx/qwen3-4b-kv-cache-v1/canonical-run-attempt-1 \
+  --run-attempt 1
+```
+
+`run-all` resolves all input and output paths before creating anything and
+refuses missing, non-regular, or symlinked inputs, a mismatched Git HEAD,
+package-source drift, top-level import-shadow candidates, an existing output
+workspace, or an unavailable macOS network sandbox. Before
+creating the workspace, it runs an isolated (`python -I -S`) model-free probe from
+a resolved non-repository directory under the exact network-denied sandbox.
+The probe uses only standard-library distribution metadata and regular-file
+hashing before runtime verification; it does not import a target package to
+discover its origin. It verifies the exact frozen 34-distribution MLX-LM
+closure, including every declared regular non-symlink file under
+site-packages except generated `.dist-info/RECORD`, against the immutable
+Apple Silicon/Python 3.13 identity
+allowlist shipped in `llmtracefx/cache_audit/data/`. This closure (for example
+transformers 5.16.1 and no mlx-vlm) belongs only to the external
+dependencies-only venv. It is independent of the project's `mlx` extra, which
+keeps its own certified pins and is never used for a real-MLX run. The allowlist itself is
+bound by a SHA-256 constant in code and records only distribution, exact
+version, trusted-root label, regular-file count, total bytes, and deterministic
+tree digest, never absolute paths. Generated scripts outside site-packages are excluded, so
+the identity is portable across external-venv paths. The discovered normalized distribution names must equal the frozen closure
+exactly. The union of their declared regular files (plus only their generated
+`.dist-info/RECORD` files) must equal every regular file in `site-packages`.
+Missing, unowned, or symlinked package files, duplicate or unexpected
+distributions, `.pth`,
+`sitecustomize.py`, `usercustomize.py`, `__pycache__`, `.pyc`, and `.pyo` are
+rejected before import. The probe also verifies source/package identity, current
+process RSS, system swap, and system memory pressure. It then applies one global
+machine gate. A failure returns
+`NEEDS_CLEAN_BOOT:<reason>` without creating a ledger or consuming a replicate
+ID. The committed tree identity is intentionally canonical for this installed
+Apple Silicon/Python 3.13 runtime; it is not a portable cross-platform wheel
+identity. The same checks can be recorded without canonical execution by
+writing an explicitly new receipt:
+
+```console
+EXTERNAL_VENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo \
+  preflight --model-dir MODEL \
+  --workload calibrated.json --expected-commit FULL_40_CHARACTER_GIT_SHA \
+  --output-workspace /Users/siddhant-git-ai/.cache/llmtracefx/qwen3-4b-kv-cache-v1/canonical-run-attempt-1 \
+  --output preflight.json --run-attempt 1
+```
+
+`run-all` repeats this gate rather than trusting a prior receipt. Both commands
+require canonical run ID `qwen3-4b-99469aa8-attempt-1` and the exact absolute
+workspace shown above. Preflight only checks that the durable external marker
+`/Users/siddhant-git-ai/.cache/llmtracefx/canonical-attempts/qwen3-4b-99469aa8-attempt-1.json`
+is absent and consumes nothing. After all gates pass, `run-all` atomically
+creates that marker immediately before the workspace and ledger, binding the
+commit, workload, model, workspace, and started state. Existing markers are
+always refused. The same marker inode is finalized with terminal state and
+ledger digest and runner code never deletes it. The marker identity and
+started digest are retained in the ledger and aggregate contract. `aggregate`
+refuses to run unless the host marker is `completed`, names the same commit,
+and records the started digest bound in the ledger and the SHA-256 of the
+exact ledger bytes, so an edited ledger is rejected.
+`run-all` then creates a workspace containing exactly
+`attempts/`, `private-artifacts/`, and `run-ledger.jsonl`. The append-only
+ledger binds the expected commit, package-source digest, installed runtime
+package-tree identities, calibrated workload and lane digests, model digest,
+conversion-summary digest, exact sandbox-policy digest, and all six immutable
+replicate IDs. Every replicate must follow one
+canonical lifecycle: planned, preflight, optional started plus passed monitors,
+postflight, then finalized. Complete replicates have exactly one started row
+with a distinct privacy-safe child-instance digest. Failed-before-start and
+failed-after-start transitions have separate schemas and reason rules. Every
+finalized row binds the status, safe reason code, and deterministic digest of
+its final attempt directory. Each child receives the expected commit and
+revalidates the clean source/package tree and immutable runtime-distribution
+identities before loading the model and immediately before finalizing evidence.
+The parent repeats source validation before and after every child. The
+sandbox probe and every replicate child re-enter the same trusted bootstrap,
+never `python -m`.
+
+Each replicate loads the model once, then performs exactly one untimed,
+discarded, direct runtime generation against a fresh cache per lane. Warm-ups
+must reproduce the corresponding frozen calibration output, decode to
+`CACHE_OK`, and emit no baseline, insertion, request, stage, or bundle
+evidence; their caches and runtimes are torn down before measured blocks. Six
+deterministic full 14-block permutations interleave the lanes,
+spread the six first positions, and avoid fixing the interior/allocation-step
+pair in one adjacent order. The supervisor launches each ID once in a fresh, sequential, network-denied
+child process. Its environment is rebuilt from a minimal explicit allowlist:
+a fixed system `PATH`, offline flags, a fresh instance ID, and `TMPDIR` bound
+to a private directory on the output-workspace filesystem. The directory is
+removed after the child; if cleanup fails it is preserved with private failure
+evidence and the run is invalid. Parent `HOME`,
+`PYTHONPATH`, `DYLD*`, cloud/auth/token-file variables, and unknown variables
+are never inherited. Preflight requires the Apple M5 Pro/24 GiB host contract,
+at least 25% `vm_stat` availability, no more than 12 GiB swap, at least 20 GiB
+free disk, and no non-excluded process using at least 1 GiB RSS. Process
+observations retain only a count and the generic `other_large_process`
+category, never names or PIDs. The two-second runtime monitor uses 15%, 14 GiB,
+and 12 GiB limits respectively. If a slow observation would leave more than
+4.1 seconds between monitor rows, the replicate stops with
+`monitor_cadence_missed` instead of recording an unverifiable gap. Timing margin is bounded by a 12-minute
+per-child deadline and a 90-minute total monotonic deadline; no performance
+dry-run was used. The only preliminary child is the model-free sandbox probe.
+Failed IDs retain bounded private logs and
+partial artifacts in `private-artifacts/`, receive exactly one failed marker,
+and are never replaced. Failed process-group cleanup, a surviving orphan, or an
+operator interrupt aborts all later launches while still finalizing every
+planned ID exactly once. During `run-all` the supervisor handles Ctrl-C
+(SIGINT) by setting a flag and recording it at the next ledger-safe point: a
+running child is stopped with `supervisor_aborted`, and a replicate that has
+not launched is finalized with `supervisor_aborted_before_start`. If the
+interrupt arrives after a child has exited, that replicate finishes normally
+and the next ID records the abort. An unexpected supervisor error outside those paths,
+such as a failed ledger write, stops the run without terminal rows; the ledger
+then fails verification and the attempt marker is finalized as failed.
+All six preregistered process replicates must complete and validate structurally. Any per-replicate
+preflight, launch, started, runtime, timeout, source, cleanup, or
+`supervisor_aborted_before_start` failure is preserved but invalidates the
+full run; failed IDs are never replaced. The global gate runs before workspace
+creation, so an initial refusal consumes no replicate.
+Output identity and deterministic correctness failures, recomputation,
+engine-attestation or observed-work disagreement, and any schema-valid cache
+verdict, including `unsupported`, `recomputed`, `attested_only`, `invalid`, or
+a non-`evicted` capacity revisit, are preserved canonical observations, not
+replicate-fatal gates. The per-arm policy-agreement booleans and verdict counts
+are measured outcomes rather than pass preconditions. Only structural evidence
+corruption or inconsistent coverage/accounting invalidates the aggregate. A
+pair with failed output identity or correctness, recomputation, an unsupported
+cache verdict, or eviction pressure has `paired_latency_comparable: false` and
+null paired deltas/ratios; warmup and calibration remain pre-run compatibility
+gates.
+Both `preflight` and `run-all` require the literal integer
+`--run-attempt 1`; the receipt and canonical ledger bind
+`run_attempt: 1` and `prior_invalidated_run_ledger_digests: []`; those fields
+also propagate into the verified experiment contract and public bindings. A
+preflight refusal before workspace creation remains zero consumed and may be
+retried only after the already-required explicit clean-reboot confirmation.
+Once attempt 1 creates its workspace and starts, any invalidation permanently
+invalidates the canonical result under this preregistration: no later attempt
+and no new-workspace retry may masquerade as canonical.
+After the replicates finish, a terminal ledger row is appended even if public
+results derivation or verification fails; that state is recorded as
+`results_derivation_failed` with no results digest. The command exits nonzero
+unless all six replicates complete and public results derivation succeeds.
+
+Aggregation and sanitization remain explicit:
+
+```console
+PINNED_ENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo aggregate \
+  --run-workspace /Users/siddhant-git-ai/.cache/llmtracefx/qwen3-4b-kv-cache-v1/canonical-run-attempt-1 \
+  --output-dir private-aggregate \
+  --expected-commit FULL_40_CHARACTER_GIT_SHA
+PINNED_ENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo verify private-aggregate \
+  --expected-commit FULL_40_CHARACTER_GIT_SHA
+PINNED_ENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo sanitize private-aggregate \
+  --output-dir public-aggregate --expected-commit FULL_40_CHARACTER_GIT_SHA
+PINNED_ENV/bin/python -I -S /external/trusted-bootstrap.py --trusted-repo-root /absolute/repo verify public-aggregate \
+  --expected-commit FULL_40_CHARACTER_GIT_SHA
+```
+
+Aggregation accepts only the complete three-entry run workspace. It verifies
+each standard source bundle, then reproduces nested copies through the
+data-only bundle path without `evidence_bundle.py`; neither private nor public
+aggregates may contain scripts or executable files. It never copies
+`private-artifacts/`. Both aggregates retain every privacy-safe lifecycle row
+in `run-ledger.jsonl` and contain a strict `results.json`; both files are
+covered by the recursive `SHA256SUMS`.
+`results.json` is derived from verified private records before nested bundle
+redaction and preserves per-lane/case paired reuse, engine verdict, timing,
+memory-level, output-count, identity, correctness, and policy-agreement
+observations plus descriptive medians and ranges. Every cell accounts for all
+six complete replicates as zero to six complete paired samples plus explicit
+per-replicate missing-pair reasons; no measurement is invented for a refused or
+otherwise incomplete pair. Each cell also has an explicit comparable-pair
+count, and statistics are null when no values are available. It declares
+deltas as treatment minus control and ratios as treatment divided by control,
+and retains control verdict, control engine-cached-token, and control
+policy-reuse observations. These are descriptive measurements, not causal
+claims. It contains no token arrays, prompts, paths, host IDs, or secrets.
+
+Real-MLX aggregate bundles deliberately contain no executable verifier.
+Offline verification must invoke the independently installed, version-pinned
+`llmtracefx-real-mlx-cache-audit verify` command. The verifier requires a
+terminal `aggregate_eligible` ledger with exactly six complete replicates and
+exact accounting of those six replicates in every result cell across present
+samples and missing-pair reasons. It checks the ledger against every attempt,
+reproduces `results.json` from private
+aggregates, strictly validates public result schemas and bounds, and verifies
+the result digest bound by the ledger and experiment contract. Unkeyed
+`SHA256SUMS` provides integrity only, not authenticity. The Git commit that
+contains the final public evidence is the external authenticity anchor; the
+measurement commit and package-source digest remain visible in public
+evidence even though standard public-redacted nested manifests omit the
+generator commit.
+
+Within each lifecycle, all cache-assisted requests finish before the independent
+fresh-cache correctness baselines run. Reported client timing sums only the
+runtime cache fetch and generation clocks. TTFT ends when the yielded response
+token reaches the client iterator; process-wide synchronization is retained
+only for total completion. Oracle work, stage collection, insertion, and
+baseline generation are excluded. Paired latency comparability additionally
+requires adjacent requests and equal generated output-token counts in both
+arms. Eviction control/revisit pairs are always incomparable because pressure
+requests intervene, while reuse and eviction facts remain reportable.
+Allocator active/cache, process RSS, system swap, and system-memory pressure
+remain explicitly scoped control/treatment level observations only and are not
+causal deltas. The MLX allocator peak is reset immediately before each cache
+fetch and read after generation, so cold and hit requests share the same
+boundary and the peak includes cache lookup/copy/trim plus generation. Only
+this per-request peak has a paired difference. It is still a process-global
+allocator observation, so intervening allocator activity may contribute.
+The two-second monitoring and stage-observation subprocesses can perturb host
+scheduling, but stage instrumentation remains outside client timing clocks.
+
+Article claims may use only a verified compatible claim-matrix cell and its raw
+paired observations. A hit alone never proves saved work or latency; missing
+facts remain null. Token index 256 is an MLX KV allocation-step boundary, not a
+block-cache claim. Public tables must use the verified `results.json`, not
+unavailable fields in generic redacted nested bundles, as proof of exact reuse
+or output agreement.
+
+The fixed interpretation limits are one observation per cell per replicate,
+descriptive medians and ranges only, possible schedule/order and thermal
+effects, and non-causal allocator-active/cache, RSS, swap, and pressure levels,
+monitoring/stage-observation scheduling perturbation, no block-cache
+interpretation of allocation step 256, token-granular MLX cache behavior, and
+no power, energy, kernel, or utilization claims. The constant-target
+`CACHE_OK` output identity cannot distinguish workload arrays and provides no
+evidence against cross-prefix or cross-namespace contamination. It confirms
+only that cached and fresh paths produced the same fixed answer. It may serve
+as a mechanical timing-comparability gate, but it is not independent
+corroboration of reuse. Evidence is scoped to one host, model, and conversion.
+Within every pair the cold control always precedes the warm treatment, so
+monotone drift can inflate an apparent latency benefit; reported deltas are
+descriptive and are not causal speedups. The
+output workspace must be outside every repository and free of top-level import
+shadows for every runtime import package. Every process/lifecycle failure is
+disqualifying; a completed request's negative measured output or cache outcome
+is retained as evidence.

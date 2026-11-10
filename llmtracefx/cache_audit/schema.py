@@ -13,7 +13,7 @@ CACHE_AUDIT_SCHEMA_VERSION = "2"
 T = TypeVar("T")
 
 
-class EvidenceBasis(str, Enum):
+class EvidenceBasis(str, Enum):  # noqa: UP042 - StrEnum changes str()
     """How a cache-audit fact was obtained."""
 
     OBSERVED = "observed"
@@ -23,13 +23,13 @@ class EvidenceBasis(str, Enum):
     UNAVAILABLE = "unavailable"
 
 
-class PublicationMode(str, Enum):
+class PublicationMode(str, Enum):  # noqa: UP042 - StrEnum changes str()
     PRIVATE = "private"
     PUBLIC_SYNTHETIC = "public_synthetic"
     PUBLIC_REDACTED = "public_redacted"
 
 
-class ScenarioKind(str, Enum):
+class ScenarioKind(str, Enum):  # noqa: UP042 - StrEnum changes str()
     COLD = "cold"
     IDENTICAL_PREFIX = "identical_prefix"
     FIRST_TOKEN_MUTATION = "first_token_mutation"
@@ -51,7 +51,7 @@ class ScenarioKind(str, Enum):
     SPECULATIVE = "speculative"
 
 
-class Verdict(str, Enum):
+class Verdict(str, Enum):  # noqa: UP042 - StrEnum changes str()
     """Cache-reuse verdict only; output eligibility is tracked separately."""
 
     INVALID = "invalid"
@@ -64,20 +64,20 @@ class Verdict(str, Enum):
     ATTESTED_ONLY = "attested_only"
 
 
-class EligibilityStatus(str, Enum):
+class EligibilityStatus(str, Enum):  # noqa: UP042 - StrEnum changes str()
     ELIGIBLE = "eligible"
     INELIGIBLE = "ineligible"
     UNAVAILABLE = "unavailable"
     NOT_APPLICABLE = "not_applicable"
 
 
-class PairRole(str, Enum):
+class PairRole(str, Enum):  # noqa: UP042 - StrEnum changes str()
     SINGLE = "single"
     CONTROL = "control"
     TREATMENT = "treatment"
 
 
-class TerminalState(str, Enum):
+class TerminalState(str, Enum):  # noqa: UP042 - StrEnum changes str()
     COMPLETED = "completed"
     REFUSED = "refused"
     FAILED = "failed"
@@ -133,9 +133,17 @@ def _strings(value: Any, context: str) -> tuple[str, ...]:
     )
 
 
+def _all_plain_integers(values: Any, minimum: int = 0) -> bool:
+    # Fast path for large token arrays. Callers fall back to per-item _integer
+    # checks when this is False, so error messages are unchanged.
+    return not values or (set(map(type, values)) == {int} and min(values) >= minimum)
+
+
 def _integers(value: Any, context: str) -> tuple[int, ...]:
     if not isinstance(value, list):
         raise SchemaValidationError(f"{context} must be an array")
+    if _all_plain_integers(value):
+        return tuple(value)
     return tuple(
         _integer(item, f"{context}[{index}]") for index, item in enumerate(value)
     )
@@ -333,8 +341,9 @@ class RequestSpec:
                 raise SchemaValidationError(
                     "RequestSpec.input_token_count is inconsistent"
                 )
-            for index, token in enumerate(self.input_token_ids):
-                _integer(token, f"RequestSpec.input_token_ids[{index}]")
+            if not _all_plain_integers(self.input_token_ids):
+                for index, token in enumerate(self.input_token_ids):
+                    _integer(token, f"RequestSpec.input_token_ids[{index}]")
         _integer(self.output_tokens, "RequestSpec.output_tokens", minimum=1)
         if self.mutation_position is not None:
             position = _integer(self.mutation_position, "RequestSpec.mutation_position")

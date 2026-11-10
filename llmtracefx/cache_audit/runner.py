@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
+import os
+import re
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 
 from .adapters.base import CacheAuditAdapter
-from .bundle import _git_package_digest, package_source_digest, write_bundle
+from .bundle import (
+    _git_package_digest,
+    _run_git,
+    package_source_digest,
+    write_bundle,
+)
 from .expected import longest_common_prefix
 from .schema import (
     AuditManifest,
@@ -34,26 +40,63 @@ def _run_id(backend: str, requests: Sequence[RequestSpec], seed: int) -> str:
     return "cache-audit-" + hashlib.sha256(material).hexdigest()[:16]
 
 
-@lru_cache(maxsize=1)
 def source_commit() -> tuple[str | None, str | None]:
-    """Return the stable commit that introduced the current normalized package."""
+    """Return the generator commit and its timestamp, when available.
 
+    Under the trusted real-MLX bootstrap this is exactly the trusted commit in
+    the trusted repository. Otherwise it is the oldest commit on HEAD's history
+    whose normalized package tree matches the current package, so unrelated
+    later commits do not change it.
+    """
+
+    if os.environ.get("LLMTRACEFX_TRUSTED_BOOTSTRAP") == "1":
+        return _trusted_source_commit(
+            os.environ.get("LLMTRACEFX_TRUSTED_REPO_ROOT"),
+            os.environ.get("LLMTRACEFX_TRUSTED_COMMIT"),
+        )
+    return _stable_source_commit()
+
+
+@lru_cache(maxsize=4)
+def _trusted_source_commit(
+    repository_text: str | None, trusted_commit: str | None
+) -> tuple[str | None, str | None]:
+    if (
+        not repository_text
+        or not trusted_commit
+        or re.fullmatch(r"[0-9a-f]{40}", trusted_commit) is None
+    ):
+        return None, None
+    try:
+        result = _run_git(
+            Path(repository_text).resolve(),
+            "show",
+            "-s",
+            "--format=%H%n%cI",
+            trusted_commit,
+        )
+    except ValueError:
+        return None, None
+    lines = result.stdout.splitlines()
+    if result.returncode != 0 or len(lines) != 2 or lines[0] != trusted_commit:
+        return None, None
+    return lines[0], lines[1]
+
+
+@lru_cache(maxsize=1)
+def _stable_source_commit() -> tuple[str | None, str | None]:
     repository = Path(__file__).resolve().parents[2]
-    result = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repository),
+    try:
+        result = _run_git(
+            repository,
             "log",
             "--format=%H%x09%cI",
             "HEAD",
             "--",
             "llmtracefx",
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
+        )
+    except ValueError:
+        return None, None
     if result.returncode != 0:
         return None, None
     current_digest = package_source_digest()
@@ -228,11 +271,7 @@ def run_audit(
         model_artifact_digest=identity.model_artifact_digest,
         cache_config=authoritative_cache_config,
     )
-    now = (
-        datetime.now(timezone.utc)
-        .isoformat(timespec="microseconds")
-        .replace("+00:00", "Z")
-    )
+    now = datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
     generator_commit, generator_commit_at = source_commit()
     manifest = AuditManifest(
         run_id=_run_id(adapter.backend, ordered, seed),
