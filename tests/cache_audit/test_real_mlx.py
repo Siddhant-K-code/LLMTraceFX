@@ -8,6 +8,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from dataclasses import fields, replace
+from functools import cache, lru_cache
 from itertools import groupby
 from pathlib import Path
 from types import SimpleNamespace
@@ -110,9 +111,14 @@ def _assume_sandbox_exec(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@cache
+def _fake_token_id(word: str) -> int:
+    return 10 + sum((index + 1) * ord(char) for index, char in enumerate(word))
+
+
 class FakeTokenizer:
     def _id(self, word: str) -> int:
-        return 10 + sum((index + 1) * ord(char) for index, char in enumerate(word))
+        return _fake_token_id(word)
 
     def apply_chat_template(
         self,
@@ -311,6 +317,9 @@ def _calibration_outputs(
     }
 
 
+# Compiling is deterministic and slow, and the frozen workload is immutable,
+# so tests share one instance.
+@lru_cache(maxsize=1)
 def _calibrated_workload() -> FrozenMLXWorkload:
     workload = compile_workload(FakeTokenizer())
     return replace(
