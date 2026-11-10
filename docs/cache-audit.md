@@ -395,7 +395,10 @@ creates that marker immediately before the workspace and ledger, binding the
 commit, workload, model, workspace, and started state. Existing markers are
 always refused. The same marker inode is finalized with terminal state and
 ledger digest and runner code never deletes it. The marker identity and
-started digest are retained in the ledger and aggregate contract.
+started digest are retained in the ledger and aggregate contract. `aggregate`
+refuses to run unless the host marker is `completed`, names the same commit,
+and records the started digest bound in the ledger and the SHA-256 of the
+exact ledger bytes, so an edited ledger is rejected.
 `run-all` then creates a workspace containing exactly
 `attempts/`, `private-artifacts/`, and `run-ledger.jsonl`. The append-only
 ledger binds the expected commit, package-source digest, installed runtime

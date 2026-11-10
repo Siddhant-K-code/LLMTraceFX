@@ -4663,6 +4663,7 @@ def assemble_aggregate(
     )
     if not _aggregate_eligibility_from_rows(_parse_jsonl(ledger)):
         raise RealMLXExperimentError("aggregate requires all 6 attempts complete")
+    _verify_terminal_attempt_marker(ledger, expected_commit=expected_commit)
     output_dir.mkdir(parents=True)
     (output_dir / "replicates").mkdir()
     try:
@@ -5716,6 +5717,29 @@ def _finalize_canonical_attempt_marker(
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _verify_terminal_attempt_marker(ledger: Path, *, expected_commit: str) -> None:
+    """Require the host's completed attempt marker to bind this exact ledger."""
+
+    marker = _safe_object(CANONICAL_ATTEMPT_MARKER.expanduser().absolute())
+    run_start = _parse_jsonl(ledger)[0]
+    if (
+        marker.get("status") != "completed"
+        or marker.get("canonical_run_id") != CANONICAL_RUN_ID
+        or marker.get("attempt_marker_id") != _marker_identity()
+        or marker.get("run_attempt") != CANONICAL_RUN_ATTEMPT
+        or marker.get("expected_commit") != expected_commit
+        or marker.get("started_marker_digest")
+        != run_start.get("canonical_attempt_marker_digest")
+    ):
+        raise RealMLXExperimentError(
+            "canonical attempt marker does not match the run ledger"
+        )
+    if marker.get("run_ledger_digest") != _digest_bytes(ledger.read_bytes()):
+        raise RealMLXExperimentError(
+            "run ledger digest does not match the canonical attempt marker"
+        )
 
 
 @dataclass(frozen=True)

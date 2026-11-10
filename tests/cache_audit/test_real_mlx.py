@@ -1540,7 +1540,35 @@ def _make_attempts(
         complete_replicates=5 if failed_last else 6,
         results_digest=results_digest,
     )
+    _write_terminal_marker(
+        ledger,
+        expected_commit=expected_commit,
+        workload=workload,
+        status="failed" if failed_last else "completed",
+    )
     return workspace
+
+
+def _write_terminal_marker(
+    ledger: Path,
+    *,
+    expected_commit: str = "a" * 40,
+    workload: FrozenMLXWorkload | None = None,
+    status: str = "completed",
+) -> None:
+    """Write the host attempt marker that run-all would leave for this ledger."""
+
+    real_mlx_module.CANONICAL_ATTEMPT_MARKER.unlink(missing_ok=True)
+    started, _ = real_mlx_module._consume_canonical_attempt(
+        expected_commit=expected_commit,
+        workload=workload or _calibrated_workload(),
+    )
+    real_mlx_module._finalize_canonical_attempt_marker(
+        started,
+        "sha256:" + "1" * 64,
+        status=status,
+        ledger=ledger,
+    )
 
 
 def test_terminal_adapter_records_survive_replicate_and_aggregate_verification(
@@ -1679,6 +1707,51 @@ def test_run_binding_rejects_zero_marker_digest() -> None:
             run_attempt=1,
             attempt_marker_digest="sha256:" + "0" * 64,
         )
+
+
+def _rewrite_ledger_row(ledger: Path, index: int, **changes: Any) -> None:
+    rows = real_mlx_module._parse_jsonl(ledger)
+    rows[index] = {**rows[index], **changes}
+    ledger.write_text("".join(real_mlx_module._json_line(row) for row in rows))
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        ("edited_ledger", "run ledger digest does not match"),
+        ("missing_marker", "must be a regular file"),
+        ("failed_marker", "marker does not match the run ledger"),
+        ("foreign_started_digest", "marker does not match the run ledger"),
+        ("other_commit", "marker does not match the run ledger"),
+    ],
+)
+def test_aggregate_requires_the_terminal_marker_to_bind_the_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: str, message: str
+) -> None:
+    workspace = _make_attempts(tmp_path, monkeypatch)
+    ledger = workspace / "run-ledger.jsonl"
+    marker = real_mlx_module.CANONICAL_ATTEMPT_MARKER
+    if tamper == "edited_ledger":
+        _rewrite_ledger_row(ledger, -1, timestamp="2099-01-01T00:00:00Z")
+    elif tamper == "missing_marker":
+        marker.unlink()
+    elif tamper == "failed_marker":
+        _write_terminal_marker(ledger, status="failed")
+    elif tamper == "other_commit":
+        _write_terminal_marker(ledger, expected_commit="b" * 40)
+    else:
+        payload = json.loads(marker.read_text())
+        payload["started_marker_digest"] = "sha256:" + "2" * 64
+        marker.write_bytes(_json_bytes(payload))
+    output = tmp_path / "aggregate"
+    with pytest.raises(RealMLXExperimentError, match=message):
+        assemble_aggregate(
+            workspace,
+            output,
+            expected_commit="a" * 40,
+            generator_package_digest=real_mlx_module.package_source_digest(),
+        )
+    assert not output.exists()
 
 
 def test_aggregate_regeneration_checksums_and_public_redaction(
