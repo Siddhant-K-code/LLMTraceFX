@@ -88,6 +88,28 @@ def _isolated_canonical_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     )
 
 
+def _assume_sandbox_exec(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let supervisor tests build sandboxed commands on non-macOS hosts."""
+
+    sandbox = Path("/usr/bin/sandbox-exec")
+    original_is_file = Path.is_file
+    original_access = real_mlx_module.os.access
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda self: True if self == sandbox else original_is_file(self),
+    )
+    monkeypatch.setattr(
+        real_mlx_module.os,
+        "access",
+        lambda path, mode, *args, **kwargs: (
+            True
+            if Path(path) == sandbox
+            else original_access(path, mode, *args, **kwargs)
+        ),
+    )
+
+
 class FakeTokenizer:
     def _id(self, word: str) -> int:
         return 10 + sum((index + 1) * ord(char) for index, char in enumerate(word))
@@ -1393,6 +1415,8 @@ def _make_attempts(
             replicate / "environment.json",
             {
                 **_safe_environment(instance_id=f"{index + 1:032x}"),
+                "platform_system": "Darwin",
+                "platform_machine": "arm64",
                 "mlx": REQUIRED_MLX_VERSION,
                 "mlx_lm": REQUIRED_MLX_LM_VERSION,
             },
@@ -2514,6 +2538,7 @@ def test_run_all_uses_fresh_offline_sandboxed_children(
     monkeypatch: pytest.MonkeyPatch,
     results_failure: str | None,
 ) -> None:
+    _assume_sandbox_exec(monkeypatch)
     launches: list[dict[str, Any]] = []
     observed_instances: set[str] = set()
 
@@ -2924,6 +2949,7 @@ def test_run_all_bundle_source_failure_finalizes_every_planned_id(
 def test_run_all_preserves_terminal_reason_when_postflight_policy_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _assume_sandbox_exec(monkeypatch)
     workload_path = tmp_path / "workload.json"
     workload_path.write_text("{}")
     model_dir = tmp_path / "model"
@@ -3750,6 +3776,7 @@ def test_cleanup_failure_preserves_partial_evidence_and_aborts_remaining(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _assume_sandbox_exec(monkeypatch)
     workload_path = tmp_path / "workload.json"
     workload_path.write_text("{}")
     model_dir = tmp_path / "model"
@@ -3881,6 +3908,7 @@ def test_cleanup_failure_preserves_partial_evidence_and_aborts_remaining(
 def _supervisor_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> dict[str, Any]:
+    _assume_sandbox_exec(monkeypatch)
     workload_path = tmp_path / "workload.json"
     workload_path.write_text("{}")
     model_dir = tmp_path / "model"
