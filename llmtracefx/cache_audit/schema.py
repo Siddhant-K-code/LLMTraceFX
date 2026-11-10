@@ -13,7 +13,7 @@ CACHE_AUDIT_SCHEMA_VERSION = "2"
 T = TypeVar("T")
 
 
-class EvidenceBasis(str, Enum):
+class EvidenceBasis(str, Enum):  # noqa: UP042 - StrEnum changes str()
     """How a cache-audit fact was obtained."""
 
     OBSERVED = "observed"
@@ -23,13 +23,13 @@ class EvidenceBasis(str, Enum):
     UNAVAILABLE = "unavailable"
 
 
-class PublicationMode(str, Enum):
+class PublicationMode(str, Enum):  # noqa: UP042 - StrEnum changes str()
     PRIVATE = "private"
     PUBLIC_SYNTHETIC = "public_synthetic"
     PUBLIC_REDACTED = "public_redacted"
 
 
-class ScenarioKind(str, Enum):
+class ScenarioKind(str, Enum):  # noqa: UP042 - StrEnum changes str()
     COLD = "cold"
     IDENTICAL_PREFIX = "identical_prefix"
     FIRST_TOKEN_MUTATION = "first_token_mutation"
@@ -51,7 +51,7 @@ class ScenarioKind(str, Enum):
     SPECULATIVE = "speculative"
 
 
-class Verdict(str, Enum):
+class Verdict(str, Enum):  # noqa: UP042 - StrEnum changes str()
     """Cache-reuse verdict only; output eligibility is tracked separately."""
 
     INVALID = "invalid"
@@ -64,20 +64,20 @@ class Verdict(str, Enum):
     ATTESTED_ONLY = "attested_only"
 
 
-class EligibilityStatus(str, Enum):
+class EligibilityStatus(str, Enum):  # noqa: UP042 - StrEnum changes str()
     ELIGIBLE = "eligible"
     INELIGIBLE = "ineligible"
     UNAVAILABLE = "unavailable"
     NOT_APPLICABLE = "not_applicable"
 
 
-class PairRole(str, Enum):
+class PairRole(str, Enum):  # noqa: UP042 - StrEnum changes str()
     SINGLE = "single"
     CONTROL = "control"
     TREATMENT = "treatment"
 
 
-class TerminalState(str, Enum):
+class TerminalState(str, Enum):  # noqa: UP042 - StrEnum changes str()
     COMPLETED = "completed"
     REFUSED = "refused"
     FAILED = "failed"
