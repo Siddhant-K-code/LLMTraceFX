@@ -433,13 +433,18 @@ at least 25% `vm_stat` availability, no more than 12 GiB swap, at least 20 GiB
 free disk, and no non-excluded process using at least 1 GiB RSS. Process
 observations retain only a count and the generic `other_large_process`
 category, never names or PIDs. The two-second runtime monitor uses 15%, 14 GiB,
-and 12 GiB limits respectively. Timing margin is bounded by a 12-minute
+and 12 GiB limits respectively. If a slow observation would leave more than
+4.1 seconds between monitor rows, the replicate stops with
+`monitor_cadence_missed` instead of recording an unverifiable gap. Timing margin is bounded by a 12-minute
 per-child deadline and a 90-minute total monotonic deadline; no performance
 dry-run was used. The only preliminary child is the model-free sandbox probe.
 Failed IDs retain bounded private logs and
 partial artifacts in `private-artifacts/`, receive exactly one failed marker,
-and are never replaced. Failed process-group cleanup or a surviving orphan
-aborts all later launches while still finalizing every planned ID exactly once.
+and are never replaced. Failed process-group cleanup, a surviving orphan, or an
+operator interrupt aborts all later launches while still finalizing every
+planned ID exactly once. An unexpected supervisor error outside those paths,
+such as a failed ledger write, stops the run without terminal rows; the ledger
+then fails verification and the attempt marker is finalized as failed.
 All six preregistered process replicates must complete and validate structurally. Any per-replicate
 preflight, launch, started, runtime, timeout, source, cleanup, or
 `supervisor_aborted_before_start` failure is preserved but invalidates the

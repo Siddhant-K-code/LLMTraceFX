@@ -282,6 +282,7 @@ _STARTED_TERMINAL_REASONS = {
     "child_exit_nonzero",
     "child_timeout",
     "invalid_complete_artifact",
+    "monitor_cadence_missed",
     "orphaned_child_process",
     "process_cleanup_failed",
     "source_validation_failed",
@@ -290,6 +291,7 @@ _STARTED_TERMINAL_REASONS = {
 }
 _NOT_STARTED_TERMINAL_REASONS = {
     "child_launch_failed",
+    "process_cleanup_failed",
     "source_validation_failed",
     "supervisor_aborted_before_start",
     "total_timeout_before_start",
@@ -302,6 +304,7 @@ _ABORT_LATER_REASONS = {
     "orphaned_child_process",
     "process_cleanup_failed",
     "source_validation_failed",
+    "supervisor_aborted",
     "total_timeout",
     "total_timeout_before_start",
 }
@@ -6251,6 +6254,7 @@ def _verify_run_ledger(
     started_instance_ids: set[str] = set()
     started_instances_by_replicate: dict[str, str] = {}
     final_rows: dict[str, dict[str, Any]] = {}
+    preflight_passed: dict[str, bool] = {}
     for replicate_id in REPLICATE_IDS:
         lifecycle = [row for row in rows if row.get("replicate_id") == replicate_id]
         if not lifecycle or lifecycle[0].get("event") != "planned":
@@ -6287,6 +6291,7 @@ def _verify_run_ledger(
         )
         if preflight["event"] != "preflight":
             raise RealMLXExperimentError("run ledger preflight order is invalid")
+        preflight_passed[replicate_id] = preflight["status"] == "passed"
         preflight_reason = preflight["reason"]
         external_preflight_failure = preflight_reason in {
             "supervisor_aborted_before_start",
@@ -6616,9 +6621,18 @@ def _verify_run_ledger(
                     raise RealMLXExperimentError(
                         "run ledger child instance does not match attempt"
                     )
+
+    def aborts_later(replicate_id: str) -> bool:
+        reason = final_rows[replicate_id]["reason"]
+        # An interrupt after a passed preflight but before launch originates
+        # the abort itself; later IDs record it at preflight time instead.
+        return reason in _ABORT_LATER_REASONS or (
+            reason == "supervisor_aborted_before_start"
+            and preflight_passed[replicate_id]
+        )
+
     for index, replicate_id in enumerate(REPLICATE_IDS):
-        finalized = final_rows[replicate_id]
-        if finalized["reason"] not in _ABORT_LATER_REASONS:
+        if not aborts_later(replicate_id):
             continue
         for later_id in REPLICATE_IDS[index + 1 :]:
             later_lifecycle = [
@@ -6636,15 +6650,15 @@ def _verify_run_ledger(
     aborting_finalization_seen = False
     for replicate_id in REPLICATE_IDS:
         reason = final_rows[replicate_id]["reason"]
-        if (
+        if aborts_later(replicate_id):
+            aborting_finalization_seen = True
+        elif (
             reason == "supervisor_aborted_before_start"
             and not aborting_finalization_seen
         ):
             raise RealMLXExperimentError(
                 "run ledger supervisor abort lacks an earlier aborting finalization"
             )
-        if reason in _ABORT_LATER_REASONS:
-            aborting_finalization_seen = True
     finalized_elapsed_values = [
         _finite_elapsed(row["elapsed_seconds"], "finalized")
         for row in rows
@@ -7148,6 +7162,7 @@ def _run_all_replicates_after_consumption(
                     ledger_sequence += 1
                     started_recorded = True
                     next_monitor = time.monotonic() + MONITOR_INTERVAL_SECONDS
+                    previous_monitor_elapsed = 0.0
                     while process.poll() is None:
                         now = time.monotonic()
                         if now - child_started >= CHILD_TIMEOUT_SECONDS:
@@ -7158,6 +7173,16 @@ def _run_all_replicates_after_consumption(
                             abort_remaining = True
                             break
                         if now >= next_monitor:
+                            monitor_elapsed = now - child_started
+                            # A slow observation can push the next row past the
+                            # cadence the ledger verifier accepts; stop the
+                            # replicate with a recorded reason instead.
+                            if (
+                                monitor_elapsed - previous_monitor_elapsed
+                                > MONITOR_INTERVAL_SECONDS * 2 + 0.1
+                            ):
+                                reason = "monitor_cadence_missed"
+                                break
                             observation = _machine_observation(
                                 output_workspace,
                                 excluded_roots={os.getpid(), process.pid},
@@ -7175,12 +7200,13 @@ def _run_all_replicates_after_consumption(
                                 ),
                                 reason=monitor_reason,
                                 observation=observation,
-                                elapsed_seconds=now - child_started,
+                                elapsed_seconds=monitor_elapsed,
                             )
                             ledger_sequence += 1
                             if monitor_reason is not None:
                                 reason = monitor_reason
                                 break
+                            previous_monitor_elapsed = monitor_elapsed
                             next_monitor = now + MONITOR_INTERVAL_SECONDS
                         time.sleep(0.1)
                     if reason is not None:
@@ -7227,6 +7253,16 @@ def _run_all_replicates_after_consumption(
                     reason = "source_validation_failed"
                     abort_remaining = True
 
+                # Clean up before the postflight row so a not-started row
+                # records the same final reason as its finalization.
+                temp_cleanup_failed = False
+                try:
+                    shutil.rmtree(private_temp_root, ignore_errors=False)
+                except OSError:
+                    reason = "process_cleanup_failed"
+                    abort_remaining = True
+                    temp_cleanup_failed = True
+
                 postflight = _machine_observation(
                     output_workspace,
                     excluded_roots=(
@@ -7260,13 +7296,6 @@ def _run_all_replicates_after_consumption(
                     ),
                 )
                 ledger_sequence += 1
-                temp_cleanup_failed = False
-                try:
-                    shutil.rmtree(private_temp_root, ignore_errors=False)
-                except OSError:
-                    reason = "process_cleanup_failed"
-                    abort_remaining = True
-                    temp_cleanup_failed = True
                 if reason is None:
                     try:
                         verify_replicate(
@@ -7348,13 +7377,8 @@ def _run_all_replicates_after_consumption(
                 complete_replicate_ids=_complete_attempt_ids(attempts),
             )
             results_digest = _digest_bytes(_json_bytes(results))
-        except (
-            CacheAuditBundleError,
-            OSError,
-            RealMLXExperimentError,
-            RuntimeError,
-            ValueError,
-        ):
+        except Exception:
+            # Any derivation failure must still leave a terminal ledger row.
             results_derivation_failed = True
     _finalize_run_ledger(
         ledger,

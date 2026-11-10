@@ -3876,3 +3876,278 @@ def test_cleanup_failure_preserves_partial_evidence_and_aborts_remaining(
         for line in (workspace / "run-ledger.jsonl").read_text().splitlines()
     ]
     assert sum(row["event"] == "finalized" for row in ledger) == 6
+
+
+def _supervisor_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Any]:
+    workload_path = tmp_path / "workload.json"
+    workload_path.write_text("{}")
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    conversion_summary = tmp_path / "summary.json"
+    conversion_summary.write_text("{}")
+    calibrated = _calibrated_workload()
+    monkeypatch.setattr(
+        real_mlx_module,
+        "EXPECTED_CALIBRATED_WORKLOAD_DIGEST",
+        calibrated.to_dict()["workload_digest"],
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "EXPECTED_CALIBRATED_LANE_DIGESTS",
+        {lane.lane_id: lane.to_dict()["lane_digest"] for lane in calibrated.lanes},
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_validate_supervisor_source",
+        lambda _: "sha256:" + "b" * 64,
+    )
+    monkeypatch.setattr(
+        real_mlx_module, "load_workload", lambda *_args, **_kwargs: calibrated
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "verify_model_contract",
+        lambda *_args, **_kwargs: EXPECTED_MODEL_ARTIFACT_DIGEST,
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_run_exact_sandbox_probe",
+        lambda **_kwargs: _runtime_packages(),
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_runtime_package_identity",
+        lambda *_args, **_kwargs: _runtime_packages(),
+    )
+    safe_observation = {
+        "chip": "Apple M5 Pro",
+        "total_memory_bytes": 24 * 1024**3,
+        "vm_stat_available_ratio": 0.5,
+        "system_swap_used_bytes": 0,
+        "disk_free_bytes": 100 * 1024**3,
+        "heavy_process_count": 0,
+        "heavy_process_categories": [],
+        "scopes": {
+            "memory": "system_wide_vm_stat",
+            "swap": "system_wide",
+            "disk": "output_workspace_filesystem",
+            "processes": "host_process_table_excluding_supervisor_and_child_tree",
+        },
+    }
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_machine_observation",
+        lambda *_args, **_kwargs: safe_observation,
+    )
+    monkeypatch.setattr(real_mlx_module, "_group_exists", lambda _pid: False)
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_terminate_process_group",
+        lambda *_args, **_kwargs: True,
+    )
+    return {
+        "workload": workload_path,
+        "model_dir": model_dir,
+        "conversion_summary": conversion_summary,
+        "output_workspace": tmp_path / "run",
+        "expected_commit": "a" * 40,
+        "run_attempt": 1,
+    }
+
+
+def _finalized_reasons(workspace: Path) -> list[str]:
+    return [
+        row["reason"]
+        for row in real_mlx_module._parse_jsonl(workspace / "run-ledger.jsonl")
+        if row.get("event") == "finalized"
+    ]
+
+
+class _RunningProcess:
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        self.pid = 20_000
+        self.returncode = None
+
+    def poll(self) -> None:
+        return None
+
+    def wait(self) -> int:
+        return 0
+
+
+def test_run_all_interrupt_after_start_writes_a_verifiable_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _supervisor_inputs(tmp_path, monkeypatch)
+
+    class InterruptedProcess(_RunningProcess):
+        def poll(self) -> None:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(real_mlx_module.subprocess, "Popen", InterruptedProcess)
+
+    result = real_mlx_module.run_all_replicates(**inputs)
+
+    assert result["complete_replicates"] == 0
+    assert _finalized_reasons(inputs["output_workspace"]) == [
+        "supervisor_aborted",
+        *["supervisor_aborted_before_start"] * 5,
+    ]
+
+
+def test_run_all_interrupt_before_start_writes_a_verifiable_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _supervisor_inputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        real_mlx_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt),
+    )
+
+    real_mlx_module.run_all_replicates(**inputs)
+
+    assert (
+        _finalized_reasons(inputs["output_workspace"])
+        == ["supervisor_aborted_before_start"] * 6
+    )
+
+
+def test_run_ledger_rejects_continuation_after_interrupt_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _supervisor_inputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        real_mlx_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt),
+    )
+    real_mlx_module.run_all_replicates(**inputs)
+    ledger = inputs["output_workspace"] / "run-ledger.jsonl"
+    rows = real_mlx_module._parse_jsonl(ledger)
+    for row in rows:
+        if row.get("replicate_id") == "replicate-1" and row["event"] in {
+            "preflight",
+            "postflight",
+            "finalized",
+        }:
+            if row["event"] == "preflight":
+                row["status"] = "passed"
+                row["reason"] = None
+            else:
+                row["reason"] = "child_launch_failed"
+    attempt = inputs["output_workspace"] / "attempts" / "replicate-1"
+    shutil.rmtree(attempt)
+    real_mlx_module.record_failed_attempt(
+        attempt,
+        "replicate-1",
+        reason="child_launch_failed",
+        failed_at=real_mlx_module._utc_now(),
+    )
+    for row in rows:
+        if row.get("replicate_id") == "replicate-1" and row["event"] == "finalized":
+            row["attempt_digest"] = real_mlx_module._directory_digest(attempt)
+    ledger.write_text(
+        "".join(real_mlx_module._json_line(row) for row in rows), encoding="ascii"
+    )
+
+    with pytest.raises(RealMLXExperimentError, match="continued after an aborting"):
+        real_mlx_module._verify_run_ledger(ledger)
+
+
+def test_run_all_records_a_missed_monitor_cadence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time as time_module
+
+    inputs = _supervisor_inputs(tmp_path, monkeypatch)
+    clock = [1_000.0]
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    fake_time = SimpleNamespace(
+        **{
+            name: getattr(time_module, name)
+            for name in dir(time_module)
+            if not name.startswith("_")
+        }
+    )
+    fake_time.monotonic = lambda: clock[0]
+    fake_time.sleep = sleep
+    monkeypatch.setattr(real_mlx_module, "time", fake_time)
+    observation = real_mlx_module._machine_observation(
+        Path("unused"), excluded_roots=set()
+    )
+
+    def slow_observation(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        clock[0] += 5.0
+        return observation
+
+    monkeypatch.setattr(real_mlx_module, "_machine_observation", slow_observation)
+    monkeypatch.setattr(real_mlx_module.subprocess, "Popen", _RunningProcess)
+
+    real_mlx_module.run_all_replicates(**inputs)
+
+    assert (
+        _finalized_reasons(inputs["output_workspace"]) == ["monitor_cadence_missed"] * 6
+    )
+
+
+def test_run_all_temp_cleanup_failure_before_start_is_verifiable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _supervisor_inputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        real_mlx_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("launch failed")),
+    )
+    real_rmtree = shutil.rmtree
+
+    def rmtree(path: Any, *args: Any, **kwargs: Any) -> None:
+        if Path(path).name == ".replicate-0.tmp":
+            raise OSError("cleanup failed")
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(real_mlx_module.shutil, "rmtree", rmtree)
+
+    real_mlx_module.run_all_replicates(**inputs)
+
+    workspace = inputs["output_workspace"]
+    assert _finalized_reasons(workspace) == [
+        "process_cleanup_failed",
+        *["supervisor_aborted_before_start"] * 5,
+    ]
+    assert (workspace / "private-artifacts" / "replicate-0" / "private-temp").is_dir()
+
+
+def test_run_all_writes_terminal_row_when_results_derivation_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inputs = _supervisor_inputs(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        real_mlx_module.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("launch failed")),
+    )
+    monkeypatch.setattr(
+        real_mlx_module, "_aggregate_eligibility_from_rows", lambda _rows: True
+    )
+    monkeypatch.setattr(
+        real_mlx_module,
+        "_public_results_from_private",
+        lambda _attempts: {}["missing-stage-memory"],
+    )
+    monkeypatch.setattr(real_mlx_module, "_verify_run_ledger", lambda *_a, **_k: None)
+
+    result = real_mlx_module.run_all_replicates(**inputs)
+
+    assert result["run_all_complete"] is False
+    last = real_mlx_module._parse_jsonl(
+        inputs["output_workspace"] / "run-ledger.jsonl"
+    )[-1]
+    assert last["event"] == "run-finalized"
+    assert last["status"] == "results_derivation_failed"
