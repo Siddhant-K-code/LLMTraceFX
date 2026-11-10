@@ -1,0 +1,101 @@
+name: LLMTraceFX perf gate
+description: >-
+  Fail a pull request when LLM inference latency or decode throughput
+  regresses beyond a threshold and beyond run-to-run noise, using
+  provenance-checked LLMTraceFX ExperimentRecords. Inconclusive comparisons
+  are reported, never guessed.
+author: Siddhant-K-code
+branding:
+  icon: activity
+  color: orange
+
+inputs:
+  baseline:
+    description: Whitespace-separated record.json files or directories (searched recursively) for the baseline runs.
+    required: true
+  candidate:
+    description: Whitespace-separated record.json files or directories (searched recursively) for the candidate runs.
+    required: true
+  metric:
+    description: "total, model_load, tokenize, prefill, decode (lower is better) or decode_tokens_per_second (higher is better)."
+    required: false
+    default: total
+  max-regression:
+    description: Allowed relative regression before failing, as a fraction (0.05 = 5%).
+    required: false
+    default: "0.05"
+  min-repetitions:
+    description: Usable runs required on each side (minimum 2).
+    required: false
+    default: "3"
+  fail-on-inconclusive:
+    description: Fail the step when the gate cannot decide (too few runs, not comparable, or within noise).
+    required: false
+    default: "true"
+  python-version:
+    description: Python used to run the gate. The gate needs only the standard library.
+    required: false
+    default: "3.12"
+
+outputs:
+  verdict:
+    description: pass, regression or inconclusive.
+    value: ${{ steps.gate.outputs.verdict }}
+  report:
+    description: Path to the JSON gate report.
+    value: ${{ steps.gate.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Run perf gate
+      id: gate
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        GATE_BASELINE: ${{ inputs.baseline }}
+        GATE_CANDIDATE: ${{ inputs.candidate }}
+        GATE_METRIC: ${{ inputs.metric }}
+        GATE_MAX_REGRESSION: ${{ inputs.max-regression }}
+        GATE_MIN_REPETITIONS: ${{ inputs.min-repetitions }}
+        GATE_FAIL_ON_INCONCLUSIVE: ${{ inputs.fail-on-inconclusive }}
+      run: |
+        set -euo pipefail
+        read -r -a baseline <<< "$(echo $GATE_BASELINE)"
+        read -r -a candidate <<< "$(echo $GATE_CANDIDATE)"
+        report="$RUNNER_TEMP/llmtracefx-gate-report.json"
+        # The gate imports only the standard library, so it runs straight from
+        # the action checkout without installing the package's heavy extras.
+        set +e
+        PYTHONPATH="$ACTION_PATH" python -m llmtracefx.optimizer.cli gate \
+          --baseline "${baseline[@]}" \
+          --candidate "${candidate[@]}" \
+          --metric "$GATE_METRIC" \
+          --max-regression "$GATE_MAX_REGRESSION" \
+          --min-repetitions "$GATE_MIN_REPETITIONS" \
+          --output "$report" \
+          --summary-markdown "$GITHUB_STEP_SUMMARY"
+        status=$?
+        set -e
+        case "$status" in
+          0) verdict=pass ;;
+          1) verdict=regression ;;
+          *) verdict=inconclusive ;;
+        esac
+        echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+        if [ -f "$report" ]; then
+          echo "report=$report" >> "$GITHUB_OUTPUT"
+        fi
+        if [ "$verdict" = regression ]; then
+          echo "::error title=LLMTraceFX perf gate::Performance regression detected"
+          exit 1
+        fi
+        if [ "$verdict" = inconclusive ] && [ "$GATE_FAIL_ON_INCONCLUSIVE" = "true" ]; then
+          echo "::error title=LLMTraceFX perf gate::Inconclusive; see the step summary"
+          exit 2
+        fi

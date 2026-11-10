@@ -1,0 +1,99 @@
+{
+  "schema_version": "1",
+  "run_id": "synthetic-example-0",
+  "started_at": "2025-01-01T00:00:00Z",
+  "ended_at": "2025-01-01T00:00:05.160Z",
+  "platform": {
+    "os_name": "Darwin",
+    "os_version": "24.0",
+    "architecture": "arm64",
+    "cpu_model": null,
+    "cpu_cores": null,
+    "total_memory_gb": null,
+    "accelerator": null
+  },
+  "model": {
+    "model_id": "Qwen/Qwen3.8-27B",
+    "model_revision": null,
+    "tokenizer_revision": null,
+    "quantization": "Q4_K_M",
+    "model_family": null
+  },
+  "runtime": {
+    "name": "llama.cpp",
+    "version": "b1234",
+    "backend": "Metal",
+    "git_revision": null,
+    "provider": null
+  },
+  "command": {
+    "argv": [
+      "llama-cli",
+      "-m",
+      "model.gguf"
+    ],
+    "config_hash": null,
+    "workload_hash": "synthetic-workload"
+  },
+  "repetition": {
+    "warmup_repetitions": 1,
+    "measured_repetitions": 3,
+    "repetition_index": 0,
+    "seed": null
+  },
+  "tokens": {
+    "input_tokens": 50,
+    "context_tokens": null,
+    "generated_tokens": 200,
+    "provenance": null
+  },
+  "timing": {
+    "model_load": {
+      "value": 820.0,
+      "provenance": "measured_native",
+      "unit": "ms"
+    },
+    "tokenize": null,
+    "prefill": {
+      "value": 310.5,
+      "provenance": "measured_native",
+      "unit": "ms"
+    },
+    "decode": {
+      "value": 4029.7,
+      "provenance": "measured_native",
+      "unit": "ms"
+    },
+    "total": {
+      "value": 5160.2,
+      "provenance": "measured_wall_clock",
+      "unit": "ms"
+    }
+  },
+  "speculative": {
+    "enabled": false,
+    "method": null,
+    "configured_depth": null,
+    "proposed_tokens": null,
+    "accepted_tokens": null,
+    "verification_time": null
+  },
+  "memory": {
+    "active": null,
+    "cache": null,
+    "peak": null,
+    "wired": null
+  },
+  "power": {
+    "average_power": null,
+    "energy": null
+  },
+  "instruments": null,
+  "outcome": {
+    "success": true,
+    "quality_score": null,
+    "quality_metric": null,
+    "notes": "Synthetic example for the viewer; not a benchmark result."
+  },
+  "error": null
+}

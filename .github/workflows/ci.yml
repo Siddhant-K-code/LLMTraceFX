@@ -398,3 +398,51 @@ jobs:
         run: |
           uv run --no-sync pytest -q \
             tests/deploy/test_vllm_kv_truth_clean_env_launcher.py::test_real_setuptools_wheel_install_and_public_cli_split
+
+  # Exercises the published composite action (action.yml at the repo root)
+  # against committed fixture records, so a broken action fails here before a
+  # user's pull request does.
+  perf-gate-action:
+    name: perf gate action self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Gate passes a comparable candidate
+        id: ok
+        uses: ./
+        with:
+          baseline: tests/optimizer/fixtures/gate/baseline
+          candidate: tests/optimizer/fixtures/gate/candidate-ok
+
+      - name: Gate flags a regressed candidate
+        id: regressed
+        continue-on-error: true
+        uses: ./
+        with:
+          baseline: tests/optimizer/fixtures/gate/baseline
+          candidate: tests/optimizer/fixtures/gate/candidate-regressed
+
+      - name: Gate refuses when runs are too few
+        id: few
+        uses: ./
+        with:
+          baseline: tests/optimizer/fixtures/gate/baseline/run-0 tests/optimizer/fixtures/gate/baseline/run-1
+          candidate: tests/optimizer/fixtures/gate/candidate-ok
+          fail-on-inconclusive: "false"
+
+      - name: Check verdicts
+        env:
+          OK: ${{ steps.ok.outputs.verdict }}
+          REGRESSED: ${{ steps.regressed.outputs.verdict }}
+          REGRESSED_OUTCOME: ${{ steps.regressed.outcome }}
+          FEW: ${{ steps.few.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          echo "ok=$OK regressed=$REGRESSED ($REGRESSED_OUTCOME) few=$FEW"
+          test "$OK" = pass
+          test "$REGRESSED" = regression
+          test "$REGRESSED_OUTCOME" = failure
+          test "$FEW" = inconclusive
