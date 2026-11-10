@@ -25,6 +25,7 @@ from llmtracefx.cache_audit.adapters.mlx import (
     MLXCacheAdapterError,
     MLXGenerationStep,
     MLXLocalCacheAdapter,
+    MLXStageObservation,
     SavedCacheIdentity,
     _validate_local_model_path,
     check_mlx_capabilities,
@@ -32,10 +33,12 @@ from llmtracefx.cache_audit.adapters.mlx import (
     write_saved_cache_sidecar,
 )
 from llmtracefx.cache_audit.expected import MLXCacheOracle
+from llmtracefx.cache_audit.report import build_summary
 from llmtracefx.cache_audit.runner import run_audit
 from llmtracefx.cache_audit.schema import (
     CacheConfig,
     EvidenceBasis,
+    PairRole,
     RequestSpec,
     ScenarioKind,
     Verdict,
@@ -100,6 +103,7 @@ class FakeMLXRuntime:
         self._peak_bytes = 0
         self.synchronize_calls = 0
         self.reset_peak_calls = 0
+        self.memory_boundary_events: list[str] = []
         self.loaded_model_path: Path | None = None
         self.loaded_model_config: bytes | None = None
 
@@ -134,6 +138,7 @@ class FakeMLXRuntime:
 
     def reset_peak_memory(self) -> None:
         self.reset_peak_calls += 1
+        self.memory_boundary_events.append("reset")
         self._peak_bytes = self._active_bytes
 
     def active_memory(self) -> int:
@@ -152,6 +157,7 @@ class FakeMLXRuntime:
     def fetch(
         self, model_key: Hashable, tokens: Sequence[int]
     ) -> tuple[_FakeCacheHandle | None, tuple[int, ...]]:
+        self.memory_boundary_events.append("fetch")
         expectation = self._oracle.lookup(model_key, "_runtime_", tokens)
         request = tuple(tokens)
         if expectation.matched_entry_id is None:
@@ -213,7 +219,14 @@ class FakeMLXRuntime:
             token = _hash_token(seed, index, apply_corruption)
             cache.resident_tokens.append(token)
             finish_reason = "stop" if index == max_tokens - 1 else None
-            yield MLXGenerationStep(token=token, finish_reason=finish_reason)
+            yield MLXGenerationStep(
+                token=token,
+                finish_reason=finish_reason,
+                prompt_tokens=len(prompt),
+                prompt_tps=100.0,
+                generation_tokens=index + 1,
+                generation_tps=50.0,
+            )
 
 
 def _spec(
@@ -236,13 +249,18 @@ def _spec(
     )
 
 
-def _adapter(runtime: FakeMLXRuntime | None = None) -> MLXLocalCacheAdapter:
+def _adapter(
+    runtime: FakeMLXRuntime | None = None,
+    *,
+    stage_observer: Callable[[MLXStageObservation], None] | None = None,
+) -> MLXLocalCacheAdapter:
     return MLXLocalCacheAdapter(
         runtime=runtime if runtime is not None else FakeMLXRuntime(),
         model="fake-model",
         tokenizer="fake-tokenizer",
         model_key="fake-model-key",
         model_artifact_digest=_MODEL_ARTIFACT_DIGEST,
+        stage_observer=stage_observer,
     )
 
 
@@ -487,7 +505,8 @@ def test_corrupted_output_does_not_mutate_cache_truth() -> None:
 
 
 def test_exact_empty_remainder_is_refused_not_silently_regenerated() -> None:
-    adapter = _adapter()
+    observations: list[MLXStageObservation] = []
+    adapter = _adapter(stage_observer=observations.append)
     prompt = (31, 32, 33)
     first = adapter.run([_spec("cold", prompt, order=0)])[0]
     assert first.output.output_token_ids is not None
@@ -508,15 +527,23 @@ def test_exact_empty_remainder_is_refused_not_silently_regenerated() -> None:
     assert second.verdict_reasons == ("unsupported:exact_empty_remainder_unsupported",)
     assert second.output.output_token_ids is None
     assert any(item.blocks_verdict for item in second.limitations)
+    second_stages = [
+        item.stage for item in observations if item.request_id == "exact-empty"
+    ]
+    assert second_stages == ["request_before_lookup", "request_after_lookup"]
 
 
 def test_quantized_cache_scenario_is_explicitly_unsupported() -> None:
-    adapter = _adapter()
+    observations: list[MLXStageObservation] = []
+    adapter = _adapter(stage_observer=observations.append)
     record = adapter.run(
         [_spec("quant", (1, 2, 3), order=0, scenario=ScenarioKind.QUANTIZED_CACHE)]
     )[0]
     assert record.verdict is Verdict.UNSUPPORTED
     assert record.verdict_reasons == ("unsupported:quantized_cache_unsupported",)
+    assert [(item.request_id, item.stage) for item in observations] == [
+        (None, "lifecycle_ready")
+    ]
 
 
 def test_observed_hidden_prompt_work_is_classified_as_recomputed() -> None:
@@ -572,7 +599,8 @@ def test_run_requires_exact_token_ids() -> None:
 
 
 def test_memory_and_timing_evidence_are_observed_and_wall_clock() -> None:
-    adapter = _adapter()
+    runtime = FakeMLXRuntime()
+    adapter = _adapter(runtime)
     record = adapter.run([_spec("cold", (41, 42, 43), order=0)])[0]
 
     assert record.memory.runtime_active_bytes.value is not None
@@ -581,7 +609,11 @@ def test_memory_and_timing_evidence_are_observed_and_wall_clock() -> None:
     assert record.memory.runtime_peak_bytes.value is not None
     assert (
         record.memory.runtime_peak_bytes.scope
-        == "process_global_allocator_gauge_since_reset"
+        == "process_global_allocator_peak_from_cache_fetch_through_generation"
+    )
+    assert (
+        record.memory.runtime_peak_bytes.source
+        == "mlx.get_peak_memory_after_reset_before_cache_fetch"
     )
     assert record.memory.allocator_cache_bytes.value is not None
     assert record.memory.logical_cache_bytes.value is not None
@@ -590,6 +622,7 @@ def test_memory_and_timing_evidence_are_observed_and_wall_clock() -> None:
     assert record.cache_before.entry_count.value == 0
     assert record.cache_after is not None
     assert record.cache_after.entry_count.value == 1
+    assert record.cache_after.cache_classes.value == ["FakeKVCache"]
     assert record.cache_after.complete is False
 
     assert record.timing.total is not None
@@ -598,12 +631,181 @@ def test_memory_and_timing_evidence_are_observed_and_wall_clock() -> None:
     assert record.timing.total.value >= 0
     assert record.timing.in_process_first_token is not None
     assert record.timing.in_process_first_token.value >= 0
-    assert record.timing.scope == "in_process_generation_section"
-    assert "prompt_cache_lookup" in record.timing.exclusions
+    assert record.timing.client_ttft is not None
+    assert record.timing.client_ttft.value >= record.timing.in_process_first_token.value
+    assert runtime.synchronize_calls == 2
+    assert record.timing.prefill is not None
+    assert record.timing.prefill.value == pytest.approx(0.03)
+    assert record.timing.decode is not None
+    assert record.timing.decode.value == pytest.approx(0.04)
+    assert record.timing.scope == "runtime_cache_fetch_and_mlx_lm_stream_generate"
+    assert "prompt_cache_insertion" in record.timing.exclusions
     assert (
         record.reuse.engine_created_tokens.basis is EvidenceBasis.INDEPENDENTLY_DERIVED
     )
     assert record.reuse.eviction_observed.value is None
+    assert runtime.memory_boundary_events == ["reset", "fetch"]
+
+
+def test_peak_boundary_is_equivalent_for_cold_and_hit_requests() -> None:
+    runtime = FakeMLXRuntime()
+    adapter = _adapter(runtime)
+    adapter.run(
+        [
+            _spec("cold", (1, 2, 3), order=0),
+            _spec("hit", (1, 2, 3, 4), order=1),
+        ]
+    )
+
+    assert runtime.memory_boundary_events == ["reset", "fetch", "reset", "fetch"]
+
+
+def test_pair_timing_exclusions_are_fixed_and_summary_compatible() -> None:
+    adapter = _adapter()
+    control, treatment = adapter.run(
+        [
+            replace(
+                _spec("cold", (1, 2, 3), order=0),
+                pair_id="cold-exact",
+                pair_role=PairRole.CONTROL,
+            ),
+            replace(
+                _spec(
+                    "exact",
+                    (1, 2, 3),
+                    order=1,
+                    scenario=ScenarioKind.IDENTICAL_PREFIX,
+                ),
+                pair_id="cold-exact",
+                pair_role=PairRole.TREATMENT,
+            ),
+        ]
+    )
+
+    assert control.timing.exclusions == treatment.timing.exclusions
+    assert not any(
+        exclusion.startswith("in_process_generation_total=")
+        for exclusion in control.timing.exclusions
+    )
+    pair = build_summary(
+        [control, treatment],
+        Mock(run_id="run"),
+    )[
+        "paired_deltas"
+    ][0]
+    assert pair["compatible"] is True
+    assert "timing_exclusions_mismatch" not in pair["eligibility_reasons"]
+
+
+def test_stage_observer_receives_named_allocator_boundaries() -> None:
+    observations: list[MLXStageObservation] = []
+    adapter = MLXLocalCacheAdapter(
+        runtime=FakeMLXRuntime(),
+        model="fake-model",
+        tokenizer="fake-tokenizer",
+        model_key="fake-model-key",
+        model_artifact_digest=_MODEL_ARTIFACT_DIGEST,
+        stage_observer=observations.append,
+    )
+
+    adapter.run([_spec("cold", (1, 2, 3), order=0)])
+
+    assert [observation.stage for observation in observations] == [
+        "lifecycle_ready",
+        "request_before_lookup",
+        "request_after_lookup",
+        "request_after_generation",
+        "request_after_insertion",
+        "request_after_baseline",
+    ]
+    assert observations[-1].request_id == "cold"
+
+
+def test_correctness_baselines_run_after_all_lifecycle_measurements() -> None:
+    observations: list[MLXStageObservation] = []
+    adapter = MLXLocalCacheAdapter(
+        runtime=FakeMLXRuntime(),
+        model="fake-model",
+        tokenizer="fake-tokenizer",
+        model_key="fake-model-key",
+        model_artifact_digest=_MODEL_ARTIFACT_DIGEST,
+        stage_observer=observations.append,
+    )
+
+    adapter.run(
+        [
+            _spec("control", (1, 2, 3), order=0),
+            _spec("treatment", (4, 5, 6), order=1),
+        ]
+    )
+
+    boundaries = [
+        (observation.request_id, observation.stage) for observation in observations
+    ]
+    assert boundaries[-2:] == [
+        ("control", "request_after_baseline"),
+        ("treatment", "request_after_baseline"),
+    ]
+    assert boundaries.index(
+        ("treatment", "request_after_insertion")
+    ) < boundaries.index(("control", "request_after_baseline"))
+
+
+def test_configured_correctness_evaluator_is_independent_of_identity() -> None:
+    adapter = MLXLocalCacheAdapter(
+        runtime=FakeMLXRuntime(),
+        model="fake-model",
+        tokenizer="fake-tokenizer",
+        model_key="fake-model-key",
+        model_artifact_digest=_MODEL_ARTIFACT_DIGEST,
+        correctness_evaluator=lambda _tokens: False,
+    )
+
+    record = adapter.run([_spec("cold", (1, 2, 3), order=0)])[0]
+
+    assert record.output.token_identity.value is True
+    assert record.output.correctness.value is False
+    assert record.output.correctness.source == "configured_deterministic_evaluator"
+
+
+def test_controlled_hit_pressure_miss_observes_eviction_transition() -> None:
+    runtime = FakeMLXRuntime(max_entries=2)
+    adapter = MLXLocalCacheAdapter(
+        runtime=runtime,
+        model="fake-model",
+        tokenizer="fake-tokenizer",
+        model_key="fake-model-key",
+        model_artifact_digest=_MODEL_ARTIFACT_DIGEST,
+        max_cache_entries=2,
+    )
+    requests = (
+        _spec("seed-a", (1, 2, 3, 4), order=0),
+        _spec(
+            "hit-a",
+            (1, 2, 3, 4),
+            order=1,
+            scenario=ScenarioKind.IDENTICAL_PREFIX,
+        ),
+        _spec("seed-b", (11, 12, 13, 14), order=2),
+        _spec("seed-c", (21, 22, 23, 24), order=3),
+        RequestSpec(
+            request_id="revisit-a",
+            scenario=ScenarioKind.EVICTION_COUNT,
+            order=4,
+            input_token_ids=(1, 2, 3, 4),
+            input_token_count=4,
+            expected_predecessors=("hit-a",),
+        ),
+    )
+
+    records = adapter.run(requests)
+
+    eviction = records[-1]
+    assert eviction.reuse.prior_residency_observed.value is True
+    assert eviction.reuse.residency_absence_observed.value is True
+    assert eviction.reuse.eviction_observed.value is True
+    assert eviction.reuse.engine_cached_tokens.value == 0
+    assert eviction.reuse.observed_prompt_tokens.value == 4
 
 
 def test_refusal_record_has_no_timing_but_has_partial_memory_facts() -> None:

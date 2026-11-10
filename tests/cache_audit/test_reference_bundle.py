@@ -114,6 +114,27 @@ def test_public_demo_is_deterministic_and_standalone_verifiable(
     assert first_files == second_files
 
 
+def test_bundle_git_uses_absolute_binary_minimal_env_and_disabled_features(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    commands: list[tuple[list[str], dict[str, object]]] = []
+
+    def run(command: list[str], **kwargs: object) -> object:
+        commands.append((command, kwargs))
+        return type("Completed", (), {"returncode": 0, "stdout": "false\n"})()
+
+    monkeypatch.setattr(cache_bundle.subprocess, "run", run)
+    assert cache_bundle._repository_is_incomplete(tmp_path) is False
+    command, kwargs = commands[0]
+    assert command[0] == "/usr/bin/git"
+    assert "core.fsmonitor=false" in command
+    assert "core.hooksPath=/dev/null" in command
+    assert "core.attributesFile=/dev/null" in command
+    assert kwargs["env"] == cache_bundle._GIT_ENV
+    # Historical portable wrappers remain byte-stable; new in-package Git
+    # chronology checks use the hardened command and environment above.
+
+
 def test_bundle_round_trip_and_tamper_detection(tmp_path: Path) -> None:
     output = tmp_path / "bundle"
     requests = adversarial_requests()
@@ -1236,6 +1257,17 @@ def test_repository_chronology_ignores_replacement_refs(tmp_path: Path) -> None:
         replacement_commit,
     )
     assert _verify_manifest_chronology(manifest, repository=repository) == "verified"
+
+
+def test_repository_chronology_rejects_dirty_worktree(tmp_path: Path) -> None:
+    repository, manifest, _ = _hermetic_chronology_fixture(tmp_path)
+    source = repository / "llmtracefx" / "__init__.py"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\n# uncommitted change\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CacheAuditBundleError, match="worktree is dirty"):
+        _verify_manifest_chronology(manifest, repository=repository)
 
 
 def _blobless_partial_clone(

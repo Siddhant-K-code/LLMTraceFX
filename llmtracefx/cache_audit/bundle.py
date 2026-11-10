@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import subprocess
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -54,20 +53,43 @@ BUNDLE_DATA_FILES = (
     "evidence_bundle.py",
 )
 BUNDLE_FILES = (*BUNDLE_DATA_FILES, "SHA256SUMS")
+DATA_ONLY_BUNDLE_DATA_FILES = tuple(
+    name for name in BUNDLE_DATA_FILES if name != "evidence_bundle.py"
+)
+DATA_ONLY_BUNDLE_FILES = (*DATA_ONLY_BUNDLE_DATA_FILES, "SHA256SUMS")
 _CHECKSUM = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._-]*)$")
 PUBLIC_REDACTED_FACT_SCOPE = "public_redacted_fact"
 PUBLIC_REDACTED_TIMING_SCOPE = "public_redacted_timing"
 PUBLIC_REDACTED_TIMING_EXCLUSIONS = ("timing_details_redacted",)
 PUBLIC_REDACTED_TIMING_UNIT = "s"
-_GIT_ENV = {
-    key: value for key, value in os.environ.items() if not key.startswith("GIT_")
-}
-_GIT_ENV.update(
+PUBLIC_SAFE_LIMITATION_CODES = frozenset(
     {
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_NO_LAZY_FETCH": "1",
-        "GIT_OPTIONAL_LOCKS": "0",
+        "quantized_cache_unsupported",
+        "rotating_cache_unsupported",
+        "non_trimmable_cache_reuse_unsupported",
+        "exact_empty_remainder_unsupported",
     }
+)
+_GIT_ENV = {
+    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "HOME": "/dev/null",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+    "GIT_OPTIONAL_LOCKS": "0",
+}
+_GIT_COMMAND = (
+    "/usr/bin/git",
+    "--no-replace-objects",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.attributesFile=/dev/null",
 )
 
 
@@ -698,7 +720,6 @@ def _verify_public_synthetic_provenance(
         or manifest.adapter_version != "2"
         or manifest.workload_digest != workload_digest(recorded)
         or manifest.generator_commit is None
-        or manifest.generator_package_digest != package_source_digest()
     ):
         raise CacheAuditBundleError(
             "public_synthetic publication requires the approved built-in "
@@ -753,14 +774,13 @@ def _timestamp(value: str, field: str) -> datetime:
         raise CacheAuditBundleError(f"{field} must be an ISO-8601 timestamp") from exc
     if parsed.tzinfo is None:
         raise CacheAuditBundleError(f"{field} must include a timezone offset")
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def _repository_is_incomplete(repository: Path) -> bool:
     shallow = subprocess.run(
         [
-            "git",
-            "--no-replace-objects",
+            *_GIT_COMMAND,
             "-C",
             str(repository),
             "rev-parse",
@@ -778,8 +798,7 @@ def _repository_is_incomplete(repository: Path) -> bool:
         return True
     partial = subprocess.run(
         [
-            "git",
-            "--no-replace-objects",
+            *_GIT_COMMAND,
             "-C",
             str(repository),
             "config",
@@ -805,8 +824,7 @@ def _repository_is_incomplete(repository: Path) -> bool:
 def _package_objects_missing(repository: Path, commit: str) -> bool:
     result = subprocess.run(
         [
-            "git",
-            "--no-replace-objects",
+            *_GIT_COMMAND,
             "-C",
             str(repository),
             "rev-list",
@@ -831,8 +849,7 @@ def _package_objects_missing(repository: Path, commit: str) -> bool:
 def _git_package_digest(repository: Path, commit: str) -> str:
     listing = subprocess.run(
         [
-            "git",
-            "--no-replace-objects",
+            *_GIT_COMMAND,
             "-C",
             str(repository),
             "ls-tree",
@@ -864,8 +881,7 @@ def _git_package_digest(repository: Path, commit: str) -> str:
     for relative_text in paths:
         result = subprocess.run(
             [
-                "git",
-                "--no-replace-objects",
+                *_GIT_COMMAND,
                 "-C",
                 str(repository),
                 "show",
@@ -910,10 +926,46 @@ def _verify_manifest_chronology(
     repository = repository or Path(__file__).resolve().parents[2]
     if not (repository / ".git").exists():
         return "unavailable"
+    status = subprocess.run(
+        [
+            *_GIT_COMMAND,
+            "-C",
+            str(repository),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=no",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        env=_GIT_ENV,
+    )
+    if status.returncode != 0:
+        raise CacheAuditBundleError("repository status is unavailable")
+    if status.stdout:
+        if _repository_is_incomplete(repository):
+            object_type = subprocess.run(
+                [
+                    *_GIT_COMMAND,
+                    "-C",
+                    str(repository),
+                    "cat-file",
+                    "-t",
+                    manifest.generator_commit,
+                ],
+                capture_output=True,
+                check=False,
+                text=True,
+                env=_GIT_ENV,
+            )
+            if object_type.returncode != 0:
+                return "unavailable"
+            if _package_objects_missing(repository, manifest.generator_commit):
+                return "unavailable"
+        raise CacheAuditBundleError("repository worktree is dirty")
     object_type = subprocess.run(
         [
-            "git",
-            "--no-replace-objects",
+            *_GIT_COMMAND,
             "-C",
             str(repository),
             "cat-file",
@@ -933,8 +985,7 @@ def _verify_manifest_chronology(
         raise CacheAuditBundleError("generator object is not a commit")
     result = subprocess.run(
         [
-            "git",
-            "--no-replace-objects",
+            *_GIT_COMMAND,
             "-C",
             str(repository),
             "show",
@@ -1079,6 +1130,8 @@ def write_bundle(
     output_dir: Path,
     manifest: AuditManifest,
     records: Sequence[RequestEvidence],
+    *,
+    data_only: bool = False,
 ) -> None:
     """Write one complete bundle atomically at file granularity."""
 
@@ -1127,14 +1180,24 @@ def write_bundle(
         render_reuse_alignment_svg(records),
     )
     atomic_write_text(output_dir / "report.html", render_html(manifest, records))
-    atomic_write_text(
-        output_dir / "evidence_bundle.py",
-        _portable_verifier(manifest),
-    )
+    if not data_only:
+        atomic_write_text(
+            output_dir / "evidence_bundle.py",
+            _portable_verifier(manifest),
+        )
+    checksum_files = DATA_ONLY_BUNDLE_DATA_FILES if data_only else BUNDLE_DATA_FILES
     checksums = "".join(
-        f"{_sha256(output_dir / name)}  {name}\n" for name in BUNDLE_DATA_FILES
+        f"{_sha256(output_dir / name)}  {name}\n" for name in checksum_files
     )
     atomic_write_text(output_dir / "SHA256SUMS", checksums)
+
+
+def copy_data_only_bundle(source_dir: Path, output_dir: Path) -> None:
+    """Verify a standard bundle and reproduce it without executable content."""
+
+    manifest, records = read_bundle(source_dir)
+    write_bundle(output_dir, manifest, records, data_only=True)
+    verify_bundle(output_dir, data_only=True)
 
 
 def _load_json(path: Path) -> Any:
@@ -1169,7 +1232,7 @@ def _load_records(path: Path) -> list[RequestEvidence]:
     return records
 
 
-def _verify_checksums(bundle_dir: Path) -> None:
+def _verify_checksums(bundle_dir: Path, *, data_only: bool = False) -> None:
     text = read_bounded_regular_text(
         bundle_dir / "SHA256SUMS",
         max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
@@ -1183,15 +1246,17 @@ def _verify_checksums(bundle_dir: Path) -> None:
         if name in found:
             raise CacheAuditBundleError(f"duplicate checksum entry: {name}")
         found[name] = digest
-    if set(found) != set(BUNDLE_DATA_FILES):
+    expected_files = DATA_ONLY_BUNDLE_DATA_FILES if data_only else BUNDLE_DATA_FILES
+    if set(found) != set(expected_files):
         raise CacheAuditBundleError("checksum file list is incomplete or unexpected")
     for name, expected in found.items():
         if _sha256(bundle_dir / name) != expected:
             raise CacheAuditBundleError(f"checksum mismatch: {name}")
 
 
-def _verify_public_privacy(bundle_dir: Path) -> None:
-    for name in BUNDLE_FILES:
+def _verify_public_privacy(bundle_dir: Path, *, data_only: bool = False) -> None:
+    bundle_files = DATA_ONLY_BUNDLE_FILES if data_only else BUNDLE_FILES
+    for name in bundle_files:
         text = read_bounded_regular_text(
             bundle_dir / name,
             max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
@@ -1332,7 +1397,11 @@ def _verify_public_redacted_shape(
         for limitation in record.limitations:
             if limitation.code == "public_tokens_redacted":
                 continue
-            if re.fullmatch(r"redacted_limitation_[0-9]{4}", limitation.code) is None:
+            if (
+                limitation.code not in PUBLIC_SAFE_LIMITATION_CODES
+                and re.fullmatch(r"redacted_limitation_[0-9]{4}", limitation.code)
+                is None
+            ):
                 raise CacheAuditBundleError(
                     "public-redacted limitation identifier is invalid"
                 )
@@ -1403,28 +1472,35 @@ def _verify_reference_oracle(
             )
 
 
-def verify_bundle(bundle_dir: Path) -> dict[str, Any]:
+def verify_bundle(bundle_dir: Path, *, data_only: bool = False) -> dict[str, Any]:
     """Verify checksums, schema, request order, verdicts, reports, and privacy."""
 
     if not bundle_dir.is_dir() or bundle_dir.is_symlink():
         raise CacheAuditBundleError("bundle must be a regular directory")
+    bundle_files = DATA_ONLY_BUNDLE_FILES if data_only else BUNDLE_FILES
     actual = {item.name for item in bundle_dir.iterdir()}
-    if actual != set(BUNDLE_FILES):
+    if actual != set(bundle_files):
         raise CacheAuditBundleError(
-            f"bundle files differ: missing={sorted(set(BUNDLE_FILES) - actual)}, "
-            f"extra={sorted(actual - set(BUNDLE_FILES))}"
+            f"bundle files differ: missing={sorted(set(bundle_files) - actual)}, "
+            f"extra={sorted(actual - set(bundle_files))}"
         )
-    for name in BUNDLE_FILES:
+    for name in bundle_files:
         path = bundle_dir / name
         if path.is_symlink() or not path.is_file():
             raise CacheAuditBundleError(f"{name} must be a regular non-symlink file")
-    _verify_checksums(bundle_dir)
+    _verify_checksums(bundle_dir, data_only=data_only)
     manifest = AuditManifest.from_dict(_load_json(bundle_dir / "audit-manifest.json"))
-    if manifest.generator_package_digest != package_source_digest():
+    current_package_matches = (
+        manifest.generator_package_digest == package_source_digest()
+    )
+    repository_chronology_corroboration = _verify_manifest_chronology(manifest)
+    if (
+        not current_package_matches
+        and repository_chronology_corroboration != "verified"
+    ):
         raise CacheAuditBundleError(
             "bundle belongs to a different llmtracefx cache-audit package"
         )
-    repository_chronology_corroboration = _verify_manifest_chronology(manifest)
     _verify_manifest_backend_contract(manifest)
     records = _load_records(bundle_dir / "request-evidence.jsonl")
     if tuple(record.spec.request_id for record in records) != manifest.request_order:
@@ -1506,13 +1582,13 @@ def verify_bundle(bundle_dir: Path) -> dict[str, Any]:
         max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
     ) != render_html(manifest, records):
         raise CacheAuditBundleError("HTML report is not deterministic")
-    if read_bounded_regular_text(
+    if not data_only and read_bounded_regular_text(
         bundle_dir / "evidence_bundle.py",
         max_bytes=MAX_EVIDENCE_ARTIFACT_BYTES,
     ) != _portable_verifier(manifest):
         raise CacheAuditBundleError("portable verifier wrapper is not deterministic")
     if manifest.publication_mode is not PublicationMode.PRIVATE:
-        _verify_public_privacy(bundle_dir)
+        _verify_public_privacy(bundle_dir, data_only=data_only)
     return {
         "run_id": manifest.run_id,
         "backend": manifest.backend,
@@ -1532,10 +1608,12 @@ def verify_bundle(bundle_dir: Path) -> dict[str, Any]:
     }
 
 
-def read_bundle(bundle_dir: Path) -> tuple[AuditManifest, list[RequestEvidence]]:
+def read_bundle(
+    bundle_dir: Path, *, data_only: bool = False
+) -> tuple[AuditManifest, list[RequestEvidence]]:
     """Load a checksummed bundle after full verification."""
 
-    verify_bundle(bundle_dir)
+    verify_bundle(bundle_dir, data_only=data_only)
     return (
         AuditManifest.from_dict(_load_json(bundle_dir / "audit-manifest.json")),
         _load_records(bundle_dir / "request-evidence.jsonl"),
@@ -1620,7 +1698,11 @@ def _redacted_limitations(
 ) -> tuple[Limitation, ...]:
     return tuple(
         Limitation(
-            code=f"redacted_limitation_{index:04d}",
+            code=(
+                limitation.code
+                if limitation.code in PUBLIC_SAFE_LIMITATION_CODES
+                else f"redacted_limitation_{index:04d}"
+            ),
             message="Limitation details are available only in the private bundle.",
             blocks_verdict=limitation.blocks_verdict,
         )

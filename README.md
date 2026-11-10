@@ -921,6 +921,48 @@ and the planned next features, see
 - MLX collection requires Apple silicon and an existing local model. There is
   no direct CUDA collector; NVIDIA llama.cpp evidence is imported from captured
   output.
+- The canonical real-MLX audit is scoped to one host, model, and conversion.
+  Its constant-target `CACHE_OK` output identity cannot distinguish workload
+  arrays and provides no evidence against cross-prefix or cross-namespace
+  contamination; it confirms only that cached and fresh paths produced the
+  same fixed answer. It is a mechanical timing-comparability gate, not
+  independent corroboration of reuse. All six preregistered process
+  replicates must complete structurally, with no replacement. Measured output
+  divergence, incorrect output, recomputation, or a non-evicted capacity
+  revisit remains a valid negative result rather than invalidating a completed
+  replicate; observation counts are not pass thresholds, and such pairs are
+  not latency-comparable. `preflight` and `run-all` require `--run-attempt 1`,
+  canonical run ID `qwen3-4b-99469aa8-attempt-1`, and the exact workspace
+  `/Users/siddhant-git-ai/.cache/llmtracefx/qwen3-4b-kv-cache-v1/canonical-run-attempt-1`.
+  They bind an empty prior-invalidated-ledger list. The global preflight gate runs
+  before workspace creation, so an initial refusal consumes no replicate and
+  can be retried only after explicit clean-reboot confirmation. Once attempt 1
+  starts, any invalidation permanently invalidates the canonical result under
+  this preregistration. Immediately before workspace/ledger creation,
+  `run-all` atomically consumes the durable external marker
+  `/Users/siddhant-git-ai/.cache/llmtracefx/canonical-attempts/qwen3-4b-99469aa8-attempt-1.json`;
+  preflight only verifies its absence. The marker is finalized in place and
+  is never deleted by the runner, so no new-workspace retry is canonical. MLX allocator
+  peaks reset immediately before each cache fetch, covering lookup/copy/trim
+  plus generation from an equivalent cold/hit boundary; stage instrumentation
+  remains outside client clocks. Within each pair the
+  cold control always precedes the warm treatment, so monotone drift can
+  inflate an apparent latency benefit; deltas are descriptive, not causal
+  speedups. Before
+  runtime imports, every distribution in the locked MLX-LM closure is hashed
+  from standard-library metadata and compared with the immutable packaged
+  Apple Silicon/Python 3.13 identity allowlist. Canonical execution requires
+  an externally extracted, SHA-256-checked copy of
+  `scripts/run-real-mlx-cache-audit-trusted.py`, invoked as
+  `EXTERNAL_VENV/bin/python -I -S /external/trusted-bootstrap.py
+  --trusted-repo-root /absolute/repo ...`; the console entry point remains for
+  help and capability inspection. Every artifact command requires an exact
+  `--expected-commit`. The bootstrap, runtime identity, and project code are
+  read from that exact commit, with project code imported only from a private
+  read-only snapshot rather than the mutable checkout. The dependencies-only
+  venv and output workspace may be siblings, but neither may contain the
+  other; the output must remain outside every repository and free of
+  runtime-package import shadows.
 - API timing is observed at the client. It cannot expose provider queueing,
   prefill, kernel execution, or server-side clocks. For servers you operate,
   `--server-metrics-url` adds the engine's own window counters. They are
