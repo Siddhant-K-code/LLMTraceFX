@@ -453,10 +453,26 @@ else:
         "-c",
         code,
     ]
+    head = subprocess.run(
+        ["git", "-C", str(real_mlx_module._PROJECT_ROOT), "rev-parse", "HEAD"],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    environment = real_mlx_module._offline_child_environment("a" * 32)
+    # Pin the commit the way the trusted bootstrap does, so the smoke test does
+    # not depend on which commit last touched the package.
+    environment.update(
+        {
+            "LLMTRACEFX_TRUSTED_BOOTSTRAP": "1",
+            "LLMTRACEFX_TRUSTED_COMMIT": head,
+            "LLMTRACEFX_TRUSTED_REPO_ROOT": str(real_mlx_module._PROJECT_ROOT),
+        }
+    )
     result = subprocess.run(
         command,
         cwd=tmp_path,
-        env=real_mlx_module._offline_child_environment("a" * 32),
+        env=environment,
         capture_output=True,
         check=False,
         text=True,

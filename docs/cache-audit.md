@@ -213,7 +213,8 @@ timestamps and exact package digest remain mandatory. A later trusted verifier
 may have a different current package digest; that is accepted only when the
 recorded generator commit is available and its exact package tree independently
 matches the manifest digest. An available but conflicting Git object,
-timestamp, tree, or dirty tracked worktree always fails verification. Git
+timestamp, or tree always fails verification, and so does a dirty tracked
+worktree on that different-package path. Git
 corroboration disables replacement objects and lazy network fetching, and only
 an explicitly configured promisor remote can establish a partial checkout.
 
@@ -355,10 +356,13 @@ discover its origin. It verifies the exact frozen 34-distribution MLX-LM
 closure, including every declared regular non-symlink file under
 site-packages except generated `.dist-info/RECORD`, against the immutable
 Apple Silicon/Python 3.13 identity
-allowlist shipped in `llmtracefx/cache_audit/data/`. The allowlist itself is
+allowlist shipped in `llmtracefx/cache_audit/data/`. This closure (for example
+transformers 5.16.1 and no mlx-vlm) belongs only to the external
+dependencies-only venv. It is independent of the project's `mlx` extra, which
+keeps its own certified pins and is never used for a real-MLX run. The allowlist itself is
 bound by a SHA-256 constant in code and records only distribution, exact
 version, trusted-root label, regular-file count, total bytes, and deterministic
-tree digest—never absolute paths. Generated scripts outside site-packages are excluded, so
+tree digest, never absolute paths. Generated scripts outside site-packages are excluded, so
 the identity is portable across external-venv paths. The discovered normalized distribution names must equal the frozen closure
 exactly. The union of their declared regular files (plus only their generated
 `.dist-info/RECORD` files) must equal every regular file in `site-packages`.
@@ -443,8 +447,8 @@ full run; failed IDs are never replaced. The global gate runs before workspace
 creation, so an initial refusal consumes no replicate.
 Output identity and deterministic correctness failures, recomputation,
 engine-attestation or observed-work disagreement, and any schema-valid cache
-verdict—including `unsupported`, `recomputed`, `attested_only`, `invalid`, or
-a non-`evicted` capacity revisit—are preserved canonical observations, not
+verdict, including `unsupported`, `recomputed`, `attested_only`, `invalid`, or
+a non-`evicted` capacity revisit, are preserved canonical observations, not
 replicate-fatal gates. The per-arm policy-agreement booleans and verdict counts
 are measured outcomes rather than pass preconditions. Only structural evidence
 corruption or inconsistent coverage/accounting invalidates the aggregate. A
