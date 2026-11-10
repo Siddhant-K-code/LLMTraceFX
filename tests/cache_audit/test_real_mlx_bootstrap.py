@@ -118,7 +118,9 @@ def test_portable_identity_ignores_record_and_out_of_root_scripts(
     assert identities[0]["file_count"] == 2
 
 
-def test_built_wheel_contains_trusted_bootstrap(tmp_path: Path) -> None:
+def test_built_wheel_does_not_install_trusted_bootstrap(tmp_path: Path) -> None:
+    """Installers rewrite the shebang, so an installed copy can never self-verify."""
+
     completed = subprocess.run(
         ["uv", "build", "--wheel", "--out-dir", str(tmp_path)],
         cwd=PROJECT_ROOT,
@@ -129,9 +131,8 @@ def test_built_wheel_contains_trusted_bootstrap(tmp_path: Path) -> None:
     assert completed.returncode == 0, completed.stderr
     wheel = next(tmp_path.glob("*.whl"))
     with zipfile.ZipFile(wheel) as archive:
-        assert any(
-            name.endswith("/scripts/run-real-mlx-cache-audit-trusted.py")
-            or name.endswith(".data/scripts/run-real-mlx-cache-audit-trusted.py")
+        assert not any(
+            name.endswith("run-real-mlx-cache-audit-trusted.py")
             for name in archive.namelist()
         )
 

@@ -953,7 +953,8 @@ and the planned next features, see
   from standard-library metadata and compared with the immutable packaged
   Apple Silicon/Python 3.13 identity allowlist. Canonical execution requires
   an externally extracted, SHA-256-checked copy of
-  `scripts/run-real-mlx-cache-audit-trusted.py`, invoked as
+  `scripts/run-real-mlx-cache-audit-trusted.py` taken from the checkout with
+  `git show` (the wheel does not install it), invoked as
   `EXTERNAL_VENV/bin/python -I -S /external/trusted-bootstrap.py
   --trusted-repo-root /absolute/repo ...`; the console entry point remains for
   help and capability inspection. Every artifact command requires an exact

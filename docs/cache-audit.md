@@ -275,7 +275,11 @@ implementations.
 canonical command must instead use a SHA-256-checked external copy extracted
 with hardened `git show` from the expected commit:
 `EXTERNAL_VENV/bin/python -I -S /external/trusted-bootstrap.py
---trusted-repo-root /absolute/repo ...`. The bootstrap derives the one allowed
+--trusted-repo-root /absolute/repo ...`. Extract it from a checkout, for example
+`git -C /absolute/repo show <expected-commit>:scripts/run-real-mlx-cache-audit-trusted.py
+> /external/trusted-bootstrap.py`. The wheel does not install this script:
+installers rewrite its shebang, and the bootstrap refuses to run unless its
+bytes match the committed file. The bootstrap derives the one allowed
 `site-packages` root from that interpreter, authenticates its own running bytes
 against the commit, reads the frozen runtime identity through `git show`, and
 keeps site startup disabled. `compile`, `calibrate`, `preflight`, `run-all`,
