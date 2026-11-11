@@ -62,7 +62,14 @@ the run still succeeds.
 
 ## Cutting a release
 
-1. Bump `version` in `pyproject.toml` and merge to `main`.
+1. Bump the version in three places and merge to `main`:
+   - `version` in `pyproject.toml`.
+   - The `version` line of the `name = "llmtracefx"` package entry in
+     `uv.lock`. Edit it by hand. Do not run `uv lock`, which rewrites
+     `revision = 5`. If this line is stale, `uv sync --locked` in
+     `publish.yml` fails and nothing is published.
+   - The five `llmtracefx-X.Y.Z-py3-none-any.whl` filenames in
+     `docs/VLLM_KV_TRUTH_RUNBOOK.md`.
 2. Create a GitHub release with a new tag `vX.Y.Z` on that commit and publish it.
 3. Check the "Publish to PyPI" and "Deploy Space" runs.
 
