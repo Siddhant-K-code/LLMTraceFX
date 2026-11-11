@@ -1,0 +1,131 @@
+# Deploy spaces/evidence-viewer to a Hugging Face Space for a release.
+#
+# Needs the HF_TOKEN secret (a write token) and the HF_SPACE repository
+# variable (owner/name). Without either one the workflow skips with a notice.
+# One-time setup is in docs/releasing.md.
+#
+# The Space installs the released package from PyPI (llmtracefx==X.Y.Z), so
+# this waits until publish.yml has uploaded that version. workflow_dispatch
+# redeploys an existing release tag.
+
+name: Deploy Space
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to deploy, for example v1.10.0
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  config:
+    name: check Space configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+    steps:
+      - name: Check HF_TOKEN and HF_SPACE
+        id: check
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+        run: |
+          missing=""
+          [ -n "$HF_TOKEN" ] || missing="the HF_TOKEN secret"
+          if [ -z "$HF_SPACE" ]; then
+            missing="${missing:+$missing and }the HF_SPACE variable"
+          fi
+          if [ -n "$missing" ]; then
+            echo "::notice title=Space deploy skipped::Set $missing to deploy the evidence viewer. See docs/releasing.md."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    name: deploy evidence viewer
+    needs: config
+    if: needs.config.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve release tag
+        id: tag
+        env:
+          TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tag must look like vX.Y.Z, got '$TAG'"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      # The deploy script comes from the workflow's own ref, so redeploying a
+      # tag made before the script existed still works. The Space files come
+      # from the release tag.
+      - name: Check out deploy tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: tooling
+          persist-credentials: false
+
+      - name: Check out the release
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          path: release
+          sparse-checkout: spaces/evidence-viewer
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+          python-version: "3.12"
+
+      - name: Wait for the release on PyPI
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          url="https://pypi.org/pypi/llmtracefx/$VERSION/json"
+          for attempt in $(seq 1 40); do
+            if curl -fsS -o /dev/null "$url"; then
+              echo "llmtracefx $VERSION is on PyPI"
+              exit 0
+            fi
+            echo "Attempt $attempt: llmtracefx $VERSION is not on PyPI yet"
+            sleep 30
+          done
+          echo "::error::llmtracefx $VERSION did not appear on PyPI within 20 minutes. Check the Publish to PyPI run, then rerun this workflow."
+          exit 1
+
+      - name: Deploy to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          set -euo pipefail
+          uv run --no-project --with huggingface_hub==2.4.0 \
+            python tooling/scripts/deploy_space.py \
+              --version "$VERSION" \
+              --space "$HF_SPACE" \
+              --revision "$TAG" \
+              --source release/spaces/evidence-viewer \
+            | tee -a "$GITHUB_STEP_SUMMARY"
