@@ -194,9 +194,8 @@ that directory has the manual deploy commands.
 
 ### README badges
 
-CI, CodeQL, PyPI version, license, supported Python versions and a link to
-the perf gate. The PyPI badge shows the latest version once the first release
-is uploaded by `publish.yml`.
+CI, CodeQL, PyPI version, PyPI downloads (pepy.tech), license, supported
+Python versions and a link to the perf gate.
 
 ### Awesome list entries (drafts)
 
