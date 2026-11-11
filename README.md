@@ -870,7 +870,7 @@ Python. It writes a Markdown table to the job summary and exposes `verdict`
 (`pass`, `regression`, or `inconclusive`) and `report` (JSON path) as
 outputs. Set `fail-on-inconclusive: "false"` to report without failing when
 the runs are too few or too noisy to decide. `@v1` follows the latest 1.x
-release. Pin a release tag such as `@v1.10.0` or a commit SHA for fully
+release. Pin a release tag such as `@v1.11.0` or a commit SHA for fully
 reproducible CI.
 
 The same check runs locally:

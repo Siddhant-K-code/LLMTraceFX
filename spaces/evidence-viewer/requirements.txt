@@ -1,2 +1,2 @@
 gradio==6.31.0
-llmtracefx @ git+https://github.com/Siddhant-K-code/LLMTraceFX@v1.10.0
+llmtracefx @ git+https://github.com/Siddhant-K-code/LLMTraceFX@v1.11.0

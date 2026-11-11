@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to deploy, for example v1.10.0
+        description: Release tag to deploy, for example v1.11.0
         required: true
         type: string
 
