@@ -111,7 +111,9 @@ def main(argv: list[str] | None = None) -> int:
             print((staged / "requirements.txt").read_text(), end="")
             return 0
         url = upload(staged, args.space, token, args.version, revision)
-    print(f"Deployed {PACKAGE} {args.version} to https://huggingface.co/spaces/{args.space}")
+    print(
+        f"Deployed {PACKAGE} {args.version} to https://huggingface.co/spaces/{args.space}"
+    )
     print(f"Commit: {url}")
     return 0
 
