@@ -93,7 +93,7 @@ Importers for `vllm bench serve --save-result` JSON and AIPerf
 
 Ranked by expected return for effort:
 
-Items 1, 4 (CI badges only) and 5 are now built; see below.
+Items 1, 4 and 5 are now built; see below.
 
 1. **Publish a perf gate GitHub Action** that runs a pinned workload, compares
    against a committed baseline and fails a pull request on regression. A
@@ -189,12 +189,14 @@ the action against committed fixtures and checks all three verdicts.
 record's measurements with their provenance and its span tree, and it offers
 the Perfetto and OTLP exports for download. The logic lives in `viewer.py`,
 which does not import Gradio and is tested in CI. The bundled example record
-is synthetic. The README in that directory has the deploy commands.
+is synthetic. `deploy-space.yml` deploys it on every release; the README in
+that directory has the manual deploy commands.
 
 ### README badges
 
-CI, CodeQL, license, supported Python versions and a link to the perf gate.
-There is no PyPI badge because the package is not on PyPI yet.
+CI, CodeQL, PyPI version, license, supported Python versions and a link to
+the perf gate. The PyPI badge shows the latest version once the first release
+is uploaded by `publish.yml`.
 
 ### Awesome list entries (drafts)
 
@@ -214,9 +216,9 @@ pull request per entry and alphabetical placement.
 - Concurrency sweeps, goodput and trace replay.
 - Importers for `vllm bench serve` and AIPerf exports.
 - NVML or DCGM energy collection.
-- Publishing to PyPI (needed for a PyPI badge and `pip install llmtracefx`).
-- Tagging a `v1` release so the Action can be pinned as `@v1`.
-- Deploying the Space, which needs a Hugging Face account.
+- Completing the one-time PyPI and Hugging Face setup in
+  [releasing.md](releasing.md). Releases then publish to PyPI, move the `v1`
+  Action tag and deploy the Space automatically.
 - Following up on the awesome list submissions:
   tensorchord/Awesome-LLMOps#1136, rafska/awesome-local-llm#364 and
   antranapp/awesome-mlx#62. These describe only features already on `main`.
