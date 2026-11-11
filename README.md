@@ -814,6 +814,24 @@ uv run llmtracefx-optimizer workloads run-api \
   --dry-run
 ```
 
+With `--budget-plan`, `--budget-ledger`, and `--budget-request-id`, each
+request is claimed in a sealed ledger at its full price ceiling before any
+network I/O. A ledger entry is `planned`, `attempted`, `completed`, `failed`, or
+`abandoned`. A request ID is never attempted twice. A `failed` request blocks
+later requests for its model permanently. An `attempted` request whose process
+died before settlement also blocks its model, until an operator records it:
+
+```bash
+uv run llmtracefx-optimizer workloads abandon-budget-request \
+  --budget-plan budget-plan.json \
+  --budget-ledger budget-ledger.json \
+  --budget-request-id request-id \
+  --reason "runner was killed before settlement"
+```
+
+The entry becomes `abandoned`, keeps its full ceiling charged, and the reason
+is appended to the ledger events. That request ID can never be retried.
+
 Then run `tune`, `tune-report`, or `optimize` against the verified result
 directory. The example policy files under `examples/optimizer/` are labelled
 examples and contain no benchmark claim.

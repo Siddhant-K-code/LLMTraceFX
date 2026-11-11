@@ -5,6 +5,12 @@ claim before each network attempt and settles that claim only when provider
 usage proves a smaller charge. A failed or unaccounted request keeps its full
 planned ceiling, and the same request ID can never be claimed twice.
 
+A request that fails, or one that was claimed but never settled because its
+process died, stops later requests for the same model. A failed request stops
+the model permanently. An unsettled request stops it until an operator
+records it as abandoned, which keeps the full ceiling charged and never
+permits a retry of that request ID.
+
 The separate anchor detects accidental deletion, movement, partial writes and
 one-sided rollback. Like every user-writable local file, it is not a defense
 against a malicious operator who deletes or restores both ledger and anchor;
@@ -43,7 +49,9 @@ _MONEY_PLACES = Decimal("0.000000000001")
 _LEDGER_SEAL_FIELD = "ledger_sha256"
 _PLAN_SEAL_FIELD = "plan_sha256"
 _ANCHOR_SEAL_FIELD = "anchor_sha256"
-_REQUEST_STATUSES = frozenset({"planned", "attempted", "completed", "failed"})
+_REQUEST_STATUSES = frozenset(
+    {"planned", "attempted", "completed", "failed", "abandoned"}
+)
 _LEDGER_IDENTITY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$")
 
 
@@ -525,10 +533,13 @@ class BudgetGate:
                 raise BudgetError("budget ledger request identities do not match")
             if status not in _REQUEST_STATUSES:
                 raise BudgetError("budget ledger contains an invalid request status")
-            if entry.get("ceiling_usd") != _money(
-                self._requests[request_id].ceiling_usd
-            ):
+            ceiling = _money(self._requests[request_id].ceiling_usd)
+            if entry.get("ceiling_usd") != ceiling:
                 raise BudgetError("budget ledger request ceiling does not match")
+            if status == "abandoned" and entry.get("accounted_cost_usd") != ceiling:
+                raise BudgetError(
+                    "budget ledger abandoned request must keep its full ceiling"
+                )
             seen.add(request_id)
         self._recompute_totals(payload)
         self._validate_anchor(payload)
@@ -703,6 +714,11 @@ class BudgetGate:
                     "budget ledger is terminally failed; no later request is allowed"
                 )
             entry = self._entry(payload, request_id)
+            if entry["status"] == "abandoned":
+                raise BudgetError(
+                    "request was abandoned by an operator after an unsettled "
+                    "attempt; its request_id can never be retried"
+                )
             if entry["status"] != "planned":
                 raise BudgetError(
                     "request was already attempted; automatic retries are forbidden"
@@ -714,6 +730,22 @@ class BudgetGate:
                 raise BudgetError(
                     "a prior failed request stopped this model; retries and later "
                     "requests for that model are forbidden"
+                )
+            unsettled = sorted(
+                other["request_id"]
+                for other in payload["entries"]
+                if other["model_id"] == model_id and other["status"] == "attempted"
+            )
+            if unsettled:
+                raise BudgetError(
+                    "an earlier request for this model was claimed but never "
+                    f"settled ({', '.join(unsettled)}); its outcome and charge are "
+                    "unknown, so later requests for that model are blocked. After "
+                    "confirming no process still owns it, clear it with "
+                    "`llmtracefx-optimizer workloads abandon-budget-request "
+                    "--budget-plan PLAN --budget-ledger LEDGER "
+                    "--budget-request-id ID --reason TEXT`; the full ceiling "
+                    "stays charged and that request_id can never be retried"
                 )
             remaining = _decimal(
                 payload["remaining_authorized_usd"],
@@ -846,6 +878,51 @@ class BudgetGate:
 
             if breaches:
                 raise BudgetError("; ".join(breaches))
+
+    def abandon(self, request_id: str, *, reason: str) -> None:
+        """Record an operator's decision that an unsettled claim will never settle.
+
+        Only an ``attempted`` entry can be abandoned. Its full ceiling stays
+        charged, the request_id can never be claimed again, and later requests
+        for the same model are allowed again.
+        """
+
+        if not isinstance(reason, str) or not reason.strip():
+            raise BudgetError("abandoning a request requires a non-empty reason")
+        reason = reason.strip()
+        planned = self._requests.get(request_id)
+        if planned is None:
+            raise BudgetError("request_id is not authorized by the budget plan")
+        with _exclusive_lock(self.lock_path):
+            payload = self._read_ledger()
+            entry = self._entry(payload, request_id)
+            if entry["status"] != "attempted":
+                raise BudgetError(
+                    "only an attempted request that was never settled can be "
+                    f"abandoned; this request is {entry['status']}"
+                )
+            if entry["accounted_cost_usd"] != _money(planned.ceiling_usd):
+                raise BudgetError(
+                    "attempted request does not hold its full ceiling; refusing "
+                    "to abandon it"
+                )
+            abandoned_at = utc_now_iso()
+            entry["status"] = "abandoned"
+            entry["abandonment"] = {"at": abandoned_at, "reason": reason}
+            self._recompute_totals(payload)
+            payload["events"].append(
+                {
+                    "stage": "operator_abandon",
+                    "at": abandoned_at,
+                    "request_id": request_id,
+                    "model_id": planned.model_id,
+                    "reason": reason,
+                    "accounted_cost_usd": entry["accounted_cost_usd"],
+                    "cumulative_accounted_usd": payload["cumulative_accounted_usd"],
+                    "remaining_authorized_usd": payload["remaining_authorized_usd"],
+                }
+            )
+            self._write_ledger(payload)
 
     def snapshot(self) -> dict[str, Any]:
         with _exclusive_lock(self.lock_path):
