@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -64,6 +66,19 @@ def test_repository_requirements_can_be_pinned() -> None:
     pinned = deploy_space.pin_requirements(text, "1.10.0")
     assert "llmtracefx==1.10.0" in pinned.splitlines()
     assert "git+" not in pinned
+
+
+def test_space_python_satisfies_requires_python() -> None:
+    # Spaces default to Python 3.10 when python_version is unset, which cannot
+    # install llmtracefx.
+    readme = (ROOT / "spaces" / "evidence-viewer" / "README.md").read_text()
+    match = re.search(r'^python_version:\s*"?(\d+)\.(\d+)"?\s*$', readme, re.M)
+    assert match, "spaces/evidence-viewer/README.md must set python_version"
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    floor = re.fullmatch(r">=\s*(\d+)\.(\d+)", project["requires-python"])
+    assert floor
+    space = (int(match[1]), int(match[2]))
+    assert space >= (int(floor[1]), int(floor[2]))
 
 
 def test_dry_run_stages_the_space_without_uploading(
