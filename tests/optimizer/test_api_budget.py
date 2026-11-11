@@ -423,3 +423,213 @@ def test_provider_price_caps_cannot_exceed_planned_rates(
 
     with pytest.raises(BudgetError, match=message):
         BudgetPlan.read(write_plan(tmp_path / "plan.json", [planned]))
+
+
+def _invoke_cli(argv: list[str]) -> int:
+    from llmtracefx.optimizer import cli
+
+    parser = cli.build_parser()
+    args = parser.parse_args(argv)
+    return int(args.func(args))
+
+
+def test_unsettled_attempt_blocks_its_model_but_not_other_models(
+    tmp_path: Path,
+) -> None:
+    requests = [
+        request("glm-first"),
+        request("glm-second"),
+        request("flash-first", model_id="z-ai/glm-5.3-flash"),
+    ]
+    plan = write_plan(tmp_path / "plan.json", requests)
+    ledger = tmp_path / "ledger.json"
+    claim(initialize_gate(plan, ledger), "glm-first")
+
+    # A fresh gate stands in for the next process after a crash between
+    # claim and settle.
+    restarted = open_gate(plan, ledger)
+    with pytest.raises(BudgetError, match="never settled") as excinfo:
+        claim(restarted, "glm-second")
+    assert "glm-first" in str(excinfo.value)
+    assert "abandon-budget-request" in str(excinfo.value)
+    assert restarted.snapshot()["entries"][1]["status"] == "planned"
+
+    claim(restarted, "flash-first", model_id="z-ai/glm-5.3-flash")
+    assert restarted.snapshot()["entries"][2]["status"] == "attempted"
+
+
+def test_operator_abandon_unblocks_the_model_and_keeps_the_charge(
+    tmp_path: Path,
+) -> None:
+    plan = write_plan(tmp_path / "plan.json", [request("first"), request("second")])
+    ledger = tmp_path / "ledger.json"
+    gate = initialize_gate(plan, ledger)
+    claim(gate, "first")
+    before = gate.snapshot()
+
+    gate.abandon("first", reason="  runner was killed by OOM  ")
+
+    after = gate.snapshot()
+    first = after["entries"][0]
+    assert first["status"] == "abandoned"
+    assert first["accounted_cost_usd"] == first["ceiling_usd"]
+    assert first["abandonment"]["reason"] == "runner was killed by OOM"
+    assert first["settled_at"] is None
+    assert after["cumulative_accounted_usd"] == before["cumulative_accounted_usd"]
+    assert after["remaining_authorized_usd"] == before["remaining_authorized_usd"]
+    assert after["revision"] == before["revision"] + 1
+    event = after["events"][-1]
+    assert event["stage"] == "operator_abandon"
+    assert event["at"] == first["abandonment"]["at"]
+    assert event["request_id"] == "first"
+    assert event["model_id"] == "z-ai/glm-5.3"
+    assert event["reason"] == "runner was killed by OOM"
+
+    with pytest.raises(BudgetError, match="can never be retried"):
+        claim(gate, "first")
+    with pytest.raises(BudgetError, match="this request is abandoned"):
+        gate.abandon("first", reason="again")
+
+    claim(open_gate(plan, ledger), "second")
+    assert gate.snapshot()["entries"][1]["status"] == "attempted"
+
+
+def test_operator_abandon_refuses_entries_that_are_not_attempted(
+    tmp_path: Path,
+) -> None:
+    plan = write_plan(
+        tmp_path / "plan.json",
+        [request("planned"), request("done"), request("broken", model_id="m/x")],
+    )
+    ledger = tmp_path / "ledger.json"
+    gate = initialize_gate(plan, ledger)
+    claim(gate, "done")
+    gate.settle(
+        "done",
+        provider_success=True,
+        usage=ProviderUsage(reported=True, cost_usd=0.001),
+        failure=None,
+    )
+    claim(gate, "broken", model_id="m/x")
+    gate.settle(
+        "broken",
+        provider_success=False,
+        usage=None,
+        failure="timeout",
+    )
+    revision = gate.snapshot()["revision"]
+
+    with pytest.raises(BudgetError, match="this request is planned"):
+        gate.abandon("planned", reason="no")
+    with pytest.raises(BudgetError, match="this request is completed"):
+        gate.abandon("done", reason="no")
+    with pytest.raises(BudgetError, match="this request is failed"):
+        gate.abandon("broken", reason="no")
+    with pytest.raises(BudgetError, match="not authorized"):
+        gate.abandon("unknown", reason="no")
+    with pytest.raises(BudgetError, match="non-empty reason"):
+        gate.abandon("planned", reason="   ")
+    assert gate.snapshot()["revision"] == revision
+
+
+def test_failed_request_still_blocks_after_an_abandon_for_that_model(
+    tmp_path: Path,
+) -> None:
+    plan = write_plan(
+        tmp_path / "plan.json",
+        [request("crashed"), request("failed"), request("later")],
+    )
+    gate = initialize_gate(plan, tmp_path / "ledger.json")
+    claim(gate, "crashed")
+    gate.abandon("crashed", reason="process died")
+    claim(gate, "failed")
+    gate.settle("failed", provider_success=False, usage=None, failure="timeout")
+
+    with pytest.raises(BudgetError, match="stopped this model"):
+        claim(gate, "later")
+
+
+def test_abandoned_entry_with_a_refund_is_refused_on_read(tmp_path: Path) -> None:
+    plan = write_plan(tmp_path / "plan.json", [request("one")])
+    ledger = tmp_path / "ledger.json"
+    gate = initialize_gate(plan, ledger)
+    claim(gate, "one")
+    gate.abandon("one", reason="process died")
+    payload = json.loads(ledger.read_text(encoding="utf-8"))
+    payload["entries"][0]["accounted_cost_usd"] = "0.000000000000"
+    payload.pop("ledger_sha256")
+    sealed = api_budget._sealed(payload)
+    ledger.write_text(json.dumps(sealed), encoding="utf-8")
+    anchor = gate._anchor_payload(sealed)
+    gate.anchor_path.write_text(
+        json.dumps(api_budget._sealed(anchor, seal_field="anchor_sha256")),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BudgetError, match="must keep its full ceiling"):
+        open_gate(plan, ledger)
+
+
+def test_ledger_written_before_the_abandoned_status_still_loads(
+    tmp_path: Path,
+) -> None:
+    plan = write_plan(
+        tmp_path / "plan.json",
+        [request("done"), request("broken", model_id="m/x"), request("open")],
+    )
+    ledger = tmp_path / "ledger.json"
+    gate = initialize_gate(plan, ledger)
+    claim(gate, "done")
+    gate.settle(
+        "done",
+        provider_success=True,
+        usage=ProviderUsage(reported=True, cost_usd=0.001),
+        failure=None,
+    )
+    claim(gate, "broken", model_id="m/x")
+    gate.settle("broken", provider_success=False, usage=None, failure="timeout")
+    payload = json.loads(ledger.read_text(encoding="utf-8"))
+    assert {entry["status"] for entry in payload["entries"]} == {
+        "completed",
+        "failed",
+        "planned",
+    }
+    assert all("abandonment" not in entry for entry in payload["entries"])
+    assert all(event["stage"] != "operator_abandon" for event in payload["events"])
+
+    reopened = open_gate(plan, ledger)
+    assert reopened.snapshot() == payload
+    claim(reopened, "open")
+
+
+def test_abandon_budget_request_cli(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    plan = write_plan(tmp_path / "plan.json", [request("first"), request("second")])
+    ledger = tmp_path / "ledger.json"
+    claim(initialize_gate(plan, ledger), "first")
+    argv = [
+        "workloads",
+        "abandon-budget-request",
+        "--budget-plan",
+        str(plan),
+        "--budget-ledger",
+        str(ledger),
+        "--budget-request-id",
+        "first",
+        "--reason",
+        "runner host was rebooted",
+    ]
+
+    assert _invoke_cli(argv) == 0
+    out = capsys.readouterr().out
+    assert "Abandoned first for z-ai/glm-5.3" in out
+    assert "can never be retried" in out
+    payload = json.loads(ledger.read_text(encoding="utf-8"))
+    assert payload["entries"][0]["status"] == "abandoned"
+    assert payload["events"][-1]["reason"] == "runner host was rebooted"
+
+    assert _invoke_cli(argv) == 1
+    assert "this request is abandoned" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        _invoke_cli(argv[:-2])

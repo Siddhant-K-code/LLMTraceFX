@@ -1531,6 +1531,28 @@ def _cmd_workloads_run_api(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_workloads_abandon_budget_request(args: argparse.Namespace) -> int:
+    try:
+        gate = BudgetGate(Path(args.budget_plan), Path(args.budget_ledger))
+        gate.abandon(args.budget_request_id, reason=args.reason)
+        snapshot = gate.snapshot()
+    except BudgetError as exc:
+        print(f"Budget request was not abandoned: {exc}", file=sys.stderr)
+        return 1
+    entry = next(
+        item
+        for item in snapshot["entries"]
+        if item["request_id"] == args.budget_request_id
+    )
+    print(
+        f"Abandoned {args.budget_request_id} for {entry['model_id']}; "
+        f"{entry['accounted_cost_usd']} USD stays charged and the request_id "
+        f"can never be retried. Remaining authorized: "
+        f"{snapshot['remaining_authorized_usd']} USD"
+    )
+    return 0
+
+
 def _cmd_workloads_summarize(args: argparse.Namespace) -> int:
     results_dir = Path(args.results)
     summary = summarize_results(results_dir)
@@ -3747,6 +3769,33 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_api_parser.set_defaults(func=_cmd_workloads_run_api)
+
+    abandon_parser = workloads_subparsers.add_parser(
+        "abandon-budget-request",
+        help=(
+            "Record that a budget-gated request claimed but never settled, "
+            "because its process died, will never settle. Its full ceiling "
+            "stays charged, its request ID can never be retried, and later "
+            "requests for the same model are allowed again."
+        ),
+    )
+    abandon_parser.add_argument(
+        "--budget-plan", required=True, help="Immutable budget plan of the ledger"
+    )
+    abandon_parser.add_argument(
+        "--budget-ledger", required=True, help="Sealed budget ledger to update"
+    )
+    abandon_parser.add_argument(
+        "--budget-request-id",
+        required=True,
+        help="Request ID whose entry is still attempted",
+    )
+    abandon_parser.add_argument(
+        "--reason",
+        required=True,
+        help="Why the request will never settle; recorded in the ledger events",
+    )
+    abandon_parser.set_defaults(func=_cmd_workloads_abandon_budget_request)
 
     list_profiles_parser = workloads_subparsers.add_parser(
         "list-api-profiles",
