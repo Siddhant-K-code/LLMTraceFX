@@ -474,7 +474,7 @@ run cannot be replayed into another. No account, workspace, or profile
 identifier may appear in it.
 
 `run` would then import the SDK, probe it against the pinned and inspected Modal
-1.5.5 API surface, and validate the standard local Modal profile with a
+1.6.4 API surface, and validate the standard local Modal profile with a
 read-only probe whose output is discarded, all before the app module is
 imported or any resource-creating or paid provider operation begins. Only then
 would it execute staging, verification, the eager canary, the
@@ -661,8 +661,8 @@ uv run llmtracefx-optimizer optimize \
 | Metal and `xctrace` | macOS, full Xcode command-line tools, and a locally available Instruments template | `uv run llmtracefx-optimizer instruments capability` |
 | Hosted API collection | An HTTPS OpenAI-compatible endpoint and a provider key stored in an environment variable | Use `collect-api --dry-run` before making a request |
 | Modal planning | No Modal account or SDK is required | `uv run llmtracefx-deploy plan --help` |
-| Modal execution | An approved plan, current price inputs, Modal account and auth, optional `modal` extra, proxy auth token, pinned model revision, and pinned serving image | `uv sync --locked --extra modal` (the constraint is still `>=1.0.5`, but the lock now resolves `modal==1.5.5`) |
-| Modal L4 crossover execution | Currently refused: the sealed design is infeasible on an L4. Would otherwise need a signed authorization, cleared credential-exposure attestation, fresh rate receipt, run-bound signed headroom, and the exactly pinned SDK | `uv sync --locked --extra modal-l4-execute` (installs `modal==1.5.5`) |
+| Modal execution | An approved plan, current price inputs, Modal account and auth, optional `modal` extra, proxy auth token, pinned model revision, and pinned serving image | `uv sync --locked --extra modal` (the constraint is still `>=1.0.5`, but the lock now resolves `modal==1.6.4`) |
+| Modal L4 crossover execution | Currently refused: the sealed design is infeasible on an L4. Would otherwise need a signed authorization, cleared credential-exposure attestation, fresh rate receipt, run-bound signed headroom, and the exactly pinned SDK | `uv sync --locked --extra modal-l4-execute` (installs `modal==1.6.4`) |
 
 Hosted API requests, Modal staging, deployment, health checks, and inference can
 incur provider charges. None runs from the quickstart or from

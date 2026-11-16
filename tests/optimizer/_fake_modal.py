@@ -2,7 +2,7 @@
 
 The real provider package is never imported by these tests. This fake
 mirrors the exact API surface the protocol pins (and that was inspected
-against modal 1.5.5), so a drift in either the fake or the real SDK
+against modal 1.6.4), so a drift in either the fake or the real SDK
 surfaces as a failing capability probe rather than a silent divergence.
 """
 
@@ -294,7 +294,7 @@ class SandboxTerminatedError(RuntimeError):
     """Mirror of modal.exception.SandboxTerminatedError."""
 
 
-def build_fake_modal(version: str = "1.5.5") -> types.ModuleType:
+def build_fake_modal(version: str = "1.6.4") -> types.ModuleType:
     """Return a module object that satisfies the pinned capability probe."""
 
     module = types.ModuleType("modal")

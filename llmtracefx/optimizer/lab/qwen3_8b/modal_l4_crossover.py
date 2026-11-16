@@ -714,7 +714,7 @@ MEMORY_GATE = {
 # missing decorator parameter is a refusal: this protocol never invents a
 # provider method, and never silently drops a control it promised.
 # ---------------------------------------------------------------------------
-TESTED_MODAL_VERSION = "1.5.5"
+TESTED_MODAL_VERSION = "1.6.4"
 MINIMUM_MODAL_VERSION = (1, 5, 0)
 MAXIMUM_MODAL_VERSION_EXCLUSIVE = (2, 0, 0)
 REQUIRED_SDK_ATTRIBUTES = (

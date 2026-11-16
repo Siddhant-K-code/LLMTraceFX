@@ -2606,7 +2606,7 @@ class TestLocalProfileGate:
 
     def test_validation_records_only_safe_fields(self) -> None:
         result = execute_module.validate_local_profile(
-            sdk_version="1.5.5",
+            sdk_version="1.6.4",
             runner=lambda command: 0,
             clock=lambda: "2026-09-04T20:00:00+00:00",
         )
@@ -2615,8 +2615,8 @@ class TestLocalProfileGate:
             "gate": "local_profile_authentication",
             "authenticated": True,
             "mechanism": "current_interpreter_python_m_modal_token_info",
-            "cli_version": "1.5.5",
-            "sdk_version": "1.5.5",
+            "cli_version": "1.6.4",
+            "sdk_version": "1.6.4",
             "records_profile_identity": False,
             "checked_at": "2026-09-04T20:00:00+00:00",
         }
@@ -2628,7 +2628,7 @@ class TestLocalProfileGate:
             seen["command"] = tuple(command)
             return 0
 
-        execute_module.validate_local_profile(sdk_version="1.5.5", runner=runner)
+        execute_module.validate_local_profile(sdk_version="1.6.4", runner=runner)
         # The probe is the running interpreter's own modal module, so the CLI is
         # guaranteed to be the same install the SDK is loaded from.
         assert seen["command"] == (sys.executable, "-m", "modal", "token", "info")
@@ -2645,7 +2645,7 @@ class TestLocalProfileGate:
             execute_module.ModalExecutionError, match="no authenticated"
         ):
             execute_module.validate_local_profile(
-                sdk_version="1.5.5", runner=lambda command: 1
+                sdk_version="1.6.4", runner=lambda command: 1
             )
 
     def test_the_default_runner_discards_every_stream(self, monkeypatch: Any) -> None:

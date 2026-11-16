@@ -218,7 +218,7 @@ class TestResourceAndLifecycleControls:
 
     def test_runtime_image_spec_binds_the_exact_sdk_and_base_image(self) -> None:
         spec = modal.RUNTIME_IMAGE_SPEC
-        assert spec["provider_sdk_version"] == "1.5.5"
+        assert spec["provider_sdk_version"] == "1.6.4"
         assert spec["base_image_reference"] == vllm_compile.BASE_IMAGE_REFERENCE
         assert spec["vllm_source_commit"] == vllm_compile.VLLM_SOURCE_COMMIT
         # The commitment is a deterministic hash of exactly those inputs.
