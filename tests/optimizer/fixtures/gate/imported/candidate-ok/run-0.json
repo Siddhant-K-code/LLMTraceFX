@@ -1,0 +1,199 @@
+{
+  "kind": "llmtracefx.imported_benchmark",
+  "schema_version": "1",
+  "importer": {
+    "name": "llmtracefx",
+    "version": "1.13.0"
+  },
+  "source": {
+    "tool": "vllm-bench-serve",
+    "tool_version": null,
+    "schema_version": null,
+    "sha256": "ee3a336db049e5c851c5037db8b657a39ac29ff27b5fc04dd1b9b139b3abefa1",
+    "filename": "run-0.json",
+    "user_metadata": {}
+  },
+  "run": {
+    "started_at": "20260512-143007",
+    "label": null,
+    "tokenizer_id": "meta-llama/Llama-3.1-8B-Instruct"
+  },
+  "model_id": "meta-llama/Llama-3.1-8B-Instruct",
+  "endpoint": {
+    "backend": "openai",
+    "endpoint_type": "openai"
+  },
+  "load": {
+    "num_prompts": 8,
+    "request_rate": "inf",
+    "burstiness": 1.0,
+    "max_concurrency": null
+  },
+  "load_unresolved": [],
+  "totals": {
+    "completed_requests": {
+      "value": 8,
+      "unit": "requests",
+      "provenance": "imported_reported",
+      "source_key": "completed"
+    },
+    "failed_requests": {
+      "value": 0,
+      "unit": "requests",
+      "provenance": "imported_reported",
+      "source_key": "failed"
+    },
+    "total_input_tokens": {
+      "value": 4096,
+      "unit": "tokens",
+      "provenance": "imported_reported",
+      "source_key": "total_input_tokens"
+    },
+    "total_output_tokens": {
+      "value": 1024,
+      "unit": "tokens",
+      "provenance": "imported_reported",
+      "source_key": "total_output_tokens"
+    },
+    "duration": {
+      "value": 4.107,
+      "unit": "s",
+      "provenance": "imported_reported",
+      "source_key": "duration"
+    }
+  },
+  "metrics": {
+    "itl_ms": {
+      "unit": "ms",
+      "direction": "lower_is_better",
+      "provenance": "imported_derived",
+      "stats": {
+        "mean": {
+          "value": 29.427,
+          "source_key": "mean_itl_ms"
+        },
+        "median": {
+          "value": 28.906,
+          "source_key": "median_itl_ms"
+        },
+        "p99": {
+          "value": 41.776,
+          "source_key": "p99_itl_ms"
+        },
+        "std": {
+          "value": 3.118,
+          "source_key": "std_itl_ms"
+        }
+      },
+      "notes": [
+        "Computed by vllm bench serve over successful requests only.",
+        "std is the population standard deviation (numpy std).",
+        "Gaps between streamed chunks, pooled over all requests."
+      ]
+    },
+    "tpot_ms": {
+      "unit": "ms",
+      "direction": "lower_is_better",
+      "provenance": "imported_derived",
+      "stats": {
+        "mean": {
+          "value": 29.427,
+          "source_key": "mean_tpot_ms"
+        },
+        "median": {
+          "value": 29.315,
+          "source_key": "median_tpot_ms"
+        },
+        "p99": {
+          "value": 30.102,
+          "source_key": "p99_tpot_ms"
+        },
+        "std": {
+          "value": 0.384,
+          "source_key": "std_tpot_ms"
+        }
+      },
+      "notes": [
+        "Computed by vllm bench serve over successful requests only.",
+        "std is the population standard deviation (numpy std).",
+        "Per request (latency - TTFT) / (output tokens - 1), then summarised over requests."
+      ]
+    },
+    "ttft_ms": {
+      "unit": "ms",
+      "direction": "lower_is_better",
+      "provenance": "imported_derived",
+      "stats": {
+        "mean": {
+          "value": 213.605,
+          "source_key": "mean_ttft_ms"
+        },
+        "median": {
+          "value": 211.024,
+          "source_key": "median_ttft_ms"
+        },
+        "p99": {
+          "value": 234.8,
+          "source_key": "p99_ttft_ms"
+        },
+        "std": {
+          "value": 11.266,
+          "source_key": "std_ttft_ms"
+        }
+      },
+      "notes": [
+        "Computed by vllm bench serve over successful requests only.",
+        "std is the population standard deviation (numpy std)."
+      ]
+    },
+    "request_throughput": {
+      "unit": "requests/s",
+      "direction": "higher_is_better",
+      "provenance": "imported_derived",
+      "stats": {
+        "value": {
+          "value": 1.947894,
+          "source_key": "request_throughput"
+        }
+      },
+      "notes": [
+        "Computed by vllm bench serve over the benchmark duration."
+      ]
+    },
+    "output_throughput": {
+      "unit": "tokens/s",
+      "direction": "higher_is_better",
+      "provenance": "imported_derived",
+      "stats": {
+        "value": {
+          "value": 249.330411,
+          "source_key": "output_throughput"
+        }
+      },
+      "notes": [
+        "Computed by vllm bench serve over the benchmark duration."
+      ]
+    },
+    "total_token_throughput": {
+      "unit": "tokens/s",
+      "direction": "higher_is_better",
+      "provenance": "imported_derived",
+      "stats": {
+        "value": {
+          "value": 1246.652057,
+          "source_key": "total_token_throughput"
+        }
+      },
+      "notes": [
+        "Computed by vllm bench serve over the benchmark duration."
+      ]
+    }
+  },
+  "unmapped_keys": [
+    "latencies",
+    "max_concurrent_requests",
+    "max_output_tokens_per_s",
+    "queue_times",
+    "rtfx"
+  ]
+}

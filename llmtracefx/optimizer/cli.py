@@ -99,7 +99,14 @@ from .export import (
     render_chrome_trace_json,
     render_otlp_json_line,
 )
-from .gate import METRIC_CHOICES, GateInputError, evaluate_gate, load_records
+from .gate import GateInputError, evaluate_gate, load_gate_inputs
+from .importers import (
+    AIPERF_TOOL,
+    VLLM_BENCH_TOOL,
+    BenchmarkImportError,
+    ImportedBenchmark,
+    import_benchmark_file,
+)
 from .instruments import (
     METAL_SYSTEM_TRACE_TEMPLATE,
     InstrumentsCommandError,
@@ -691,8 +698,8 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
 def _cmd_gate(args: argparse.Namespace) -> int:
     try:
-        baseline = load_records(args.baseline)
-        candidate = load_records(args.candidate)
+        baseline = load_gate_inputs(args.baseline)
+        candidate = load_gate_inputs(args.candidate)
         report = evaluate_gate(
             baseline,
             candidate,
@@ -716,6 +723,55 @@ def _cmd_gate(args: argparse.Namespace) -> int:
         print(f"gate: could not write report: {exc}", file=sys.stderr)
         return 2
     return report.exit_code
+
+
+def _import_summary(imported: ImportedBenchmark) -> str:
+    lines = [
+        f"imported {imported.source.filename} from {imported.source.tool}"
+        f" {imported.source.tool_version or '(version not recorded)'}"
+        f" sha256 {imported.source.sha256[:12]}; model {imported.model_id}",
+    ]
+    for name, metric in imported.metrics.items():
+        lines.append(f"  {name} [{metric.unit}]: {', '.join(metric.stats)}")
+    if imported.load_unresolved:
+        lines.append(
+            "  load settings unresolved (the gate will not use this file): "
+            + ", ".join(imported.load_unresolved)
+        )
+    if "failed_requests" not in imported.totals:
+        lines.append(
+            "  failed request count unknown (the gate will not use this file)"
+        )
+    if imported.unmapped_keys:
+        lines.append(f"  not imported: {', '.join(imported.unmapped_keys)}")
+    return "\n".join(lines)
+
+
+def _cmd_import(args: argparse.Namespace) -> int:
+    tool = VLLM_BENCH_TOOL if args.import_command == "vllm-bench" else AIPERF_TOOL
+    source = Path(args.source)
+    try:
+        if args.output is not None and Path(args.output).resolve() == source.resolve():
+            raise BenchmarkImportError("--output must not overwrite the source file")
+        imported = import_benchmark_file(source, tool)
+    except BenchmarkImportError as exc:
+        print(f"import: {exc}", file=sys.stderr)
+        return 2
+    text = imported.to_json()
+    if args.output is None:
+        sys.stdout.write(text)
+        print(_import_summary(imported), file=sys.stderr)
+        return 0
+    try:
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(output, text)
+    except OSError as exc:
+        print(f"import: could not write {args.output}: {exc}", file=sys.stderr)
+        return 1
+    print(_import_summary(imported))
+    print(f"written to {args.output}")
+    return 0
 
 
 def _cmd_native_mtp_capability_report(args: argparse.Namespace) -> int:
@@ -3062,7 +3118,8 @@ def build_parser() -> argparse.ArgumentParser:
         "gate",
         help=(
             "CI performance gate: compare candidate records with baseline "
-            "records of the same workload and platform. Exit 0 pass, "
+            "records of the same workload and platform, or imported vLLM "
+            "bench or AIPerf artifacts with imported artifacts. Exit 0 pass, "
             "1 regression, 2 inconclusive (too few runs, not comparable, "
             "or within noise)."
         ),
@@ -3071,21 +3128,29 @@ def build_parser() -> argparse.ArgumentParser:
         "--baseline",
         nargs="+",
         required=True,
-        help="Baseline record.json files or directories (searched recursively)",
+        help=(
+            "Baseline record.json or imported artifact files, or directories "
+            "(searched recursively)"
+        ),
     )
     gate_parser.add_argument(
         "--candidate",
         nargs="+",
         required=True,
-        help="Candidate record.json files or directories (searched recursively)",
+        help=(
+            "Candidate record.json or imported artifact files, or directories "
+            "(searched recursively)"
+        ),
     )
     gate_parser.add_argument(
         "--metric",
-        choices=METRIC_CHOICES,
         default="total",
         help=(
-            "timing.<phase> latency (lower is better) or "
-            "decode_tokens_per_second (higher is better); default total"
+            "For records: total, model_load, tokenize, prefill or decode "
+            "latency (lower is better) or decode_tokens_per_second (higher is "
+            "better); default total. For imported artifacts: "
+            "<metric>.<statistic>, for example ttft_ms.p99 (vLLM bench) or "
+            "time_to_first_token.p99 (AIPerf)"
         ),
     )
     gate_parser.add_argument(
@@ -3107,6 +3172,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Append a Markdown summary, e.g. $GITHUB_STEP_SUMMARY",
     )
     gate_parser.set_defaults(func=_cmd_gate)
+
+    import_parser = subparsers.add_parser(
+        "import",
+        help=(
+            "Convert a saved vLLM bench serve or AIPerf result into an "
+            "imported benchmark artifact that `gate` accepts. Values keep "
+            "the source tool's provenance; nothing is measured or guessed."
+        ),
+    )
+    import_subparsers = import_parser.add_subparsers(
+        dest="import_command", required=True
+    )
+    for name, help_text in (
+        ("vllm-bench", "a `vllm bench serve --save-result` JSON file"),
+        ("aiperf", "an AIPerf profile_export_aiperf.json file"),
+    ):
+        import_tool_parser = import_subparsers.add_parser(
+            name,
+            help=f"Import {help_text}. Exit 0 imported, 2 refused, 1 write error.",
+        )
+        import_tool_parser.add_argument("source", help=f"Path to {help_text}")
+        import_tool_parser.add_argument(
+            "--output",
+            default=None,
+            help="Write the artifact here instead of stdout",
+        )
+        import_tool_parser.set_defaults(func=_cmd_import)
 
     export_parser = subparsers.add_parser(
         "export",

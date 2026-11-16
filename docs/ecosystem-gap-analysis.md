@@ -67,10 +67,12 @@ research pass and are less thoroughly verified.
     relevant once item 1 exists.
 
 Importers for `vllm bench serve --save-result` JSON and AIPerf
-`profile_export_aiperf.json` would let users bring existing results into
-`compare` without rerunning. Both formats carry percentile fields
-(`p99_ttft_ms`, per metric `avg`, `p50`, `p99`) that map cleanly to
-`derived` provenance.
+`profile_export_aiperf.json` let users bring existing results into
+LLMTraceFX without rerunning. Both formats carry percentile fields
+(`p99_ttft_ms`, per metric `avg`, `p50`, `p99`). These are statistics another
+tool computed, so they feed the perf gate rather than `compare`, and they carry
+their own provenance labels. See "`import vllm-bench` and `import aiperf`"
+below.
 
 ## What LLMTraceFX already does that others do not
 
@@ -183,6 +185,56 @@ beyond Python. It writes a Markdown table to the job summary and exposes
 `verdict` and `report` outputs. The `perf gate action self-test` CI job runs
 the action against committed fixtures and checks all three verdicts.
 
+### `import vllm-bench` and `import aiperf`
+
+`llmtracefx-optimizer import vllm-bench <file>` reads a
+`vllm bench serve --save-result` JSON file, and
+`llmtracefx-optimizer import aiperf <file>` reads an AIPerf
+`profile_export_aiperf.json` (schema versions 1.0 to 1.7 and older files
+without a version). Each writes an `llmtracefx.imported_benchmark` artifact.
+The artifact records the source tool, its version when the file states one
+(vLLM files do not), the source schema version, the source file name and the
+sha256 of its bytes.
+
+Every value keeps the key it came from. Statistics the tool computed (means,
+medians, percentiles, standard deviations, rates) are labelled
+`imported_derived`. Counts and totals the tool reported are labelled
+`imported_reported`. Neither is `derived`, which in LLMTraceFX means
+LLMTraceFX computed the value, and neither is a measurement. Keys the importer
+does not map are listed in `unmapped_keys`. Load settings it cannot find are
+listed in `load_unresolved`. Nothing missing is filled in. For example, vLLM
+writes only the percentiles passed to `--percentile-metrics`, so a file saved
+with the default `99` has no p50.
+
+The importers refuse a file rather than guess when it is not one JSON object
+(`--append-result` files hold several), holds NaN or Infinity, has the wrong
+type for a key, has no successful requests, is a pooling or embedding result,
+or comes from the other tool. AIPerf files are also refused when the run was
+cancelled or incomplete, used more than one model, counted more than one phase
+toward results, or are a timeslice, aggregate or collated export. Endpoint
+URLs, headers and API keys are never copied.
+
+Imported artifacts go to `gate`, not `compare`. `compare` reads sealed
+`workloads run` directories and only compares systems that ran the identical
+workload: same prompt hashes, evaluator, output cap and sampling, with a
+correctness result for every row. Neither export has per-prompt hashes or
+correctness results, so an imported file cannot join a comparable unit, and a
+unit of its own would compare nothing. Imports are not turned into
+`ExperimentRecord`s either, because a record holds per-run phase measurements
+and platform facts that these files do not have.
+
+With imported artifacts a user can archive a provenance-tagged summary of an
+existing run and gate a pull request on N baseline and N candidate runs of the
+same tool, model, endpoint, load and token totals, for example
+`--metric ttft_ms.p99` or `--metric time_to_first_token.p99`. Each imported
+file counts as one run, and the same file cannot be counted twice. A run with
+failed requests, an unstated failure count or unresolved load is excluded and
+listed. Imports cannot be used with `compare`, `tune` or the lab, cannot be
+mixed with LLMTraceFX records in one gate, and vLLM and AIPerf results cannot
+be gated against each other, because the two tools define their metrics
+differently. Neither format has per-request data or correctness results, so
+neither is available from an import.
+
 ### Evidence viewer Space
 
 `spaces/evidence-viewer/` is a Gradio app for Hugging Face Spaces. It shows a
@@ -213,7 +265,6 @@ pull request per entry and alphabetical placement.
 
 - OTLP metrics export (histograms for TTFT and duration).
 - Concurrency sweeps, goodput and trace replay.
-- Importers for `vllm bench serve` and AIPerf exports.
 - NVML or DCGM energy collection.
 - Completing the one-time PyPI and Hugging Face setup in
   [releasing.md](releasing.md). Releases then publish to PyPI, move the `v1`

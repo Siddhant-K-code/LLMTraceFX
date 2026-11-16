@@ -434,16 +434,38 @@ jobs:
           candidate: tests/optimizer/fixtures/gate/candidate-ok
           fail-on-inconclusive: "false"
 
+      - name: Gate passes comparable imported vLLM bench runs
+        id: imported-ok
+        uses: ./
+        with:
+          baseline: tests/optimizer/fixtures/gate/imported/baseline
+          candidate: tests/optimizer/fixtures/gate/imported/candidate-ok
+          metric: ttft_ms.p99
+
+      - name: Gate flags regressed imported vLLM bench runs
+        id: imported-regressed
+        continue-on-error: true
+        uses: ./
+        with:
+          baseline: tests/optimizer/fixtures/gate/imported/baseline
+          candidate: tests/optimizer/fixtures/gate/imported/candidate-regressed
+          metric: ttft_ms.p99
+
       - name: Check verdicts
         env:
           OK: ${{ steps.ok.outputs.verdict }}
           REGRESSED: ${{ steps.regressed.outputs.verdict }}
           REGRESSED_OUTCOME: ${{ steps.regressed.outcome }}
           FEW: ${{ steps.few.outputs.verdict }}
+          IMPORTED_OK: ${{ steps.imported-ok.outputs.verdict }}
+          IMPORTED_REGRESSED: ${{ steps.imported-regressed.outputs.verdict }}
         run: |
           set -euo pipefail
           echo "ok=$OK regressed=$REGRESSED ($REGRESSED_OUTCOME) few=$FEW"
+          echo "imported ok=$IMPORTED_OK regressed=$IMPORTED_REGRESSED"
           test "$OK" = pass
           test "$REGRESSED" = regression
           test "$REGRESSED_OUTCOME" = failure
           test "$FEW" = inconclusive
+          test "$IMPORTED_OK" = pass
+          test "$IMPORTED_REGRESSED" = regression
