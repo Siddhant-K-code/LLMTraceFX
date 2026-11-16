@@ -93,7 +93,7 @@ Importers for `vllm bench serve --save-result` JSON and AIPerf
 
 Ranked by expected return for effort:
 
-Items 1, 4 and 5 are now built; see below.
+Items 1 to 5 are now done; see below.
 
 1. **Publish a perf gate GitHub Action** that runs a pinned workload, compares
    against a committed baseline and fails a pull request on regression. A
@@ -192,15 +192,28 @@ which does not import Gradio and is tested in CI. The bundled example record
 is synthetic. `deploy-space.yml` deploys it on every release; the README in
 that directory has the manual deploy commands.
 
+The Space `siddhant-k-code/llmtracefx-evidence-viewer` exists but is paused.
+It was created on ZeroGPU hardware, where the viewer cannot start, so the
+`HF_SPACE` variable is unset and release deploys are skipped. See
+[releasing.md](releasing.md) for the hardware to pick.
+
 ### README badges
 
 CI, CodeQL, PyPI version, PyPI downloads (pepy.tech), license, supported
 Python versions and a link to the perf gate.
 
-### Awesome list entries (drafts)
+### Awesome list entries
 
 One line per list, in each list's existing format. Each list asks for one
 pull request per entry and alphabetical placement.
+
+| List | Pull request | Status |
+| --- | --- | --- |
+| `tensorchord/Awesome-LLMOps` | tensorchord/Awesome-LLMOps#1136 | Merged |
+| `antranapp/awesome-mlx` | antranapp/awesome-mlx#62 | Merged |
+| `rafska/Awesome-local-LLM` | rafska/awesome-local-llm#364 | Open |
+
+Entries as submitted:
 
 - `tensorchord/Awesome-LLMOps`, Observability section:
   `| [LLMTraceFX](https://github.com/Siddhant-K-code/LLMTraceFX) | Evidence-first LLM inference measurement: provenance on every metric, OTLP/Perfetto export, server /metrics attribution and a CI perf gate. | ![GitHub Badge](https://img.shields.io/github/stars/Siddhant-K-code/LLMTraceFX.svg?style=flat-square) |`
@@ -215,10 +228,5 @@ pull request per entry and alphabetical placement.
 - Concurrency sweeps, goodput and trace replay.
 - Importers for `vllm bench serve` and AIPerf exports.
 - NVML or DCGM energy collection.
-- Completing the one-time PyPI and Hugging Face setup in
-  [releasing.md](releasing.md). Releases then publish to PyPI, move the `v1`
-  Action tag and deploy the Space automatically.
-- Following up on the awesome list submissions:
-  tensorchord/Awesome-LLMOps#1136, rafska/awesome-local-llm#364 and
-  antranapp/awesome-mlx#62. These describe only features already on `main`.
-  Once the gate and exports merge, they can be mentioned in follow-up edits.
+- Running the evidence viewer Space on CPU basic hardware (see above).
+- Getting rafska/awesome-local-llm#364 reviewed.

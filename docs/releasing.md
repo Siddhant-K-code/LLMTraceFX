@@ -60,6 +60,11 @@ The workflow creates the Space (Gradio SDK) if it does not exist. If either
 `HF_TOKEN` or `HF_SPACE` is missing, the deploy is skipped with a notice and
 the run still succeeds.
 
+Free accounts can get HTTP 402 when the API creates a Space. In that case,
+create it by hand first. Pick the Gradio SDK and **CPU basic** hardware. The
+viewer has no `@spaces.GPU` function, so it fails to start on ZeroGPU, and
+moving an existing Space from ZeroGPU to CPU basic needs a PRO account.
+
 ## Cutting a release
 
 1. Bump the version in three places and merge to `main`:
