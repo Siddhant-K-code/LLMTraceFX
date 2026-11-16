@@ -348,6 +348,19 @@ def test_imported_metric_must_name_a_known_metric_and_stat(metric):
         assert "ttft_ms.p99" in str(report_or_error)
 
 
+def test_imported_statistic_may_contain_a_dot():
+    def p999(index, data):
+        stats = data["metrics"]["ttft_ms"]["stats"]
+        stats["p99.9"] = dict(stats["p99"], source_key="p99.9_ttft_ms")
+
+    report = evaluate_gate(
+        imported("b", IMPORTED_BASE, p999),
+        imported("c", IMPORTED_BASE, p999),
+        metric="ttft_ms.p99.9",
+    )
+    assert report.verdict is GateVerdict.PASS
+
+
 def test_imported_different_load_is_not_comparable():
     def faster(index, data):
         data["load"]["request_rate"] = 4.0
@@ -392,6 +405,9 @@ def test_load_gate_inputs_finds_imported_artifacts(tmp_path):
     ]
     with pytest.raises(GateInputError, match="import vllm-bench"):
         load_gate_inputs([tmp_path / "raw.json"])
+    (tmp_path / "deep.json").write_text("[" * 100000 + "]" * 100000)
+    with pytest.raises(GateInputError, match="recursion"):
+        load_gate_inputs([tmp_path / "deep.json"])
     assert len(load_gate_inputs([FIXTURES / "baseline"])) == 3
 
 

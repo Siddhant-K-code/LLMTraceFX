@@ -92,7 +92,12 @@ def looks_like_vllm_bench(data: Any) -> bool:
 
 def _count(data: dict[str, Any], key: str) -> int:
     value = data[key]
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+        or finite_number(value) is None
+    ):
         raise BenchmarkImportError(f"{key} must be a non-negative integer")
     return value
 

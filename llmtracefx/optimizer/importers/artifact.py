@@ -208,7 +208,10 @@ def finite_number(value: Any) -> float | None:
     """A finite JSON number as float; ``None`` for bools, strings and NaN."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
     return number if math.isfinite(number) else None
 
 
@@ -224,6 +227,8 @@ def parse_json_document(text: str, label: str) -> Any:
         value, end = decoder.raw_decode(stripped)
     except ValueError as exc:
         raise BenchmarkImportError(f"{label} is not valid JSON: {exc}") from exc
+    except RecursionError as exc:
+        raise BenchmarkImportError(f"{label} is nested too deeply") from exc
     if stripped[end:].strip():
         raise BenchmarkImportError(
             f"{label} holds more than one JSON document (for example a "

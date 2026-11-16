@@ -373,7 +373,8 @@ _EXAMPLE_METRIC = {
 
 def _imported_metric(tool: str, metric: str) -> tuple[str, str]:
     choices = sorted(METRIC_DIRECTIONS[tool])
-    name, dot, stat = metric.rpartition(".")
+    # Metric names have no dots; statistics can (vLLM writes p99.9).
+    name, dot, stat = metric.partition(".")
     if not dot or not stat or name not in METRIC_DIRECTIONS[tool]:
         raise ValueError(
             f"for {tool} imports the metric is <metric>.<statistic>, for example "

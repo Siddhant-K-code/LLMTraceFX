@@ -177,6 +177,7 @@ def two_phase_profiling():
     [
         (VLLM_BENCH_TOOL, "[]", "JSON object"),
         (VLLM_BENCH_TOOL, '{"a": NaN}', "not valid JSON"),
+        (VLLM_BENCH_TOOL, "[" * 100000 + "]" * 100000, "nested too deeply"),
         (VLLM_BENCH_TOOL, '{"a": 1}\n{"a": 2}', "more than one JSON document"),
         (VLLM_BENCH_TOOL, vllm(completed=0), "no request completed"),
         (VLLM_BENCH_TOOL, vllm(completed="8"), "completed must be"),
@@ -184,6 +185,9 @@ def two_phase_profiling():
         (VLLM_BENCH_TOOL, vllm(request_rate="fast"), "request_rate must be"),
         (VLLM_BENCH_TOOL, vllm(p99_ttft_ms="slow"), "p99_ttft_ms must be"),
         (VLLM_BENCH_TOOL, vllm(total_input_sequences=8), "pooling"),
+        (VLLM_BENCH_TOOL, '{"p99_ttft_ms": 1' + "0" * 400 + "}", "missing"),
+        (VLLM_BENCH_TOOL, vllm(total_input_tokens=10**400), "total_input_tokens"),
+        (VLLM_BENCH_TOOL, vllm(p99_ttft_ms=10**400), "p99_ttft_ms must be"),
         (VLLM_BENCH_TOOL, vllm(model_id=...), "missing model_id"),
         (VLLM_BENCH_TOOL, load("aiperf_v1_7.json"), "looks like an AIPerf"),
         (AIPERF_TOOL, load("vllm_default.json"), "looks like a `vllm bench"),
