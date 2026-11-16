@@ -36,6 +36,7 @@ from ._artifact_io import (
     read_bounded_regular_text,
 )
 from .collectors._shared import atomic_write_text
+from .importers.aiperf import looks_like_aiperf_profile
 from .importers.artifact import (
     HIGHER_IS_BETTER,
     IMPORTED_BENCHMARK_KIND,
@@ -47,7 +48,6 @@ from .importers.artifact import (
     is_imported_benchmark,
     parse_json_document,
 )
-from .importers.aiperf import looks_like_aiperf_profile
 from .importers.vllm_bench import looks_like_vllm_bench
 from .schema import ExperimentRecord, Measurement, SchemaValidationError
 
@@ -445,9 +445,7 @@ def _imported_adapter(items: Sequence[ImportedBenchmark], metric: str) -> _Adapt
         sample=lambda item: _imported_sample(item, name, stat),
         key=lambda item: _imported_key(item, higher),
         run_id=lambda item: item.run_id,
-        differs=(
-            "tool version, model, endpoint, load settings or token totals differ"
-        ),
+        differs=("tool version, model, endpoint, load settings or token totals differ"),
         source_tool=tool,
     )
 

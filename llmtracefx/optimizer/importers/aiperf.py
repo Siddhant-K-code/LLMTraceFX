@@ -142,9 +142,10 @@ def _models(config: dict[str, Any]) -> list[str]:
             "input_config names no model (expected models.items or "
             "endpoint.model_names)"
         )
-    if not all(isinstance(name, str) and name for name in names):
+    checked = [name for name in names if isinstance(name, str) and name]
+    if len(checked) != len(names):
         raise BenchmarkImportError("input_config model names must be strings")
-    return names
+    return checked
 
 
 def _endpoint(config: dict[str, Any]) -> dict[str, EndpointValue]:

@@ -739,9 +739,7 @@ def _import_summary(imported: ImportedBenchmark) -> str:
             + ", ".join(imported.load_unresolved)
         )
     if "failed_requests" not in imported.totals:
-        lines.append(
-            "  failed request count unknown (the gate will not use this file)"
-        )
+        lines.append("  failed request count unknown (the gate will not use this file)")
     if imported.unmapped_keys:
         lines.append(f"  not imported: {', '.join(imported.unmapped_keys)}")
     return "\n".join(lines)
