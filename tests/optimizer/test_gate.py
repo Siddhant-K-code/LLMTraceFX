@@ -12,7 +12,15 @@ from llmtracefx.optimizer.gate import (
     GateInputError,
     GateVerdict,
     evaluate_gate,
+    load_gate_inputs,
     load_records,
+)
+from llmtracefx.optimizer.importers import (
+    AIPERF_TOOL,
+    VLLM_BENCH_TOOL,
+    ImportedBenchmark,
+    import_benchmark_file,
+    read_imported_benchmark,
 )
 from llmtracefx.optimizer.schema import (
     CommandInfo,
@@ -243,3 +251,201 @@ def test_cli_bad_input_exits_inconclusive(tmp_path, capsys):
         )
     assert exc.value.code == 2
     assert "gate:" in capsys.readouterr().err
+
+
+IMPORTED_FIXTURES = FIXTURES / "imported"
+
+
+def imported(prefix: str, p99s: list[float], edit=None) -> list[ImportedBenchmark]:
+    source = Path(__file__).parent / "fixtures" / "importers" / "vllm_default.json"
+    template = import_benchmark_file(source, VLLM_BENCH_TOOL).to_dict()
+    items = []
+    for index, p99 in enumerate(p99s):
+        data = json.loads(json.dumps(template))
+        data["source"]["filename"] = f"{prefix}-{index}.json"
+        data["source"]["sha256"] = f"{prefix}{index}".encode().hex().ljust(64, "0")
+        data["metrics"]["ttft_ms"]["stats"]["p99"]["value"] = p99
+        if edit is not None:
+            edit(index, data)
+        items.append(ImportedBenchmark.from_dict(data))
+    return items
+
+
+IMPORTED_BASE = [230.0, 233.0, 236.0]
+
+
+def test_imported_pass_and_regression():
+    ok = evaluate_gate(
+        imported("b", IMPORTED_BASE),
+        imported("c", [231.0, 234.0, 237.0]),
+        metric="ttft_ms.p99",
+    )
+    assert ok.verdict is GateVerdict.PASS
+    assert ok.input_kind == "imported_benchmark"
+    assert ok.source_tool == VLLM_BENCH_TOOL
+    assert ok.provenance == "imported_derived"
+    assert ok.unit == "ms"
+    assert [s["filename"] for s in ok.sources[:1]] == ["b-0.json"]
+    assert "did not measure them" in ok.to_markdown()
+    assert ok.to_dict()["input_kind"] == "imported_benchmark"
+
+    bad = evaluate_gate(
+        imported("b", IMPORTED_BASE),
+        imported("c", [270.0, 273.0, 276.0]),
+        metric="ttft_ms.p99",
+    )
+    assert bad.verdict is GateVerdict.REGRESSION
+
+
+def test_imported_throughput_is_higher_is_better():
+    def rate(value):
+        def edit(index, data):
+            stats = data["metrics"]["output_throughput"]["stats"]
+            stats["value"]["value"] = value + index
+
+        return edit
+
+    report = evaluate_gate(
+        imported("b", IMPORTED_BASE, rate(500.0)),
+        imported("c", IMPORTED_BASE, rate(400.0)),
+        metric="output_throughput.value",
+    )
+    assert report.higher_is_better
+    assert report.verdict is GateVerdict.REGRESSION
+
+
+def test_imported_refuses_mixing_with_records():
+    with pytest.raises(GateInputError, match="cannot be mixed"):
+        evaluate_gate(runs("b", BASE), imported("c", IMPORTED_BASE))
+
+
+def test_imported_refuses_mixed_tools_and_duplicate_files():
+    aiperf = Path(__file__).parent / "fixtures" / "importers" / "aiperf_legacy.json"
+    other = import_benchmark_file(aiperf, AIPERF_TOOL)
+    with pytest.raises(GateInputError, match="different tools"):
+        evaluate_gate(imported("b", IMPORTED_BASE), [other] * 3, metric="x.p99")
+
+    base = imported("b", IMPORTED_BASE)
+    with pytest.raises(GateInputError, match="more than once"):
+        evaluate_gate(base, [base[0], *imported("c", [1.0, 2.0])])
+
+
+@pytest.mark.parametrize("metric", ["total", "ttft_ms", "ttft_ms.p95", "nope.p99"])
+def test_imported_metric_must_name_a_known_metric_and_stat(metric):
+    report_or_error = None
+    try:
+        report_or_error = evaluate_gate(
+            imported("b", IMPORTED_BASE), imported("c", IMPORTED_BASE), metric=metric
+        )
+    except ValueError as exc:
+        report_or_error = exc
+    if metric == "ttft_ms.p95":
+        # A percentile the run did not save is excluded, not guessed.
+        assert report_or_error.verdict is GateVerdict.INCONCLUSIVE
+        assert any("no ttft_ms.p95" in e for e in report_or_error.excluded)
+    else:
+        assert isinstance(report_or_error, ValueError)
+        assert "ttft_ms.p99" in str(report_or_error)
+
+
+def test_imported_statistic_may_contain_a_dot():
+    def p999(index, data):
+        stats = data["metrics"]["ttft_ms"]["stats"]
+        stats["p99.9"] = dict(stats["p99"], source_key="p99.9_ttft_ms")
+
+    report = evaluate_gate(
+        imported("b", IMPORTED_BASE, p999),
+        imported("c", IMPORTED_BASE, p999),
+        metric="ttft_ms.p99.9",
+    )
+    assert report.verdict is GateVerdict.PASS
+
+
+def test_imported_different_load_is_not_comparable():
+    def faster(index, data):
+        data["load"]["request_rate"] = 4.0
+
+    report = evaluate_gate(
+        imported("b", IMPORTED_BASE),
+        imported("c", IMPORTED_BASE, faster),
+        metric="ttft_ms.p99",
+    )
+    assert report.verdict is GateVerdict.INCONCLUSIVE
+    assert "load settings" in report.reason
+
+
+def test_imported_runs_with_failures_or_unknowns_are_excluded():
+    def flaky(index, data):
+        if index == 0:
+            data["totals"]["failed_requests"]["value"] = 1
+        if index == 1:
+            del data["totals"]["failed_requests"]
+
+    report = evaluate_gate(
+        imported("b", IMPORTED_BASE),
+        imported("c", IMPORTED_BASE, flaky),
+        metric="ttft_ms.p99",
+    )
+    assert report.verdict is GateVerdict.INCONCLUSIVE
+    assert len(report.excluded) == 2
+    assert any("failed" in reason for reason in report.excluded)
+
+
+def test_load_gate_inputs_finds_imported_artifacts(tmp_path):
+    for item in imported("b", IMPORTED_BASE):
+        (tmp_path / item.source.filename).write_text(item.to_json())
+    (tmp_path / "notes.json").write_text('{"other": true}')
+    raw = Path(__file__).parent / "fixtures" / "importers" / "vllm_default.json"
+    (tmp_path / "raw.json").write_text(raw.read_text())
+    found = load_gate_inputs([tmp_path])
+    assert [item.source.filename for item in found] == [
+        "b-0.json",
+        "b-1.json",
+        "b-2.json",
+    ]
+    with pytest.raises(GateInputError, match="import vllm-bench"):
+        load_gate_inputs([tmp_path / "raw.json"])
+    (tmp_path / "deep.json").write_text("[" * 100000 + "]" * 100000)
+    with pytest.raises(GateInputError, match="recursion"):
+        load_gate_inputs([tmp_path / "deep.json"])
+    assert len(load_gate_inputs([FIXTURES / "baseline"])) == 3
+
+
+def test_committed_imported_fixtures_match_their_sources():
+    sources = Path(__file__).parent / "fixtures" / "importers" / "gate"
+    artifacts = sorted(IMPORTED_FIXTURES.rglob("*.json"))
+    assert len(artifacts) == 9
+    for artifact in artifacts:
+        source = sources / artifact.relative_to(IMPORTED_FIXTURES)
+        fresh = import_benchmark_file(source, VLLM_BENCH_TOOL).to_dict()
+        committed = read_imported_benchmark(artifact).to_dict()
+        fresh.pop("importer")
+        committed.pop("importer")
+        assert committed == fresh
+
+
+@pytest.mark.parametrize(
+    ("candidate", "expected"),
+    [("candidate-ok", 0), ("candidate-regressed", 1)],
+)
+def test_cli_gate_on_imported_fixtures(tmp_path, capsys, candidate, expected):
+    output = tmp_path / "report.json"
+    with pytest.raises(SystemExit) as exc:
+        cli.main(
+            [
+                "gate",
+                "--baseline",
+                str(IMPORTED_FIXTURES / "baseline"),
+                "--candidate",
+                str(IMPORTED_FIXTURES / candidate),
+                "--metric",
+                "ttft_ms.p99",
+                "--output",
+                str(output),
+            ]
+        )
+    assert exc.value.code == expected
+    report = json.loads(output.read_text())
+    assert report["input_kind"] == "imported_benchmark"
+    assert report["source_tool"] == VLLM_BENCH_TOOL
+    assert capsys.readouterr().out.startswith(("pass:", "regression:"))

@@ -11,13 +11,13 @@ branding:
 
 inputs:
   baseline:
-    description: Whitespace-separated record.json files or directories (searched recursively) for the baseline runs.
+    description: Whitespace-separated record.json or imported benchmark artifact files, or directories (searched recursively), for the baseline runs.
     required: true
   candidate:
-    description: Whitespace-separated record.json files or directories (searched recursively) for the candidate runs.
+    description: Whitespace-separated record.json or imported benchmark artifact files, or directories (searched recursively), for the candidate runs.
     required: true
   metric:
-    description: "total, model_load, tokenize, prefill, decode (lower is better) or decode_tokens_per_second (higher is better)."
+    description: "For records: total, model_load, tokenize, prefill, decode (lower is better) or decode_tokens_per_second (higher is better). For imported artifacts: <metric>.<statistic>, such as ttft_ms.p99."
     required: false
     default: total
   max-regression:

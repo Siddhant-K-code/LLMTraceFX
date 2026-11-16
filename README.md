@@ -258,6 +258,47 @@ differs, when the difference is within run-to-run noise, or when the noise is
 larger than the allowed regression, so a noisy runner cannot pass by chance.
 The same check ships as a GitHub Action; see [Perf gate in CI](#perf-gate-in-ci).
 
+### Import vLLM bench and AIPerf results
+
+`import` converts results you already have into an
+`llmtracefx.imported_benchmark` artifact, without rerunning:
+
+```bash
+uv run llmtracefx-optimizer import vllm-bench vllm-result.json --output runs/base-0.json
+uv run llmtracefx-optimizer import aiperf profile_export_aiperf.json --output runs/base-0.json
+```
+
+`vllm-bench` reads the file written by `vllm bench serve --save-result`.
+`aiperf` reads `profile_export_aiperf.json` (schema 1.0 to 1.7). The artifact
+records the source tool, its version if the file has one, and the sha256 of the
+source file. Statistics the tool computed, such as `p99_ttft_ms`, are labelled
+`imported_derived`, and counts it reported are labelled `imported_reported`.
+They are not LLMTraceFX measurements. Missing fields are omitted and listed,
+never guessed. Malformed files, unsupported AIPerf schemas, cancelled or
+incomplete runs, runs mixing models or phases, and multi-document
+`--append-result` files are refused with exit code 2. Without `--output` the
+artifact is written to stdout.
+
+Imported artifacts work with `gate` only. Gate N baseline imports against N
+candidate imports from the same tool, model, endpoint and load, naming a metric
+and statistic:
+
+```bash
+uv run llmtracefx-optimizer gate --baseline runs/base --candidate runs/head \
+  --metric ttft_ms.p99
+```
+
+Runs are comparable only when their total input tokens match, and for latency
+metrics their total output tokens too. Use a fixed dataset and seed, and for
+vLLM pass `--ignore-eos` so every run generates the same number of tokens.
+Otherwise the gate reports inconclusive. Runs with failed requests are not
+used.
+
+They cannot be used with `compare` (no per-prompt hashes or correctness
+results), mixed with LLMTraceFX records, or gated across tools. See
+[`docs/ecosystem-gap-analysis.md`](docs/ecosystem-gap-analysis.md) for the
+full mapping and refusal rules.
+
 ### Verification and resumability
 
 The workload catalog covers code completion, structured JSON, and prose
@@ -873,6 +914,11 @@ outputs. Set `fail-on-inconclusive: "false"` to report without failing when
 the runs are too few or too noisy to decide. `@v1` follows the latest 1.x
 release. Pin a release tag such as `@v1.11.0` or a commit SHA for fully
 reproducible CI.
+
+The baseline and candidate can also be directories of imported vLLM bench or
+AIPerf artifacts (see
+[Import vLLM bench and AIPerf results](#import-vllm-bench-and-aiperf-results)),
+with a metric such as `ttft_ms.p99`.
 
 The same check runs locally:
 
