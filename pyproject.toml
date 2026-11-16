@@ -77,7 +77,7 @@ modal = [
 # The GLM *constraint* is untouched; the resolved GLM install is not.
 # Install it with `uv sync --extra modal-l4-execute`.
 modal-l4-execute = [
-    "modal==1.5.5",
+    "modal==1.6.4",
 ]
 
 dev = [
