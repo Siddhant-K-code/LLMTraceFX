@@ -288,6 +288,12 @@ uv run llmtracefx-optimizer gate --baseline runs/base --candidate runs/head \
   --metric ttft_ms.p99
 ```
 
+Runs are comparable only when their total input tokens match, and for latency
+metrics their total output tokens too. Use a fixed dataset and seed, and for
+vLLM pass `--ignore-eos` so every run generates the same number of tokens.
+Otherwise the gate reports inconclusive. Runs with failed requests are not
+used.
+
 They cannot be used with `compare` (no per-prompt hashes or correctness
 results), mixed with LLMTraceFX records, or gated across tools. See
 [`docs/ecosystem-gap-analysis.md`](docs/ecosystem-gap-analysis.md) for the
