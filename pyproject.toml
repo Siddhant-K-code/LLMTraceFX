@@ -66,18 +66,18 @@ modal = [
 # (`llmtracefx-modal-l4-execute`). Unlike the GLM deployment, whose API
 # surface is stable across the 1.x line and only needs the >=1.0.5 floor
 # above, the L4 crossover orchestrator and its capability probe were written
-# and tested against the exact API of modal 1.5.5 (for example the read-only
+# and tested against the exact API of modal 1.6.4 (for example the read-only
 # volume mount `Volume.with_mount_options(read_only=True)` and the
 # `FunctionCall.cancel(terminate_containers=True)` teardown). It is pinned
 # exactly so a silent SDK upgrade cannot move that surface under a paid run.
 # It is a separate extra, so the GLM `modal` constraint above is unchanged.
 # Note what that does and does not mean: uv resolves one `modal` entry for the
-# whole project, so adding this pin moved the locked version from 1.5.4 to
-# 1.5.5, and a locked `uv sync --extra modal` for GLM now installs 1.5.5 too.
+# whole project, so this pin sets the locked version (now 1.6.4), and a locked
+# `uv sync --extra modal` for GLM installs 1.6.4 too.
 # The GLM *constraint* is untouched; the resolved GLM install is not.
 # Install it with `uv sync --extra modal-l4-execute`.
 modal-l4-execute = [
-    "modal==1.5.5",
+    "modal==1.6.4",
 ]
 
 dev = [

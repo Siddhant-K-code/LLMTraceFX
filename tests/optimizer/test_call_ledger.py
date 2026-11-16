@@ -303,7 +303,7 @@ class TestCallersShareTheStateMachine:
             completed_at="2026-09-04T00:10:00+00:00",
         )
         assert document["ledger_sha256"] == (
-            "sha256:d1fc78774a7dfef0e193aa622474836b9985feae6b422daffe04c60be050b2e3"
+            "sha256:4ee17c1b49fbda1d76ba349afeb8348592786f6e09a61c40ee5c1339ea849e73"
         )
 
     def test_vllm_event_chain_hashes_are_pinned(self, tmp_path: Path) -> None:

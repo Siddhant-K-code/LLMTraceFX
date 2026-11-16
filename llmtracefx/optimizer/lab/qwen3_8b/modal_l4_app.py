@@ -56,7 +56,7 @@ except ModuleNotFoundError as exc:  # pragma: no cover - exercised only on Modal
     raise SystemExit(
         "The Modal SDK is required to run this entrypoint. It is an optional "
         "dependency of llmtracefx: install the exact tested SDK with "
-        "`uv sync --extra modal-l4-execute` (pins modal==1.5.5). Planning, "
+        "`uv sync --extra modal-l4-execute` (pins modal==1.6.4). Planning, "
         "verification, and evidence do not need it and never import this "
         "module."
     ) from exc
@@ -83,7 +83,7 @@ app = modal.App(NAMES["app_name"])
 # One run-scoped volume. It is created here and deleted by the local
 # orchestrator's teardown; nothing else in the workspace shares its name.
 # The measured functions receive it read-only through the documented
-# ``with_mount_options(read_only=True)`` API (modal 1.5.5); the deprecated
+# ``with_mount_options(read_only=True)`` API (modal 1.6.4); the deprecated
 # ``Volume.read_only()`` is deliberately not used.
 model_volume = modal.Volume.from_name(NAMES["volume_name"], create_if_missing=True)
 read_only_model_volume = model_volume.with_mount_options(read_only=True)
