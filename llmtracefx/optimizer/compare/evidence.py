@@ -73,6 +73,7 @@ from ..collectors.openai_api import (
     _read_bounded_regular_file,
     artifact_set_is_complete,
 )
+from ..load.artifact import find_sweep_artifact, sweep_refusal
 from ..schema import ExperimentRecord
 from ..tune.loader import ExcludedRun, LoadedEvidence, RunEvidence, load_evidence
 from ..workloads.api_verify import RUN_MANIFEST_NAME, run_artifacts_are_complete
@@ -1074,6 +1075,9 @@ def load_comparison_evidence(
         )
 
     for results_dir in results_dirs:
+        sweep = find_sweep_artifact(results_dir)
+        if sweep is not None:
+            raise CompareEvidenceError(sweep_refusal(sweep))
         mistake = _raw_collector_directory_error(results_dir)
         if mistake is not None:
             raise CompareEvidenceError(mistake)

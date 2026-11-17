@@ -18,6 +18,8 @@ SWEEP_FILE_NAME = "sweep.json"
 SWEEP_PLAN_FILE_NAME = "sweep_plan.json"
 SWEEP_KINDS = frozenset({SWEEP_KIND, SWEEP_PLAN_KIND})
 
+_HEAD_BYTES = 4096
+
 SWEEP_REFUSAL_REASON = (
     "it is a concurrent load sweep. Its requests overlapped in time, so its "
     "latencies describe the server under that load and cannot stand in for "
@@ -41,3 +43,29 @@ def sweep_files_in(directory: Path) -> list[Path]:
     for name in (SWEEP_FILE_NAME, SWEEP_PLAN_FILE_NAME):
         found.extend(sorted(directory.rglob(name)))
     return found
+
+
+def is_sweep_file(path: Path) -> bool:
+    """True for a file named like a sweep artifact or declaring a sweep kind.
+
+    Only the head is read: the writer puts ``kind`` first, and a file that is
+    not a sweep is left for its own reader to judge.
+    """
+    if path.name in (SWEEP_FILE_NAME, SWEEP_PLAN_FILE_NAME):
+        return True
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(_HEAD_BYTES)
+    except OSError:
+        return False
+    return any(f'"{kind}"'.encode() in head for kind in SWEEP_KINDS)
+
+
+def find_sweep_artifact(path: Path) -> Path | None:
+    """The first sweep artifact at or below ``path``, if any."""
+    if path.is_dir():
+        found = sweep_files_in(path)
+        return found[0] if found else None
+    if path.is_file() and is_sweep_file(path):
+        return path
+    return None

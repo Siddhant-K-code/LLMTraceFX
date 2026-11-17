@@ -13,6 +13,10 @@ import pytest
 from _load_fakes import API_KEY, API_KEY_ENV, FakeOpenAIServer, fake_openai_server
 
 from llmtracefx.optimizer import cli
+from llmtracefx.optimizer.compare.evidence import (
+    CompareEvidenceError,
+    load_comparison_evidence,
+)
 from llmtracefx.optimizer.load.artifact import SWEEP_KIND, SWEEP_PLAN_KIND
 from llmtracefx.optimizer.load.cli import is_loopback_endpoint
 
@@ -358,3 +362,33 @@ def test_prompts_jsonl_with_unknown_keys_is_refused(
 )
 def test_is_loopback_endpoint(endpoint: str, loopback: bool) -> None:
     assert is_loopback_endpoint(endpoint) is loopback
+
+
+def test_gate_compare_and_export_refuse_sweep_artifacts(
+    tmp_path: Path, server: FakeOpenAIServer
+) -> None:
+    argv = sweep_argv(
+        tmp_path, server, "--concurrency", "1", "--requests-per-point", "1"
+    )
+    assert run_main(argv)[0] == 0
+    out_dir = tmp_path / "out"
+    sweep_file = out_dir / "sweep.json"
+    renamed = tmp_path / "renamed.json"
+    renamed.write_bytes(sweep_file.read_bytes())
+
+    for target in (out_dir, sweep_file, renamed, tmp_path):
+        code, _, err = run_main(
+            ["gate", "--baseline", str(target), "--candidate", str(target)]
+        )
+        assert code == 2
+        assert "was refused: it is a concurrent load sweep" in err
+
+    with pytest.raises(CompareEvidenceError, match="concurrent load sweep"):
+        load_comparison_evidence((tmp_path,))
+
+    code, _, err = run_main(
+        ["export", "otlp", "--record", str(renamed), "--output", str(tmp_path / "t")]
+    )
+    assert code == 1
+    assert "concurrent load sweep" in err
+    assert not (tmp_path / "t").exists()
