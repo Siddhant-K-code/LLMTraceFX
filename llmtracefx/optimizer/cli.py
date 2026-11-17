@@ -11,7 +11,8 @@ Subcommands:
                      llama.cpp, TGI) and diff two snapshots into window
                      evidence that refuses to attribute contaminated windows.
     export           Export a record as OTLP/JSON spans (OpenTelemetry GenAI
-                     conventions) or a Chrome/Perfetto trace timeline.
+                     conventions) or a Chrome/Perfetto trace timeline, or
+                     many records as OTLP/JSON GenAI histograms.
     gate             CI performance gate: compare candidate runs with
                      baseline runs; exit 0 pass, 1 regression, 2 inconclusive.
     native-mtp       Native Qwen MTP capability report / evidence collection.
@@ -94,10 +95,13 @@ from .compare.report_html import render_compare_report_html
 from .doctor.speculative import diagnose_speculative_regression
 from .export import (
     ExportError,
+    build_otlp_metrics,
     build_trace,
+    load_metrics_runs,
     read_json_artifact,
     render_chrome_trace_json,
     render_otlp_json_line,
+    render_otlp_metrics_json_line,
 )
 from .gate import GateInputError, evaluate_gate, load_gate_inputs
 from .importers import (
@@ -693,6 +697,34 @@ def _cmd_export(args: argparse.Namespace) -> int:
     print(f"{label} with {len(model.spans)} spans written to {args.output}")
     if not args.include_paths:
         print("Local model paths were reduced to basenames; see --include-paths.")
+    return 0
+
+
+def _cmd_export_metrics(args: argparse.Namespace) -> int:
+    try:
+        export = build_otlp_metrics(
+            load_metrics_runs(args.inputs), include_paths=args.include_paths
+        )
+    except (SchemaValidationError, ExportError) as exc:
+        print(f"Cannot export metrics: {exc}", file=sys.stderr)
+        return 1
+    for note in export.notes:
+        print(f"Not exported: {note}")
+    if export.observation_count == 0:
+        print("Nothing to export: no run measured any GenAI metric", file=sys.stderr)
+        return 1
+    try:
+        atomic_write_text(Path(args.output), render_otlp_metrics_json_line(export))
+    except OSError as exc:
+        print(
+            f"Could not write OTLP/JSON metrics to {args.output}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"OTLP/JSON metrics with {export.observation_count} observations from "
+        f"{len(export.exported_run_ids)} runs written to {args.output}"
+    )
     return 0
 
 
@@ -3202,7 +3234,8 @@ def build_parser() -> argparse.ArgumentParser:
         "export",
         help=(
             "Export one ExperimentRecord as OTLP/JSON spans or a Chrome/"
-            "Perfetto trace. Deterministic: IDs derive from run_id."
+            "Perfetto trace, or many as OTLP/JSON GenAI histograms. "
+            "Deterministic: IDs derive from run_id."
         ),
     )
     export_subparsers = export_parser.add_subparsers(
@@ -3243,6 +3276,29 @@ def build_parser() -> argparse.ArgumentParser:
             help="Keep local model paths instead of reducing them to basenames",
         )
         export_format_parser.set_defaults(func=_cmd_export)
+    export_metrics_parser = export_subparsers.add_parser(
+        "otlp-metrics",
+        help=(
+            "Aggregate API runs into OTLP/JSON GenAI histograms (duration, "
+            "time to first chunk, tokens, server TTFT and TPOT)"
+        ),
+    )
+    export_metrics_parser.add_argument(
+        "inputs",
+        nargs="+",
+        help=(
+            "record.json files or directories searched for record.json; "
+            f"api_evidence.json and {SERVER_METRICS_EVIDENCE_NAME} next to "
+            "each record are used when present"
+        ),
+    )
+    export_metrics_parser.add_argument("--output", required=True)
+    export_metrics_parser.add_argument(
+        "--include-paths",
+        action="store_true",
+        help="Keep local model paths instead of reducing them to basenames",
+    )
+    export_metrics_parser.set_defaults(func=_cmd_export_metrics)
 
     native_mtp_parser = subparsers.add_parser(
         "native-mtp",
