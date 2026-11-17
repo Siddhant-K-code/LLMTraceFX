@@ -10,6 +10,10 @@ for each load point:
 - diagnostics that show whether the load generator kept up,
 - optionally, the server's own Prometheus window for the point.
 
+`sweep-llama-cpp` and `sweep-mlx` do the same against llama.cpp's native
+`/completion` endpoint and in-process mlx-lm; see
+[Sweeps against llama.cpp and MLX](#sweeps-against-llamacpp-and-mlx).
+
 Everything else in LLMTraceFX measures one request at a time. A sweep does
 not. Read the next section before using its numbers.
 
@@ -136,6 +140,114 @@ The command exits 0 when every point finished with every request sent and
 succeeded and every server metrics window was recorded. It exits 1 otherwise,
 and 130 when interrupted. Degraded scheduling prints a warning but does not
 change the exit code.
+
+## Sweeps against llama.cpp and MLX
+
+Two more commands run the same sweep against backends that do not speak the
+OpenAI API. They use the same dispatcher, load flags, goodput, scheduling
+diagnostics and `sweep.json` layout as `sweep-api`, and `gate`, `compare`
+and `export` refuse their output in the same way. Each `attribution` block
+gets a `backend` entry that names the backend, the pinned upstream commit,
+what the backend reported about itself and the in-flight limit it supports.
+
+Their rows are not comparable with `sweep-api` rows, even against the same
+server or model. Neither command applies a chat template, and each
+`attribution.cannot_claim` says so.
+
+### `sweep-llama-cpp`
+
+Sends each request to `llama-server`'s native `/completion` endpoint
+(ggml-org/llama.cpp at `ebc9fb933e774bb4ac0ba497a67948e16b7e5656`).
+
+```bash
+llmtracefx-optimizer sweep-llama-cpp \
+  --run-id llama-sweep \
+  --endpoint http://127.0.0.1:8080 \
+  --prompt-file prompt.txt \
+  --max-output-tokens 256 \
+  --concurrency 1,2,4 \
+  --requests-per-point 32 \
+  --output-dir results/llama-sweep
+```
+
+- `--endpoint` is the server root, including any API prefix. The command
+  adds `/completion` and `/props` itself, and refuses a URL that already
+  ends in `/completion` or has a query string.
+- `--max-output-tokens` is required and is sent as `n_predict`.
+- The model is whatever `llama-server` loaded. The server reports it only as
+  a file path, which is not written; the backend block records
+  `build_info` and `total_slots` from `/props`.
+- The prompt is sent as is. There is no chat template and no system prompt.
+- `cache_prompt` is sent as false unless you pass `--cache-prompt`.
+  Sampling options (`--temperature`, `--top-p`, `--top-k`, `--seed`) are
+  sent only when given.
+- `--api-key-env` names an environment variable that holds a key for
+  `--api-key`. The key is sent as a Bearer header and never written.
+- Remote endpoints need `--allow-remote-load`, and non-local hosts need
+  https, as with `sweep-api`.
+- Before a real sweep, the command reads `/props`. A point that could have
+  more requests in flight than the server's `total_slots` is refused, since
+  the extra requests would wait in the server's queue. Pass
+  `--allow-server-queue` to run it anyway; the choice is recorded in the
+  backend block. A dry run sends nothing and does not read `/props`.
+- The server metrics flags work as in `sweep-api` (start `llama-server`
+  with `--metrics`).
+
+Rows add the server's own accounting from the final chunk: `truncated`,
+`id_slot`, `server_prompt_n`, `server_prompt_ms` and `server_predicted_ms`.
+The server timers are `measured_native`. They exclude queueing and network
+time, so they are not the client's TTFT and decode time. Token counts
+(`tokens_predicted`, `tokens_evaluated`, `timings.cache_n`) are
+`provider_reported`. `finish_reason` holds the raw `stop_type`: `eos` and
+`word` count as `stop`, `limit` counts as `length`, and anything else fails
+the request as `unrecognized_stop_type`.
+
+`llama-bench` is not a worker. It runs its own fixed prompt and generation
+lengths and takes no requests, so the dispatcher cannot drive it.
+
+### `sweep-mlx`
+
+Runs mlx-lm in the same process (ml-explore/mlx-lm at
+`c4c9c762cc797fd979fc98645f5db5112753bbe9`, ml-explore/mlx at
+`fbedcee5f4a0c7b2cbb642ea91d4c555460d3e48`).
+
+```bash
+llmtracefx-optimizer sweep-mlx \
+  --run-id mlx-sweep \
+  --model-path mlx-community/Qwen3-8B-4bit \
+  --model-id qwen3-8b-4bit \
+  --prompt-file prompt.txt \
+  --request-rate 0.5,1 --max-in-flight 1 \
+  --requests-per-point 32 \
+  --output-dir results/mlx-sweep
+```
+
+In-process mlx-lm runs one generation at a time. `stream_generate` does not
+batch, and its generation stream belongs to the thread that loaded the
+model. So the command:
+
+- refuses any point that could have more than one request in flight. Closed
+  loop takes only `--concurrency 1`, and rate points need
+  `--max-in-flight 1`. Arrivals held back by that cap show up as dispatch
+  lag in the scheduling diagnostics;
+- loads the model and runs every generation on one owner thread;
+- refuses, rather than queues, a request that arrives while another is
+  running. It would be a `client_error` row, and should not happen with the
+  limit above.
+
+Other behavior:
+
+- Tokenization is inside TTFT. The seed is set before every request.
+- Token counts use the `collect-mlx` rule and are `measured_native`. There
+  is no prompt cache, so `cached_prompt_tokens` is empty.
+- `--request-timeout` is checked between tokens.
+- A failed generation keeps only the exception type, in
+  `runtime_error_type`.
+- There is no warmup, so the first request includes any one-time cost.
+  There is no draft model, chat template, server metrics or
+  `--allow-remote-load`, since nothing goes over the network.
+- A dry run does not load the model, and `--model-path` is optional for it.
+  The backend block records the model load time as `measured_wall_clock`.
 
 ## Definitions
 

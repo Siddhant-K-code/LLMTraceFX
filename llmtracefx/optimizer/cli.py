@@ -133,6 +133,7 @@ from .instruments.workflow import (
     record_trace,
 )
 from .load.artifact import find_sweep_artifact, sweep_refusal
+from .load.backend_cli import add_backend_sweep_parsers
 from .load.cli import add_sweep_api_parser
 from .manifest import collect_environment_manifest
 from .optimize_summary import (
@@ -3114,6 +3115,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     collect_api_parser.set_defaults(func=_cmd_collect_api)
     add_sweep_api_parser(subparsers)
+    add_backend_sweep_parsers(subparsers)
 
     server_metrics_parser = subparsers.add_parser(
         "server-metrics",

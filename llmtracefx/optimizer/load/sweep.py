@@ -555,7 +555,15 @@ def sweep_document(
     finished: bool,
     interrupted: bool = False,
     started_at_utc: str,
+    attribution: Mapping[str, Any] = ATTRIBUTION,
+    field_provenance: Mapping[str, str] = ROW_FIELD_PROVENANCE,
 ) -> dict[str, Any]:
+    """The ``sweep.json`` document.
+
+    ``attribution`` and ``field_provenance`` default to the OpenAI-compatible
+    HTTP worker's. A backend whose rows differ (another provenance for token
+    counts, a concurrency limit) passes its own.
+    """
     summary = sweep_summary(points)
     summary["planned_points"] = planned_points
     summary["finished"] = finished
@@ -573,14 +581,14 @@ def sweep_document(
         "schema_version": SWEEP_SCHEMA_VERSION,
         "started_at_utc": started_at_utc,
         "written_at_utc": utc_now_iso(),
-        "attribution": ATTRIBUTION,
+        "attribution": dict(attribution),
         "dispatcher": {"name": DISPATCHER_NAME, "version": DISPATCHER_VERSION},
         "mode": mode,
         "load": dict(load),
         "slo": None if slo is None else slo.to_dict(),
         "workload": dict(workload),
         "request_plan": dict(request_plan),
-        "field_provenance": dict(ROW_FIELD_PROVENANCE),
+        "field_provenance": dict(field_provenance),
         "summary": summary,
         "points": list(points),
     }
@@ -595,6 +603,7 @@ def sweep_plan_document(
     workload: Mapping[str, Any],
     points: Sequence[SweepPoint],
     requests_per_point: int,
+    attribution: Mapping[str, Any] = ATTRIBUTION,
 ) -> dict[str, Any]:
     planned = []
     for point in points:
@@ -612,7 +621,7 @@ def sweep_plan_document(
         "schema_version": SWEEP_SCHEMA_VERSION,
         "dry_run": True,
         "network_request_performed": False,
-        "attribution": ATTRIBUTION,
+        "attribution": dict(attribution),
         "dispatcher": {"name": DISPATCHER_NAME, "version": DISPATCHER_VERSION},
         "mode": mode,
         "load": dict(load),
