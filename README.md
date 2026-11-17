@@ -337,7 +337,9 @@ load, not any single request. A sweep writes `sweep.json` and no
 count against goodput, and a value that cannot be checked is withheld with a
 reason. Remote endpoints need `--allow-remote-load`. See
 [`docs/load-sweeps.md`](docs/load-sweeps.md) for what a sweep can claim,
-the goodput rules and the scheduling diagnostics.
+the goodput rules and the scheduling diagnostics. `sweep-llama-cpp` and
+`sweep-mlx` run the same sweep against llama.cpp's native `/completion`
+endpoint and in-process mlx-lm.
 
 ### Verification and resumability
 

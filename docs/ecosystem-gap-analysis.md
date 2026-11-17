@@ -340,6 +340,12 @@ generator is a separate module, `load/dispatcher.py`, that also supports
 arrivals at given timestamps for trace replay. See
 [load-sweeps.md](load-sweeps.md).
 
+`sweep-llama-cpp` (llama.cpp's native `/completion`) and `sweep-mlx`
+(in-process mlx-lm) reuse the same dispatcher and artifact. `sweep-mlx`
+refuses more than one request in flight, and `sweep-llama-cpp` refuses more
+than the server's slots unless told to queue. Each records its limit in the
+attribution block.
+
 ### `replay`
 
 `llmtracefx-optimizer replay validate|plan|run` reads Mooncake JSONL,
@@ -425,6 +431,5 @@ Entries as submitted:
 
 ## Follow ups not built here
 
-- Load sweeps against non-OpenAI-compatible collectors (MLX, llama.cpp).
 - Running the evidence viewer Space on CPU basic hardware (see above).
 - Getting rafska/awesome-local-llm#364 reviewed.

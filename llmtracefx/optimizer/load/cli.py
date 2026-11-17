@@ -13,7 +13,8 @@ import json
 import os
 import sys
 import urllib.parse
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +37,14 @@ from ..server_metrics import (
     ServerMetricsError,
     validate_metrics_url,
 )
-from .api_worker import make_api_sender, preflight, request_config
+from .api_worker import (
+    ROW_FIELD_PROVENANCE,
+    ApiRequestSpec,
+    RequestRow,
+    make_api_sender,
+    preflight,
+    request_config,
+)
 from .artifact import SWEEP_FILE_NAME, SWEEP_PLAN_FILE_NAME
 from .dispatcher import (
     ARRIVAL_DISTRIBUTIONS,
@@ -44,13 +52,16 @@ from .dispatcher import (
     DEFAULT_MAX_DISPATCH_LAG_MS,
     MAX_REQUESTS,
     DispatchConfigError,
+    DispatchContext,
 )
 from .goodput import SloTargets
 from .sweep import (
+    ATTRIBUTION,
     MODE_CONCURRENCY,
     MODE_REQUEST_RATE,
     POINT_COMPLETE,
     PrometheusPairing,
+    ServerMetricsPairing,
     SweepPoint,
     SweepRun,
     build_points,
@@ -211,19 +222,8 @@ def is_loopback_endpoint(endpoint: str) -> bool:
         return False
 
 
-def add_sweep_api_parser(subparsers: Any) -> argparse.ArgumentParser:
-    parser: argparse.ArgumentParser = subparsers.add_parser(
-        "sweep-api",
-        help=(
-            "Run a concurrency or request rate sweep against one "
-            "OpenAI-compatible endpoint and report latency, goodput and "
-            "scheduling fidelity per load point"
-        ),
-        # Prefix matching would let "--api-key <secret>" resolve to
-        # "--api-key-env" and persist the secret as a variable name.
-        allow_abbrev=False,
-    )
-    add_api_client_arguments(parser)
+def add_load_arguments(parser: argparse.ArgumentParser) -> None:
+    """Prompt source, load levels, arrival process and SLO options shared by sweeps."""
     prompts = parser.add_mutually_exclusive_group(required=True)
     prompts.add_argument(
         "--prompt-file",
@@ -286,7 +286,9 @@ def add_sweep_api_parser(subparsers: Any) -> argparse.ArgumentParser:
         default=DEFAULT_MAX_DISPATCH_LAG_MS,
         help="p99 client dispatch lag above which a point is marked degraded",
     )
-    add_server_metrics_arguments(parser)
+
+
+def add_remote_load_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--allow-remote-load",
         action="store_true",
@@ -295,11 +297,33 @@ def add_sweep_api_parser(subparsers: Any) -> argparse.ArgumentParser:
             "against a hosted API every one of them is billed."
         ),
     )
+
+
+def add_dry_run_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help=f"Write {SWEEP_PLAN_FILE_NAME} and send nothing",
     )
+
+
+def add_sweep_api_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser: argparse.ArgumentParser = subparsers.add_parser(
+        "sweep-api",
+        help=(
+            "Run a concurrency or request rate sweep against one "
+            "OpenAI-compatible endpoint and report latency, goodput and "
+            "scheduling fidelity per load point"
+        ),
+        # Prefix matching would let "--api-key <secret>" resolve to
+        # "--api-key-env" and persist the secret as a variable name.
+        allow_abbrev=False,
+    )
+    add_api_client_arguments(parser)
+    add_load_arguments(parser)
+    add_server_metrics_arguments(parser)
+    add_remote_load_argument(parser)
+    add_dry_run_argument(parser)
     parser.set_defaults(func=cmd_sweep_api)
     return parser
 
@@ -394,7 +418,7 @@ def read_prompts_jsonl(path: Path) -> list[str]:
     return prompts
 
 
-def _slo(args: argparse.Namespace) -> SloTargets | None:
+def slo_from_args(args: argparse.Namespace) -> SloTargets | None:
     if (
         args.slo_ttft_ms is None
         and args.slo_tpot_ms is None
@@ -407,6 +431,21 @@ def _slo(args: argparse.Namespace) -> SloTargets | None:
 
 
 def _validate(args: argparse.Namespace) -> None:
+    validate_load_args(args)
+    refuse_remote_endpoint(args.endpoint, allowed=args.allow_remote_load)
+
+
+def refuse_remote_endpoint(endpoint: str, *, allowed: bool) -> None:
+    if not is_loopback_endpoint(endpoint) and not allowed:
+        raise ValueError(
+            "the endpoint is not on this machine. A sweep sends many requests "
+            "and a hosted API bills each one; pass --allow-remote-load to "
+            "confirm"
+        )
+
+
+def validate_load_args(args: argparse.Namespace) -> None:
+    """Checks on the options added by :func:`add_load_arguments`."""
     if not 1 <= args.requests_per_point <= MAX_REQUESTS:
         raise ValueError(f"--requests-per-point must be between 1 and {MAX_REQUESTS}")
     if args.cooldown_seconds < 0:
@@ -424,16 +463,73 @@ def _validate(args: argparse.Namespace) -> None:
         )
     elif args.arrival != ARRIVAL_POISSON and args.arrival_seed is not None:
         raise ValueError("--arrival-seed only applies to --arrival poisson")
-    if not is_loopback_endpoint(args.endpoint) and not args.allow_remote_load:
-        raise ValueError(
-            "the endpoint is not on this machine. A sweep sends many requests "
-            "and a hosted API bills each one; pass --allow-remote-load to "
-            "confirm"
-        )
+
+
+def read_prompts(args: argparse.Namespace) -> list[str]:
+    if args.prompt_file:
+        return [Path(args.prompt_file).read_text(encoding="utf-8")]
+    return read_prompts_jsonl(Path(args.prompts_jsonl))
+
+
+def points_from_args(args: argparse.Namespace) -> list[SweepPoint]:
+    return build_points(
+        concurrency=args.concurrency,
+        request_rates=args.request_rate,
+        arrival=args.arrival,
+        seed=args.arrival_seed,
+        max_in_flight=args.max_in_flight,
+    )
+
+
+def sweep_mode(args: argparse.Namespace) -> str:
+    return MODE_REQUEST_RATE if args.request_rate is not None else MODE_CONCURRENCY
+
+
+def load_argv(args: argparse.Namespace) -> list[str]:
+    """The options added by :func:`add_load_arguments`, as explicit argv."""
+    argv: list[str] = []
+    for flag, value in (
+        ("--prompt-file", args.prompt_file),
+        ("--prompts-jsonl", args.prompts_jsonl),
+        (
+            "--concurrency",
+            None if args.concurrency is None else _join(args.concurrency),
+        ),
+        (
+            "--request-rate",
+            None if args.request_rate is None else _join(args.request_rate),
+        ),
+        ("--arrival", args.arrival if args.request_rate is not None else None),
+        ("--arrival-seed", args.arrival_seed),
+        ("--max-in-flight", args.max_in_flight),
+        ("--requests-per-point", args.requests_per_point),
+        ("--cooldown-seconds", args.cooldown_seconds),
+        ("--slo-ttft-ms", args.slo_ttft_ms),
+        ("--slo-tpot-ms", args.slo_tpot_ms),
+        ("--slo-e2e-ms", args.slo_e2e_ms),
+        ("--max-dispatch-lag-ms", args.max_dispatch_lag_ms),
+    ):
+        if value is not None:
+            argv.extend((flag, str(value)))
+    return argv
 
 
 def _workload(
     args: argparse.Namespace, prompts: Sequence[str], system_prompt: str | None
+) -> dict[str, Any]:
+    return workload_summary(
+        args,
+        prompts,
+        system_prompt,
+        stream_include_usage=args.stream_include_usage,
+    )
+
+
+def workload_summary(
+    args: argparse.Namespace,
+    prompts: Sequence[str],
+    system_prompt: str | None,
+    **extra: Any,
 ) -> dict[str, Any]:
     distinct = list(dict.fromkeys(sha256_text(prompt) for prompt in prompts))
     return {
@@ -445,11 +541,11 @@ def _workload(
         ),
         "requests_per_point": args.requests_per_point,
         "order": "request i of each point uses prompt i modulo prompt_count",
-        "stream_include_usage": args.stream_include_usage,
+        **extra,
     }
 
 
-def _load_settings(args: argparse.Namespace) -> dict[str, Any]:
+def load_settings(args: argparse.Namespace) -> dict[str, Any]:
     rate_mode = args.request_rate is not None
     return {
         "requests_per_point": args.requests_per_point,
@@ -520,11 +616,8 @@ def cmd_sweep_api(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
     try:
         _validate(args)
-        slo = _slo(args)
-        if args.prompt_file:
-            prompts = [Path(args.prompt_file).read_text(encoding="utf-8")]
-        else:
-            prompts = read_prompts_jsonl(Path(args.prompts_jsonl))
+        slo = slo_from_args(args)
+        prompts = read_prompts(args)
         system_prompt = (
             Path(args.system_prompt_file).read_text(encoding="utf-8")
             if args.system_prompt_file
@@ -535,13 +628,7 @@ def cmd_sweep_api(args: argparse.Namespace) -> int:
             if args.server_metrics_url is None
             else validate_metrics_url(args.server_metrics_url)
         )
-        points = build_points(
-            concurrency=args.concurrency,
-            request_rates=args.request_rate,
-            arrival=args.arrival,
-            seed=args.arrival_seed,
-            max_in_flight=args.max_in_flight,
-        )
+        points = points_from_args(args)
         base = base_api_config(args, prompt=prompts[0], command_argv=_sweep_argv(args))
 
         def specs_for(point: SweepPoint) -> list[Any]:
@@ -565,49 +652,28 @@ def cmd_sweep_api(args: argparse.Namespace) -> int:
         return fail("Failed to configure sweep", exc)
 
     credential = os.environ.get(args.api_key_env, "").strip() or None
-    mode = MODE_REQUEST_RATE if args.request_rate is not None else MODE_CONCURRENCY
-    load = _load_settings(args)
-    workload = _workload(args, prompts, system_prompt)
+    output = SweepOutput(
+        output_dir=output_dir,
+        mode=sweep_mode(args),
+        load=load_settings(args),
+        slo=slo,
+        request_plan=request_plan,
+        workload=_workload(args, prompts, system_prompt),
+        points=points,
+        requests_per_point=args.requests_per_point,
+        credential=credential,
+    )
 
     if args.dry_run:
-        plan = sweep_plan_document(
-            mode=mode,
-            load=load,
-            slo=slo,
-            request_plan=request_plan,
-            workload=workload,
-            points=points,
-            requests_per_point=args.requests_per_point,
-        )
-        plan["credential_env_var_present"] = credential is not None
+        extra: dict[str, Any] = {"credential_env_var_present": credential is not None}
         if metrics_url is not None:
-            plan["server_metrics_url"] = metrics_url
-        try:
-            output_dir.mkdir(parents=True, exist_ok=True)
-            _write(output_dir / SWEEP_PLAN_FILE_NAME, plan, credential)
-        except OSError as exc:
-            return fail("Failed to write the sweep plan", exc)
-        print(
-            f"Sweep plan written to {output_dir / SWEEP_PLAN_FILE_NAME}: "
-            f"{len(points)} points, {plan['total_requests']} requests, "
-            "nothing sent"
-        )
-        return 0
+            extra["server_metrics_url"] = metrics_url
+        return write_sweep_plan(output, extra, fail)
 
     try:
         for point in points:
             preflight(base, specs_for(point), environ=os.environ)
-        stale = [
-            output_dir / SWEEP_FILE_NAME,
-            *output_dir.glob("server_metrics_point_*.json"),
-        ]
-        existing = [path.name for path in stale if path.exists()]
-        if existing:
-            raise ValueError(
-                f"{output_dir} already holds sweep output ({', '.join(existing)}); "
-                "choose a new --output-dir"
-            )
-        output_dir.mkdir(parents=True, exist_ok=True)
+        ensure_new_output_dir(output_dir)
     except (
         OSError,
         ValueError,
@@ -616,21 +682,129 @@ def cmd_sweep_api(args: argparse.Namespace) -> int:
     ) as exc:
         return fail("Failed to configure sweep", exc)
 
+    return run_sweep(
+        output,
+        send=make_api_sender(
+            base, transport=UrllibStreamingTransport(), environ=os.environ
+        ),
+        specs_for=specs_for,
+        cooldown_seconds=args.cooldown_seconds,
+        max_dispatch_lag_ms=args.max_dispatch_lag_ms,
+        server_metrics=metrics_pairing(args, metrics_url),
+        describe_error=detail,
+        fail=fail,
+    )
+
+
+@dataclass
+class SweepOutput:
+    """What a sweep command writes. Shared by every load backend."""
+
+    output_dir: Path
+    mode: str
+    load: dict[str, Any]
+    slo: SloTargets | None
+    request_plan: dict[str, Any]
+    workload: dict[str, Any]
+    points: Sequence[SweepPoint]
+    requests_per_point: int
+    credential: str | None = None
+    attribution: Mapping[str, Any] = field(default_factory=lambda: ATTRIBUTION)
+    field_provenance: Mapping[str, str] = field(
+        default_factory=lambda: ROW_FIELD_PROVENANCE
+    )
+
+
+Fail = Callable[[str, BaseException], int]
+
+
+def write_sweep_plan(output: SweepOutput, extra: Mapping[str, Any], fail: Fail) -> int:
+    plan = sweep_plan_document(
+        mode=output.mode,
+        load=output.load,
+        slo=output.slo,
+        request_plan=output.request_plan,
+        workload=output.workload,
+        points=output.points,
+        requests_per_point=output.requests_per_point,
+        attribution=output.attribution,
+    )
+    plan.update(extra)
+    path = output.output_dir / SWEEP_PLAN_FILE_NAME
+    try:
+        output.output_dir.mkdir(parents=True, exist_ok=True)
+        _write(path, plan, output.credential)
+    except OSError as exc:
+        return fail("Failed to write the sweep plan", exc)
+    print(
+        f"Sweep plan written to {path}: {len(output.points)} points, "
+        f"{plan['total_requests']} requests, nothing sent"
+    )
+    return 0
+
+
+def ensure_new_output_dir(output_dir: Path) -> None:
+    """Refuse a directory that already holds sweep output, then create it."""
+    stale = [
+        output_dir / SWEEP_FILE_NAME,
+        *output_dir.glob("server_metrics_point_*.json"),
+    ]
+    existing = [path.name for path in stale if path.exists()]
+    if existing:
+        raise ValueError(
+            f"{output_dir} already holds sweep output ({', '.join(existing)}); "
+            "choose a new --output-dir"
+        )
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+
+def metrics_pairing(
+    args: argparse.Namespace, metrics_url: str | None
+) -> PrometheusPairing | None:
+    if metrics_url is None:
+        return None
+    return PrometheusPairing(
+        metrics_url,
+        runtime=args.server_metrics_runtime,
+        settle_timeout_seconds=args.server_metrics_settle_timeout,
+        assume_isolated=args.server_metrics_assume_isolated,
+    )
+
+
+def run_sweep(
+    output: SweepOutput,
+    *,
+    send: Callable[[ApiRequestSpec, DispatchContext], RequestRow],
+    specs_for: Callable[[SweepPoint], Sequence[ApiRequestSpec]],
+    cooldown_seconds: float,
+    max_dispatch_lag_ms: float,
+    server_metrics: ServerMetricsPairing | None,
+    describe_error: Callable[[BaseException], str],
+    fail: Fail,
+) -> int:
+    """Run every point, write ``sweep.json`` after each one, and report.
+
+    Returns the exit code: 0 when clean, 1 otherwise, 130 when interrupted.
+    """
+    output_dir = output.output_dir
+    credential = output.credential
     started = utc_now_iso()
     completed: list[dict[str, Any]] = []
 
     def document(*, finished: bool, interrupted: bool = False) -> dict[str, Any]:
         return sweep_document(
-            mode=mode,
-            load=load,
-            slo=slo,
-            request_plan=request_plan,
-            workload=workload,
+            mode=output.mode,
+            load=output.load,
+            slo=output.slo,
+            request_plan=output.request_plan,
+            workload=output.workload,
             points=completed,
-            planned_points=len(points),
+            planned_points=len(output.points),
             finished=finished,
             interrupted=interrupted,
             started_at_utc=started,
+            attribution=output.attribution,
+            field_provenance=output.field_provenance,
         )
 
     def on_point(point: dict[str, Any]) -> None:
@@ -638,34 +812,22 @@ def cmd_sweep_api(args: argparse.Namespace) -> int:
         print(_point_line(point))
         _write(output_dir / SWEEP_FILE_NAME, document(finished=False), credential)
 
-    pairing = (
-        None
-        if metrics_url is None
-        else PrometheusPairing(
-            metrics_url,
-            runtime=args.server_metrics_runtime,
-            settle_timeout_seconds=args.server_metrics_settle_timeout,
-            assume_isolated=args.server_metrics_assume_isolated,
-        )
-    )
     run = SweepRun(
-        points=points,
-        send=make_api_sender(
-            base, transport=UrllibStreamingTransport(), environ=os.environ
-        ),
+        points=output.points,
+        send=send,
         specs_for=specs_for,
         output_dir=output_dir,
-        slo=slo,
-        cooldown_seconds=args.cooldown_seconds,
-        max_dispatch_lag_ms=args.max_dispatch_lag_ms,
-        server_metrics=pairing,
-        describe_error=detail,
+        slo=output.slo,
+        cooldown_seconds=cooldown_seconds,
+        max_dispatch_lag_ms=max_dispatch_lag_ms,
+        server_metrics=server_metrics,
+        describe_error=describe_error,
         on_point=on_point,
     )
     print(
-        f"Sweeping {len(points)} points x {args.requests_per_point} requests "
-        f"({mode}). Results are concurrent-load measurements, not isolated "
-        "single-request evidence."
+        f"Sweeping {len(output.points)} points x {output.requests_per_point} "
+        f"requests ({output.mode}). Results are concurrent-load measurements, "
+        "not isolated single-request evidence."
     )
     try:
         run_points(run)
@@ -720,11 +882,29 @@ def _report(document: dict[str, Any], output_dir: Path) -> int:
 
 
 __all__ = [
+    "Fail",
+    "SweepOutput",
     "add_api_client_arguments",
+    "add_dry_run_argument",
+    "add_load_arguments",
+    "add_remote_load_argument",
     "add_server_metrics_arguments",
     "add_sweep_api_parser",
     "base_api_config",
     "cmd_sweep_api",
+    "ensure_new_output_dir",
     "is_loopback_endpoint",
+    "load_argv",
+    "load_settings",
+    "metrics_pairing",
+    "points_from_args",
+    "read_prompts",
     "read_prompts_jsonl",
+    "refuse_remote_endpoint",
+    "run_sweep",
+    "slo_from_args",
+    "sweep_mode",
+    "validate_load_args",
+    "workload_summary",
+    "write_sweep_plan",
 ]
