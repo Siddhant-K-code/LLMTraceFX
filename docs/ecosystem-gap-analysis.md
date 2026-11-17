@@ -27,17 +27,18 @@ research pass and are less thoroughly verified.
 | Ollama response timings | none (per request fields) | no `/metrics` endpoint | no | no | no | none |
 | mlx-lm server benchmark | concurrency | no | no | no | no | none |
 | MLPerf Inference | formal scenarios | n/a | latency caps | MLPerf Power | mandatory accuracy | audited |
-| LLMTraceFX | single request | **now: `server-metrics`** | no (single objective `tune`) | Apple Instruments, **now: NVML (`gpu-energy`)** | every workload verified | per value provenance |
+| LLMTraceFX | single request; **now: concurrency and rate sweeps** (`sweep-api`) | **now: `server-metrics`** | **now: request and token goodput** (`sweep-api`) | Apple Instruments, **now: NVML (`gpu-energy`)** | every workload verified | per value provenance |
 
 ## Gaps, ranked by how strongly users expect them
 
 1. **Concurrency and request rate sweeps.** Table stakes for every serving
    benchmark. LLMTraceFX measures one request at a time by design. A sweep
    mode would need its own attribution story because per request timings
-   stop being isolated.
+   stop being isolated. **Built in this branch as `sweep-api`.**
 2. **Goodput and SLO attainment.** vLLM, SGLang, GuideLLM and AIPerf report
    the fraction of requests or tokens that meet joint TTFT, TPOT and E2E
-   targets. This depends on item 1.
+   targets. This depends on item 1. **Built in this branch as part of
+   `sweep-api`.**
 3. **Server-side metrics during a run.** GuideLLM and AIPerf scrape the
    server's Prometheus endpoint so users can tell "the client saw slow TTFT"
    apart from "the server queue was the bottleneck". **Built in this branch
@@ -65,7 +66,8 @@ research pass and are less thoroughly verified.
    separate attribute.
 10. **Scheduling fidelity diagnostics.** GuideLLM reports dispatch and
     scheduling delay so users can trust the load generator itself. Only
-    relevant once item 1 exists.
+    relevant once item 1 exists. **Built in this branch as part of
+    `sweep-api`.**
 
 Importers for `vllm bench serve --save-result` JSON and AIPerf
 `profile_export_aiperf.json` let users bring existing results into
@@ -300,6 +302,34 @@ NVML is unavailable, including on macOS.
 DCGM was not used: its exporter samples every 30 seconds by default and its
 scrapes carry no timestamp, which is too coarse for one request.
 
+### `sweep-api`
+
+`llmtracefx-optimizer sweep-api` runs one request mix at several
+concurrency levels (closed loop) or request rates (open loop, Poisson or
+constant arrivals) against an OpenAI-compatible endpoint, using the same
+streaming client as `collect-api`. Each point reports nearest rank latency
+percentiles for TTFT, first content, TPOT and E2E, throughput, and goodput.
+
+Goodput is the share of dispatched requests that met every stated TTFT, TPOT
+and E2E target. Failed requests stay in the denominator. A request whose value
+for a stated target is missing is unverifiable: the headline fraction is then
+withheld and lower and upper bounds are reported instead. Token goodput is
+withheld when any request lacks a provider token count.
+
+Requests in a sweep overlap, so a sweep is its own artifact kind,
+`llmtracefx.load_sweep`, with an `attribution` block that lists what it can
+and cannot claim. It writes no `record.json`, and `gate`, `compare` and
+`export` refuse sweep artifacts rather than mix them with single-request
+records. Values keep the existing provenance labels.
+
+Each point also carries scheduling diagnostics (dispatch lag, closed loop slot
+refill, arrivals held by the in-flight cap, client CPU use) and is marked
+degraded when the client could not keep to its schedule.
+`--server-metrics-url` pairs each point with a Prometheus window. The load
+generator is a separate module, `load/dispatcher.py`, that also supports
+arrivals at given timestamps for trace replay. See
+[load-sweeps.md](load-sweeps.md).
+
 ### Evidence viewer Space
 
 `spaces/evidence-viewer/` is a Gradio app for Hugging Face Spaces. It shows a
@@ -341,7 +371,9 @@ Entries as submitted:
 
 ## Follow ups not built here
 
-- Concurrency sweeps, goodput and trace replay.
+- Trace replay (Mooncake, ShareGPT timed, BurstGPT) on the `sweep-api`
+  dispatcher.
+- Load sweeps against non-OpenAI-compatible collectors (MLX, llama.cpp).
 - GPU energy in records: feed `gpu-energy` evidence into `ExperimentRecord`
   power, `export` and `gate`, and add DCGM as a second source.
 - Running the evidence viewer Space on CPU basic hardware (see above).

@@ -131,6 +131,8 @@ from .instruments.workflow import (
     plan_trace,
     record_trace,
 )
+from .load.artifact import find_sweep_artifact, sweep_refusal
+from .load.cli import add_sweep_api_parser
 from .manifest import collect_environment_manifest
 from .optimize_summary import (
     OPTIMIZE_SUMMARY_SCHEMA_VERSION,
@@ -665,6 +667,11 @@ def _cmd_server_metrics_diff(args: argparse.Namespace) -> int:
 
 
 def _cmd_export(args: argparse.Namespace) -> int:
+    for given in (args.record, args.api_evidence, args.server_metrics):
+        sweep = None if given is None else find_sweep_artifact(Path(given))
+        if sweep is not None:
+            print(f"Cannot export: {sweep_refusal(sweep)}", file=sys.stderr)
+            return 1
     try:
         record = ExperimentRecord.read_json(args.record)
         api_evidence = (
@@ -704,6 +711,11 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
 
 def _cmd_export_metrics(args: argparse.Namespace) -> int:
+    for given in args.inputs:
+        sweep = find_sweep_artifact(Path(given))
+        if sweep is not None:
+            print(f"Cannot export metrics: {sweep_refusal(sweep)}", file=sys.stderr)
+            return 1
     try:
         export = build_otlp_metrics(
             load_metrics_runs(args.inputs), include_paths=args.include_paths
@@ -3095,6 +3107,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     collect_api_parser.set_defaults(func=_cmd_collect_api)
+    add_sweep_api_parser(subparsers)
 
     server_metrics_parser = subparsers.add_parser(
         "server-metrics",

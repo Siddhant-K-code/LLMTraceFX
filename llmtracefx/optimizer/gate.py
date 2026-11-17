@@ -49,6 +49,7 @@ from .importers.artifact import (
     parse_json_document,
 )
 from .importers.vllm_bench import looks_like_vllm_bench
+from .load.artifact import find_sweep_artifact, sweep_refusal
 from .schema import ExperimentRecord, Measurement, SchemaValidationError
 
 GATE_REPORT_KIND = "llmtracefx.gate.report"
@@ -276,11 +277,15 @@ def load_gate_inputs(paths: Sequence[str | Path]) -> list[GateInput]:
 
     Files are read as given. A directory expands to every ``record.json`` and
     every other ``*.json`` holding an imported benchmark artifact below it;
-    other JSON files there are skipped.
+    other JSON files there are skipped. A load sweep artifact, given directly
+    or found below a directory, is refused rather than skipped.
     """
     files: list[Path] = []
     for raw in paths:
         path = Path(raw)
+        sweep = find_sweep_artifact(path)
+        if sweep is not None:
+            raise GateInputError(sweep_refusal(sweep))
         if path.is_dir():
             found = sorted({*path.rglob("record.json"), *_imported_in(path)})
             if not found:
