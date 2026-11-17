@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 
 from llmtracefx.optimizer.collectors.openai_api import (
+    _RESOLVER_WORKERS,
     FAILURE_CONNECTION,
     FAILURE_HTTP_STATUS,
     FAILURE_TIMEOUT,
@@ -31,7 +32,6 @@ from llmtracefx.optimizer.collectors.openai_api import (
     TransportConnectionError,
     TransportTimeout,
     UrllibStreamingTransport,
-    _RESOLVER_WORKERS,
     _DeadlineHTTPSConnection,
     _DeadlineWatchdog,
     _UrllibResponse,

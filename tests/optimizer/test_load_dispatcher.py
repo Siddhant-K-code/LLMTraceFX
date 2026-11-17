@@ -6,6 +6,7 @@ assertions use events and barriers rather than tight wall-clock bounds.
 
 from __future__ import annotations
 
+import itertools
 import json
 import statistics
 import threading
@@ -52,7 +53,7 @@ def test_poisson_schedule_is_seeded_and_has_the_requested_mean_gap() -> None:
     assert first == planned_offsets(OpenLoopRate(10.0, "poisson", seed=7), 2000)
     assert first != planned_offsets(OpenLoopRate(10.0, "poisson", seed=8), 2000)
     assert first is not None and first[0] == 0.0
-    gaps = [b - a for a, b in zip(first, first[1:])]
+    gaps = [b - a for a, b in itertools.pairwise(first)]
     assert all(gap >= 0 for gap in gaps)
     assert statistics.fmean(gaps) == pytest.approx(0.1, rel=0.1)
 

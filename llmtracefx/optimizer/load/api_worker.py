@@ -22,8 +22,8 @@ from ..collectors.openai_api import (
     APICollectionResult,
     OpenAIStreamCollectorError,
     StreamingTransport,
-    assert_credential_not_embedded,
     _resolve_credential,
+    assert_credential_not_embedded,
     build_request_plan,
     stream_chat_completion,
 )
