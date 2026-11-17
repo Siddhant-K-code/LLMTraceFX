@@ -11,13 +11,22 @@ The first selected request goes out at offset 0. Each later request goes out
 at ``(source arrival - first selected arrival) * time_scale``, so a scale of
 2.0 replays twice as slowly and 0.5 twice as fast. Requests that share a
 source timestamp keep sharing their offset.
+
+A multi-turn trace is selected by whole sessions: the window applies to each
+session's first turn and ``max_sessions`` keeps the first N sessions.
+``max_requests`` is refused, since it would cut a session part way. Only a
+session's first turn has a planned offset. A later turn is sent after the
+previous turn of its session completes, plus its scaled ``delay``, or not
+before its scaled ``timestamp``. Its prompt resends the earlier turns, with a
+synthetic stand-in for each assistant answer.
 """
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +43,14 @@ from .artifact import (
     tool_record,
     write_text,
 )
-from .formats import BURSTGPT, MOONCAKE, ParsedTrace, TraceEntry
+from .formats import (
+    AIPERF_MULTI_TURN,
+    AIPERF_UPSTREAM,
+    BURSTGPT,
+    MOONCAKE,
+    ParsedTrace,
+    TraceEntry,
+)
 from .prompts import (
     WORD_LIST_SHA256,
     WORD_VOCABULARY,
@@ -43,6 +59,8 @@ from .prompts import (
     word_count,
 )
 from .tokenizer import ReplayTokenizer, TokenUnits, count_tokens, fit_units
+
+History = tuple[tuple[str, str], ...]
 
 _MAX_TIME_SCALE = 1e6
 _OFFSET_DECIMALS = 6
@@ -61,6 +79,7 @@ class Selection:
     max_requests: int | None = None
     models: tuple[str, ...] = ()
     log_types: tuple[str, ...] = ()
+    max_sessions: int | None = None
 
     def validate(self, trace_format: str) -> None:
         if not math.isfinite(self.time_scale) or not (
@@ -80,10 +99,31 @@ class Selection:
             raise ScheduleError("--end-s must be greater than --start-s")
         if self.max_requests is not None and self.max_requests < 1:
             raise ScheduleError("--max-requests must be at least 1")
+        if trace_format == AIPERF_MULTI_TURN:
+            if self.max_requests is not None:
+                raise ScheduleError(
+                    "--max-requests would cut a session part way; use "
+                    "--max-sessions for a multi-turn trace"
+                )
+            if self.max_sessions is not None and self.max_sessions < 1:
+                raise ScheduleError("--max-sessions must be at least 1")
+        elif self.max_sessions is not None:
+            raise ScheduleError("--max-sessions applies to multi-turn traces only")
         if (self.models or self.log_types) and trace_format != BURSTGPT:
             raise ScheduleError("--model and --log-type filter BurstGPT traces only")
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self, trace_format: str | None = None) -> dict[str, Any]:
+        if trace_format == AIPERF_MULTI_TURN:
+            return {
+                "order": ["window", "max_sessions"],
+                "unit": "session",
+                "window_start_s": self.start_s,
+                "window_end_s": self.end_s,
+                "window_reference": "first data row of the trace file",
+                "window_applies_to": "each session's first turn",
+                "max_sessions": self.max_sessions,
+                "time_scale": self.time_scale,
+            }
         return {
             "order": ["filters", "window", "max_requests"],
             "models": list(self.models),
@@ -101,7 +141,9 @@ class ScheduledRequest:
     index: int
     source_line: int
     source_arrival_s: float
-    arrival_offset_s: float
+    arrival_offset_s: float | None
+    """Planned send offset. ``None`` for a later turn of a session, whose
+    send time depends on when the previous turn completes."""
     target_output_tokens: int
     target_input_tokens: int | None
     estimated_prompt_tokens: int
@@ -110,10 +152,29 @@ class ScheduledRequest:
     reused_blocks: int | None = None
     reusable_tokens: int | None = None
     tokenizer_prompt_tokens: int | None = None
+    session: int | None = None
+    turn: int | None = None
+    delay_s: float | None = None
+    not_before_offset_s: float | None = None
+    history_turns: int | None = None
+    history_sha256: str | None = None
 
     @property
     def request_id(self) -> str:
         return f"r{self.index:07d}"
+
+    def session_dict(self) -> dict[str, Any]:
+        """Multi-turn fields, empty for a single-turn trace."""
+        if self.session is None:
+            return {}
+        return {
+            "session": self.session,
+            "turn": self.turn,
+            "delay_s": self.delay_s,
+            "not_before_offset_s": self.not_before_offset_s,
+            "history_turns": self.history_turns,
+            "history_sha256": self.history_sha256,
+        }
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -130,6 +191,7 @@ class ScheduledRequest:
             "hash_blocks": self.hash_blocks,
             "reused_blocks": self.reused_blocks,
             "reusable_tokens_upper_bound": self.reusable_tokens,
+            **self.session_dict(),
         }
 
 
@@ -166,9 +228,19 @@ class ReplaySchedule:
         """Regenerate the prompt for request ``index`` with a shared builder."""
         return _prompt(builder, self.entries[index])
 
+    def history_at(self, builder: PromptBuilder, index: int) -> History:
+        """Regenerate the earlier turns sent before request ``index``."""
+        return _history(builder, self.entries, index)
+
+    @property
+    def multi_turn(self) -> bool:
+        return self.trace.format == AIPERF_MULTI_TURN
+
     @property
     def offsets_s(self) -> tuple[float, ...]:
-        return tuple(request.arrival_offset_s for request in self.requests)
+        if self.multi_turn:
+            raise ScheduleError("a multi-turn schedule has no full list of offsets")
+        return tuple(_offset(request) for request in self.requests)
 
     def summary(self) -> dict[str, Any]:
         requests = self.requests
@@ -182,7 +254,9 @@ class ReplaySchedule:
             "requests": len(requests),
             "first_selected_source_s": first,
             "source_span_s": span,
-            "planned_duration_s": requests[-1].arrival_offset_s,
+            "planned_duration_s": max(
+                r.arrival_offset_s for r in requests if r.arrival_offset_s is not None
+            ),
             "planned_duration_provenance": MetricProvenance.DERIVED.value,
             "target_input_tokens_total": input_total,
             "target_output_tokens_total": sum(r.target_output_tokens for r in requests),
@@ -197,6 +271,12 @@ class ReplaySchedule:
                 r.tokenizer_prompt_tokens or 0 for r in requests
             )
             summary["tokenizer_provenance"] = TOKENIZER_EXACT
+        if self.multi_turn:
+            summary["sessions"] = len({r.session for r in requests})
+            summary["planned_duration_basis"] = (
+                "offset of the last session's first turn; later turns wait for "
+                "completions, so the run takes longer"
+            )
         if self.trace.format == MOONCAKE:
             blocks = sum(r.hash_blocks or 0 for r in requests)
             reused = sum(r.reused_blocks or 0 for r in requests)
@@ -219,12 +299,12 @@ class ReplaySchedule:
         return summary
 
     def to_document(self) -> dict[str, Any]:
-        document = {
+        document: dict[str, Any] = {
             "kind": SCHEDULE_KIND,
             "schema_version": SCHEMA_VERSION,
             "generated_by": tool_record(),
             "source": self.trace.source_dict(),
-            "selection": self.selection.to_dict(),
+            "selection": self.selection.to_dict(self.trace.format),
             "prompts": self._prompts_record(),
             "output_length": {
                 "policy": "max_tokens ceiling",
@@ -233,6 +313,9 @@ class ReplaySchedule:
             "summary": self.summary(),
             "requests": [request.to_dict() for request in self.requests],
         }
+        if self.multi_turn:
+            document["prompts"]["history"] = self._history_record()
+            document["sessions"] = _SESSION_POLICY
         return seal(document, "schedule_sha256")
 
     def _prompts_record(self) -> dict[str, Any]:
@@ -270,6 +353,55 @@ class ReplaySchedule:
         )
         return record
 
+    def _history_record(self) -> dict[str, Any]:
+        exact = self.tokenizer is not None
+        record: dict[str, Any] = {
+            "messages": (
+                "each earlier user turn's trace text, each followed by a "
+                "synthetic assistant turn, then this turn's text"
+            ),
+            "assistant_method": f"{self.vocabulary.method}:reply",
+            "assistant_length_basis": (
+                f"the earlier turn's output_length, in {'tokens' if exact else 'words'}"
+            ),
+            "assistant_length_provenance": TRACE_DECLARED,
+            "assistant_token_provenance": (
+                TOKENIZER_EXACT if exact else MetricProvenance.ESTIMATED.value
+            ),
+            "note": (
+                "No response text is stored, so the server's real answers are "
+                "never resent. AIPerf's default (DELTAS_WITHOUT_RESPONSES) "
+                "threads the live answers instead, so prompt lengths after the "
+                "first turn differ from an AIPerf run by the gap between real "
+                "and declared output lengths."
+            ),
+        }
+        if exact:
+            record["counted"] = (
+                "every message encoded on its own and summed; the chat template "
+                "between messages is not counted"
+            )
+        return record
+
+
+_SESSION_POLICY: dict[str, Any] = {
+    "upstream": dict(AIPERF_UPSTREAM),
+    "first_turn": "sent at its scaled timestamp",
+    "later_turn": (
+        "sent after the previous turn of the session completes, then after "
+        "its scaled delay, or not before its scaled timestamp, or at once"
+    ),
+    "failed_turn": "the session continues, as in AIPerf",
+    "delay_cap": None,
+    "stop": "turns not yet sent are recorded as not sent",
+}
+
+
+def _offset(request: ScheduledRequest) -> float:
+    if request.arrival_offset_s is None:
+        raise ScheduleError(f"{request.request_id} has no planned offset")
+    return request.arrival_offset_s
+
 
 def _structure(trace_format: str) -> str:
     if trace_format == MOONCAKE:
@@ -287,6 +419,35 @@ def _prompt(builder: PromptBuilder, entry: TraceEntry) -> str:
     if entry.hash_ids is not None:
         return builder.for_hash_ids(entry.hash_ids, entry.input_tokens)
     return builder.for_line(entry.line, entry.input_tokens)
+
+
+def _history(
+    builder: PromptBuilder, entries: Sequence[TraceEntry], index: int
+) -> History:
+    entry = entries[index]
+    if not entry.turn:
+        return ()
+    earlier = entries[index - entry.turn : index]
+    if any(e.session != entry.session for e in earlier):
+        raise ScheduleError(f"line {entry.line}: earlier turns were not selected")
+    history: list[tuple[str, str]] = []
+    for prior in earlier:
+        history.append(("user", _prompt(builder, prior)))
+        history.append(("assistant", _reply(builder, prior)))
+    return tuple(history)
+
+
+def _reply(builder: PromptBuilder, entry: TraceEntry) -> str:
+    return builder.for_reply(entry.line, entry.line_turn or 0, entry.output_tokens)
+
+
+def history_sha256(history: History) -> str:
+    """The sha256 recorded for a regenerated history, never the text itself."""
+    return sha256_text(
+        json.dumps(
+            [list(turn) for turn in history], ensure_ascii=False, separators=(",", ":")
+        )
+    )
 
 
 def _select(trace: ParsedTrace, selection: Selection) -> list[TraceEntry]:
@@ -318,6 +479,13 @@ def _select(trace: ParsedTrace, selection: Selection) -> list[TraceEntry]:
     ]
     if selection.max_requests is not None:
         selected = selected[: selection.max_requests]
+    if selection.max_sessions is not None:
+        kept: set[int | None] = set()
+        for entry in selected:
+            if len(kept) == selection.max_sessions and entry.session not in kept:
+                break
+            kept.add(entry.session)
+        selected = [entry for entry in selected if entry.session in kept]
     if not selected:
         raise ScheduleError("the selection is empty; widen the window or filters")
     return selected
@@ -396,6 +564,10 @@ def build_schedule(
                     reuse=reuse,
                 )
             )
+    if trace.format == AIPERF_MULTI_TURN:
+        requests = _with_sessions(
+            builder, selected, requests, first, selection, tokenizer, units
+        )
     return ReplaySchedule(
         trace=trace,
         selection=selection,
@@ -436,6 +608,79 @@ def _scheduled(
         reusable_tokens=reusable,
         tokenizer_prompt_tokens=tokenizer_tokens,
     )
+
+
+def _reply_counts(
+    builder: PromptBuilder,
+    entries: Sequence[TraceEntry],
+    tokenizer: ReplayTokenizer | None,
+    units: TokenUnits | None,
+) -> list[int | None]:
+    """Exact token counts of each turn's synthetic reply, checked token by token."""
+    if tokenizer is None or units is None:
+        return [None] * len(entries)
+    counts: list[int | None] = []
+    for start in range(0, len(entries), _TOKENIZER_CHUNK):
+        chunk = entries[start : start + _TOKENIZER_CHUNK]
+        counts.extend(
+            count_tokens(
+                tokenizer,
+                units,
+                [_reply(builder, entry) for entry in chunk],
+                [True] * len(chunk),
+                [entry.line for entry in chunk],
+            )
+        )
+    return counts
+
+
+def _with_sessions(
+    builder: PromptBuilder,
+    entries: Sequence[TraceEntry],
+    requests: Sequence[ScheduledRequest],
+    first: float,
+    selection: Selection,
+    tokenizer: ReplayTokenizer | None,
+    units: TokenUnits | None,
+) -> list[ScheduledRequest]:
+    """Add history, session timing and whole-conversation lengths to each turn."""
+
+    def scaled(seconds: float) -> float:
+        return round(seconds * selection.time_scale, _OFFSET_DECIMALS)
+
+    replies = _reply_counts(builder, entries, tokenizer, units)
+    result: list[ScheduledRequest] = []
+    for index, (entry, request) in enumerate(zip(entries, requests, strict=True)):
+        history = _history(builder, entries, index)
+        earlier = range(index - (entry.turn or 0), index)
+        tokens = request.tokenizer_prompt_tokens
+        if tokens is not None:
+            # Each message is encoded on its own; the template between them
+            # is not counted, as for a single-turn prompt.
+            tokens += sum(
+                (requests[j].tokenizer_prompt_tokens or 0) + (replies[j] or 0)
+                for j in earlier
+            )
+        result.append(
+            replace(
+                request,
+                arrival_offset_s=None if entry.turn else request.arrival_offset_s,
+                estimated_prompt_tokens=request.estimated_prompt_tokens
+                + sum(word_count(text) for _, text in history),
+                tokenizer_prompt_tokens=tokens,
+                session=entry.session,
+                turn=entry.turn,
+                delay_s=None if entry.delay_s is None else scaled(entry.delay_s),
+                not_before_offset_s=(
+                    None
+                    if entry.not_before_s is None
+                    else scaled(entry.not_before_s - first)
+                ),
+                history_turns=len(history) // 2,
+                history_sha256=history_sha256(history) if history else None,
+            )
+        )
+    return result
 
 
 def write_schedule(path: Path, schedule: ReplaySchedule) -> tuple[str, dict[str, Any]]:

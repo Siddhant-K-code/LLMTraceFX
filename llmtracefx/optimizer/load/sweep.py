@@ -47,6 +47,7 @@ from .dispatcher import (
     DispatchReport,
     LoadPolicy,
     OpenLoopRate,
+    SessionArrivals,
     _nearest_rank,
     dispatch,
     planned_offsets,
@@ -119,6 +120,8 @@ class SweepPoint:
             return f"concurrency={self.policy.concurrency}"
         if isinstance(self.policy, OpenLoopRate):
             return f"rate={self.policy.rate_per_second:g}/s"
+        if isinstance(self.policy, SessionArrivals):
+            return f"sessions={len(self.policy.turns)}"
         return f"timed={len(self.policy.offsets_seconds)}"
 
     def to_dict(self) -> dict[str, Any]:

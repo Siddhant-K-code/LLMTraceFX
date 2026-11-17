@@ -364,6 +364,17 @@ the verdict is `faithful`, `lagged` (p99 lag over `--max-dispatch-lag-s`) or
 `server-metrics` snapshots, so vLLM's prefix cache counters can be read
 against the trace's planned reuse.
 
+`--format aiperf-multi-turn` reads AIPerf `multi_turn` JSONL, following
+`ai-dynamo/aiperf` at commit `fc7d61e`. A later turn is sent only after the
+previous turn of its session completes, then after its `delay` or not before
+its `timestamp`, as in AIPerf's fixed schedule. Its prompt resends the earlier
+turns. No response text is stored, so each earlier answer is synthetic text
+whose length is that turn's `output_length` (labelled `trace_declared`;
+with `--tokenizer` it is exactly that many tokens and is checked).
+AIPerf resends the live answers instead. Mooncake publishes no multi-turn
+format: its `conversation_trace.jsonl` (`kvcache-ai/Mooncake` at `eca2c76`)
+has no session field, so it is replayed open-loop with `--format mooncake`.
+
 ### Evidence viewer Space
 
 `spaces/evidence-viewer/` is a Gradio app for Hugging Face Spaces. It shows a
@@ -405,9 +416,6 @@ Entries as submitted:
 
 ## Follow ups not built here
 
-- Trace replay: multi-turn traces (AIPerf `multi_turn`, Mooncake
-  conversation traces). The tokenizer option for exact prompt lengths is
-  built as `replay --tokenizer`.
 - Load sweeps against non-OpenAI-compatible collectors (MLX, llama.cpp).
 - GPU energy in records: `gpu-energy` evidence now fills `ExperimentRecord`
   power and feeds `export` and `gate`. Adding DCGM as a second source remains.

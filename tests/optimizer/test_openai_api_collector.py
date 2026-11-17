@@ -6092,3 +6092,39 @@ def test_stream_chat_completion_writes_nothing_and_reports_status(
     assert refused.evidence.failure is not None
     assert refused.evidence.failure.category == FAILURE_HTTP_STATUS
     assert dropped.http_status is None
+
+
+def test_history_is_sent_before_the_prompt_and_hashed_as_workload(
+    tmp_path: Path,
+) -> None:
+    history = (("user", "First question."), ("assistant", "First answer."))
+    single = make_config(tmp_path)
+    multi = replace(single, history=history)
+    plan = build_request_plan(multi)
+    assert [m.role for m in plan.messages] == ["user", "assistant", "user"]
+    assert plan.workload_hash != build_request_plan(single).workload_hash
+    assert plan.config_hash == build_request_plan(single).config_hash
+    assert "First answer" not in json.dumps(plan.to_dict())
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        (("user", "q"),),
+        (("assistant", "a"), ("user", "q")),
+        (("user", "q"), ("assistant", "")),
+        [("user", "q"), ("assistant", "a")],
+    ],
+)
+def test_bad_history_is_refused(tmp_path: Path, history: Any) -> None:
+    with pytest.raises(OpenAIStreamCollectorError, match="history"):
+        make_config(tmp_path, history=history)
+
+
+def test_a_credential_in_the_history_is_refused(tmp_path: Path) -> None:
+    credential = "SECRETVALUE1234567890"
+    history = (("user", f"key {credential}"), ("assistant", "ok"))
+    config = make_config(tmp_path, history=history)
+    with pytest.raises(OpenAIStreamCollectorError, match="history") as raised:
+        assert_credential_not_embedded(config, {"ZAI_API_KEY": credential})
+    assert credential not in str(raised.value)

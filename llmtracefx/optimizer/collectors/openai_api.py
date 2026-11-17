@@ -1384,10 +1384,17 @@ class APICollectionConfig:
     record says plainly that the per-event rows were cut. Each row is four
     fixed-width fields and never any generated text, so this bound is the
     only thing the timeline's size depends on."""
+    history: tuple[tuple[str, str], ...] = ()
+    """Earlier conversation turns sent before ``prompt``, as ``(role,
+    content)`` pairs. Roles alternate ``user`` then ``assistant`` and the
+    last one is ``assistant``. Like the prompt, only lengths and hashes of
+    the contents are recorded. Empty by default, which leaves every
+    existing request and hash unchanged."""
 
     def __post_init__(self) -> None:
         if not self.run_id:
             raise OpenAIStreamCollectorError("run_id must be non-empty")
+        _check_history(self.history)
         if not _PROVIDER_LABEL_PATTERN.match(self.provider or ""):
             raise OpenAIStreamCollectorError(
                 "provider must be a short label matching "
@@ -2372,12 +2379,43 @@ class RequestPlan:
         return json.dumps(self.to_dict(), indent=indent, allow_nan=False)
 
 
+def _check_history(history: Any) -> None:
+    if not isinstance(history, tuple):
+        raise OpenAIStreamCollectorError("history must be a tuple of (role, content)")
+    for index, turn in enumerate(history):
+        expected = "user" if index % 2 == 0 else "assistant"
+        if (
+            not isinstance(turn, tuple)
+            or len(turn) != 2
+            or turn[0] != expected
+            or not isinstance(turn[1], str)
+            or not turn[1]
+        ):
+            raise OpenAIStreamCollectorError(
+                f"history[{index}] must be ({expected!r}, non-empty text)"
+            )
+    if len(history) % 2:
+        raise OpenAIStreamCollectorError(
+            "history must end with an assistant turn, so the prompt is the next "
+            "user turn"
+        )
+
+
 def _build_messages(config: APICollectionConfig) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
     if config.system_prompt is not None:
         messages.append({"role": "system", "content": config.system_prompt})
+    messages.extend({"role": role, "content": text} for role, text in config.history)
     messages.append({"role": "user", "content": config.prompt})
     return messages
+
+
+def _workload_hash(config: APICollectionConfig) -> str:
+    """The prompt's hash, or the whole conversation's when there is history."""
+    if not config.history:
+        return sha256_text(config.prompt)
+    turns = [list(turn) for turn in config.history] + [["user", config.prompt]]
+    return sha256_text(json.dumps(turns, ensure_ascii=False, separators=(",", ":")))
 
 
 def _core_request_parameters(config: APICollectionConfig) -> dict[str, Any]:
@@ -2612,7 +2650,7 @@ def build_request_plan(
         retained_event_limit=config.retained_event_limit,
         command=_sanitized_command(config, env_var_display=env_var_display),
         config_hash=_config_identity_hash(config),
-        workload_hash=sha256_text(config.prompt),
+        workload_hash=_workload_hash(config),
     )
 
 
@@ -3861,6 +3899,9 @@ def _assert_credential_not_embedded(
         ("provider_request_id", config.extensions.provider_request_id),
     )
     haystacks.extend((label, value) for label, value in optional if value is not None)
+    haystacks.extend(
+        (f"history[{index}]", text) for index, (_, text) in enumerate(config.history)
+    )
     if config.extra_body is not None:
         haystacks.append(("extra_body", json.dumps(config.extra_body, sort_keys=True)))
     if config.extensions.routing is not None:

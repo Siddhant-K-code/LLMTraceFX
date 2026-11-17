@@ -29,6 +29,7 @@ from llmtracefx.optimizer.replay.tokenizer import (
 FIXTURES = Path(__file__).parent / "fixtures" / "replay"
 MOONCAKE = parse_trace(FIXTURES / "mooncake_small.jsonl", "mooncake")
 AIPERF = parse_trace(FIXTURES / "aiperf_single_turn.jsonl", "aiperf-single-turn")
+MULTI = parse_trace(FIXTURES / "aiperf_multi_turn.jsonl", "aiperf-multi-turn")
 
 
 def test_units_keep_only_one_token_words() -> None:
@@ -85,6 +86,46 @@ def test_a_merge_refuses_the_schedule() -> None:
     with pytest.raises(TokenizerError, match=r"line \d+: .*adjacent words merged"):
         build_schedule(
             MOONCAKE, Selection(), salt="s", tokenizer=fake_tokenizer(MergesRepeats())
+        )
+
+
+@pytest.mark.parametrize("encoder", [ByteLevel(), Metaspace()])
+def test_multi_turn_counts_every_message_exactly(encoder: Any) -> None:
+    schedule = build_schedule(
+        MULTI, Selection(), salt="s", tokenizer=fake_tokenizer(encoder)
+    )
+    builder = schedule.prompt_builder()
+    for index, request in enumerate(schedule.requests):
+        history = schedule.history_at(builder, index)
+        texts = [text for _, text in history] + [schedule.entries[index].text or ""]
+        counted = sum(len(ids) for ids in encoder.encode_batch(texts))
+        assert request.tokenizer_prompt_tokens == counted
+        replies = [text for role, text in history if role == "assistant"]
+        earlier = schedule.entries[index - len(replies) : index]
+        assert [len(ids) for ids in encoder.encode_batch(replies)] == [
+            e.output_tokens for e in earlier
+        ]
+    assert max(r.history_turns or 0 for r in schedule.requests) == 2
+    history_record = schedule.to_document()["prompts"]["history"]
+    assert history_record["assistant_method"] == TOKEN_PROMPT_METHOD + ":reply"
+    assert history_record["assistant_token_provenance"] == "tokenizer_exact"
+    assert "chat template" in history_record["counted"]
+
+
+class _GrowsLongText(ByteLevel):
+    """One token per word in the probes, but texts of 3+ words gain a token."""
+
+    def pieces(self, text: str) -> list[str]:
+        pieces = super().pieces(text)
+        return pieces + ["!"] if len(pieces) >= 3 else pieces
+
+
+def test_multi_turn_refuses_a_reply_of_inexact_length() -> None:
+    # User turns are trace text and only counted; the synthetic replies of
+    # 3 or more words no longer encode one token per word.
+    with pytest.raises(TokenizerError, match=r"line \d+: .*adjacent words merged"):
+        build_schedule(
+            MULTI, Selection(), salt="s", tokenizer=fake_tokenizer(_GrowsLongText())
         )
 
 

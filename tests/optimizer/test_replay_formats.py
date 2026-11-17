@@ -288,3 +288,70 @@ def test_aiperf_refuses_unsupported_rows(
 ) -> None:
     with pytest.raises(TraceFormatError, match=message):
         parse_trace(_write(tmp_path, json.dumps(row) + "\n"), "aiperf-single-turn")
+
+
+AIPERF_MULTI = FIXTURES / "aiperf_multi_turn.jsonl"
+
+
+def test_aiperf_multi_turn_groups_and_orders_sessions() -> None:
+    trace = parse_trace(AIPERF_MULTI, "aiperf-multi-turn")
+    entries = trace.entries
+    assert trace.sessions == 3
+    assert trace.rows_total == 4
+    # Lines sharing a session_id join in file order; sessions sort by start.
+    assert [e.line for e in entries] == [1, 1, 3, 4, 2]
+    assert [e.session for e in entries] == [0, 0, 0, 1, 2]
+    assert [e.turn for e in entries] == [0, 1, 2, 0, 0]
+    assert [e.arrival_s for e in entries] == [0.0, 0.0, 0.0, 0.2, 0.5]
+    assert entries[1].delay_s == 0.01 and entries[1].not_before_s is None
+    assert entries[2].not_before_s == 0.8 and entries[2].delay_s is None
+    source = trace.source_dict()
+    assert source["sessions"] == 3
+    assert source["upstream"]["repository"] == "ai-dynamo/aiperf"
+    assert "trip" not in json.dumps(source)
+
+
+@pytest.mark.parametrize(
+    ("turns", "match"),
+    [
+        ([{"timestamp": 0, "texts": ["a"], "output_length": 1}], "texts"),
+        ([{"delay": 5, "text": "a", "output_length": 1}], "first turn"),
+        ([{"text": "a", "output_length": 1}], "first turn"),
+        (
+            [
+                {"timestamp": 0, "text": "a", "output_length": 1},
+                {"timestamp": 9, "delay": 1, "text": "b", "output_length": 1},
+            ],
+            "not both",
+        ),
+        (
+            [{"timestamp": 0, "text": "a", "output_length": 1, "role": "system"}],
+            "role",
+        ),
+        (
+            [{"timestamp": 0, "text": "a", "output_length": 1, "session_id": "x"}],
+            "session_id",
+        ),
+        (
+            [
+                {"timestamp": 9, "text": "a", "output_length": 1},
+                {"timestamp": 5, "text": "b", "output_length": 1},
+            ],
+            "backwards",
+        ),
+        ([{"timestamp": 0, "text": "a"}], "output_length"),
+        ([], "non-empty list"),
+    ],
+)
+def test_aiperf_multi_turn_refusals(
+    tmp_path: Path, turns: list[dict[str, object]], match: str
+) -> None:
+    path = _write(tmp_path, json.dumps({"session_id": "s", "turns": turns}) + "\n")
+    with pytest.raises(TraceFormatError, match=match):
+        parse_trace(path, "aiperf-multi-turn")
+
+
+def test_aiperf_multi_turn_refuses_a_single_turn_row(tmp_path: Path) -> None:
+    path = _write(tmp_path, AIPERF.read_text())
+    with pytest.raises(TraceFormatError, match="unknown field"):
+        parse_trace(path, "aiperf-multi-turn")

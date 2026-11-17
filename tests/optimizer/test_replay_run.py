@@ -299,3 +299,87 @@ def test_a_plain_run_has_no_tokenizer_overhead(tmp_path: Path) -> None:
     assert all(
         row["tokenizer_prompt_tokens"] is None for row in _lines(out / REQUESTS_FILE)
     )
+
+
+MULTI = str(FIXTURES / "aiperf_multi_turn.jsonl")
+
+
+def test_multi_turn_run_sends_history_after_each_turn_completes(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "out"
+    with fake_openai_server() as server:
+        argv = _argv(server.endpoint, out)
+        argv[2:5] = [MULTI, "--format", "aiperf-multi-turn"]
+        assert _run(argv) == 0
+        bodies = list(server.bodies)
+
+    roles = sorted(
+        (tuple(m["role"] for m in body["messages"]) for body in bodies), key=len
+    )
+    assert roles[-1] == ("user", "assistant", "user", "assistant", "user")
+    longest = max(bodies, key=lambda body: len(body["messages"]))
+    assert [m["content"] for m in longest["messages"][::2]] == [
+        "Plan a short trip.",
+        "Add a budget.",
+        "Make it shorter.",
+    ]
+    lines = _lines(out / REQUESTS_FILE)
+    trip = [line for line in lines if line["session"] == 0]
+    assert [line["turn"] for line in trip] == [0, 1, 2]
+    assert trip[1]["dispatched_offset_s"] >= trip[0]["completed_offset_s"]
+    assert trip[2]["dispatched_offset_s"] >= trip[1]["completed_offset_s"]
+    result = read_result(out / RESULT_FILE)
+    assert result["counts"]["prompt_sha256_mismatches"] == 0
+    assert result["sessions"]["sessions"] == 3
+    assert result["sessions"]["all_turns_succeeded"] == 3
+    assert result["dispatch"]["policy"]["kind"] == "session_arrivals"
+    for name in (REQUESTS_FILE, RESULT_FILE, SCHEDULE_FILE):
+        assert "Make it shorter" not in (out / name).read_text()
+
+
+def test_multi_turn_run_with_a_tokenizer_reports_exact_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        replay_cli,
+        "load_tokenizer",
+        lambda spec, revision=None: fake_tokenizer(ByteLevel(), name=spec),
+    )
+    out = tmp_path / "out"
+    with fake_openai_server() as server:
+        argv = _argv(server.endpoint, out, "--tokenizer", "org/model")
+        argv[2:5] = [MULTI, "--format", "aiperf-multi-turn"]
+        assert _run(argv) == 0
+    result = read_result(out / RESULT_FILE)
+    assert result["counts"]["prompt_sha256_mismatches"] == 0
+    assert result["sessions"]["all_turns_succeeded"] == 3
+    rows = _lines(out / REQUESTS_FILE)
+    assert all(row["tokenizer_prompt_tokens"] for row in rows)
+    assert result["tokens"]["input_minus_tokenizer"]["requests_compared"] == 5
+
+
+def test_multi_turn_session_continues_after_a_failed_turn(tmp_path: Path) -> None:
+    trace = parse_trace(MULTI, "aiperf-multi-turn")
+    schedule = build_schedule(trace, Selection(max_sessions=1), salt="s")
+    with fake_openai_server() as server:
+        server.behaviour.fail_every = 1
+        base = APICollectionConfig(
+            run_id="replay",
+            provider="openai-compatible",
+            endpoint=server.endpoint,
+            model_id="test-model",
+            prompt="unused",
+            output_dir=tmp_path,
+            command_argv=("llmtracefx-optimizer",),
+            credential_env_var=API_KEY_ENV,
+        )
+        replay = dispatch_schedule(
+            schedule,
+            base,
+            ReplayOptions(),
+            transport=UrllibStreamingTransport(),
+            environ=ENVIRON,
+        )
+    assert [row.sent for row in replay.rows] == [True, True, True]
+    assert not any(row.success for row in replay.rows)

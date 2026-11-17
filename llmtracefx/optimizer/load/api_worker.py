@@ -72,7 +72,9 @@ class ApiRequestSpec:
     ``max_output_tokens`` when set. ``extra_body`` is merged over the base
     config's ``extra_body``, with the spec winning on a shared key.
     ``run_id_suffix`` names the request inside the run; it defaults to the
-    zero-padded dispatch index.
+    zero-padded dispatch index. ``history`` holds earlier conversation
+    turns sent before ``prompt``, as ``(role, content)`` pairs; the
+    collector config checks its shape.
     """
 
     prompt: str
@@ -80,6 +82,7 @@ class ApiRequestSpec:
     run_id_suffix: str | None = None
     max_tokens: int | None = None
     extra_body: Mapping[str, Any] | None = None
+    history: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.prompt, str) or not self.prompt:
@@ -119,6 +122,7 @@ def request_config(
         run_id=f"{base.run_id}-{suffix}",
         prompt=spec.prompt,
         system_prompt=spec.system_prompt,
+        history=spec.history,
         max_output_tokens=(
             spec.max_tokens if spec.max_tokens is not None else base.max_output_tokens
         ),

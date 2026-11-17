@@ -1,6 +1,6 @@
 """Strict parsers for production arrival traces.
 
-Three formats are read, each checked against its upstream definition:
+Four formats are read, each checked against its upstream definition:
 
 ``mooncake``
     kvcache-ai/Mooncake ``FAST25-release/traces/*.jsonl`` and
@@ -19,6 +19,23 @@ Three formats are read, each checked against its upstream definition:
     (milliseconds), ``text`` and ``output_length``. Fields replay cannot
     honour, such as ``delay``, ``session_id`` and multimodal content, are
     refused rather than dropped.
+
+``aiperf-multi-turn``
+    The AIPerf ``multi_turn`` custom dataset JSONL (ai-dynamo/aiperf
+    ``src/aiperf/dataset/loader/multi_turn.py`` at commit
+    ``fc7d61eafa813d53c8c6056de5b64648cb60d843``). One line is
+    ``{"session_id": ..., "turns": [...]}``. Lines that share a
+    ``session_id`` form one session, with turns in file order; a line with
+    no ``session_id`` is a session of its own. Each turn has ``text`` and
+    ``output_length``. The first turn of a session needs ``timestamp``; a
+    later turn may set ``timestamp`` (not before) or ``delay`` (after the
+    previous turn completes), both in milliseconds, as in AIPerf's fixed
+    schedule. Sessions are ordered by their first timestamp. Raw session
+    ids are never kept, only the session's position in that order.
+
+Mooncake publishes no multi-turn format: its FAST25 ``conversation_trace``
+uses the plain four-field schema with no session field, so it replays as a
+``mooncake`` trace.
 
 The format is always named by the caller and the file is never sniffed. The
 whole file is validated in one streaming pass, including rows a later
@@ -45,7 +62,16 @@ from .._artifact_io import reject_non_finite_json_constant
 MOONCAKE = "mooncake"
 BURSTGPT = "burstgpt"
 AIPERF_SINGLE_TURN = "aiperf-single-turn"
-TRACE_FORMATS = (MOONCAKE, BURSTGPT, AIPERF_SINGLE_TURN)
+AIPERF_MULTI_TURN = "aiperf-multi-turn"
+TRACE_FORMATS = (MOONCAKE, BURSTGPT, AIPERF_SINGLE_TURN, AIPERF_MULTI_TURN)
+
+AIPERF_UPSTREAM = {
+    "repository": "ai-dynamo/aiperf",
+    "commit": "fc7d61eafa813d53c8c6056de5b64648cb60d843",
+    "loader": "src/aiperf/dataset/loader/multi_turn.py",
+    "timing": "src/aiperf/timing/strategies/fixed_schedule.py",
+}
+"""The upstream definition the multi-turn parser and session timing follow."""
 
 MOONCAKE_BLOCK_SIZE = 512
 """Tokens per hash block in the published Mooncake traces."""
@@ -87,6 +113,19 @@ _AIPERF_UNSUPPORTED_KEYS = {
     "extra": "per-request body fields are not forwarded by replay",
 }
 
+_AIPERF_MULTI_TURN_LINE_KEYS = frozenset({"type", "session_id", "turns"})
+_AIPERF_MULTI_TURN_TURN_KEYS = frozenset(
+    {"type", "text", "output_length", "timestamp", "delay", "role"}
+)
+_AIPERF_MULTI_TURN_UNSUPPORTED = {
+    **{
+        key: reason
+        for key, reason in _AIPERF_UNSUPPORTED_KEYS.items()
+        if key not in ("delay", "session_id")
+    },
+    "session_id": "a turn's session is the session_id of its line",
+}
+
 _DECIMAL = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 _INTEGER = re.compile(r"[0-9]+")
 
@@ -102,7 +141,9 @@ class TraceEntry:
     line: int
     """1-based physical line in the source file."""
     arrival_s: float
-    """Source arrival time in seconds, before any rebasing or scaling."""
+    """Source arrival time in seconds, before any rebasing or scaling. For a
+    multi-turn trace this is the session's arrival, the first turn's
+    timestamp, for every turn of the session."""
     output_tokens: int
     input_tokens: int | None = None
     """Declared prompt length. ``None`` for text formats, which declare text."""
@@ -110,6 +151,16 @@ class TraceEntry:
     text: str | None = None
     model: str | None = None
     log_type: str | None = None
+    session: int | None = None
+    """Multi-turn only: the session's position after sorting by arrival."""
+    turn: int | None = None
+    """Multi-turn only: 0-based turn number within the session."""
+    line_turn: int | None = None
+    """Multi-turn only: 0-based position in its line's ``turns`` list."""
+    delay_s: float | None = None
+    """Later turns only: wait after the previous turn completes."""
+    not_before_s: float | None = None
+    """Later turns only: declared timestamp, in source seconds."""
 
 
 @dataclass(frozen=True)
@@ -129,10 +180,12 @@ class ParsedTrace:
     columns: tuple[str, ...] = ()
     """BurstGPT header columns, in file order."""
     ignored_columns: tuple[str, ...] = ()
+    sessions: int | None = None
+    """Multi-turn only: the number of sessions."""
 
     def source_dict(self) -> dict[str, Any]:
         """The source description recorded in every replay artifact."""
-        return {
+        source = {
             "format": self.format,
             "file_name": self.file_name,
             "sha256": self.sha256,
@@ -146,6 +199,10 @@ class ParsedTrace:
             "columns": list(self.columns),
             "ignored_columns": list(self.ignored_columns),
         }
+        if self.sessions is not None:
+            source["sessions"] = self.sessions
+            source["upstream"] = dict(AIPERF_UPSTREAM)
+        return source
 
 
 class _HashingLines:
@@ -215,6 +272,8 @@ def parse_trace(
             result = _parse_mooncake(lines, label, block_size)
         elif fmt == BURSTGPT:
             result = _parse_burstgpt(lines, label, exclude_failed)
+        elif fmt == AIPERF_MULTI_TURN:
+            result = _parse_aiperf_multi_turn(lines, label)
         else:
             result = _parse_aiperf_single_turn(lines, label)
     entries, rows_total, origin_s, extra = result
@@ -530,22 +589,9 @@ def _parse_aiperf_single_turn(lines: _HashingLines, label: str) -> _ParseResult:
         for required in ("timestamp", "text", "output_length"):
             if row.get(required) is None:
                 raise TraceFormatError(f"{where}: {required} is required for replay")
-        timestamp = row["timestamp"]
-        if (
-            isinstance(timestamp, bool)
-            or not isinstance(timestamp, (int, float))
-            or not math.isfinite(timestamp)
-            or not 0 <= timestamp <= _MAX_EXACT_INT
-        ):
-            raise TraceFormatError(
-                f"{where}: timestamp must be a non-negative number of "
-                f"milliseconds, got {timestamp!r}"
-            )
-        text = row["text"]
-        if not isinstance(text, str) or not text.strip():
-            raise TraceFormatError(f"{where}: text must be a non-empty string")
+        arrival_s = _milliseconds(row, "timestamp", where)
+        text = _text_field(row, where)
         output_length = _int_field(row, "output_length", where, minimum=1)
-        arrival_s = float(timestamp) / 1000.0
         _require_non_decreasing(arrival_s, previous, where, "timestamp")
         previous = arrival_s
         entries.append(
@@ -559,3 +605,164 @@ def _parse_aiperf_single_turn(lines: _HashingLines, label: str) -> _ParseResult:
     if not entries:
         raise TraceFormatError(f"{label}: the trace has no rows")
     return tuple(entries), len(entries), entries[0].arrival_s, {}
+
+
+def _milliseconds(row: dict[str, Any], key: str, where: str) -> float:
+    """A non-negative millisecond value, returned in seconds."""
+    value = row[key]
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or not 0 <= value <= _MAX_EXACT_INT
+    ):
+        raise TraceFormatError(
+            f"{where}: {key} must be a non-negative number of milliseconds, "
+            f"got {value!r}"
+        )
+    return float(value) / 1000.0
+
+
+def _text_field(row: dict[str, Any], where: str) -> str:
+    text = row["text"]
+    if not isinstance(text, str) or not text.strip():
+        raise TraceFormatError(f"{where}: text must be a non-empty string")
+    return text
+
+
+@dataclass(frozen=True, slots=True)
+class _Turn:
+    line: int
+    line_turn: int
+    text: str
+    output_tokens: int
+    timestamp_s: float | None
+    delay_s: float | None
+
+
+def _check_keys(
+    row: dict[str, Any],
+    where: str,
+    supported: frozenset[str],
+    unsupported: dict[str, str],
+    what: str,
+) -> None:
+    for key in row:
+        if key in unsupported:
+            raise TraceFormatError(
+                f"{where}: field {key!r} is not supported: {unsupported[key]}"
+            )
+        if key not in supported:
+            raise TraceFormatError(f"{where}: unknown field {key!r} for {what}")
+
+
+def _multi_turn_turn(raw: Any, line: int, position: int, label: str) -> _Turn:
+    where = f"{label}:{line}: turns[{position}]"
+    if not isinstance(raw, dict):
+        raise TraceFormatError(f"{where}: expected a JSON object")
+    _check_keys(
+        raw,
+        where,
+        _AIPERF_MULTI_TURN_TURN_KEYS,
+        _AIPERF_MULTI_TURN_UNSUPPORTED,
+        "an AIPerf turn",
+    )
+    if raw.get("type", "single_turn") != "single_turn":
+        raise TraceFormatError(f"{where}: type must be 'single_turn'")
+    if raw.get("role") not in ("user", None):
+        raise TraceFormatError(
+            f"{where}: role must be 'user' when present; system and assistant "
+            "turns are not replayed"
+        )
+    for required in ("text", "output_length"):
+        if raw.get(required) is None:
+            raise TraceFormatError(f"{where}: {required} is required for replay")
+    timestamp = (
+        None if raw.get("timestamp") is None else _milliseconds(raw, "timestamp", where)
+    )
+    delay = None if raw.get("delay") is None else _milliseconds(raw, "delay", where)
+    if timestamp is not None and delay is not None:
+        raise TraceFormatError(f"{where}: a turn sets timestamp or delay, not both")
+    return _Turn(
+        line=line,
+        line_turn=position,
+        text=_text_field(raw, where),
+        output_tokens=_int_field(raw, "output_length", where, minimum=1),
+        timestamp_s=timestamp,
+        delay_s=delay,
+    )
+
+
+def _parse_aiperf_multi_turn(lines: _HashingLines, label: str) -> _ParseResult:
+    sessions: dict[str | int, list[_Turn]] = {}
+    rows_total = 0
+    for line, row in _json_rows(lines, label):
+        rows_total += 1
+        where = f"{label}:{line}"
+        _check_keys(
+            row,
+            where,
+            _AIPERF_MULTI_TURN_LINE_KEYS,
+            {},
+            "an AIPerf multi_turn row",
+        )
+        if row.get("type", "multi_turn") != "multi_turn":
+            raise TraceFormatError(f"{where}: type must be 'multi_turn'")
+        session_id = row.get("session_id")
+        if session_id is not None and (
+            not isinstance(session_id, str) or not session_id
+        ):
+            raise TraceFormatError(
+                f"{where}: session_id must be a non-empty string when present"
+            )
+        turns = row.get("turns")
+        if not isinstance(turns, list) or not turns:
+            raise TraceFormatError(f"{where}: turns must be a non-empty list")
+        # A line without a session_id is its own session. Its key is the line
+        # number, an int, so it can never collide with a string session_id.
+        key: str | int = line if session_id is None else session_id
+        sessions.setdefault(key, []).extend(
+            _multi_turn_turn(turn, line, position, label)
+            for position, turn in enumerate(turns)
+        )
+    if not sessions:
+        raise TraceFormatError(f"{label}: the trace has no rows")
+    starts: list[tuple[float, list[_Turn]]] = []
+    for turns in sessions.values():
+        first = turns[0]
+        where = f"{label}:{first.line}: turns[{first.line_turn}]"
+        if first.timestamp_s is None or first.delay_s is not None:
+            raise TraceFormatError(
+                f"{where}: the first turn of a session needs a timestamp and no "
+                "delay; it is sent at that time"
+            )
+        previous = first.timestamp_s
+        for turn in turns[1:]:
+            if turn.timestamp_s is None:
+                continue
+            _require_non_decreasing(
+                turn.timestamp_s,
+                previous,
+                f"{label}:{turn.line}: turns[{turn.line_turn}]",
+                "timestamp within the session",
+            )
+            previous = turn.timestamp_s
+        starts.append((first.timestamp_s, turns))
+    # sorted() is stable, so sessions that start together keep file order.
+    starts.sort(key=lambda item: item[0])
+    entries = [
+        TraceEntry(
+            line=turn.line,
+            arrival_s=start,
+            output_tokens=turn.output_tokens,
+            text=turn.text,
+            session=session,
+            turn=number,
+            line_turn=turn.line_turn,
+            delay_s=None if number == 0 else turn.delay_s,
+            not_before_s=None if number == 0 else turn.timestamp_s,
+        )
+        for session, (start, turns) in enumerate(starts)
+        for number, turn in enumerate(turns)
+    ]
+    return tuple(entries), rows_total, starts[0][0], {"sessions": len(starts)}
