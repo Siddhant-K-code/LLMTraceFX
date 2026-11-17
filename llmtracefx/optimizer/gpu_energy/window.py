@@ -9,7 +9,6 @@ NVML and a fake clock. Nothing here interprets the readings; that is
 from __future__ import annotations
 
 import subprocess
-import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -96,7 +95,7 @@ class UnknownProcessTable:
 
 
 def default_process_table() -> ProcessTable:
-    if sys.platform.startswith("linux"):
+    if Path("/proc/self/stat").is_file():
         return ProcProcessTable()
     return UnknownProcessTable()
 
