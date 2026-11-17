@@ -31,6 +31,7 @@ from llmtracefx.optimizer.collectors.openai_api import (
     TransportConnectionError,
     TransportTimeout,
     UrllibStreamingTransport,
+    _RESOLVER_WORKERS,
     _DeadlineHTTPSConnection,
     _DeadlineWatchdog,
     _UrllibResponse,
@@ -1306,14 +1307,14 @@ def test_timed_out_dns_uses_a_bounded_worker(
         timeout_seconds=0.03,
     )
     try:
-        for _ in range(4):
+        for _ in range(_RESOLVER_WORKERS + 4):
             with pytest.raises(TransportTimeout):
                 UrllibStreamingTransport().open_stream(request)
         workers = [
             thread
             for thread in threading.enumerate()
-            if thread.name == "llmtracefx-dns-resolver"
+            if thread.name.startswith("llmtracefx-dns-resolver")
         ]
-        assert len(workers) == 1
+        assert len(workers) == _RESOLVER_WORKERS
     finally:
         release.set()

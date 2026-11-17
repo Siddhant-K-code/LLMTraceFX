@@ -460,17 +460,31 @@ class _ResolverTask:
     failure: OSError | UnicodeError | None = None
 
 
-class _BoundedResolver:
-    """One daemon resolver worker with a bounded pending queue."""
+_RESOLVER_WORKERS = 8
 
-    def __init__(self) -> None:
-        self._tasks: queue.Queue[_ResolverTask] = queue.Queue(maxsize=1)
-        self._worker = threading.Thread(
-            target=self._run,
-            name="llmtracefx-dns-resolver",
-            daemon=True,
-        )
-        self._worker.start()
+
+class _BoundedResolver:
+    """A small fixed pool of daemon resolver workers with a bounded queue.
+
+    One worker was enough for one request at a time. A load sweep opens
+    many connections at once, and a single worker would serialize their
+    DNS lookups and add that wait to every request's time to first token.
+    The pool and its queue stay bounded, so a hung resolver still cannot
+    accumulate threads.
+    """
+
+    def __init__(self, workers: int = _RESOLVER_WORKERS) -> None:
+        self._tasks: queue.Queue[_ResolverTask] = queue.Queue(maxsize=workers)
+        self._workers = [
+            threading.Thread(
+                target=self._run,
+                name=f"llmtracefx-dns-resolver-{index}",
+                daemon=True,
+            )
+            for index in range(workers)
+        ]
+        for worker in self._workers:
+            worker.start()
 
     def resolve(
         self,
@@ -1352,6 +1366,14 @@ class APICollectionConfig:
     """Provider-side model build, when the provider exposes one. Hosted
     APIs generally do not, in which case this stays ``None`` rather than
     being guessed from the model ID."""
+    extra_body: Mapping[str, Any] | None = None
+    """Additional top-level JSON body fields, for server-specific options
+    such as vLLM's ``ignore_eos``. They are recorded in the request plan
+    and the config hash like every other request field, and they may not
+    replace a field this collector already sets."""
+    stream_include_usage: bool = False
+    """Send ``stream_options.include_usage``. Portable OpenAI field that
+    several servers require before they report token usage in a stream."""
     retained_event_limit: int = DEFAULT_RETAINED_EVENT_LIMIT
     """How many per-event timing rows the timeline keeps.
 
@@ -1430,10 +1452,61 @@ class APICollectionConfig:
             raise OpenAIStreamCollectorError(
                 "request_timeout_seconds must be a positive finite number"
             )
+        if not isinstance(self.stream_include_usage, bool):
+            raise OpenAIStreamCollectorError("stream_include_usage must be a boolean")
+        if self.extra_body is not None:
+            object.__setattr__(self, "extra_body", _validated_extra_body(self))
         if not isinstance(self.extensions, ProviderExtensions):
             raise OpenAIStreamCollectorError(
                 "extensions must be a ProviderExtensions instance"
             )
+
+
+_RESERVED_BODY_FIELDS = frozenset(
+    {
+        "messages",
+        "model",
+        "stream",
+        "stream_options",
+        "max_tokens",
+        "max_completion_tokens",
+        "temperature",
+        "top_p",
+        "seed",
+        "reasoning_effort",
+        "thinking",
+        "request_id",
+        "provider",
+    }
+)
+
+
+def _validated_extra_body(config: APICollectionConfig) -> dict[str, Any]:
+    extra = config.extra_body
+    if not isinstance(extra, Mapping) or not extra:
+        raise OpenAIStreamCollectorError(
+            "extra_body must be a non-empty mapping when set"
+        )
+    for key in extra:
+        if not isinstance(key, str) or not key:
+            raise OpenAIStreamCollectorError(
+                "extra_body keys must be non-empty strings"
+            )
+    clashes = sorted(set(extra) & _RESERVED_BODY_FIELDS)
+    if clashes:
+        raise OpenAIStreamCollectorError(
+            "extra_body may not set fields the collector controls: "
+            + ", ".join(clashes)
+        )
+    try:
+        # A JSON round trip both proves the value is serializable without
+        # NaN or Infinity and detaches it from the caller's objects.
+        copied = json.loads(json.dumps(dict(extra), allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise OpenAIStreamCollectorError(
+            f"extra_body must be finite JSON: {type(exc).__name__}"
+        ) from None
+    return cast(dict[str, Any], copied)
 
 
 def _validate_optional_ratio(name: str, value: Any, *, maximum: float) -> None:
@@ -2318,12 +2391,25 @@ def _core_request_parameters(config: APICollectionConfig) -> dict[str, Any]:
         parameters["top_p"] = config.top_p
     if config.seed is not None:
         parameters["seed"] = config.seed
+    if config.stream_include_usage:
+        # Only written when asked for, so existing config hashes are
+        # unchanged. vLLM and SGLang report usage in a stream only when
+        # this is set.
+        parameters["stream_options"] = {"include_usage": True}
     return parameters
+
+
+def _extension_fields(config: APICollectionConfig) -> dict[str, Any]:
+    """Provider extensions plus any caller-supplied extra body fields."""
+    fields = config.extensions.to_request_fields()
+    if config.extra_body is not None:
+        fields.update(config.extra_body)
+    return fields
 
 
 def _request_body(config: APICollectionConfig) -> dict[str, Any]:
     body = _core_request_parameters(config)
-    body.update(config.extensions.to_request_fields())
+    body.update(_extension_fields(config))
     body["messages"] = _build_messages(config)
     return body
 
@@ -2374,7 +2460,7 @@ def _config_identity_hash(config: APICollectionConfig) -> str:
             # credential itself would persist a derivation of a secret this
             # collector promises never to hash.
             "request_parameters": _core_request_parameters(config),
-            "provider_extensions": config.extensions.to_request_fields(),
+            "provider_extensions": _extension_fields(config),
             # Two runs that classify the same finish reason differently are
             # not the same measurement configuration, even though they
             # issue byte-identical requests. The difference is in what the
@@ -2520,7 +2606,7 @@ def build_request_plan(
         header_names=("Accept", "Authorization", "Content-Type"),
         messages=messages,
         request_parameters=_core_request_parameters(config),
-        provider_extensions=config.extensions.to_request_fields(),
+        provider_extensions=_extension_fields(config),
         finish_reasons=config.finish_reasons.identity(),
         request_timeout_seconds=float(config.request_timeout_seconds),
         retained_event_limit=config.retained_event_limit,
@@ -2912,6 +2998,14 @@ class APICollectionResult:
     record: ExperimentRecord
     evidence: APIEvidence
     response_text: str
+    started_monotonic: float | None = None
+    """The collector clock reading taken just before the request was sent.
+    Not persisted; a load sweep uses it to place the request on its own
+    timeline with the same clock the offsets were measured on."""
+    completed_monotonic: float | None = None
+    http_status: int | None = None
+    """The response status line, or None when no response headers arrived
+    (a connection failure or a timeout before headers). Not persisted."""
 
 
 # --- Streaming accumulation --------------------------------------------------
@@ -3767,6 +3861,8 @@ def _assert_credential_not_embedded(
         ("provider_request_id", config.extensions.provider_request_id),
     )
     haystacks.extend((label, value) for label, value in optional if value is not None)
+    if config.extra_body is not None:
+        haystacks.append(("extra_body", json.dumps(config.extra_body, sort_keys=True)))
     if config.extensions.routing is not None:
         haystacks.extend(
             (f"provider_routing.order[{index}]", route)
@@ -3981,6 +4077,33 @@ def collect_openai_stream(
     failures stay explicit exceptions, because none of them describes a
     request that was actually attempted.
     """
+    result = stream_chat_completion(
+        config, transport=transport, environ=environ, clock=clock
+    )
+    _publish_artifacts(
+        config.output_dir,
+        run_id=config.run_id,
+        record=result.record,
+        evidence=result.evidence,
+        response_text=result.response_text,
+    )
+    return result
+
+
+def stream_chat_completion(
+    config: APICollectionConfig,
+    *,
+    transport: StreamingTransport,
+    environ: Mapping[str, str] | None = None,
+    clock: Callable[[], float] = time.perf_counter,
+) -> APICollectionResult:
+    """Stream one chat completion and return its evidence without writing it.
+
+    This is the request path ``collect_openai_stream`` uses, minus the
+    artifact set. Load sweeps call it directly because a request issued
+    under concurrency is not an isolated measurement and must not leave a
+    ``record.json`` that reads as one.
+    """
     resolved_environ = os.environ if environ is None else environ
     credential = _resolve_credential(config, resolved_environ)
     _assert_credential_not_embedded(credential, config)
@@ -4011,6 +4134,7 @@ def collect_openai_stream(
     failure: APIFailure | None = None
     rate_limit_headers: dict[str, str] = {}
     header_request_id: str | None = None
+    http_status: int | None = None
 
     try:
         response = transport.open_stream(request)
@@ -4021,6 +4145,7 @@ def collect_openai_stream(
     else:
         accumulator.response_headers_at = clock()
         try:
+            http_status = response.status_code
             headers = response.headers
             rate_limit_headers = _rate_limit_headers(headers, redact=redact)
             header_request_id = _request_id_from_headers(headers)
@@ -4091,15 +4216,13 @@ def collect_openai_stream(
 
     _assert_finite_evidence(record, evidence)
 
-    _publish_artifacts(
-        config.output_dir,
-        run_id=config.run_id,
+    return APICollectionResult(
         record=record,
         evidence=evidence,
         response_text=response_text,
-    )
-    return APICollectionResult(
-        record=record, evidence=evidence, response_text=response_text
+        started_monotonic=started,
+        completed_monotonic=completed,
+        http_status=http_status,
     )
 
 

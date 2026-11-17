@@ -6003,3 +6003,92 @@ def test_bare_session_terms_remain_ordinary_query_keys(key: str) -> None:
 def test_session_words_inside_ordinary_settings_are_not_credentials(key: str) -> None:
     assert _names_a_credential(key) is False
     _validate_endpoint(f"https://api.example.com/v1/chat?{key}=value")
+
+
+# --- Load sweep support: extra_body, include_usage, no-artifact path ---------
+
+
+def _sent_body(config: APICollectionConfig) -> dict[str, Any]:
+    _, transport = run(config, glm_stream())
+    return json.loads(transport.requests[0].body)
+
+
+def test_extra_body_reaches_the_request_plan_and_hash(tmp_path: Path) -> None:
+    caller_owned = {"ignore_eos": True, "min_tokens": 8}
+    config = make_config(tmp_path, extra_body=caller_owned)
+    caller_owned["ignore_eos"] = False
+
+    body = _sent_body(config)
+    plan = build_request_plan(config, environ=ENVIRON)
+    plain = build_request_plan(make_config(tmp_path), environ=ENVIRON)
+
+    assert body["ignore_eos"] is True and body["min_tokens"] == 8
+    assert plan.provider_extensions["ignore_eos"] is True
+    assert "ignore_eos" not in plain.provider_extensions
+    assert plan.config_hash != plain.config_hash
+
+
+@pytest.mark.parametrize(
+    ("extra_body", "match"),
+    [
+        ({"max_tokens": 5}, "fields the collector controls: max_tokens"),
+        ({"stream": False}, "fields the collector controls: stream"),
+        ({"bad": float("nan")}, "finite JSON"),
+        ({"bad": object()}, "finite JSON"),
+        ({1: True}, "keys must be non-empty strings"),
+        ({}, "non-empty mapping"),
+    ],
+)
+def test_extra_body_is_refused_when_unsafe(
+    tmp_path: Path, extra_body: dict[Any, Any], match: str
+) -> None:
+    with pytest.raises(OpenAIStreamCollectorError, match=match):
+        make_config(tmp_path, extra_body=extra_body)
+
+
+def test_extra_body_may_not_carry_the_credential(tmp_path: Path) -> None:
+    config = make_config(tmp_path, extra_body={"note": API_KEY})
+    with pytest.raises(OpenAIStreamCollectorError):
+        assert_credential_not_embedded(config, ENVIRON)
+
+
+def test_stream_include_usage_is_opt_in(tmp_path: Path) -> None:
+    assert "stream_options" not in _sent_body(make_config(tmp_path))
+    config = make_config(tmp_path, stream_include_usage=True)
+    assert _sent_body(config)["stream_options"] == {"include_usage": True}
+    plan = build_request_plan(config, environ=ENVIRON)
+    assert plan.request_parameters["stream_options"] == {"include_usage": True}
+
+
+def test_stream_chat_completion_writes_nothing_and_reports_status(
+    tmp_path: Path,
+) -> None:
+    from llmtracefx.optimizer.collectors.openai_api import stream_chat_completion
+
+    config = make_config(tmp_path)
+    ok = stream_chat_completion(
+        config,
+        transport=FakeTransport(FakeResponse(glm_stream())),
+        environ=ENVIRON,
+        clock=StepClock(),
+    )
+    refused = stream_chat_completion(
+        config,
+        transport=FakeTransport(FakeResponse([b"{}"], status_code=429)),
+        environ=ENVIRON,
+        clock=StepClock(),
+    )
+    dropped = stream_chat_completion(
+        config,
+        transport=FakeTransport(TransportConnectionError("refused")),
+        environ=ENVIRON,
+        clock=StepClock(),
+    )
+
+    assert not config.output_dir.exists()
+    assert ok.http_status == 200 and ok.evidence.success
+    assert ok.started_monotonic is not None and ok.completed_monotonic is not None
+    assert refused.http_status == 429
+    assert refused.evidence.failure is not None
+    assert refused.evidence.failure.category == FAILURE_HTTP_STATUS
+    assert dropped.http_status is None
