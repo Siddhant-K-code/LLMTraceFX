@@ -5,10 +5,12 @@ import pytest
 
 from llmtracefx.optimizer.replay.artifact import ReplayArtifactError, sha256_text
 from llmtracefx.optimizer.replay.formats import parse_trace
+from llmtracefx.optimizer.replay.prompts import word_count
 from llmtracefx.optimizer.replay.schedule import (
     ScheduleError,
     Selection,
     build_schedule,
+    history_sha256,
     read_schedule,
     write_schedule,
 )
@@ -17,6 +19,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "replay"
 MOONCAKE = parse_trace(FIXTURES / "mooncake_small.jsonl", "mooncake")
 BURST = parse_trace(FIXTURES / "burstgpt_v1_small.csv", "burstgpt", exclude_failed=True)
 AIPERF = parse_trace(FIXTURES / "aiperf_single_turn.jsonl", "aiperf-single-turn")
+MULTI = parse_trace(FIXTURES / "aiperf_multi_turn.jsonl", "aiperf-multi-turn")
 
 
 def test_offsets_start_at_zero_and_scale() -> None:
@@ -125,3 +128,57 @@ def test_same_salt_gives_the_same_schedule() -> None:
     other = build_schedule(MOONCAKE, Selection(), salt="b").to_document()
     assert first["schedule_sha256"] == second["schedule_sha256"]
     assert first["schedule_sha256"] != other["schedule_sha256"]
+
+
+def test_multi_turn_history_resends_earlier_turns_with_synthetic_replies() -> None:
+    schedule = build_schedule(MULTI, Selection(time_scale=2.0), salt="s")
+    builder = schedule.prompt_builder()
+    requests = schedule.requests
+    assert [r.arrival_offset_s for r in requests] == [0.0, None, None, 0.4, 1.0]
+    assert requests[1].delay_s == 0.02 and requests[2].not_before_offset_s == 1.6
+    assert schedule.history_at(builder, 0) == ()
+    history = schedule.history_at(builder, 2)
+    assert [role for role, _ in history] == ["user", "assistant"] * 2
+    assert [history[0][1], history[2][1]] == ["Plan a short trip.", "Add a budget."]
+    # Each reply has the earlier turn's declared output_length in words.
+    assert [word_count(history[1][1]), word_count(history[3][1])] == [6, 4]
+    # The same earlier turn has the same bytes in every later request.
+    assert schedule.history_at(builder, 1) == history[:2]
+    assert requests[2].history_turns == 2
+    assert requests[2].history_sha256 == history_sha256(history)
+    assert requests[2].prompt_sha256 == sha256_text("Make it shorter.")
+    assert requests[2].estimated_prompt_tokens == 3 + sum(
+        word_count(text) for _, text in history
+    )
+    document = schedule.to_document()
+    assert document["prompts"]["history"]["assistant_length_provenance"] == (
+        "trace_declared"
+    )
+    assert document["sessions"]["upstream"]["commit"].startswith("fc7d61e")
+    assert document["summary"]["sessions"] == 3
+    assert document["selection"]["unit"] == "session"
+    assert "Plan a short trip" not in json.dumps(document)
+    with pytest.raises(ScheduleError, match="no full list"):
+        _ = schedule.offsets_s
+
+
+def test_single_turn_documents_have_no_session_fields() -> None:
+    document = build_schedule(AIPERF, Selection(), salt="s").to_document()
+    assert "sessions" not in document
+    assert "history" not in document["prompts"]
+    assert "session" not in document["requests"][0]
+    assert "max_sessions" not in document["selection"]
+
+
+def test_multi_turn_selection_keeps_whole_sessions() -> None:
+    first_two = build_schedule(MULTI, Selection(max_sessions=2), salt="s")
+    assert [r.source_line for r in first_two.requests] == [1, 1, 3, 4]
+    late = build_schedule(MULTI, Selection(start_s=0.1), salt="s")
+    assert [r.source_line for r in late.requests] == [4, 2]
+    assert late.requests[0].arrival_offset_s == 0.0
+    with pytest.raises(ScheduleError, match="--max-sessions"):
+        build_schedule(MULTI, Selection(max_requests=2), salt="s")
+    with pytest.raises(ScheduleError, match="multi-turn traces only"):
+        build_schedule(AIPERF, Selection(max_sessions=1), salt="s")
+    with pytest.raises(ScheduleError, match="at least 1"):
+        build_schedule(MULTI, Selection(max_sessions=0), salt="s")

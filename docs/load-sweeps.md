@@ -246,6 +246,9 @@ knows nothing about HTTP or sweeps. Trace replay builds on it.
   rate with Poisson or constant arrivals.
 - `TimedArrivals(offsets, max_in_flight)` sends at given offsets in seconds.
   Requests with equal offsets are released together.
+- `SessionArrivals(turns, max_in_flight)` sends each session's first turn at
+  its offset, and each later turn only after the previous turn of its session
+  completes, plus its delay or not before its offset.
 
 `dispatch(requests, send, policy, ...)` calls `send(request, context)` from
 worker threads and returns a `DispatchReport` with one outcome per request,

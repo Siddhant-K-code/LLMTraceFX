@@ -21,7 +21,14 @@ Three load policies are supported:
     recorded production trace. Requests that share an offset are released
     together, with no artificial gap between them.
 
-Open-loop and timed policies bound the number of requests in flight with
+``SessionArrivals(turns, max_in_flight)``
+    Multi-turn sessions, as in a recorded conversation trace. The first
+    turn of each session arrives at a fixed offset. Every later turn is
+    issued only after the session's previous turn completes, then after
+    its declared delay or at its declared offset, whichever applies. A
+    later turn's planned time is therefore only known at run time.
+
+Open-loop, timed and session policies bound the number of requests in flight with
 ``max_in_flight``. A request that reaches its arrival time while that cap
 is full waits for a free slot. It is counted in
 ``deferred_by_in_flight_cap`` and its wait shows up as dispatch lag, so a
@@ -37,6 +44,7 @@ the server, shaped the result.
 
 from __future__ import annotations
 
+import heapq
 import math
 import queue
 import random
@@ -211,18 +219,124 @@ class TimedArrivals:
         }
 
 
-LoadPolicy = ClosedLoop | OpenLoopRate | TimedArrivals
+@dataclass(frozen=True)
+class SessionTurn:
+    """One request's place in a multi-turn session.
+
+    The first turn of a session sets ``offset_s`` and leaves ``delay_s``
+    unset; it is sent at that offset. A later turn waits for the previous
+    turn of the same session to complete. It then waits ``delay_s`` if set,
+    or until ``offset_s`` if set, or not at all if neither is set.
+    """
+
+    session: int
+    offset_s: float | None = None
+    delay_s: float | None = None
+
+
+@dataclass(frozen=True)
+class SessionArrivals:
+    """Issue each session's turns in order, each after the previous completes."""
+
+    turns: tuple[SessionTurn, ...]
+    max_in_flight: int = MAX_CONCURRENCY
+    kind: ClassVar[str] = "session_arrivals"
+
+    def __post_init__(self) -> None:
+        raw: Any = self.turns
+        if isinstance(raw, (str, bytes)) or not isinstance(raw, Sequence):
+            raise DispatchConfigError("turns must be a sequence of SessionTurn")
+        turns = tuple(raw)
+        if not turns:
+            raise DispatchConfigError("turns must not be empty")
+        if len(turns) > MAX_REQUESTS:
+            raise DispatchConfigError(
+                f"at most {MAX_REQUESTS} turns are supported, got {len(turns)}"
+            )
+        last_offset: dict[int, float] = {}
+        for i, turn in enumerate(turns):
+            if not isinstance(turn, SessionTurn):
+                raise DispatchConfigError(f"turns[{i}] must be a SessionTurn")
+            _check_int(
+                f"turns[{i}].session", turn.session, minimum=0, maximum=MAX_REQUESTS
+            )
+            offset = (
+                None
+                if turn.offset_s is None
+                else _check_finite(
+                    f"turns[{i}].offset_s", turn.offset_s, positive=False
+                )
+            )
+            delay = (
+                None
+                if turn.delay_s is None
+                else _check_finite(f"turns[{i}].delay_s", turn.delay_s, positive=False)
+            )
+            if turn.session not in last_offset:
+                if offset is None or delay is not None:
+                    raise DispatchConfigError(
+                        f"turns[{i}] starts session {turn.session}, so it needs "
+                        "offset_s and no delay_s"
+                    )
+                last_offset[turn.session] = offset
+                continue
+            if offset is not None and delay is not None:
+                raise DispatchConfigError(
+                    f"turns[{i}] sets both offset_s and delay_s; use one"
+                )
+            if offset is not None:
+                if offset < last_offset[turn.session]:
+                    raise DispatchConfigError(
+                        f"turns[{i}].offset_s {offset} is before an earlier turn "
+                        f"of session {turn.session}"
+                    )
+                last_offset[turn.session] = offset
+        object.__setattr__(self, "turns", turns)
+        _check_int(
+            "max_in_flight", self.max_in_flight, minimum=1, maximum=MAX_CONCURRENCY
+        )
+
+    def first_turn_offsets(self) -> dict[int, float]:
+        """Request index to offset, for the first turn of each session."""
+        seen: set[int] = set()
+        firsts: dict[int, float] = {}
+        for index, turn in enumerate(self.turns):
+            if turn.session not in seen and turn.offset_s is not None:
+                seen.add(turn.session)
+                firsts[index] = float(turn.offset_s)
+        return firsts
+
+    def to_dict(self) -> dict[str, Any]:
+        firsts = list(self.first_turn_offsets().values())
+        return {
+            "kind": self.kind,
+            "turn_count": len(self.turns),
+            "session_count": len(firsts),
+            "first_session_offset_s": min(firsts),
+            "last_session_offset_s": max(firsts),
+            "max_in_flight": self.max_in_flight,
+        }
+
+
+LoadPolicy = ClosedLoop | OpenLoopRate | TimedArrivals | SessionArrivals
 
 
 def planned_offsets(policy: LoadPolicy, count: int) -> tuple[float, ...] | None:
     """The arrival schedule for ``count`` requests, in seconds from the start.
 
-    Closed loop has no schedule, since each dispatch waits on a completion,
-    so it returns ``None``. The other policies are fully determined by
-    their parameters: the same policy and count always give the same
-    offsets. The first arrival is at 0.
+    Closed loop and session arrivals have no full schedule, since a
+    dispatch waits on a completion, so they return ``None``. The other
+    policies are fully determined by their parameters: the same policy and
+    count always give the same offsets. The first arrival is at 0.
     """
     _check_int("count", count, minimum=1, maximum=MAX_REQUESTS)
+    if isinstance(policy, SessionArrivals):
+        if len(policy.turns) != count:
+            raise DispatchConfigError(
+                f"session arrivals list {len(policy.turns)} turns "
+                f"for {count} requests"
+            )
+        return None
     if isinstance(policy, ClosedLoop):
         return None
     if isinstance(policy, OpenLoopRate):
@@ -610,6 +724,99 @@ def _run_scheduled(
     return deferred
 
 
+def _run_sessions(run: _Run[Any, Any], policy: SessionArrivals, cap: int) -> int:
+    turns = policy.turns
+    count = len(turns)
+    follower: list[int | None] = [None] * count
+    last_turn: dict[int, int] = {}
+    for index, turn in enumerate(turns):
+        previous = last_turn.get(turn.session)
+        if previous is not None:
+            follower[previous] = index
+        last_turn[turn.session] = index
+    due = [(offset, index) for index, offset in policy.first_turn_offsets().items()]
+    heapq.heapify(due)
+    open_sessions = len(last_turn)
+    ready = threading.Condition()
+    slots = threading.Semaphore(cap)
+    work: queue.SimpleQueue[tuple[int, float] | None] = queue.SimpleQueue()
+    deferred = 0
+
+    def release_follower(index: int, completed: float) -> None:
+        nonlocal open_sessions
+        next_index = follower[index]
+        with ready:
+            if next_index is None:
+                open_sessions -= 1
+            else:
+                turn = turns[next_index]
+                if turn.delay_s is not None:
+                    target = completed + turn.delay_s
+                elif turn.offset_s is not None:
+                    target = max(completed, float(turn.offset_s))
+                else:
+                    target = completed
+                heapq.heappush(due, (target, next_index))
+            ready.notify()
+
+    def worker() -> None:
+        while True:
+            job = work.get()
+            if job is None:
+                return
+            try:
+                _, completed = run.execute(*job)
+            except BaseException:
+                run.halt.set()
+                with ready:
+                    ready.notify()
+                raise
+            finally:
+                slots.release()
+            release_follower(job[0], completed)
+
+    def next_due() -> tuple[int, float] | None:
+        with ready:
+            while not run.stopped():
+                if due:
+                    target, index = due[0]
+                    remaining = run.origin + target - run.clock()
+                    if remaining <= 0:
+                        heapq.heappop(due)
+                        return index, target
+                    ready.wait(min(remaining, _POLL_SECONDS))
+                elif open_sessions == 0:
+                    return None
+                else:
+                    ready.wait(_POLL_SECONDS)
+        return None
+
+    threads = [
+        threading.Thread(target=worker, name=f"llmtracefx-load-{k}", daemon=True)
+        for k in range(min(cap, count))
+    ]
+    for thread in threads:
+        thread.start()
+    try:
+        while (job := next_due()) is not None:
+            if not slots.acquire(blocking=False):
+                deferred += 1
+                acquired = False
+                while not acquired and not run.stopped():
+                    acquired = slots.acquire(timeout=_POLL_SECONDS)
+                if not acquired:
+                    break
+            work.put(job)
+    except BaseException:
+        run.halt.set()
+        raise
+    finally:
+        for _ in threads:
+            work.put(None)
+        _join_all(threads, run)
+    return deferred
+
+
 def dispatch(
     requests: Sequence[T],
     send: Callable[[T, DispatchContext], R],
@@ -634,7 +841,9 @@ def dispatch(
     threshold = _check_finite(
         "max_dispatch_lag_ms", max_dispatch_lag_ms, positive=False
     )
-    if not isinstance(policy, (ClosedLoop, OpenLoopRate, TimedArrivals)):
+    if not isinstance(
+        policy, (ClosedLoop, OpenLoopRate, TimedArrivals, SessionArrivals)
+    ):
         raise DispatchConfigError(f"unsupported load policy {type(policy).__name__}")
     offsets = planned_offsets(policy, len(items))
     cap = policy.max_in_flight
@@ -646,9 +855,14 @@ def dispatch(
 
     refill_ms: list[float] = []
     deferred = 0
-    if offsets is None:
+    unsent_offsets: dict[int, float] = {}
+    if isinstance(policy, SessionArrivals):
+        unsent_offsets = policy.first_turn_offsets()
+        deferred = _run_sessions(run, policy, cap)
+    elif offsets is None:
         refill_ms = _run_closed_loop(run, cap)
     else:
+        unsent_offsets = dict(enumerate(offsets))
         deferred = _run_scheduled(run, offsets, cap, sleep=sleep)
 
     window = clock() - run.origin
@@ -660,7 +874,7 @@ def dispatch(
             outcome = DispatchOutcome(
                 index=index,
                 sent=False,
-                scheduled_offset_s=None if offsets is None else offsets[index],
+                scheduled_offset_s=unsent_offsets.get(index),
             )
         outcomes.append(outcome)
 

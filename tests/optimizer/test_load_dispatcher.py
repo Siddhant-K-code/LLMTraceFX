@@ -27,6 +27,8 @@ from llmtracefx.optimizer.load.dispatcher import (
     DispatchContext,
     LagSummary,
     OpenLoopRate,
+    SessionArrivals,
+    SessionTurn,
     TimedArrivals,
     dispatch,
     planned_offsets,
@@ -258,3 +260,86 @@ def test_report_identifies_the_dispatcher_and_serialises() -> None:
     assert document["started_at_utc"].endswith("Z")
     assert document["policy"]["seed"] == 3
     assert document["sent_count"] == 2 and not document["stopped_early"]
+
+
+# --- Sessions ----------------------------------------------------------------
+
+
+def test_a_later_turn_waits_for_the_previous_turn_and_its_delay() -> None:
+    other_session_sent = threading.Event()
+
+    def send(item: int, context: DispatchContext) -> int:
+        if item == 2:
+            other_session_sent.set()
+        if item == 0:
+            # Session 1 is sent while session 0's first turn is in flight.
+            assert other_session_sent.wait(_TIMEOUT)
+        return item
+
+    policy = SessionArrivals(
+        (
+            SessionTurn(0, offset_s=0.0),
+            SessionTurn(0, delay_s=0.05),
+            SessionTurn(1, 0.0),
+        )
+    )
+    report = dispatch([0, 1, 2], send, policy, max_dispatch_lag_ms=1000.0)
+    first, second, _ = report.outcomes
+    assert all(outcome.sent for outcome in report.outcomes)
+    assert first.completed_offset_s is not None
+    assert second.scheduled_offset_s == pytest.approx(first.completed_offset_s + 0.05)
+    assert second.dispatched_offset_s is not None
+    assert second.dispatched_offset_s >= first.completed_offset_s + 0.05
+    assert report.planned_offsets_s is None
+    assert report.diagnostics.mode == "session_arrivals"
+
+
+def test_a_later_turn_with_an_offset_is_not_sent_before_it() -> None:
+    policy = SessionArrivals((SessionTurn(0, 0.0), SessionTurn(0, offset_s=0.1)))
+    report = dispatch([0, 1], _echo, policy, max_dispatch_lag_ms=1000.0)
+    later = report.outcomes[1]
+    assert later.scheduled_offset_s == pytest.approx(0.1)
+    assert later.dispatched_offset_s is not None and later.dispatched_offset_s >= 0.1
+
+
+def test_a_failed_turn_does_not_stop_its_session() -> None:
+    def send(item: int, context: DispatchContext) -> int:
+        if item == 0:
+            raise RuntimeError("boom")
+        return item
+
+    policy = SessionArrivals((SessionTurn(0, 0.0), SessionTurn(0)))
+    report = dispatch([0, 1], send, policy)
+    assert [o.client_error for o in report.outcomes] == ["RuntimeError", None]
+    assert report.outcomes[1].result == 1
+
+
+def test_stop_leaves_later_turns_unsent() -> None:
+    stop = threading.Event()
+
+    def send(item: int, context: DispatchContext) -> int:
+        stop.set()
+        return item
+
+    policy = SessionArrivals((SessionTurn(0, 0.0), SessionTurn(0), SessionTurn(0)))
+    report = dispatch([0, 1, 2], send, policy, stop=stop)
+    assert [o.sent for o in report.outcomes] == [True, False, False]
+    assert report.unsent_count == 2
+
+
+@pytest.mark.parametrize(
+    ("turns", "match"),
+    [
+        ((SessionTurn(0),), "starts session"),
+        ((SessionTurn(0, 0.0, delay_s=1.0),), "starts session"),
+        ((SessionTurn(0, 0.0), SessionTurn(0, 1.0, delay_s=1.0)), "both"),
+        ((SessionTurn(0, 2.0), SessionTurn(0, 1.0)), "decrease|backwards|earlier"),
+        ((SessionTurn(-1, 0.0),), "session"),
+        ((), "empty"),
+    ],
+)
+def test_bad_session_policies_are_refused(
+    turns: tuple[SessionTurn, ...], match: str
+) -> None:
+    with pytest.raises(DispatchConfigError, match=match):
+        SessionArrivals(turns)

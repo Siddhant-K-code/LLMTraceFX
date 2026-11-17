@@ -1,0 +1,4 @@
+{"type": "multi_turn", "session_id": "trip", "turns": [{"timestamp": 0, "text": "Plan a short trip.", "output_length": 6}, {"delay": 10, "text": "Add a budget.", "output_length": 4}]}
+{"session_id": "color", "turns": [{"timestamp": 500, "text": "Name a color.", "output_length": 3}]}
+{"session_id": "trip", "turns": [{"timestamp": 800, "text": "Make it shorter.", "output_length": 5, "role": "user"}]}
+{"turns": [{"timestamp": 200, "text": "Say hi.", "output_length": 2, "type": "single_turn"}]}

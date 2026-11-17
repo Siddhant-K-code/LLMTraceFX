@@ -135,7 +135,16 @@ def _add_schedule_arguments(parser: argparse.ArgumentParser) -> None:
         "--max-requests",
         type=int,
         default=None,
-        help="Keep only the first N requests after filters and window",
+        help=(
+            "Keep only the first N requests after filters and window. Refused "
+            "for a multi-turn trace, since it would cut a session"
+        ),
+    )
+    parser.add_argument(
+        "--max-sessions",
+        type=int,
+        default=None,
+        help="Multi-turn only: keep only the first N sessions after the window",
     )
     parser.add_argument(
         "--model",
@@ -184,7 +193,10 @@ def add_replay_parser(subparsers: Any) -> argparse.ArgumentParser:
     """Register ``replay`` and its subcommands on the main CLI."""
     replay: argparse.ArgumentParser = subparsers.add_parser(
         "replay",
-        help="Replay Mooncake, BurstGPT or AIPerf single_turn arrival traces",
+        help=(
+            "Replay Mooncake, BurstGPT or AIPerf single_turn and multi_turn "
+            "arrival traces"
+        ),
         allow_abbrev=False,
     )
     commands = replay.add_subparsers(dest="replay_command", required=True)
@@ -360,6 +372,19 @@ def trace_stats(trace: ParsedTrace) -> dict[str, Any]:
         "output_tokens": _distribution([e.output_tokens for e in entries]),
         "token_provenance": TRACE_DECLARED,
     }
+    if trace.sessions is not None:
+        starts = trace.sessions
+        turns: dict[int | None, int] = {}
+        for entry in entries:
+            turns[entry.session] = turns.get(entry.session, 0) + 1
+        stats["mean_arrival_rate_per_s"] = None
+        stats["sessions"] = starts
+        stats["turns_per_session"] = _distribution(list(turns.values()))
+        stats["mean_session_start_rate_per_s"] = starts / span if span > 0 else None
+        stats["rate_basis"] = (
+            "session starts; later turns wait for completions, so their send "
+            "times are not in the trace"
+        )
     declared = [e.input_tokens for e in entries if e.input_tokens is not None]
     if len(declared) == len(entries):
         stats["input_tokens"] = _distribution(declared)
@@ -402,6 +427,12 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     )
     for reason, count in source["excluded_rows"].items():
         print(f"  excluded: {count} {reason}")
+    if "sessions" in stats:
+        turns = stats["turns_per_session"]
+        print(
+            f"  sessions: {stats['sessions']}, turns per session median "
+            f"{turns['median']}, max {turns['max']}"
+        )
     if "input_tokens" in stats:
         inputs = stats["input_tokens"]
         print(
@@ -432,6 +463,7 @@ def schedule_from_args(args: argparse.Namespace, trace: ParsedTrace) -> ReplaySc
         max_requests=args.max_requests,
         models=tuple(args.models),
         log_types=tuple(args.log_types),
+        max_sessions=args.max_sessions,
     )
     tokenizer = None
     if args.tokenizer is not None:
@@ -459,6 +491,11 @@ def print_schedule_summary(schedule: ReplaySchedule) -> None:
         f"(source span {summary['source_span_s']:.3f} s, "
         f"time scale {schedule.selection.time_scale:g})"
     )
+    if "sessions" in summary:
+        print(
+            f"{summary['sessions']} sessions; the duration covers session starts "
+            "only, later turns wait for completions"
+        )
     print(f"prompt salt: {schedule.salt}")
     if schedule.tokenizer is not None:
         identity = schedule.tokenizer.identity
@@ -529,6 +566,7 @@ def _run_argv(args: argparse.Namespace) -> tuple[str, ...]:
         ("--start-s", args.start_s),
         ("--end-s", args.end_s),
         ("--max-requests", args.max_requests),
+        ("--max-sessions", args.max_sessions),
         ("--model-revision", args.model_revision),
         ("--temperature", args.temperature),
         ("--top-p", args.top_p),

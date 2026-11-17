@@ -240,10 +240,11 @@ relabelled as measurements.
   such as queue time and server TTFT are only reported when the window
   provably contains exactly the requests you sent. Otherwise the window is
   marked `contaminated`, `incomplete`, `counter_reset`, or `unverifiable`.
-- **Trace replay (Mooncake, BurstGPT, AIPerf `single_turn`):** check a
-  published arrival trace, plan its schedule offline, and replay it against an
-  OpenAI-compatible endpoint at the recorded arrival times. Synthetic prompts
-  keep Mooncake's prefix sharing. A malformed trace is refused, not repaired.
+- **Trace replay (Mooncake, BurstGPT, AIPerf `single_turn` and `multi_turn`):**
+  check a published arrival trace, plan its schedule offline, and replay it
+  against an OpenAI-compatible endpoint at the recorded arrival times. Synthetic
+  prompts keep Mooncake's prefix sharing. A malformed trace is refused, not
+  repaired.
 
 ### Export to observability tools
 
@@ -866,7 +867,7 @@ skipped. Every value that is left out is listed as `Not exported: ...`.
 ### Trace replay
 
 `replay` sends a published arrival trace to an OpenAI-compatible endpoint at
-the times the trace records. Three formats are read, each named with
+the times the trace records. Four formats are read, each named with
 `--format` and never guessed from the file:
 
 - `mooncake`: Mooncake JSONL with `timestamp` (ms), `input_length`,
@@ -878,6 +879,14 @@ the times the trace records. Three formats are read, each named with
 - `aiperf-single-turn`: AIPerf `single_turn` JSONL with `timestamp` (ms),
   `text` and `output_length`. This covers ShareGPT-style prompts with arrival
   times.
+- `aiperf-multi-turn`: AIPerf `multi_turn` JSONL. Lines with the same
+  `session_id` form one session. A session's first turn is sent at its
+  `timestamp`; each later turn waits for the previous one to complete, then
+  for its `delay` or until its `timestamp`. Its prompt resends the earlier
+  turns, with synthetic answers whose length is each turn's `output_length`.
+  Select with `--max-sessions`; `--max-requests` is refused because it would
+  cut a session. Mooncake has no multi-turn format, so its conversation trace
+  is read with `mooncake`.
 
 ```bash
 # No network: check the file, then write the schedule.
@@ -914,7 +923,9 @@ trimming. Lengths are labelled `tokenizer_exact` and count the prompt text
 only; the chat template and special tokens the server adds are not counted,
 and the result reports provider `prompt_tokens` minus the tokenizer count.
 The schedule records the tokenizer name, tokenizer.json sha256, revision and
-resolved commit.
+resolved commit. For multi-turn traces each synthetic answer is checked the
+same way, and a turn's count is the sum of its messages, each encoded on its
+own.
 
 `--time-scale` multiplies every gap between arrivals. `--start-s`, `--end-s`
 and `--max-requests` choose a window. `max_tokens` is the trace's output

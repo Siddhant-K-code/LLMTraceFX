@@ -10,6 +10,9 @@ outcome to the replay artifacts:
   checked against the sha256 the schedule recorded;
 * the time spent building each prompt is recorded, because it falls
   between the dispatch timestamp and the moment the request is sent;
+* a multi-turn trace goes through the session policy, so each later turn
+  waits for the previous turn of its session, and its regenerated history
+  is checked against the schedule's sha256 too;
 * the verdict says whether the replay kept to the trace's arrival times.
 """
 
@@ -46,6 +49,9 @@ from ..load.dispatcher import (
     MAX_CONCURRENCY,
     DispatchContext,
     DispatchReport,
+    LoadPolicy,
+    SessionArrivals,
+    SessionTurn,
     TimedArrivals,
     dispatch,
 )
@@ -65,7 +71,7 @@ from .artifact import (
     tool_record,
     write_text,
 )
-from .schedule import ReplaySchedule, ScheduledRequest
+from .schedule import History, ReplaySchedule, ScheduledRequest, history_sha256
 
 DEFAULT_MAX_DISPATCH_LAG_S = 0.05
 PREFLIGHT_CHUNK = 256
@@ -95,7 +101,7 @@ class ReplayRunError(ValueError):
 
 
 class PromptMismatchError(RuntimeError):
-    """A regenerated prompt did not hash to the value in the schedule."""
+    """A regenerated prompt or history did not hash to the schedule's value."""
 
 
 @dataclass(frozen=True)
@@ -125,10 +131,14 @@ def check_target(endpoint: str, options: ReplayOptions) -> None:
 
 
 def _spec(
-    request: ScheduledRequest, prompt: str, options: ReplayOptions
+    request: ScheduledRequest,
+    prompt: str,
+    options: ReplayOptions,
+    history: History = (),
 ) -> ApiRequestSpec:
     return ApiRequestSpec(
         prompt=prompt,
+        history=history,
         run_id_suffix=request.request_id,
         max_tokens=request.target_output_tokens,
         extra_body={"ignore_eos": True} if options.ignore_eos else None,
@@ -153,10 +163,36 @@ def preflight_schedule(
     requests = schedule.requests
     for start in range(0, len(requests), chunk):
         specs = [
-            _spec(request, schedule.prompt_at(builder, request.index), options)
+            _spec(
+                request,
+                schedule.prompt_at(builder, request.index),
+                options,
+                schedule.history_at(builder, request.index),
+            )
             for request in requests[start : start + chunk]
         ]
         preflight(base, specs, environ=environ)
+
+
+def load_policy(schedule: ReplaySchedule, options: ReplayOptions) -> LoadPolicy:
+    """Timed arrivals, or the session policy for a multi-turn trace."""
+    if not schedule.multi_turn:
+        return TimedArrivals(schedule.offsets_s, max_in_flight=options.max_in_flight)
+    turns = []
+    for request in schedule.requests:
+        if request.session is None:
+            raise ReplayRunError(f"{request.request_id} has no session")
+        offset = (
+            request.arrival_offset_s
+            if request.arrival_offset_s is not None
+            else request.not_before_offset_s
+        )
+        turns.append(
+            SessionTurn(
+                session=request.session, offset_s=offset, delay_s=request.delay_s
+            )
+        )
+    return SessionArrivals(tuple(turns), max_in_flight=options.max_in_flight)
 
 
 @dataclass(frozen=True)
@@ -177,7 +213,11 @@ def dispatch_schedule(
     clock: Callable[[], float] = time.perf_counter,
     sleep: Callable[[float], None] = time.sleep,
 ) -> DispatchedReplay:
-    """Send every scheduled request at its arrival offset."""
+    """Send every scheduled request at its arrival offset.
+
+    For a multi-turn trace, a later turn is sent once the previous turn of
+    its session completes, as the schedule describes.
+    """
     api_send = make_api_sender(base, transport=transport, environ=environ)
     builder = schedule.prompt_builder()
     build_ms: dict[int, float] = {}
@@ -186,17 +226,20 @@ def dispatch_schedule(
     def send(request: ScheduledRequest, context: DispatchContext) -> RequestRow:
         started = context.clock()
         prompt = schedule.prompt_at(builder, request.index)
+        history = schedule.history_at(builder, request.index)
         elapsed_ms = (context.clock() - started) * 1000.0
         with lock:
             build_ms[request.index] = elapsed_ms
         if sha256_text(prompt) != request.prompt_sha256:
             raise PromptMismatchError(request.request_id)
-        return api_send(_spec(request, prompt, options), context)
+        if (history_sha256(history) if history else None) != request.history_sha256:
+            raise PromptMismatchError(f"{request.request_id} history")
+        return api_send(_spec(request, prompt, options, history), context)
 
     report = dispatch(
         schedule.requests,
         send,
-        TimedArrivals(schedule.offsets_s, max_in_flight=options.max_in_flight),
+        load_policy(schedule, options),
         clock=clock,
         sleep=sleep,
         stop=stop,
@@ -250,6 +293,15 @@ def request_line(
         "estimated_prompt_tokens": request.estimated_prompt_tokens,
         "tokenizer_prompt_tokens": request.tokenizer_prompt_tokens,
         "planned_prompt_sha256": request.prompt_sha256,
+        **(
+            {}
+            if request.session is None
+            else {
+                "session": request.session,
+                "turn": request.turn,
+                "history_turns": request.history_turns,
+            }
+        ),
     }
 
 
@@ -364,6 +416,39 @@ def fidelity(
     }
 
 
+def session_counts(
+    schedule: ReplaySchedule, rows: Sequence[RequestRow]
+) -> dict[str, Any] | None:
+    """Per-session outcome counts for a multi-turn replay, else ``None``."""
+    if not schedule.multi_turn:
+        return None
+    sessions: dict[int | None, list[RequestRow]] = {}
+    for request, row in zip(schedule.requests, rows, strict=True):
+        sessions.setdefault(request.session, []).append(row)
+    complete = sum(1 for turns in sessions.values() if all(r.sent for r in turns))
+    succeeded = sum(
+        1 for turns in sessions.values() if all(r.success is True for r in turns)
+    )
+    after_failure = 0
+    for turns in sessions.values():
+        failed = False
+        for row in turns:
+            if failed and row.sent:
+                after_failure += 1
+            failed = failed or (row.sent and row.success is not True)
+    return {
+        "sessions": len(sessions),
+        "all_turns_sent": complete,
+        "all_turns_succeeded": succeeded,
+        "turns_sent_after_a_failed_turn": after_failure,
+        "note": (
+            "A failed turn does not stop its session, as in AIPerf; the next "
+            "turn still resends the planned history."
+        ),
+        "provenance": MetricProvenance.DERIVED.value,
+    }
+
+
 def _target(base: APICollectionConfig, environ: Mapping[str, str]) -> dict[str, Any]:
     plan = build_request_plan(base, environ=environ).to_dict()
     target = {
@@ -452,6 +537,11 @@ def build_result(
             "client_errors": dict(sorted(client_errors.items())),
             "prompt_sha256_mismatches": mismatched,
         },
+        **(
+            {}
+            if (sessions := session_counts(schedule, rows)) is None
+            else {"sessions": sessions}
+        ),
         "latency_ms": {
             "basis": "successful requests, nearest-rank percentiles",
             "provenance": MetricProvenance.DERIVED.value,

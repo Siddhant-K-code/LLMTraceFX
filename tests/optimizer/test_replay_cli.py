@@ -136,3 +136,22 @@ def test_plan_refuses_tokenizer_problems(
     assert _run([*base, "--tokenizer", "org/model", *out]) == 1
     assert "--extra tokenizer" in capsys.readouterr().err
     assert not (tmp_path / "x").exists()
+
+
+MULTI = str(FIXTURES / "aiperf_multi_turn.jsonl")
+
+
+def test_validate_and_plan_a_multi_turn_trace(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _run(["replay", "validate", MULTI, "--format", "aiperf-multi-turn"]) == 0
+    out = capsys.readouterr().out
+    assert "sessions: 3, turns per session median 1, max 3" in out
+    argv = ["replay", "plan", MULTI, "--format", "aiperf-multi-turn"]
+    output = tmp_path / "plan"
+    assert _run([*argv, "--max-sessions", "1", "--output-dir", str(output)]) == 0
+    assert "1 sessions" in capsys.readouterr().out
+    assert len(read_schedule(output / "replay_schedule.json")["requests"]) == 3
+    refused = [*argv, "--max-requests", "1", "--output-dir", str(tmp_path / "x")]
+    assert _run(refused) == 1
+    assert "--max-sessions" in capsys.readouterr().err

@@ -18,6 +18,13 @@ already checked that an id always names the same length.
 
 BurstGPT has no prefix information, so each prompt is seeded by its source
 line and prompts share no structure.
+
+Multi-turn: a later turn resends the earlier turns. The user turns are the
+trace's own text. No response text is ever stored, so each earlier assistant
+turn is a synthetic stand-in whose word count is that turn's declared
+``output_length``, seeded by the turn's place in the file. The same turn
+therefore has the same bytes in every later request of its session, which
+keeps the conversation prefix shared as it grows.
 """
 
 from __future__ import annotations
@@ -117,7 +124,7 @@ class PromptBuilder:
         self._vocabulary = vocabulary
         self._blocks: dict[int, str] = {}
 
-    def _seed(self, kind: str, key: int) -> bytes:
+    def _seed(self, kind: str, key: int | str) -> bytes:
         method = self._vocabulary.method
         return f"{method}\0{self._salt}\0{self._trace}\0{kind}\0{key}".encode("ascii")
 
@@ -157,4 +164,14 @@ class PromptBuilder:
         """An unstructured prompt seeded by the source line."""
         return self._finish(
             _words(self._seed("line", line), input_tokens, self._vocabulary.words)
+        )
+
+    def for_reply(self, line: int, line_turn: int, words: int) -> str:
+        """A synthetic stand-in for the assistant's answer to one trace turn."""
+        return self._finish(
+            _words(
+                self._seed("reply", f"{line}.{line_turn}"),
+                words,
+                self._vocabulary.words,
+            )
         )
