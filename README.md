@@ -248,6 +248,12 @@ Chrome trace for [ui.perfetto.dev](https://ui.perfetto.dev). Both outputs are
 deterministic: IDs derive from the `run_id`, and every timing keeps its
 provenance as a `llmtracefx.*` attribute.
 
+`export otlp-metrics` aggregates many API runs into GenAI histograms in
+OTLP/JSON: client duration, time to first chunk, time per chunk, token counts,
+and server TTFT, TPOT and request duration. The same Collector receiver reads
+it, and it can be POSTed to `/v1/metrics`. A value that was not measured is
+left out, never filled in.
+
 ### Perf gate
 
 `gate` compares candidate records with baseline records of the same model,
@@ -801,6 +807,31 @@ uv run llmtracefx-optimizer export perfetto \
 
 Open `trace.json` in [ui.perfetto.dev](https://ui.perfetto.dev). Swap
 `perfetto` for `otlp` to get OTLP/JSON instead.
+
+#### Exporting GenAI metrics
+
+```bash
+uv run llmtracefx-optimizer export otlp-metrics output/ \
+  --output output/genai-metrics.jsonl
+```
+
+Pass record files or directories. Directories are searched for `record.json`,
+and `api_evidence.json` and `server_metrics_evidence.json` next to each record
+are used when present. All runs go into one cumulative histogram per metric
+and attribute set. Each point carries `llmtracefx.provenance` and
+`llmtracefx.source`, so values measured in different ways stay apart, and each
+run is linked to its `export otlp` trace through an exemplar. Local runs are
+skipped. Every value that is left out is listed as `Not exported: ...`.
+
+| Metric | Derived from | Left out when |
+| --- | --- | --- |
+| `gen_ai.client.inference.duration` | `record.timing.total` | no total in ms |
+| `gen_ai.client.inference.time_to_first_chunk` | first reasoning or content event in the API timeline | not streamed, no chunk arrived, or the run ended in tool calls |
+| `gen_ai.client.inference.time_per_output_chunk` | gaps between consecutive reasoning or content events | as above, or fewer than two chunks, or the event list was truncated |
+| `gen_ai.client.inference.operation.input_tokens`, `.output_tokens` | `record.tokens` | token counts are estimated or have no provenance |
+| `gen_ai.server.time_to_first_token` | vLLM or SGLang TTFT histogram | the server window is not attributable, holds more than one request, or the run failed |
+| `gen_ai.server.time_per_output_token` | vLLM or SGLang TPOT histogram | as above; vLLM records 0 for one-token replies, and TGI's per-token mean includes prefill, so neither is mapped |
+| `gen_ai.server.request.duration` | vLLM, SGLang or TGI end to end latency histogram | as above |
 
 ### Apple Instruments and Metal
 
