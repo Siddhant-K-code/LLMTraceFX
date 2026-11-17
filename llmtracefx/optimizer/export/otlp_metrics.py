@@ -6,6 +6,9 @@ reads it and the object can be POSTed to any OTLP/HTTP ``/v1/metrics``
 endpoint. Metric names, units, bucket boundaries and attributes follow the
 GenAI semantic conventions in ``open-telemetry/semantic-conventions-genai``
 (see :data:`SEMCONV_REFERENCE`).
+The conventions define no energy or power metric, so GPU energy and
+average power from a ``gpu_energy_evidence.json`` sidecar use the
+``llmtracefx.gpu.*`` names instead.
 
 Only measured values are recorded. A run that lacks the evidence for a
 metric contributes nothing to it, and the reason is reported in
@@ -28,7 +31,13 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
-from ..schema import ExperimentRecord, MetricProvenance
+from ..gpu_energy.record_power import (
+    GPU_ENERGY_EVIDENCE_FILE,
+    GpuEnergyEvidenceError,
+    apply_sidecar,
+    shared_window_refusals,
+)
+from ..schema import ExperimentRecord, Measurement, MetricProvenance
 from ..server_metrics.diff import PROFILES
 from .otlp import SCOPE_NAME, _attributes
 from .trace_model import (
@@ -54,6 +63,8 @@ API_EVIDENCE_FILE = "api_evidence.json"
 SERVER_METRICS_EVIDENCE_FILE = "server_metrics_evidence.json"
 PROVENANCE_ATTRIBUTE = "llmtracefx.provenance"
 SOURCE_ATTRIBUTE = "llmtracefx.source"
+GPU_ATTRIBUTION_ATTRIBUTE = "llmtracefx.gpu.attribution_status"
+GPU_DEVICE_COUNT_ATTRIBUTE = "llmtracefx.gpu.device_count"
 
 _SECONDS_BOUNDS = (
     0.01,
@@ -119,6 +130,25 @@ _SERVER_TPOT_BOUNDS = (
     0.75,
     1.0,
     2.5,
+)
+_ENERGY_BOUNDS = tuple(float(4**power) for power in range(13))
+_POWER_BOUNDS = (
+    10.0,
+    25.0,
+    50.0,
+    75.0,
+    100.0,
+    150.0,
+    200.0,
+    300.0,
+    400.0,
+    500.0,
+    700.0,
+    1000.0,
+    1500.0,
+    2000.0,
+    3000.0,
+    5000.0,
 )
 _BASE_ATTRIBUTES = (
     "gen_ai.operation.name",
@@ -200,6 +230,25 @@ SERVER_REQUEST_DURATION = MetricSpec(
     _SECONDS_BOUNDS,
     error_type=True,
 )
+# The GenAI conventions define no energy or power metric, and the hardware
+# conventions' hw.energy and hw.power describe one component over its
+# lifetime, not a window around one run. So these use the llmtracefx
+# namespace rather than borrow a name with a different meaning.
+GPU_ENERGY = MetricSpec(
+    "llmtracefx.gpu.energy",
+    "J",
+    "Device wide GPU energy over the gpu-energy window that bracketed the "
+    "run, from the NVML energy counter. Includes idle power and command "
+    "start up.",
+    _ENERGY_BOUNDS,
+)
+GPU_AVERAGE_POWER = MetricSpec(
+    "llmtracefx.gpu.power.average",
+    "W",
+    "Device wide average GPU power over the gpu-energy window that bracketed "
+    "the run: counter energy over the counter read interval.",
+    _POWER_BOUNDS,
+)
 METRICS = (
     CLIENT_DURATION,
     CLIENT_TIME_TO_FIRST_CHUNK,
@@ -209,6 +258,8 @@ METRICS = (
     SERVER_TIME_TO_FIRST_TOKEN,
     SERVER_TIME_PER_OUTPUT_TOKEN,
     SERVER_REQUEST_DURATION,
+    GPU_ENERGY,
+    GPU_AVERAGE_POWER,
 )
 
 # Server highlights whose runtime definition was checked against the
@@ -421,8 +472,10 @@ class _RunMapper:
         notes: list[str],
         record: ExperimentRecord,
         model: TraceModel,
+        power_refusal: str | None = None,
     ) -> None:
         root = model.root
+        self.power_refusal = power_refusal
         self.collector = collector
         self.notes = notes
         self.run_id = record.run_id
@@ -448,6 +501,7 @@ class _RunMapper:
             self._chunks(record, run.api_evidence)
         if run.server_evidence is not None:
             self._server(record, run.server_evidence)
+        self._power(record)
         return self.collector.count > before
 
     def note(self, record: ExperimentRecord, message: str) -> None:
@@ -461,8 +515,12 @@ class _RunMapper:
         source: str,
         *,
         time_ns: int | None = None,
+        extra: Mapping[str, AttributeValue] | None = None,
     ) -> None:
-        attributes = _with_provenance(self.base, provenance, source)
+        attributes = {
+            **_with_provenance(self.base, provenance, source),
+            **(extra or {}),
+        }
         if spec.error_type and self.error_type is not None:
             attributes["error.type"] = self.error_type
         exemplar = _Exemplar(
@@ -550,6 +608,42 @@ class _RunMapper:
                 "api_evidence.timeline.events",
             )
 
+    def _power(self, record: ExperimentRecord) -> None:
+        power = record.power
+        source = power.source
+        if source is None:
+            if power.energy is not None or power.average_power is not None:
+                self.note(record, "GPU energy omitted: the power values have no source")
+            return
+        reason = source.refused_reason or self.power_refusal
+        if reason is None and (not record.outcome.success or record.error is not None):
+            reason = "the run did not succeed"
+        if reason is not None:
+            self.note(record, f"GPU energy omitted: {reason}")
+            return
+        extra: dict[str, AttributeValue] = {
+            GPU_ATTRIBUTION_ATTRIBUTE: source.attribution_status or "unknown",
+            GPU_DEVICE_COUNT_ATTRIBUTE: source.device_count or 0,
+        }
+        measurement: Measurement | None
+        for spec, measurement, method, unit in (
+            (GPU_ENERGY, power.energy, source.energy_method, "J"),
+            (GPU_AVERAGE_POWER, power.average_power, source.average_power_method, "W"),
+        ):
+            if measurement is None:
+                self.note(record, f"{spec.name} omitted: no value in the evidence")
+                continue
+            if measurement.unit != unit or not math.isfinite(measurement.value):
+                self.note(record, f"{spec.name} omitted: not a finite value in {unit}")
+                continue
+            self.observe(
+                spec,
+                measurement.value,
+                measurement.provenance.value,
+                f"{GPU_ENERGY_EVIDENCE_FILE}:{method}",
+                extra=extra,
+            )
+
     def _server(self, record: ExperimentRecord, evidence: Mapping[str, Any]) -> None:
         attribution = evidence.get("attribution")
         if (
@@ -634,6 +728,7 @@ def build_otlp_metrics(
     notes: list[str] = []
     windows: list[tuple[int, int]] = []
     exported: list[str] = []
+    shared = shared_window_refusals(run.record for run in runs)
     for run in sorted(runs, key=lambda item: item.record.run_id):
         record = run.record
         model = build_trace(
@@ -648,7 +743,10 @@ def build_otlp_metrics(
                 "client to provider boundary to measure"
             )
             continue
-        if _RunMapper(collector, notes, record, model).map(run):
+        mapper = _RunMapper(
+            collector, notes, record, model, power_refusal=shared.get(record.run_id)
+        )
+        if mapper.map(run):
             windows.append((model.root.start_ns, model.root.end_ns))
             exported.append(record.run_id)
     if not windows:
@@ -674,6 +772,8 @@ def load_metrics_runs(paths: Sequence[str | Path]) -> list[MetricsRun]:
     A directory expands to every ``record.json`` below it. For each record,
     ``api_evidence.json`` and ``server_metrics_evidence.json`` in the same
     directory are attached when present, as ``collect-api`` writes them.
+    A ``gpu_energy_evidence.json`` there fills the record's power in memory,
+    or records why it was refused.
     """
     files: list[Path] = []
     for raw in paths:
@@ -692,7 +792,10 @@ def load_metrics_runs(paths: Sequence[str | Path]) -> list[MetricsRun]:
         if resolved in seen:
             continue
         seen.add(resolved)
-        record = ExperimentRecord.read_json(file)
+        try:
+            record = apply_sidecar(ExperimentRecord.read_json(file), file)
+        except GpuEnergyEvidenceError as exc:
+            raise ExportError(str(exc)) from exc
         api_path = file.parent / API_EVIDENCE_FILE
         server_path = file.parent / SERVER_METRICS_EVIDENCE_FILE
         runs.append(

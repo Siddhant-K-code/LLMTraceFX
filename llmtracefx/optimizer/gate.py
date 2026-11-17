@@ -36,6 +36,14 @@ from ._artifact_io import (
     read_bounded_regular_text,
 )
 from .collectors._shared import atomic_write_text
+from .gpu_energy.record_power import (
+    ENERGY_PER_OUTPUT_TOKEN_BASIS,
+    GPU_ENERGY_EVIDENCE_FILE,
+    GpuEnergyEvidenceError,
+    apply_sidecar,
+    energy_per_output_token,
+    shared_window_refusals,
+)
 from .importers.aiperf import looks_like_aiperf_profile
 from .importers.artifact import (
     HIGHER_IS_BETTER,
@@ -56,7 +64,11 @@ GATE_REPORT_KIND = "llmtracefx.gate.report"
 GATE_REPORT_SCHEMA_VERSION = "1"
 _PHASE_METRICS = ("total", "model_load", "tokenize", "prefill", "decode")
 DECODE_TPS = "decode_tokens_per_second"
-METRIC_CHOICES = (*_PHASE_METRICS, DECODE_TPS)
+ENERGY = "energy"
+AVERAGE_POWER = "average_power"
+ENERGY_PER_OUTPUT_TOKEN = "energy_per_output_token"
+POWER_METRICS = (ENERGY, AVERAGE_POWER, ENERGY_PER_OUTPUT_TOKEN)
+METRIC_CHOICES = (*_PHASE_METRICS, DECODE_TPS, *POWER_METRICS)
 RECORDS_INPUT = "records"
 IMPORTED_INPUT = "imported_benchmark"
 
@@ -178,6 +190,17 @@ class GateReport:
             f"{self.max_regression:.1%}; at least {self.min_repetitions} runs "
             "per side."
         )
+        if self.metric in POWER_METRICS and self.input_kind == RECORDS_INPUT:
+            lines += [
+                "",
+                "GPU energy and power come from `gpu-energy record` evidence. "
+                "They are device wide over the measured window, so they include "
+                "idle power and command start up.",
+            ]
+            if self.metric == ENERGY_PER_OUTPUT_TOKEN:
+                lines.append(
+                    f"Energy per output token is {ENERGY_PER_OUTPUT_TOKEN_BASIS}."
+                )
         if self.input_kind == IMPORTED_INPUT:
             lines += [
                 "",
@@ -192,7 +215,10 @@ class GateReport:
 
 
 def load_records(paths: Sequence[str | Path]) -> list[ExperimentRecord]:
-    """Read records from files, expanding directories to ``**/record.json``."""
+    """Read records from files, expanding directories to ``**/record.json``.
+
+    A ``gpu_energy_evidence.json`` next to a record is applied to its power.
+    """
     files: list[Path] = []
     for raw in paths:
         path = Path(raw)
@@ -206,8 +232,8 @@ def load_records(paths: Sequence[str | Path]) -> list[ExperimentRecord]:
     records = []
     for file in files:
         try:
-            records.append(ExperimentRecord.read_json(file))
-        except (OSError, SchemaValidationError) as exc:
+            records.append(apply_sidecar(ExperimentRecord.read_json(file), file))
+        except (OSError, SchemaValidationError, GpuEnergyEvidenceError) as exc:
             raise GateInputError(f"{file}: {exc}") from exc
     return records
 
@@ -242,12 +268,16 @@ def _read_input(file: Path) -> GateInput:
                 f"`llmtracefx-optimizer import {command} {file} --output ...`"
             )
     try:
-        return ExperimentRecord.from_json(text)
+        record = ExperimentRecord.from_json(text)
     except SchemaValidationError as exc:
         raise GateInputError(
             f"{file}: {exc} (raw vllm bench or AIPerf results must be converted "
             "with `llmtracefx-optimizer import` first)"
         ) from exc
+    try:
+        return apply_sidecar(record, file)
+    except GpuEnergyEvidenceError as exc:
+        raise GateInputError(str(exc)) from exc
 
 
 def _imported_in(directory: Path) -> list[Path]:
@@ -312,9 +342,24 @@ def _comparability(record: ExperimentRecord, metric: str) -> tuple[Any, ...]:
         record.command.workload_hash,
         record.tokens.input_tokens,
     )
-    if metric != DECODE_TPS:
+    if metric not in (DECODE_TPS, ENERGY_PER_OUTPUT_TOKEN):
         # Latency of a longer generation is not comparable; a rate is.
         key += (record.tokens.generated_tokens,)
+    if metric in POWER_METRICS:
+        source = record.power.source
+        key += (
+            (
+                None
+                if source is None
+                else (
+                    source.collector,
+                    source.scope,
+                    source.attribution_status,
+                    source.device_count,
+                    source.device_names,
+                )
+            ),
+        )
     return key
 
 
@@ -335,6 +380,8 @@ def _sample(record: ExperimentRecord, metric: str) -> _Sample | str:
             "tokens/s",
             f"derived_from_{decode.provenance.value}",
         )
+    if metric in POWER_METRICS:
+        return _power_sample(record, metric)
     measurement: Measurement | None = getattr(record.timing, metric)
     if measurement is None:
         return f"no timing.{metric}"
@@ -345,6 +392,29 @@ def _sample(record: ExperimentRecord, metric: str) -> _Sample | str:
         measurement.value,
         measurement.unit,
         measurement.provenance.value,
+    )
+
+
+def _power_sample(record: ExperimentRecord, metric: str) -> _Sample | str:
+    source = record.power.source
+    if source is not None and source.refused_reason is not None:
+        return f"gpu-energy evidence refused: {source.refused_reason}"
+    if metric == ENERGY_PER_OUTPUT_TOKEN:
+        found = energy_per_output_token(record)
+        if isinstance(found, str):
+            return f"no energy per output token: {found}"
+        return _Sample(record.run_id, found.value, found.unit, found.provenance.value)
+    measurement: Measurement | None = getattr(record.power, metric)
+    if measurement is None:
+        return (
+            f"no power.{metric} (no {GPU_ENERGY_EVIDENCE_FILE} next to the record)"
+            if source is None
+            else f"no power.{metric}"
+        )
+    if not math.isfinite(measurement.value) or measurement.value < 0:
+        return f"power.{metric} is not a finite, non-negative value"
+    return _Sample(
+        record.run_id, measurement.value, measurement.unit, measurement.provenance.value
     )
 
 
@@ -366,7 +436,12 @@ def _record_adapter(metric: str) -> _Adapter:
         sample=lambda record: _sample(record, metric),
         key=lambda record: _comparability(record, metric),
         run_id=lambda record: record.run_id,
-        differs="model, runtime backend, platform, workload or token counts differ",
+        differs=(
+            "model, runtime backend, platform, workload, token counts or "
+            "measured GPUs and attribution differ"
+            if metric in POWER_METRICS
+            else "model, runtime backend, platform, workload or token counts differ"
+        ),
     )
 
 
@@ -501,13 +576,32 @@ def evaluate_gate(
     }
 
     excluded: list[str] = []
+    missing_power: list[str] = []
+    power_gate = metric in POWER_METRICS and not imported
+    shared = (
+        shared_window_refusals(
+            [item for item in everything if isinstance(item, ExperimentRecord)]
+        )
+        if power_gate
+        else {}
+    )
     groups: dict[str, list[_Sample]] = {"baseline": [], "candidate": []}
     keys: dict[str, set[tuple[Any, ...]]] = {"baseline": set(), "candidate": set()}
     for side, items in (("baseline", baseline), ("candidate", candidate)):
         for item in items:
             sample = adapter.sample(item)
+            run_id = adapter.run_id(item)
+            if not isinstance(sample, str) and run_id in shared:
+                sample = shared[run_id]
             if isinstance(sample, str):
-                excluded.append(f"{side} {adapter.run_id(item)}: {sample}")
+                excluded.append(f"{side} {run_id}: {sample}")
+                if (
+                    power_gate
+                    and isinstance(item, ExperimentRecord)
+                    and item.outcome.success
+                    and item.error is None
+                ):
+                    missing_power.append(f"{side} {run_id}")
                 continue
             groups[side].append(sample)
             keys[side].add(adapter.key(item))
@@ -527,6 +621,12 @@ def evaluate_gate(
             verdict=GateVerdict.INCONCLUSIVE, reason=reason, **context, **extra
         )
 
+    if missing_power:
+        return inconclusive(
+            f"{metric} is missing for {len(missing_power)} successful run(s) "
+            f"({', '.join(missing_power)}); a power gate does not drop runs it "
+            "cannot measure, so it cannot pass. See the excluded runs"
+        )
     for side, samples in groups.items():
         if len(samples) < min_repetitions:
             return inconclusive(

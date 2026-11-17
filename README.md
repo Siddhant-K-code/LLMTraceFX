@@ -259,7 +259,10 @@ provenance as a `llmtracefx.*` attribute.
 OTLP/JSON: client duration, time to first chunk, time per chunk, token counts,
 and server TTFT, TPOT and request duration. The same Collector receiver reads
 it, and it can be POSTed to `/v1/metrics`. A value that was not measured is
-left out, never filled in.
+left out, never filled in. GPU energy and average power from `gpu-energy`
+evidence are exported as `llmtracefx.gpu.energy` and
+`llmtracefx.gpu.power.average`, since the GenAI conventions have no energy
+metric.
 
 ### Perf gate
 
@@ -862,6 +865,7 @@ skipped. Every value that is left out is listed as `Not exported: ...`.
 | `gen_ai.server.time_to_first_token` | vLLM or SGLang TTFT histogram | the server window is not attributable, holds more than one request, or the run failed |
 | `gen_ai.server.time_per_output_token` | vLLM or SGLang TPOT histogram | as above; vLLM records 0 for one-token replies, and TGI's per-token mean includes prefill, so neither is mapped |
 | `gen_ai.server.request.duration` | vLLM, SGLang or TGI end to end latency histogram | as above |
+| `llmtracefx.gpu.energy`, `llmtracefx.gpu.power.average` | `gpu_energy_evidence.json` next to the record | the evidence is refused, its window is shared with another run, or the run failed |
 
 ### Trace replay
 
@@ -989,6 +993,16 @@ example around `collect-api`. Exit codes: 0 attributable, 2 written but not
 attributable, 1 on error or when the command fails, 3 when NVML is
 unavailable.
 
+To attach the energy to a record, save the evidence as
+`gpu_energy_evidence.json` next to its `record.json`. `gate` and
+`export otlp-metrics` read it from there, and `export otlp` or `perfetto`
+take it with `--gpu-energy FILE`. The record file is never rewritten. Only an
+attributable window that exited 0 and contains the whole run fills
+`power.energy` (the counter delta) and `power.average_power`; anything else is
+refused with a reason in `power.source.refused_reason`. The sampled power
+integral is never used. Runs that share one window, or whose windows overlap
+another run, are refused too.
+
 ## Verify, tune, and optimize
 
 Generate a matrix for an existing model:
@@ -1076,6 +1090,13 @@ outputs. Set `fail-on-inconclusive: "false"` to report without failing when
 the runs are too few or too noisy to decide. `@v1` follows the latest 1.x
 release. Pin a release tag such as `@v1.11.0` or a commit SHA for fully
 reproducible CI.
+
+`metric` can also be `energy`, `average_power` or `energy_per_output_token`,
+read from a `gpu_energy_evidence.json` next to each record (see
+[NVIDIA GPU energy (NVML)](#nvidia-gpu-energy-nvml)). Energy per output token
+is derived from the counter energy and a measured or reported generated token
+count. Runs must use the same GPUs and attribution status. A successful run
+with no usable value makes the gate inconclusive rather than being dropped.
 
 The baseline and candidate can also be directories of imported vLLM bench or
 AIPerf artifacts (see

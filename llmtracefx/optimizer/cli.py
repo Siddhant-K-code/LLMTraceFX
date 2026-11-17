@@ -107,6 +107,7 @@ from .export import (
 )
 from .gate import GateInputError, evaluate_gate, load_gate_inputs
 from .gpu_energy.cli import add_gpu_energy_parser
+from .gpu_energy.record_power import GpuEnergyEvidenceError, apply_gpu_energy
 from .importers import (
     AIPERF_TOOL,
     VLLM_BENCH_TOOL,
@@ -668,13 +669,15 @@ def _cmd_server_metrics_diff(args: argparse.Namespace) -> int:
 
 
 def _cmd_export(args: argparse.Namespace) -> int:
-    for given in (args.record, args.api_evidence, args.server_metrics):
+    for given in (args.record, args.api_evidence, args.server_metrics, args.gpu_energy):
         sweep = None if given is None else find_sweep_artifact(Path(given))
         if sweep is not None:
             print(f"Cannot export: {sweep_refusal(sweep)}", file=sys.stderr)
             return 1
     try:
         record = ExperimentRecord.read_json(args.record)
+        if args.gpu_energy is not None:
+            record = apply_gpu_energy(record, Path(args.gpu_energy))
         api_evidence = (
             None
             if args.api_evidence is None
@@ -691,9 +694,11 @@ def _cmd_export(args: argparse.Namespace) -> int:
             server_evidence=server_evidence,
             include_paths=args.include_paths,
         )
-    except (SchemaValidationError, ExportError) as exc:
+    except (SchemaValidationError, ExportError, GpuEnergyEvidenceError) as exc:
         print(f"Cannot export {args.record}: {exc}", file=sys.stderr)
         return 1
+    if record.power.source is not None and record.power.source.refused_reason:
+        print(f"GPU energy not used: {record.power.source.refused_reason}")
     if args.export_command == "otlp":
         text = render_otlp_json_line(model)
         label = "OTLP/JSON trace"
@@ -3194,8 +3199,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="total",
         help=(
             "For records: total, model_load, tokenize, prefill or decode "
-            "latency (lower is better) or decode_tokens_per_second (higher is "
-            "better); default total. For imported artifacts: "
+            "latency (lower is better), decode_tokens_per_second (higher is "
+            "better), or energy, average_power or energy_per_output_token from "
+            "a gpu_energy_evidence.json next to each record (lower is better; "
+            "any run without a usable value makes the gate inconclusive); "
+            "default total. For imported artifacts: "
             "<metric>.<statistic>, for example ttft_ms.p99 (vLLM bench) or "
             "time_to_first_token.p99 (AIPerf)"
         ),
@@ -3286,6 +3294,11 @@ def build_parser() -> argparse.ArgumentParser:
                 "output whose window brackets the run"
             ),
         )
+        export_format_parser.add_argument(
+            "--gpu-energy",
+            default=None,
+            help="`gpu-energy record` evidence whose window brackets the run",
+        )
         export_format_parser.add_argument("--output", required=True)
         export_format_parser.add_argument(
             "--include-paths",
@@ -3305,8 +3318,8 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="+",
         help=(
             "record.json files or directories searched for record.json; "
-            f"api_evidence.json and {SERVER_METRICS_EVIDENCE_NAME} next to "
-            "each record are used when present"
+            f"api_evidence.json, {SERVER_METRICS_EVIDENCE_NAME} and "
+            "gpu_energy_evidence.json next to each record are used when present"
         ),
     )
     export_metrics_parser.add_argument("--output", required=True)
