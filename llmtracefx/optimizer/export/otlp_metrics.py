@@ -24,6 +24,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -405,7 +406,7 @@ def _chunk_gaps_ms(api_evidence: Mapping[str, Any]) -> list[float] | str:
     chunks.sort()
     if len(chunks) < 2:
         return "fewer than two output chunks arrived"
-    gaps = [later[1] - earlier[1] for earlier, later in zip(chunks, chunks[1:])]
+    gaps = [later[1] - earlier[1] for earlier, later in pairwise(chunks)]
     if min(gaps) < 0:
         return "output event offsets are not monotonic"
     return gaps
