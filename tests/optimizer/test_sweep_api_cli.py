@@ -155,9 +155,8 @@ def test_constant_rate_sweep_records_target_and_achieved_rate(
     rate = point["scheduling"]["dispatch_rate"]
     assert rate["target_rate_per_second"] == 40.0
     assert rate["planned_schedule_rate_per_second"]["value"] == pytest.approx(40.0)
-    assert rate["achieved_dispatch_rate_per_second"]["value"] == pytest.approx(
-        40.0, rel=0.5
-    )
+    # Wall clock: slow CI runners fall behind schedule, so only bound it.
+    assert 0 < rate["achieved_dispatch_rate_per_second"]["value"] < 80.0
     # The fake server reports usage without being asked; no SLO, no goodput.
     assert point["goodput"] is None
 

@@ -18,7 +18,7 @@ import math
 import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -64,23 +64,35 @@ ATTRIBUTION: dict[str, Any] = {
     "measurement_mode": "concurrent_load",
     "requests_isolated": False,
     "can_claim": [
-        "the latency distribution and goodput this client observed for this "
-        "request mix, at this offered load, against this endpoint, from this "
-        "client host",
-        "each per-request value is a real wall clock reading for that request "
-        "while it shared the server with the other requests of its point",
-        "server-side counters and histograms for a point's window, when "
-        "server metrics were paired and the window is attributed",
+        (
+            "the latency distribution and goodput this client observed for this "
+            "request mix, at this offered load, against this endpoint, from this "
+            "client host"
+        ),
+        (
+            "each per-request value is a real wall clock reading for that request "
+            "while it shared the server with the other requests of its point"
+        ),
+        (
+            "server-side counters and histograms for a point's window, when "
+            "server metrics were paired and the window is attributed"
+        ),
     ],
     "cannot_claim": [
         "what any single request would cost on an idle server",
-        "how a request's time splits into queueing, prefill and decode, from "
-        "client timings alone",
-        "that a latency change between points is caused by the server rather "
-        "than the client or the network; the scheduling diagnostics are there "
-        "to rule out the client",
-        "comparability with single-request records; gate, compare and export "
-        "refuse sweep artifacts",
+        (
+            "how a request's time splits into queueing, prefill and decode, from "
+            "client timings alone"
+        ),
+        (
+            "that a latency change between points is caused by the server rather "
+            "than the client or the network; the scheduling diagnostics are there "
+            "to rule out the client"
+        ),
+        (
+            "comparability with single-request records; gate, compare and export "
+            "refuse sweep artifacts"
+        ),
     ],
     "provenance_note": (
         "Every value keeps an existing MetricProvenance label. What separates "
@@ -427,6 +439,10 @@ def server_metrics_file_name(point_index: int) -> str:
     return f"server_metrics_point_{point_index}.json"
 
 
+def _exception_type_name(exc: BaseException) -> str:
+    return type(exc).__name__
+
+
 @dataclass
 class SweepRun:
     """Everything one sweep needs besides the request mix."""
@@ -439,7 +455,7 @@ class SweepRun:
     cooldown_seconds: float = 0.0
     max_dispatch_lag_ms: float = DEFAULT_MAX_DISPATCH_LAG_MS
     server_metrics: ServerMetricsPairing | None = None
-    describe_error: Callable[[BaseException], str] = lambda exc: type(exc).__name__
+    describe_error: Callable[[BaseException], str] = field(default=_exception_type_name)
     sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], float] = time.perf_counter
     on_point: Callable[[dict[str, Any]], None] | None = None

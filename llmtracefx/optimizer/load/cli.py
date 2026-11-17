@@ -694,6 +694,7 @@ def _safe_write(
     try:
         _write(output_dir / SWEEP_FILE_NAME, document, credential)
     except OSError:
+        # Best effort during an interrupt; exit code 130 still reports it.
         pass
 
 
