@@ -55,8 +55,8 @@ research pass and are less thoroughly verified.
 8. **Export to observability backends.** Datadog, Honeycomb, Langfuse,
    Grafana (through OpenLIT), MLflow and W&B Weave ingest OTLP spans that use
    the OpenTelemetry GenAI semantic conventions. Perfetto is the common
-   viewer for timelines. **Built in this branch as `export otlp` and
-   `export perfetto`.**
+   viewer for timelines. **Built in this branch as `export otlp`,
+   `export otlp-metrics` and `export perfetto`.**
 9. **Reasoning aware first token timing.** AIPerf separates time to first
    token from time to first output. The OTLP export follows the GenAI
    convention for `gen_ai.response.time_to_first_chunk`, which counts
@@ -164,6 +164,47 @@ API runs use real client offsets for their child spans. Local runs only
 record phase durations, so their phases are laid out back to back and marked
 `llmtracefx.span.placement=sequential_from_durations`. That layout is an
 assumption, not a measurement.
+
+### `export otlp-metrics`
+
+`export otlp-metrics` aggregates API runs into one OTLP/JSON `MetricsData`
+line in the same file exporter format. Names, units, bucket boundaries and
+attributes follow the GenAI metrics in
+`open-telemetry/semantic-conventions-genai` at commit `e6658f1`, where the
+GenAI conventions now live. It records the client inference metrics
+(`gen_ai.client.inference.duration`, `.time_to_first_chunk`,
+`.time_per_output_chunk`, `.operation.input_tokens` and `.output_tokens`) and
+the server metrics (`gen_ai.server.time_to_first_token`,
+`.time_per_output_token` and `.request.duration`). The conventions say
+`gen_ai.client.operation.duration` should not be reported for inference, and
+`gen_ai.client.token.usage` has been replaced, so neither is emitted.
+
+Each point adds `llmtracefx.provenance` and `llmtracefx.source`, so values
+measured in different ways never share a histogram, and each run is an
+exemplar that points at its `export otlp` root span. Failed runs keep their
+duration and token points with `error.type`. Server values come only from an
+attributable window that held exactly one request, from vLLM and SGLang
+histograms whose definitions match the conventions, and for TGI only from the
+end to end duration. These mappings were checked against vLLM `c26c9bf`,
+SGLang `e55e2ee` and TGI `b4adbf2`.
+
+Where it departs from the conventions on purpose:
+
+- Missing token usage is left out. The conventions ask for 0.
+- vLLM's TPOT of 0 for a one-token reply is left out, since no time per token
+  was measured.
+- TGI's per-token mean divides by all generated tokens and includes prefill,
+  so it is not reported as `gen_ai.server.time_per_output_token`.
+- Local records are skipped. Their phases are not one inference call.
+- The `gen_ai.client.inference.usage.*` counters are not emitted. They are
+  sums, not histograms, and the records do not say which modality the tokens
+  were, so every value would be `unknown`.
+
+The output was checked with OpenTelemetry Collector contrib 0.165.0: the
+`otlpjsonfile` receiver parsed it with no errors, the `prometheus` exporter
+produced the expected `_bucket`, `_sum` and `_count` series, and the `file`
+exporter wrote it back unchanged apart from the receiver's own file name
+metadata.
 
 ### `gate` and the perf gate Action
 
@@ -276,7 +317,6 @@ Entries as submitted:
 
 ## Follow ups not built here
 
-- OTLP metrics export (histograms for TTFT and duration).
 - Concurrency sweeps, goodput and trace replay.
 - NVML or DCGM energy collection.
 - Running the evidence viewer Space on CPU basic hardware (see above).
