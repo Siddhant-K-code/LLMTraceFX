@@ -146,6 +146,7 @@ from .optimize_summary import (
     RowStatusCounts,
 )
 from .parsers.llama_cpp import LlamaCppParseError, build_experiment_record
+from .replay.cli import add_replay_parser
 from .runner import ExperimentRunner, RunnerConfig, RunnerConfigError
 from .schema import (
     CommandInfo,
@@ -3315,6 +3316,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep local model paths instead of reducing them to basenames",
     )
     export_metrics_parser.set_defaults(func=_cmd_export_metrics)
+
+    add_replay_parser(subparsers)
 
     native_mtp_parser = subparsers.add_parser(
         "native-mtp",

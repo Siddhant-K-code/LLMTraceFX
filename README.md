@@ -240,6 +240,10 @@ relabelled as measurements.
   such as queue time and server TTFT are only reported when the window
   provably contains exactly the requests you sent. Otherwise the window is
   marked `contaminated`, `incomplete`, `counter_reset`, or `unverifiable`.
+- **Trace replay (Mooncake, BurstGPT, AIPerf `single_turn`):** check a
+  published arrival trace, plan its schedule offline, and replay it against an
+  OpenAI-compatible endpoint at the recorded arrival times. Synthetic prompts
+  keep Mooncake's prefix sharing. A malformed trace is refused, not repaired.
 
 ### Export to observability tools
 
@@ -858,6 +862,62 @@ skipped. Every value that is left out is listed as `Not exported: ...`.
 | `gen_ai.server.time_to_first_token` | vLLM or SGLang TTFT histogram | the server window is not attributable, holds more than one request, or the run failed |
 | `gen_ai.server.time_per_output_token` | vLLM or SGLang TPOT histogram | as above; vLLM records 0 for one-token replies, and TGI's per-token mean includes prefill, so neither is mapped |
 | `gen_ai.server.request.duration` | vLLM, SGLang or TGI end to end latency histogram | as above |
+
+### Trace replay
+
+`replay` sends a published arrival trace to an OpenAI-compatible endpoint at
+the times the trace records. Three formats are read, each named with
+`--format` and never guessed from the file:
+
+- `mooncake`: Mooncake JSONL with `timestamp` (ms), `input_length`,
+  `output_length` and `hash_ids` (one id per 512-token block by default, see
+  `--block-size`).
+- `burstgpt`: the BurstGPT CSV (`Timestamp`, `Model`, `Request tokens`,
+  `Response tokens`, `Total tokens`, `Log Type`). Rows with zero tokens are
+  refused unless `--exclude-failed` drops and counts them.
+- `aiperf-single-turn`: AIPerf `single_turn` JSONL with `timestamp` (ms),
+  `text` and `output_length`. This covers ShareGPT-style prompts with arrival
+  times.
+
+```bash
+# No network: check the file, then write the schedule.
+uv run llmtracefx-optimizer replay validate trace.jsonl --format mooncake
+uv run llmtracefx-optimizer replay plan trace.jsonl --format mooncake \
+  --time-scale 0.5 --max-requests 1000 --output-dir replay-plan
+
+# Send it to a local server.
+export LOCAL_KEY=unused
+uv run llmtracefx-optimizer replay run trace.jsonl --format mooncake \
+  --time-scale 0.5 --max-requests 1000 \
+  --endpoint http://127.0.0.1:8000/v1/chat/completions \
+  --model-id my-model --api-key-env LOCAL_KEY --output-dir replay-run \
+  --server-metrics-url http://127.0.0.1:8000/metrics
+```
+
+Mooncake and BurstGPT give lengths, not text, so prompts are synthetic. One
+word stands in for one token, so the planned prompt length is labelled
+`estimated` and the provider's `prompt_tokens` is recorded next to it. Every
+Mooncake hash block becomes the same text wherever it appears, so requests
+that share leading `hash_ids` share a byte-identical prefix. Prompt text
+comes from a salt that is random per run unless `--prompt-salt` is given, so
+a replay never hits cache entries left by an earlier one. Prompt text is never
+written to disk; only its sha256 is.
+
+`--time-scale` multiplies every gap between arrivals. `--start-s`, `--end-s`
+and `--max-requests` choose a window. `max_tokens` is the trace's output
+length; `--ignore-eos` asks vLLM and SGLang to generate all of it. `run`
+refuses a non-loopback endpoint unless `--allow-remote-load` is given, because
+it can send thousands of requests.
+
+`run` writes `replay_schedule.json`, `replay_requests.jsonl` (one line per
+request, with its scheduled, sent and completed offsets, TTFT, E2E and token
+counts) and `replay_result.json`. The result records the trace sha256, the
+selection and scaling, dispatch lag percentiles, and a fidelity verdict:
+`faithful` when every request was sent and p99 dispatch lag is within
+`--max-dispatch-lag-s` (0.05 s by default), `lagged` when lag went over it,
+and `incomplete` when Ctrl-C stopped the run early. The exit code is 0 when
+faithful, 2 when lagged or incomplete, and 1 on errors or when every request
+failed.
 
 ### Apple Instruments and Metal
 
