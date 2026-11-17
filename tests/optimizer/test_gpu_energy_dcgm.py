@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 from _fake_nvml import FakeClock, FakeLauncher
+from test_schema import make_record
 
 from llmtracefx.optimizer import cli as optimizer_cli
 from llmtracefx.optimizer.gpu_energy import cli as gpu_cli
@@ -35,6 +36,10 @@ from llmtracefx.optimizer.gpu_energy.dcgm_window import (
     DcgmExporterUnavailable,
     DcgmWindowRecord,
     record_dcgm_window,
+)
+from llmtracefx.optimizer.gpu_energy.record_power import (
+    GPU_ENERGY_EVIDENCE_FILE,
+    apply_sidecar,
 )
 
 # Verbatim from dcgm-exporter 4.9.0 (4e663a526c4624ad0e18ad816f09b7be2c5348a7),
@@ -169,13 +174,13 @@ def _record(
 
 
 def _evidence(record: DcgmWindowRecord, **kwargs: Any) -> dict[str, Any]:
+    kwargs.setdefault("started_at", "2026-01-01T00:00:00Z")
+    kwargs.setdefault("ended_at", "2026-01-01T00:01:00Z")
+    kwargs.setdefault("min_run_share", 0.9)
     return build_dcgm_evidence(
         record,
         endpoint="http://node-a:9400/metrics",
         argv=["python", "infer.py"],
-        started_at="2026-01-01T00:00:00Z",
-        ended_at="2026-01-01T00:01:00Z",
-        min_run_share=kwargs.pop("min_run_share", 0.9),
         **kwargs,
     )
 
@@ -535,3 +540,115 @@ def test_cli_record_refuses_bad_dcgm_input_before_running(
     assert _run_cli(argv) == 1
     assert fake_dcgm_cli["launcher"].calls == []
     assert not output.exists()
+
+
+# Evidence in records -----------------------------------------------------
+
+
+def _dcgm_window(
+    day: int = 1, *, runtime_s: float = 60.0, collect_s: float = 1.0, **kwargs: Any
+) -> dict[str, Any]:
+    """dcgm-exporter evidence for a 70 s window on 2026-01-<day>."""
+    clock = FakeClock(T0)
+    exporter = FakeExporter(clock, collect_s=collect_s)
+    record = _record(clock, exporter, FakeLauncher(clock, runtime_s=runtime_s))
+    return _evidence(
+        record,
+        started_at=f"2026-01-{day:02d}T00:00:00.000000Z",
+        ended_at=f"2026-01-{day:02d}T00:01:10.000000Z",
+        **kwargs,
+    )
+
+
+def _dcgm_run(
+    directory: Path, evidence: dict[str, Any], day: int = 1, **kw: Any
+) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    kw.setdefault("started_at", f"2026-01-{day:02d}T00:00:01.000000Z")
+    kw.setdefault("ended_at", f"2026-01-{day:02d}T00:01:01.000000Z")
+    path = directory / "record.json"
+    make_record(**kw).write_json(path)
+    (directory / GPU_ENERGY_EVIDENCE_FILE).write_text(
+        json.dumps(evidence), encoding="utf-8"
+    )
+    return path
+
+
+def test_dcgm_evidence_fills_record_energy_without_average_power(
+    tmp_path: Path,
+) -> None:
+    evidence = _dcgm_window(assume_isolated=True)
+    path = _dcgm_run(tmp_path, evidence)
+
+    record = apply_sidecar(make_record().read_json(path), path)
+
+    assert record.power.energy is not None
+    assert record.power.energy.value == evidence["devices"][0]["energy"]["value"]
+    assert record.power.energy.provenance.value == "measured_native"
+    assert record.power.average_power is None
+    source = record.power.source
+    assert source.collector == "dcgm-exporter"
+    assert source.attribution_status == "operator_asserted"
+    assert source.energy_method == "dcgm_exporter_counter_delta_over_bracket"
+    assert source.average_power_method is None
+    assert source.refused_reason is None
+    assert type(record).from_dict(record.to_dict()) == record
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "fragment"),
+    [
+        (
+            {"runtime_s": 10.0, "collect_s": 30.0, "assume_isolated": True},
+            "energy counter was refused (bracket_too_wide)",
+        ),
+        ({}, "not attributable (unverifiable)"),
+    ],
+)
+def test_dcgm_refusals_reach_the_record_power_source(
+    tmp_path: Path, kwargs: dict[str, Any], fragment: str
+) -> None:
+    path = _dcgm_run(tmp_path, _dcgm_window(**kwargs))
+    record = apply_sidecar(make_record().read_json(path), path)
+    assert record.power.energy is None
+    assert record.power.average_power is None
+    assert fragment in record.power.source.refused_reason
+
+
+def test_gate_reads_dcgm_energy_and_cannot_pass_on_average_power(
+    tmp_path: Path,
+) -> None:
+    from llmtracefx.optimizer.gate import evaluate_gate, load_gate_inputs
+
+    for side, first_day in (("b", 1), ("c", 10)):
+        for index in range(3):
+            day = first_day + index
+            _dcgm_run(
+                tmp_path / side / str(index),
+                _dcgm_window(day, assume_isolated=True),
+                day,
+                run_id=f"{side}-{index}",
+            )
+    baseline = load_gate_inputs([tmp_path / "b"])
+    candidate = load_gate_inputs([tmp_path / "c"])
+    report = evaluate_gate(baseline, candidate, metric="energy")
+    assert report.verdict.value == "pass", report.reason
+    report = evaluate_gate(baseline, candidate, metric="average_power")
+    assert report.verdict.value == "inconclusive"
+    assert "average_power is missing" in report.reason
+
+
+def test_export_otlp_carries_dcgm_energy(tmp_path: Path) -> None:
+    from test_export import attrs, run_cli, spans_of
+
+    record_path = _dcgm_run(tmp_path, _dcgm_window(assume_isolated=True))
+    output = tmp_path / "trace.json"
+    argv = ["export", "otlp", "--record", str(record_path), "--output", str(output)]
+    sidecar = tmp_path / GPU_ENERGY_EVIDENCE_FILE
+
+    code, _out, err = run_cli([*argv, "--gpu-energy", str(sidecar)])
+    assert code == 0, err
+    root = attrs(spans_of(json.loads(output.read_text()))[0])
+    assert root["llmtracefx.power.source.collector"] == "dcgm-exporter"
+    assert root["llmtracefx.power.energy.provenance"] == "measured_native"
+    assert "llmtracefx.power.average.value" not in root

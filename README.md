@@ -994,6 +994,16 @@ example around `collect-api`. Exit codes: 0 attributable, 2 written but not
 attributable, 1 on error or when the command fails, 3 when NVML is
 unavailable.
 
+To attach the energy to a record, save the evidence as
+`gpu_energy_evidence.json` next to its `record.json`. `gate` and
+`export otlp-metrics` read it from there, and `export otlp` or `perfetto`
+take it with `--gpu-energy FILE`. The record file is never rewritten. Only an
+attributable window that exited 0 and contains the whole run fills
+`power.energy` (the counter delta) and `power.average_power`; anything else is
+refused with a reason in `power.source.refused_reason`. The sampled power
+integral is never used. Runs that share one window, or whose windows overlap
+another run, are refused too.
+
 To read a running [dcgm-exporter](https://github.com/NVIDIA/dcgm-exporter)
 instead, pass `--source dcgm-exporter --dcgm-exporter-url
 http://HOST:9400/metrics` to `capability` or `record`. No extra is needed.
@@ -1007,17 +1017,8 @@ delta can cover, and refuses `energy` with `bracket_too_wide` when the command
 is less than `--min-run-share` (0.9) of the longest span. Run the exporter
 with a short interval, for example `-c 1000`, and long commands. Power is
 listed per scrape but not integrated, and the window is `unverifiable`
-because the exporter has no process list.
-
-To attach the energy to a record, save the evidence as
-`gpu_energy_evidence.json` next to its `record.json`. `gate` and
-`export otlp-metrics` read it from there, and `export otlp` or `perfetto`
-take it with `--gpu-energy FILE`. The record file is never rewritten. Only an
-attributable window that exited 0 and contains the whole run fills
-`power.energy` (the counter delta) and `power.average_power`; anything else is
-refused with a reason in `power.source.refused_reason`. The sampled power
-integral is never used. Runs that share one window, or whose windows overlap
-another run, are refused too.
+because the exporter has no process list. In a record, its evidence fills
+only `power.energy`, and only with `--assume-isolated`.
 
 ## Verify, tune, and optimize
 
