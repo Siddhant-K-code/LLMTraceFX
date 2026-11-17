@@ -131,6 +131,7 @@ from .instruments.workflow import (
     plan_trace,
     record_trace,
 )
+from .load.cli import add_sweep_api_parser
 from .manifest import collect_environment_manifest
 from .optimize_summary import (
     OPTIMIZE_SUMMARY_SCHEMA_VERSION,
@@ -3095,6 +3096,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     collect_api_parser.set_defaults(func=_cmd_collect_api)
+    add_sweep_api_parser(subparsers)
 
     server_metrics_parser = subparsers.add_parser(
         "server-metrics",

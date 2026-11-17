@@ -38,6 +38,8 @@ class ServerBehaviour:
     )
     finish_reason: str = "stop"
     metrics_text: str = ""
+    fail_every: int | None = None
+    """When set, every ``fail_every``-th request (1-based) gets a 503."""
 
 
 class FakeOpenAIServer(ThreadingHTTPServer):
@@ -94,12 +96,16 @@ class _Handler(BaseHTTPRequestHandler):
         behaviour = server.behaviour
         with server.lock:
             server.bodies.append(body)
+            number = len(server.bodies)
             server.active += 1
             server.peak_active = max(server.peak_active, server.active)
+        failing = (
+            behaviour.fail_every is not None and number % behaviour.fail_every == 0
+        )
         try:
-            if behaviour.status_code != 200:
+            if behaviour.status_code != 200 or failing:
                 payload = json.dumps({"error": {"message": "overloaded"}}).encode()
-                self.send_response(behaviour.status_code)
+                self.send_response(503 if failing else behaviour.status_code)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
