@@ -105,3 +105,57 @@ def test_upload_requires_a_token(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_rejects_malformed_space_ids(space: str) -> None:
     with pytest.raises(SystemExit):
         deploy_space.main(["--version", "1.10.0", "--space", space, "--dry-run"])
+
+
+class _Runtime:
+    def __init__(self, stage: str, hardware: str | None, requested: str | None):
+        self.stage = stage
+        self.hardware = hardware
+        self.requested_hardware = requested
+
+
+class _FakeApi:
+    def __init__(self, runtime: _Runtime, fail: bool = False) -> None:
+        self.runtime = runtime
+        self.fail = fail
+        self.calls: list[str] = []
+
+    def get_space_runtime(self, space: str) -> _Runtime:
+        return self.runtime
+
+    def request_space_hardware(self, space: str, hardware: str) -> _Runtime:
+        self.calls.append(f"hardware {hardware}")
+        if self.fail:
+            raise RuntimeError("402 Payment Required")
+        self.runtime = _Runtime("PAUSED", None, hardware)
+        return self.runtime
+
+    def restart_space(self, space: str) -> _Runtime:
+        self.calls.append("restart")
+        self.runtime = _Runtime("BUILDING", None, self.runtime.requested_hardware)
+        return self.runtime
+
+
+@pytest.mark.parametrize("requested", ["zero-a10g", None])
+def test_moves_a_zerogpu_space_to_cpu_basic_and_restarts_it(
+    requested: str | None,
+) -> None:
+    api = _FakeApi(_Runtime("PAUSED", None, requested))
+    message = deploy_space.ensure_hardware(api, "owner/space")
+    assert api.calls == ["hardware cpu-basic", "restart"]
+    assert "-> cpu-basic, stage BUILDING" in message
+
+
+@pytest.mark.parametrize("stage", ["PAUSED", "RUNNING"])
+def test_leaves_other_hardware_alone(stage: str) -> None:
+    api = _FakeApi(_Runtime(stage, "t4-small", "t4-small"))
+    assert deploy_space.ensure_hardware(api, "owner/space") == (
+        "Hardware: t4-small (unchanged)"
+    )
+    assert api.calls == []
+
+
+def test_hardware_refusal_names_the_fix() -> None:
+    api = _FakeApi(_Runtime("PAUSED", None, "zero-a10g"), fail=True)
+    with pytest.raises(deploy_space.HardwareError, match="PRO account"):
+        deploy_space.ensure_hardware(api, "owner/space")
