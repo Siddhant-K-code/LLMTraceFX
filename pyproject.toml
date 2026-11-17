@@ -80,6 +80,17 @@ modal-l4-execute = [
     "modal==1.6.4",
 ]
 
+# NVIDIA's own NVML binding (it provides the `pynvml` module) for
+# `llmtracefx-optimizer gpu-energy`. It is an optional extra because only
+# machines with an NVIDIA driver can use it: nothing imports it at module
+# scope, and `gpu-energy capability` reports `extra_missing` without it.
+# The floor is a release checked to have every call the collector
+# uses (the energy counter, power usage, MIG mode and process listing).
+# Install it with `uv sync --extra nvml`.
+nvml = [
+    "nvidia-ml-py>=12.535.108",
+]
+
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
@@ -203,6 +214,7 @@ module = [
     "pandas.*",
     "numpy.*",
     "modal.*",
+    "pynvml.*",
     "huggingface_hub.*",
     "mlx.*",
     "mlx_lm.*",

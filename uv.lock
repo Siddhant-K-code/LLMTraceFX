@@ -1321,6 +1321,9 @@ modal = [
 modal-l4-execute = [
     { name = "modal" },
 ]
+nvml = [
+    { name = "nvidia-ml-py" },
+]
 test = [
     { name = "httpx" },
     { name = "pytest" },
@@ -1346,6 +1349,7 @@ requires-dist = [
     { name = "modal", marker = "extra == 'modal-l4-execute'", specifier = "==1.6.4" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.5.0" },
     { name = "numpy", specifier = ">=2.2.6" },
+    { name = "nvidia-ml-py", marker = "extra == 'nvml'", specifier = ">=12.535.108" },
     { name = "packaging", marker = "extra == 'build'", specifier = "==26.3" },
     { name = "pandas", specifier = ">=2.2.2" },
     { name = "plotly", specifier = ">=7.0.0" },
@@ -1363,7 +1367,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.24.0" },
     { name = "wheel", marker = "extra == 'build'", specifier = "==0.48.0" },
 ]
-provides-extras = ["build", "modal", "modal-l4-execute", "dev", "test", "mlx", "docs"]
+provides-extras = ["build", "modal", "modal-l4-execute", "nvml", "dev", "test", "mlx", "docs"]
 
 [[package]]
 name = "markdown"
@@ -1938,6 +1942,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/76/95/bef5b37f29fc5e739947e9ce5179ad402875633308504a52d188302319c8/numpy-2.2.6-cp313-cp313t-musllinux_1_2_x86_64.whl", hash = "sha256:8e9ace4a37db23421249ed236fdcdd457d671e25146786dfc96835cd951aa7c1", size = 18385260, upload-time = "2025-05-17T21:43:05.189Z" },
     { url = "https://files.pythonhosted.org/packages/09/04/f2f83279d287407cf36a7a8053a5abe7be3622a4363337338f2585e4afda/numpy-2.2.6-cp313-cp313t-win32.whl", hash = "sha256:038613e9fb8c72b0a41f025a7e4c3f0b7a1b5d768ece4796b674c8f3fe13efff", size = 6377225, upload-time = "2025-05-17T21:43:16.254Z" },
     { url = "https://files.pythonhosted.org/packages/67/0e/35082d13c09c02c011cf21570543d202ad929d961c02a147493cb0c2bdf5/numpy-2.2.6-cp313-cp313t-win_amd64.whl", hash = "sha256:6031dd6dfecc0cf9f668681a37648373bddd6421fff6c66ec1624eed0180ee06", size = 12771374, upload-time = "2025-05-17T21:43:35.479Z" },
+]
+
+[[package]]
+name = "nvidia-ml-py"
+version = "13.615.71"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/30/b25216758be3d3e2834825d8193609e2d71c770a8bd7984438c058c90268/nvidia_ml_py-13.615.71.tar.gz", hash = "sha256:bebe4e48f51b1dc75028c0815cb7bfa14a31a5bb80be70c9d980c6036953fc3d", size = 57485, upload-time = "2026-09-25T15:15:28.226Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/a1/1681dfa1c904d4e3e72e51b55a0ff012d50b766843ef832d584abe2113c6/nvidia_ml_py-13.615.71-py3-none-any.whl", hash = "sha256:959bf4adf6fe1308e4bd739e722236b0d1ec8392e2cefad33ff70c311380b9b6", size = 58132, upload-time = "2026-09-25T15:15:26.54Z" },
 ]
 
 [[package]]

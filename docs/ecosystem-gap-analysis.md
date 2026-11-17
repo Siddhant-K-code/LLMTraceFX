@@ -27,7 +27,7 @@ research pass and are less thoroughly verified.
 | Ollama response timings | none (per request fields) | no `/metrics` endpoint | no | no | no | none |
 | mlx-lm server benchmark | concurrency | no | no | no | no | none |
 | MLPerf Inference | formal scenarios | n/a | latency caps | MLPerf Power | mandatory accuracy | audited |
-| LLMTraceFX | single request | **now: `server-metrics`** | no (single objective `tune`) | Apple Instruments | every workload verified | per value provenance |
+| LLMTraceFX | single request | **now: `server-metrics`** | no (single objective `tune`) | Apple Instruments, **now: NVML (`gpu-energy`)** | every workload verified | per value provenance |
 
 ## Gaps, ranked by how strongly users expect them
 
@@ -46,7 +46,8 @@ research pass and are less thoroughly verified.
    item 3, which reads the server's own histograms instead of inferring
    phases at the client.
 5. **GPU telemetry and energy (NVML or DCGM).** LLMTraceFX covers Apple
-   silicon through Instruments. NVIDIA power is absent.
+   silicon through Instruments. **Built in this branch as `gpu-energy`, for
+   NVIDIA power and energy through NVML.** DCGM is not used.
 6. **Trace replay (Mooncake, ShareGPT timed replay, BurstGPT).** SGLang,
    AIPerf and AISBench all added Mooncake replay within the last year.
 7. **Prefix cache hit rate under load.** `server-metrics` now reports the
@@ -235,6 +236,29 @@ be gated against each other, because the two tools define their metrics
 differently. Neither format has per-request data or correctness results, so
 neither is available from an import.
 
+### `gpu-energy`
+
+`gpu-energy record` runs one command and reads NVIDIA power and energy
+through NVML (the optional `nvml` extra). It reads each GPU's total energy
+counter before and after the command and polls power while it runs. The
+counter delta is `energy`, labelled `measured_native`. A trapezoid over the
+power samples is `sampled_power_integral`, labelled `estimated`, and is never
+called energy. A counter that went backwards, did not move or could not be
+read leaves `energy` null with a reason. Too few samples, a failed read or a
+full sample buffer does the same for the sampled values.
+
+NVML readings are device wide. On each poll the collector also lists the GPU
+processes and walks their parent PIDs. A process outside the command, its
+children and any `--gpu-pid` makes the window `contaminated`. A window that
+cannot be checked (PID namespaces, MIG, a failed listing, or the command never
+listed) is `unverifiable` unless the operator passes `--assume-isolated`.
+Only attributable windows of a command that exited 0 produce highlights.
+`gpu-energy capability` reports what the machine supports and exits 3 when
+NVML is unavailable, including on macOS.
+
+DCGM was not used: its exporter samples every 30 seconds by default and its
+scrapes carry no timestamp, which is too coarse for one request.
+
 ### Evidence viewer Space
 
 `spaces/evidence-viewer/` is a Gradio app for Hugging Face Spaces. It shows a
@@ -278,6 +302,7 @@ Entries as submitted:
 
 - OTLP metrics export (histograms for TTFT and duration).
 - Concurrency sweeps, goodput and trace replay.
-- NVML or DCGM energy collection.
+- GPU energy in records: feed `gpu-energy` evidence into `ExperimentRecord`
+  power, `export` and `gate`, and add DCGM as a second source.
 - Running the evidence viewer Space on CPU basic hardware (see above).
 - Getting rafska/awesome-local-llm#364 reviewed.
