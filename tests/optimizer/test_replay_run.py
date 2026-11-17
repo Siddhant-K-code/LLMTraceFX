@@ -9,12 +9,14 @@ from typing import Any
 
 import pytest
 from _load_fakes import API_KEY, API_KEY_ENV, ENVIRON, fake_openai_server
+from _tokenizer_fakes import ByteLevel, fake_tokenizer
 
 from llmtracefx.optimizer import cli
 from llmtracefx.optimizer.collectors.openai_api import (
     APICollectionConfig,
     UrllibStreamingTransport,
 )
+from llmtracefx.optimizer.replay import cli as replay_cli
 from llmtracefx.optimizer.replay.artifact import (
     REQUESTS_FILE,
     RESULT_FILE,
@@ -255,3 +257,45 @@ def test_a_stop_before_dispatch_is_incomplete(tmp_path: Path) -> None:
     assert replay.report.unsent_count == 4
     assert server.bodies == []
     assert fidelity(replay.report, ReplayOptions())["verdict"] == INCOMPLETE
+
+
+def test_a_tokenizer_run_reports_exact_counts_and_overhead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        replay_cli,
+        "load_tokenizer",
+        lambda spec, revision=None: fake_tokenizer(ByteLevel(), name=spec),
+    )
+    out = tmp_path / "out"
+    with fake_openai_server() as server:
+        argv = _argv(server.endpoint, out, "--tokenizer", "org/model")
+        assert _run(argv) == 0
+
+    rows = _lines(out / REQUESTS_FILE)
+    assert sorted(row["tokenizer_prompt_tokens"] for row in rows) == [
+        600,
+        1024,
+        1100,
+        1300,
+    ]
+    result = read_result(out / RESULT_FILE)
+    overhead = result["tokens"]["input_minus_tokenizer"]
+    # The fake server always reports 11 prompt tokens.
+    assert overhead["requests_compared"] == 4
+    assert overhead["min"] == 11 - 1300
+    assert overhead["max"] == 11 - 600
+    assert overhead["provenance"] == "derived"
+    assert "--tokenizer" in result["target"]["command"]
+    assert result["field_provenance"]["tokenizer_prompt_tokens"] == "tokenizer_exact"
+
+
+def test_a_plain_run_has_no_tokenizer_overhead(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    with fake_openai_server() as server:
+        assert _run(_argv(server.endpoint, out)) == 0
+    result = read_result(out / RESULT_FILE)
+    assert result["tokens"]["input_minus_tokenizer"] is None
+    assert all(
+        row["tokenizer_prompt_tokens"] is None for row in _lines(out / REQUESTS_FILE)
+    )

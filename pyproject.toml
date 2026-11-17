@@ -91,6 +91,17 @@ nvml = [
     "nvidia-ml-py>=12.535.108",
 ]
 
+# Hugging Face `tokenizers` for `replay plan|run --tokenizer`, which makes
+# synthetic prompt lengths exact in a named tokenizer. Optional: nothing
+# imports it at module scope and `replay` refuses `--tokenizer` with an
+# install hint when it is missing. `huggingface-hub` is listed because the
+# replay code imports it directly to fetch `tokenizer.json` by repo id.
+# Install it with `uv sync --extra tokenizer`.
+tokenizer = [
+    "tokenizers>=0.19.0",
+    "huggingface-hub>=0.23.0",
+]
+
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
@@ -216,6 +227,7 @@ module = [
     "modal.*",
     "pynvml.*",
     "huggingface_hub.*",
+    "tokenizers.*",
     "mlx.*",
     "mlx_lm.*",
     "mlx_vlm.*",

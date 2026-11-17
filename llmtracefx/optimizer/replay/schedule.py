@@ -25,6 +25,7 @@ from ..schema import MetricProvenance
 from .artifact import (
     SCHEDULE_KIND,
     SCHEMA_VERSION,
+    TOKENIZER_EXACT,
     TRACE_DECLARED,
     read_document,
     render,
@@ -34,10 +35,18 @@ from .artifact import (
     write_text,
 )
 from .formats import BURSTGPT, MOONCAKE, ParsedTrace, TraceEntry
-from .prompts import PROMPT_METHOD, WORD_LIST_SHA256, PromptBuilder, word_count
+from .prompts import (
+    WORD_LIST_SHA256,
+    WORD_VOCABULARY,
+    PromptBuilder,
+    Vocabulary,
+    word_count,
+)
+from .tokenizer import ReplayTokenizer, TokenUnits, count_tokens, fit_units
 
 _MAX_TIME_SCALE = 1e6
 _OFFSET_DECIMALS = 6
+_TOKENIZER_CHUNK = 64
 
 
 class ScheduleError(ValueError):
@@ -100,6 +109,7 @@ class ScheduledRequest:
     hash_blocks: int | None = None
     reused_blocks: int | None = None
     reusable_tokens: int | None = None
+    tokenizer_prompt_tokens: int | None = None
 
     @property
     def request_id(self) -> str:
@@ -115,6 +125,7 @@ class ScheduledRequest:
             "target_output_tokens": self.target_output_tokens,
             "max_tokens": self.target_output_tokens,
             "estimated_prompt_tokens": self.estimated_prompt_tokens,
+            "tokenizer_prompt_tokens": self.tokenizer_prompt_tokens,
             "prompt_sha256": self.prompt_sha256,
             "hash_blocks": self.hash_blocks,
             "reused_blocks": self.reused_blocks,
@@ -130,12 +141,19 @@ class ReplaySchedule:
     requests: tuple[ScheduledRequest, ...]
     entries: tuple[TraceEntry, ...]
     """The selected trace rows, aligned with ``requests``."""
+    tokenizer: ReplayTokenizer | None = None
+    units: TokenUnits | None = None
+
+    @property
+    def vocabulary(self) -> Vocabulary:
+        return WORD_VOCABULARY if self.units is None else self.units.vocabulary
 
     def prompt_builder(self) -> PromptBuilder:
         return PromptBuilder(
             salt=self.salt,
             trace_sha256=self.trace.sha256,
             block_size=self.trace.block_size,
+            vocabulary=self.vocabulary,
         )
 
     def prompts(self) -> Iterator[str]:
@@ -174,6 +192,11 @@ class ReplaySchedule:
             ),
             "estimated_provenance": MetricProvenance.ESTIMATED.value,
         }
+        if self.tokenizer is not None:
+            summary["tokenizer_prompt_tokens_total"] = sum(
+                r.tokenizer_prompt_tokens or 0 for r in requests
+            )
+            summary["tokenizer_provenance"] = TOKENIZER_EXACT
         if self.trace.format == MOONCAKE:
             blocks = sum(r.hash_blocks or 0 for r in requests)
             reused = sum(r.reused_blocks or 0 for r in requests)
@@ -202,19 +225,7 @@ class ReplaySchedule:
             "generated_by": tool_record(),
             "source": self.trace.source_dict(),
             "selection": self.selection.to_dict(),
-            "prompts": {
-                "method": PROMPT_METHOD,
-                "unit": "word",
-                "word_list_sha256": WORD_LIST_SHA256,
-                "salt": self.salt,
-                "block_size": self.trace.block_size,
-                "structure": _structure(self.trace.format),
-                "length_provenance": MetricProvenance.ESTIMATED.value,
-                "note": (
-                    "One word is not exactly one token and the chat template "
-                    "adds tokens. Compare provider prompt_tokens at run time."
-                ),
-            },
+            "prompts": self._prompts_record(),
             "output_length": {
                 "policy": "max_tokens ceiling",
                 "provenance": TRACE_DECLARED,
@@ -223,6 +234,41 @@ class ReplaySchedule:
             "requests": [request.to_dict() for request in self.requests],
         }
         return seal(document, "schedule_sha256")
+
+    def _prompts_record(self) -> dict[str, Any]:
+        vocabulary = self.vocabulary
+        record: dict[str, Any] = {
+            "method": vocabulary.method,
+            "unit": "word",
+            "word_list_sha256": WORD_LIST_SHA256,
+            "salt": self.salt,
+            "block_size": self.trace.block_size,
+            "structure": _structure(self.trace.format),
+            "length_provenance": MetricProvenance.ESTIMATED.value,
+            "note": (
+                "One word is not exactly one token and the chat template "
+                "adds tokens. Compare provider prompt_tokens at run time."
+            ),
+        }
+        if self.tokenizer is None:
+            return record
+        record.update(
+            unit="token",
+            unit_words=len(vocabulary.words),
+            unit_words_sha256=vocabulary.words_sha256(),
+            leading_space=vocabulary.leading_space,
+            length_provenance=TOKENIZER_EXACT,
+            tokenizer=self.tokenizer.identity.to_dict(),
+            counted="the prompt text alone, encoded without special tokens",
+            note=(
+                "Each word is one token in the recorded tokenizer and every "
+                "prompt was encoded and checked token by token, so lengths and "
+                "hash block boundaries are exact for the prompt text. The chat "
+                "template and special tokens the server adds are not counted; "
+                "compare provider prompt_tokens at run time."
+            ),
+        )
+        return record
 
 
 def _structure(trace_format: str) -> str:
@@ -298,12 +344,20 @@ def prefix_reuse(
 
 
 def build_schedule(
-    trace: ParsedTrace, selection: Selection, *, salt: str
+    trace: ParsedTrace,
+    selection: Selection,
+    *,
+    salt: str,
+    tokenizer: ReplayTokenizer | None = None,
 ) -> ReplaySchedule:
     selection.validate(trace.format)
     selected = _select(trace, selection)
+    units = None if tokenizer is None else fit_units(tokenizer)
     builder = PromptBuilder(
-        salt=salt, trace_sha256=trace.sha256, block_size=trace.block_size
+        salt=salt,
+        trace_sha256=trace.sha256,
+        block_size=trace.block_size,
+        vocabulary=WORD_VOCABULARY if units is None else units.vocabulary,
     )
     first = selected[0].arrival_s
     reuse = (
@@ -312,36 +366,75 @@ def build_schedule(
         else None
     )
     requests: list[ScheduledRequest] = []
-    for index, entry in enumerate(selected):
-        prompt = _prompt(builder, entry)
-        hash_blocks = reused = reusable = None
-        if reuse is not None and entry.hash_ids is not None:
-            hash_blocks = len(entry.hash_ids)
-            reused, reusable = reuse[index]
-        offset = round(
-            (entry.arrival_s - first) * selection.time_scale, _OFFSET_DECIMALS
-        )
-        requests.append(
-            ScheduledRequest(
-                index=index,
-                source_line=entry.line,
-                source_arrival_s=entry.arrival_s,
-                arrival_offset_s=offset,
-                target_output_tokens=entry.output_tokens,
-                target_input_tokens=entry.input_tokens,
-                estimated_prompt_tokens=word_count(prompt),
-                prompt_sha256=sha256_text(prompt),
-                hash_blocks=hash_blocks,
-                reused_blocks=reused,
-                reusable_tokens=reusable,
+    # Prompts are built a chunk at a time so a tokenizer can encode them in
+    # one batch without the whole trace's text being held at once.
+    for start in range(0, len(selected), _TOKENIZER_CHUNK):
+        chunk = selected[start : start + _TOKENIZER_CHUNK]
+        prompts = [_prompt(builder, entry) for entry in chunk]
+        counts: Sequence[int | None] = (
+            [None] * len(chunk)
+            if tokenizer is None or units is None
+            else count_tokens(
+                tokenizer,
+                units,
+                prompts,
+                [entry.text is None for entry in chunk],
+                [entry.line for entry in chunk],
             )
         )
+        for index, (entry, prompt, count) in enumerate(
+            zip(chunk, prompts, counts, strict=True), start=start
+        ):
+            requests.append(
+                _scheduled(
+                    index,
+                    entry,
+                    prompt,
+                    count,
+                    first=first,
+                    selection=selection,
+                    reuse=reuse,
+                )
+            )
     return ReplaySchedule(
         trace=trace,
         selection=selection,
         salt=salt,
         requests=tuple(requests),
         entries=tuple(selected),
+        tokenizer=tokenizer,
+        units=units,
+    )
+
+
+def _scheduled(
+    index: int,
+    entry: TraceEntry,
+    prompt: str,
+    tokenizer_tokens: int | None,
+    *,
+    first: float,
+    selection: Selection,
+    reuse: list[tuple[int, int]] | None,
+) -> ScheduledRequest:
+    hash_blocks = reused = reusable = None
+    if reuse is not None and entry.hash_ids is not None:
+        hash_blocks = len(entry.hash_ids)
+        reused, reusable = reuse[index]
+    offset = round((entry.arrival_s - first) * selection.time_scale, _OFFSET_DECIMALS)
+    return ScheduledRequest(
+        index=index,
+        source_line=entry.line,
+        source_arrival_s=entry.arrival_s,
+        arrival_offset_s=offset,
+        target_output_tokens=entry.output_tokens,
+        target_input_tokens=entry.input_tokens,
+        estimated_prompt_tokens=word_count(prompt),
+        prompt_sha256=sha256_text(prompt),
+        hash_blocks=hash_blocks,
+        reused_blocks=reused,
+        reusable_tokens=reusable,
+        tokenizer_prompt_tokens=tokenizer_tokens,
     )
 
 

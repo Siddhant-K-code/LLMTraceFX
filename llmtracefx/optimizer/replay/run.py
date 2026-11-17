@@ -55,6 +55,7 @@ from .artifact import (
     RESULT_KIND,
     SCHEDULE_FILE,
     SCHEMA_VERSION,
+    TOKENIZER_EXACT,
     TRACE_DECLARED,
     canonical_json,
     read_document,
@@ -83,6 +84,7 @@ REPLAY_FIELD_PROVENANCE: dict[str, str] = {
     "target_input_tokens": TRACE_DECLARED,
     "target_output_tokens": TRACE_DECLARED,
     "estimated_prompt_tokens": MetricProvenance.ESTIMATED.value,
+    "tokenizer_prompt_tokens": TOKENIZER_EXACT,
     "dispatch_lag_s": MetricProvenance.DERIVED.value,
     "prompt_build_ms": MetricProvenance.MEASURED_WALL_CLOCK.value,
 }
@@ -246,6 +248,7 @@ def request_line(
         "target_input_tokens": request.target_input_tokens,
         "target_output_tokens": request.target_output_tokens,
         "estimated_prompt_tokens": request.estimated_prompt_tokens,
+        "tokenizer_prompt_tokens": request.tokenizer_prompt_tokens,
         "planned_prompt_sha256": request.prompt_sha256,
     }
 
@@ -300,6 +303,27 @@ def _ratio_summary(pairs: Sequence[tuple[int | None, int | None]]) -> dict[str, 
             ratio_min=ratios[0],
             ratio_max=ratios[-1],
         )
+    return summary
+
+
+def _overhead_summary(pairs: Sequence[tuple[int | None, int | None]]) -> dict[str, Any]:
+    """Provider prompt_tokens minus the tokenizer's count of the prompt text."""
+    gaps = sorted(
+        reported - counted
+        for reported, counted in pairs
+        if reported is not None and counted is not None
+    )
+    summary: dict[str, Any] = {
+        "basis": (
+            "provider prompt_tokens minus the recorded tokenizer's count of the "
+            "prompt text; when the server uses the same tokenizer this is the "
+            "chat template and special tokens"
+        ),
+        "requests_compared": len(gaps),
+        "provenance": MetricProvenance.DERIVED.value,
+    }
+    if gaps:
+        summary.update(median=gaps[(len(gaps) - 1) // 2], min=gaps[0], max=gaps[-1])
     return summary
 
 
@@ -458,6 +482,19 @@ def build_result(
                     for row in sent
                 ]
             ),
+            "input_minus_tokenizer": (
+                None
+                if schedule.tokenizer is None
+                else _overhead_summary(
+                    [
+                        (
+                            row.prompt_tokens,
+                            by_index[row.index].tokenizer_prompt_tokens,
+                        )
+                        for row in sent
+                    ]
+                )
+            ),
             "output_vs_trace": _ratio_summary(
                 [
                     (row.output_tokens, by_index[row.index].target_output_tokens)
@@ -529,6 +566,13 @@ def summary_lines(document: Mapping[str, Any]) -> list[str]:
         lines.append(
             "prompt tokens vs trace: median ratio "
             f"{tokens['ratio_median']:.3f} over {tokens['requests_compared']} requests"
+        )
+    overhead = document["tokens"].get("input_minus_tokenizer")
+    if overhead is not None and "median" in overhead:
+        lines.append(
+            "prompt tokens minus tokenizer count: median "
+            f"{overhead['median']} over {overhead['requests_compared']} requests "
+            "(chat template and special tokens if the server uses that tokenizer)"
         )
     cached = document["tokens"]["cached_prompt_tokens"]
     if cached["total"] is not None:

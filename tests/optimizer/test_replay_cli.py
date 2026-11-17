@@ -1,9 +1,12 @@
 import json
+import sys
 from pathlib import Path
 
 import pytest
+from _tokenizer_fakes import ByteLevel, fake_tokenizer
 
 from llmtracefx.optimizer import cli
+from llmtracefx.optimizer.replay import cli as replay_cli
 from llmtracefx.optimizer.replay.schedule import read_schedule
 
 FIXTURES = Path(__file__).parent / "fixtures" / "replay"
@@ -94,4 +97,42 @@ def test_plan_refuses_bad_salt_and_non_finite_scale(
     assert _run([*base, "--prompt-salt", "a b", *out]) == 1
     assert "--prompt-salt" in capsys.readouterr().err
     assert _run([*base, "--time-scale", "nan", *out]) == 2
+    assert not (tmp_path / "x").exists()
+
+
+def test_plan_with_a_tokenizer_records_it(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    def load(spec: str, revision: str | None = None) -> object:
+        calls.append((spec, revision))
+        return fake_tokenizer(ByteLevel(), name=spec)
+
+    monkeypatch.setattr(replay_cli, "load_tokenizer", load)
+    out_dir = tmp_path / "out"
+    argv = ["replay", "plan", MOONCAKE, "--format", "mooncake"]
+    tokenizer = ["--tokenizer", "org/model", "--tokenizer-revision", "v1"]
+    assert _run([*argv, *tokenizer, "--output-dir", str(out_dir)]) == 0
+    assert calls == [("org/model", "v1")]
+    assert "tokenizer: org/model" in capsys.readouterr().out
+    schedule = read_schedule(out_dir / "replay_schedule.json")
+    assert schedule["prompts"]["tokenizer"]["name"] == "org/model"
+    assert [r["tokenizer_prompt_tokens"] for r in schedule["requests"]] == [
+        r["target_input_tokens"] for r in schedule["requests"]
+    ]
+
+
+def test_plan_refuses_tokenizer_problems(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = ["replay", "plan", MOONCAKE, "--format", "mooncake"]
+    out = ["--output-dir", str(tmp_path / "x")]
+    assert _run([*base, "--tokenizer-revision", "v1", *out]) == 1
+    assert "--tokenizer-revision needs --tokenizer" in capsys.readouterr().err
+    monkeypatch.setitem(sys.modules, "tokenizers", None)
+    assert _run([*base, "--tokenizer", "org/model", *out]) == 1
+    assert "--extra tokenizer" in capsys.readouterr().err
     assert not (tmp_path / "x").exists()
