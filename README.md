@@ -229,6 +229,9 @@ relabelled as measurements.
 - **Apple Instruments:** check `xctrace` capability, print an execution plan,
   record a local command, or import an existing trace bundle. Supported Metal
   tables are reported narrowly rather than treated as generic GPU utilization.
+- **NVIDIA GPU energy (NVML):** run one command and record device wide GPU
+  energy from the driver's energy counter, plus sampled power. Totals are only
+  highlighted when no other process used the GPU during the window.
 - **Native Qwen MTP:** emit a capability report and an explicit unsupported
   record when the installed stack cannot produce trustworthy native-MTP
   evidence.
@@ -706,6 +709,7 @@ uv run llmtracefx-optimizer optimize \
 | Offline planning and report inspection | Python 3.11+ and `uv` | `uv sync --locked` |
 | Local MLX collection | macOS on arm64, MLX, MLX-LM, and an existing local model directory | `uv sync --locked --extra mlx` |
 | Metal and `xctrace` | macOS, full Xcode command-line tools, and a locally available Instruments template | `uv run llmtracefx-optimizer instruments capability` |
+| NVIDIA GPU energy | Linux or Windows with an NVIDIA driver, and the optional `nvml` extra | `uv sync --locked --extra nvml`, then `uv run llmtracefx-optimizer gpu-energy capability` |
 | Hosted API collection | An HTTPS OpenAI-compatible endpoint and a provider key stored in an environment variable | Use `collect-api --dry-run` before making a request |
 | Modal planning | No Modal account or SDK is required | `uv run llmtracefx-deploy plan --help` |
 | Modal execution | An approved plan, current price inputs, Modal account and auth, optional `modal` extra, proxy auth token, pinned model revision, and pinned serving image | `uv sync --locked --extra modal` (the constraint is still `>=1.0.5`, but the lock now resolves `modal==1.6.4`) |
@@ -857,6 +861,38 @@ A public, reproducible Apple Silicon example with a deterministic Metal
 workload, sanitized measured evidence, integrity hashes, and charts lives in
 [`examples/metal_evidence/`](examples/metal_evidence/README.md). Raw trace
 bundles and XML exports are excluded by design.
+
+### NVIDIA GPU energy (NVML)
+
+Install the optional extra and check support:
+
+```bash
+uv sync --locked --extra nvml
+uv run llmtracefx-optimizer gpu-energy capability
+
+uv run llmtracefx-optimizer gpu-energy record \
+  --output output/gpu-energy.json \
+  -- python my_inference.py
+```
+
+`record` reads the NVML energy counter on each GPU before and after the
+command and polls power every 100 ms while it runs. The evidence keeps two
+energy figures apart:
+
+- `energy` is the energy counter delta, labelled `measured_native`.
+- `sampled_power_integral` is a trapezoid over the power samples, labelled
+  `estimated`.
+
+Both are device wide, so they include idle power and anything else on the
+GPU. On every tick, `record` also asks NVML which processes use the selected
+GPUs. A process that is not the command or one of its children makes the
+window `contaminated`. When this cannot be checked, for example from inside a
+container's PID namespace or with MIG enabled, the window is `unverifiable`.
+Totals are only highlighted for an attributable window. To measure an
+inference server that the command calls, pass its PID with `--gpu-pid`, for
+example around `collect-api`. Exit codes: 0 attributable, 2 written but not
+attributable, 1 on error or when the command fails, 3 when NVML is
+unavailable.
 
 ## Verify, tune, and optimize
 

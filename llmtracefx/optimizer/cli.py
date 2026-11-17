@@ -16,6 +16,8 @@ Subcommands:
     gate             CI performance gate: compare candidate runs with
                      baseline runs; exit 0 pass, 1 regression, 2 inconclusive.
     native-mtp       Native Qwen MTP capability report / evidence collection.
+    gpu-energy       NVIDIA GPU energy and power through NVML (optional
+                     `nvml` extra): capability report and a measured window.
     instruments      Apple Instruments (xctrace) capability report, dry-run
                      plan, Metal trace recording, and trace import.
     parse-llama-cpp  Convert llama.cpp text output into a canonical ExperimentRecord.
@@ -104,6 +106,7 @@ from .export import (
     render_otlp_metrics_json_line,
 )
 from .gate import GateInputError, evaluate_gate, load_gate_inputs
+from .gpu_energy.cli import add_gpu_energy_parser
 from .importers import (
     AIPERF_TOOL,
     VLLM_BENCH_TOOL,
@@ -3365,6 +3368,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicit accelerator name; otherwise left unset",
     )
     native_mtp_collect_parser.set_defaults(func=_cmd_native_mtp_collect)
+
+    add_gpu_energy_parser(subparsers)
 
     instruments_parser = subparsers.add_parser(
         "instruments",
