@@ -480,6 +480,19 @@ def build_trace(
         root_attributes, "llmtracefx.power.average", record.power.average_power
     )
     _put_measurement(root_attributes, "llmtracefx.power.energy", record.power.energy)
+    power_source = record.power.source
+    if power_source is not None:
+        for name, value in (
+            ("collector", power_source.collector),
+            ("scope", power_source.scope),
+            ("attribution_status", power_source.attribution_status),
+            ("evidence_sha256", power_source.evidence_sha256),
+            ("device_count", power_source.device_count),
+            ("energy_method", power_source.energy_method),
+            ("average_power_method", power_source.average_power_method),
+            ("refused_reason", power_source.refused_reason),
+        ):
+            _put(root_attributes, f"llmtracefx.power.source.{name}", value)
 
     error_message = None
     if record.error is not None:

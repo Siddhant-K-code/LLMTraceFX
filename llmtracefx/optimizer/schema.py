@@ -20,7 +20,7 @@ import math
 import os
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -75,14 +75,10 @@ def _string_with_default(
 
 def utc_now_iso() -> str:
     """Return the current UTC time as an ISO-8601 string ending in ``Z``."""
-    return (
-        datetime.now(timezone.utc)
-        .isoformat(timespec="microseconds")
-        .replace("+00:00", "Z")
-    )
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-class MetricProvenance(str, Enum):
+class MetricProvenance(str, Enum):  # noqa: UP042 (str() must stay unchanged)
     """How a metric value was obtained.
 
     Every optional numeric measurement in this schema is paired with one of
@@ -634,24 +630,94 @@ class MemoryMetrics:
 
 
 @dataclass(frozen=True)
+class PowerSource:
+    """Where the power values came from, or why evidence was refused.
+
+    Set when power was read from a separate evidence file, for example the
+    ``gpu-energy record`` sidecar. When ``refused_reason`` is set the
+    evidence was found but not used, and the power values stay empty.
+    """
+
+    collector: str
+    evidence_kind: str
+    evidence_sha256: str
+    scope: str
+    attribution_status: str | None = None
+    window_started_at: str | None = None
+    window_ended_at: str | None = None
+    device_count: int | None = None
+    device_names: tuple[str, ...] = ()
+    energy_method: str | None = None
+    average_power_method: str | None = None
+    refused_reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "collector": self.collector,
+            "evidence_kind": self.evidence_kind,
+            "evidence_sha256": self.evidence_sha256,
+            "scope": self.scope,
+            "attribution_status": self.attribution_status,
+            "window_started_at": self.window_started_at,
+            "window_ended_at": self.window_ended_at,
+            "device_count": self.device_count,
+            "device_names": list(self.device_names),
+            "energy_method": self.energy_method,
+            "average_power_method": self.average_power_method,
+            "refused_reason": self.refused_reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PowerSource:
+        context = "PowerSource"
+        data = _require_object(data, context=context)
+        return cls(
+            collector=_required_string(data, "collector", context=context),
+            evidence_kind=_required_string(data, "evidence_kind", context=context),
+            evidence_sha256=_required_string(data, "evidence_sha256", context=context),
+            scope=_required_string(data, "scope", context=context),
+            attribution_status=_optional_string(
+                data, "attribution_status", context=context
+            ),
+            window_started_at=_optional_string(
+                data, "window_started_at", context=context
+            ),
+            window_ended_at=_optional_string(data, "window_ended_at", context=context),
+            device_count=_coerce_optional_int(data, "device_count", context=context),
+            device_names=_coerce_str_tuple(data, "device_names", context=context),
+            energy_method=_optional_string(data, "energy_method", context=context),
+            average_power_method=_optional_string(
+                data, "average_power_method", context=context
+            ),
+            refused_reason=_optional_string(data, "refused_reason", context=context),
+        )
+
+
+@dataclass(frozen=True)
 class PowerMetrics:
     """Power/energy when available (rarely measurable without native tools)."""
 
     average_power: Measurement | None = None
     energy: Measurement | None = None
+    source: PowerSource | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "average_power": _measurement_to_optional(self.average_power),
             "energy": _measurement_to_optional(self.energy),
         }
+        if self.source is not None:
+            out["source"] = self.source.to_dict()
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> PowerMetrics:
         data = _require_object(data, context="PowerMetrics")
+        source = data.get("source")
         return cls(
             average_power=_measurement_from_optional(data.get("average_power")),
             energy=_measurement_from_optional(data.get("energy")),
+            source=None if source is None else PowerSource.from_dict(source),
         )
 
 
@@ -936,6 +1002,24 @@ class ExperimentRecord:
                 raise SchemaValidationError(
                     f"{name} must be >= 0, got {measurement.value}"
                 )
+
+        source = self.power.source
+        if source is not None:
+            has_values = (
+                self.power.energy is not None or self.power.average_power is not None
+            )
+            if source.refused_reason is not None and has_values:
+                raise SchemaValidationError(
+                    "power.source.refused_reason is set, so power values must be "
+                    "empty"
+                )
+            if source.refused_reason is None and self.power.energy is None:
+                raise SchemaValidationError(
+                    "power.source is set without a refusal, so power.energy is "
+                    "required"
+                )
+            if source.device_count is not None and source.device_count < 1:
+                raise SchemaValidationError("power.source.device_count must be >= 1")
 
         spec = self.speculative
         if spec.enabled:

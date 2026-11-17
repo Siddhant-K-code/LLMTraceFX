@@ -404,7 +404,7 @@ Entries as submitted:
 - Trace replay: multi-turn traces (AIPerf `multi_turn`, Mooncake
   conversation traces) and a tokenizer option for exact prompt lengths.
 - Load sweeps against non-OpenAI-compatible collectors (MLX, llama.cpp).
-- GPU energy in records: feed `gpu-energy` evidence into `ExperimentRecord`
-  power, `export` and `gate`, and add DCGM as a second source.
+- GPU energy in records: `gpu-energy` evidence now fills `ExperimentRecord`
+  power and feeds `export` and `gate`. Adding DCGM as a second source remains.
 - Running the evidence viewer Space on CPU basic hardware (see above).
 - Getting rafska/awesome-local-llm#364 reviewed.

@@ -17,7 +17,7 @@ inputs:
     description: Whitespace-separated record.json or imported benchmark artifact files, or directories (searched recursively), for the candidate runs.
     required: true
   metric:
-    description: "For records: total, model_load, tokenize, prefill, decode (lower is better) or decode_tokens_per_second (higher is better). For imported artifacts: <metric>.<statistic>, such as ttft_ms.p99."
+    description: "For records: total, model_load, tokenize, prefill, decode (lower is better), decode_tokens_per_second (higher is better), or energy, average_power, energy_per_output_token from a gpu_energy_evidence.json next to each record (lower is better). For imported artifacts: <metric>.<statistic>, such as ttft_ms.p99."
     required: false
     default: total
   max-regression:
