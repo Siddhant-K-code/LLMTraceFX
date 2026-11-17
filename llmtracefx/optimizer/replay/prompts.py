@@ -1,9 +1,11 @@
 """Synthetic prompts that keep a trace's prefix-sharing structure.
 
-There is no tokenizer here. One "unit" is one word from a fixed list of 256
-short English words, each written with a leading space. The target length is
-a word count, so the length a server tokenizes is labelled ``estimated`` and
-the provider's own ``prompt_tokens`` is recorded next to it at run time.
+One "unit" is one word from a fixed list of 256 short English words, each
+written with a leading space. The target length is a word count, so the
+length a server tokenizes is labelled ``estimated`` and the provider's own
+``prompt_tokens`` is recorded next to it at run time. With ``--tokenizer``
+the words are narrowed to those that are one token each and every prompt is
+checked against that tokenizer; see ``tokenizer.py``.
 
 Words are drawn with SHAKE-256 rather than ``random`` so the same salt gives
 the same bytes on every Python version.
@@ -24,6 +26,7 @@ import hashlib
 import re
 import secrets
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 WORDS: tuple[str, ...] = tuple("""
     able acid aged also area army away baby back ball band bank base bath bear
@@ -56,6 +59,21 @@ class PromptSaltError(ValueError):
     pass
 
 
+@dataclass(frozen=True)
+class Vocabulary:
+    """The words a prompt is drawn from and how its first word is written."""
+
+    words: tuple[str, ...] = WORDS
+    leading_space: bool = True
+    method: str = PROMPT_METHOD
+
+    def words_sha256(self) -> str:
+        return hashlib.sha256(" ".join(self.words).encode("ascii")).hexdigest()
+
+
+WORD_VOCABULARY = Vocabulary()
+
+
 def new_salt() -> str:
     """A fresh salt, so a replay cannot hit cache entries left by an earlier run."""
     return secrets.token_hex(16)
@@ -69,11 +87,12 @@ def validate_salt(salt: str) -> str:
     return salt
 
 
-def _words(seed: bytes, count: int) -> str:
+def _words(seed: bytes, count: int, words: tuple[str, ...]) -> str:
     if count <= 0:
         return ""
     stream = hashlib.shake_256(seed).digest(count)
-    return "".join(" " + WORDS[byte] for byte in stream)
+    size = len(words)
+    return "".join(" " + words[byte % size] for byte in stream)
 
 
 def word_count(text: str) -> int:
@@ -84,16 +103,28 @@ def word_count(text: str) -> int:
 class PromptBuilder:
     """Builds deterministic synthetic prompts for one trace and salt."""
 
-    def __init__(self, *, salt: str, trace_sha256: str, block_size: int | None) -> None:
+    def __init__(
+        self,
+        *,
+        salt: str,
+        trace_sha256: str,
+        block_size: int | None,
+        vocabulary: Vocabulary = WORD_VOCABULARY,
+    ) -> None:
         self._salt = validate_salt(salt)
         self._trace = trace_sha256
         self._block_size = block_size
+        self._vocabulary = vocabulary
         self._blocks: dict[int, str] = {}
 
     def _seed(self, kind: str, key: int) -> bytes:
-        return f"{PROMPT_METHOD}\0{self._salt}\0{self._trace}\0{kind}\0{key}".encode(
-            "ascii"
-        )
+        method = self._vocabulary.method
+        return f"{method}\0{self._salt}\0{self._trace}\0{kind}\0{key}".encode("ascii")
+
+    def _finish(self, text: str) -> str:
+        # Every prompt starts the same way, so dropping the first space keeps
+        # shared prefixes byte-identical.
+        return text if self._vocabulary.leading_space else text[1:]
 
     def block_text(self, hash_id: int) -> str:
         """The full-length text for one Mooncake hash block."""
@@ -101,7 +132,9 @@ class PromptBuilder:
             raise ValueError("hash blocks need a block size")
         text = self._blocks.get(hash_id)
         if text is None:
-            text = _words(self._seed("block", hash_id), self._block_size)
+            text = _words(
+                self._seed("block", hash_id), self._block_size, self._vocabulary.words
+            )
             if len(self._blocks) < 65536:
                 self._blocks[hash_id] = text
         return text
@@ -118,8 +151,10 @@ class PromptBuilder:
             # Every word is one leading space plus four ASCII letters.
             final = final[: last * 5]
         parts.append(final)
-        return "".join(parts)
+        return self._finish("".join(parts))
 
     def for_line(self, line: int, input_tokens: int) -> str:
         """An unstructured prompt seeded by the source line."""
-        return _words(self._seed("line", line), input_tokens)
+        return self._finish(
+            _words(self._seed("line", line), input_tokens, self._vocabulary.words)
+        )

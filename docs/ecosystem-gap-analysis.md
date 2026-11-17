@@ -351,7 +351,11 @@ prompt salt. Mooncake prompts are built from `hash_ids`, so shared prefixes in
 the trace are shared prefixes on the wire, and the plan reports the share of
 prompt tokens that could at best be served from a prefix cache. Prompt
 lengths are word counts labelled `estimated`, and the provider's
-`prompt_tokens` and `cached_tokens` are recorded next to them.
+`prompt_tokens` and `cached_tokens` are recorded next to them. With
+`--tokenizer` (optional `tokenizer` extra) every synthetic prompt is encoded
+and checked to be exactly the trace length in that tokenizer, labelled
+`tokenizer_exact`, with the tokenizer.json sha256 and hub commit recorded.
+The chat template is not counted.
 
 `run` sends requests through the shared load dispatcher at the scheduled
 offsets and checks itself: dispatch lag percentiles go into the result, and
@@ -402,7 +406,8 @@ Entries as submitted:
 ## Follow ups not built here
 
 - Trace replay: multi-turn traces (AIPerf `multi_turn`, Mooncake
-  conversation traces) and a tokenizer option for exact prompt lengths.
+  conversation traces). The tokenizer option for exact prompt lengths is
+  built as `replay --tokenizer`.
 - Load sweeps against non-OpenAI-compatible collectors (MLX, llama.cpp).
 - GPU energy in records: feed `gpu-energy` evidence into `ExperimentRecord`
   power, `export` and `gate`, and add DCGM as a second source.

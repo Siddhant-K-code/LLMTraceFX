@@ -903,6 +903,19 @@ comes from a salt that is random per run unless `--prompt-salt` is given, so
 a replay never hits cache entries left by an earlier one. Prompt text is never
 written to disk; only its sha256 is.
 
+`--tokenizer` makes synthetic lengths exact. It takes a Hugging Face repo id
+(`--tokenizer-revision` pins a branch, tag or commit), a `tokenizer.json`
+file, or a directory holding one, and needs the optional extra
+(`uv sync --extra tokenizer`). Prompts then use only words that are one token
+each, and every prompt is encoded and checked: it must be exactly the trace's
+length, one token per word, so Mooncake block boundaries fall on token
+boundaries. A merge between words refuses the plan instead of padding or
+trimming. Lengths are labelled `tokenizer_exact` and count the prompt text
+only; the chat template and special tokens the server adds are not counted,
+and the result reports provider `prompt_tokens` minus the tokenizer count.
+The schedule records the tokenizer name, tokenizer.json sha256, revision and
+resolved commit.
+
 `--time-scale` multiplies every gap between arrivals. `--start-s`, `--end-s`
 and `--max-requests` choose a window. `max_tokens` is the trace's output
 length; `--ignore-eos` asks vLLM and SGLang to generate all of it. `run`

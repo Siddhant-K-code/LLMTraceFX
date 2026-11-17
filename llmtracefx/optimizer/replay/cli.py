@@ -69,6 +69,7 @@ from .schedule import (
     prefix_reuse,
     write_schedule,
 )
+from .tokenizer import TokenizerError, display_name, load_tokenizer
 
 REPLAY_ARTIFACTS = (SCHEDULE_FILE, REQUESTS_FILE, RESULT_FILE, SERVER_METRICS_FILE)
 
@@ -157,6 +158,24 @@ def _add_schedule_arguments(parser: argparse.ArgumentParser) -> None:
             "Seed for synthetic prompt text. Default: a fresh random salt per "
             "run, so a replay cannot hit cache entries left by an earlier run. "
             "The salt is always recorded; pass it back to reproduce prompts."
+        ),
+    )
+    parser.add_argument(
+        "--tokenizer",
+        default=None,
+        help=(
+            "Make synthetic prompt lengths exact in this tokenizer: a "
+            "Hugging Face repo id, a tokenizer.json file, or a directory "
+            "holding one. Counts the prompt text only, not the chat template. "
+            "Needs the optional extra: uv sync --extra tokenizer"
+        ),
+    )
+    parser.add_argument(
+        "--tokenizer-revision",
+        default=None,
+        help=(
+            "Branch, tag or commit for a --tokenizer repo id. The resolved "
+            "commit and the tokenizer.json sha256 are recorded either way."
         ),
     )
 
@@ -414,7 +433,12 @@ def schedule_from_args(args: argparse.Namespace, trace: ParsedTrace) -> ReplaySc
         models=tuple(args.models),
         log_types=tuple(args.log_types),
     )
-    return build_schedule(trace, selection, salt=salt)
+    tokenizer = None
+    if args.tokenizer is not None:
+        tokenizer = load_tokenizer(args.tokenizer, args.tokenizer_revision)
+    elif args.tokenizer_revision is not None:
+        raise TokenizerError("--tokenizer-revision needs --tokenizer")
+    return build_schedule(trace, selection, salt=salt, tokenizer=tokenizer)
 
 
 def prepare_output_dir(output_dir: Path) -> None:
@@ -436,6 +460,13 @@ def print_schedule_summary(schedule: ReplaySchedule) -> None:
         f"time scale {schedule.selection.time_scale:g})"
     )
     print(f"prompt salt: {schedule.salt}")
+    if schedule.tokenizer is not None:
+        identity = schedule.tokenizer.identity
+        print(
+            f"tokenizer: {identity.name}, tokenizer.json sha256 "
+            f"{identity.file_sha256}; prompt text lengths are exact, chat "
+            "template not counted"
+        )
     reuse = summary.get("prefix_reuse")
     if reuse is not None and reuse["reusable_fraction_upper_bound"] is not None:
         print(
@@ -451,7 +482,13 @@ def _cmd_plan(args: argparse.Namespace) -> int:
         schedule = schedule_from_args(args, trace)
         prepare_output_dir(output_dir)
         write_schedule(output_dir / SCHEDULE_FILE, schedule)
-    except (TraceFormatError, ScheduleError, PromptSaltError, OSError) as exc:
+    except (
+        TraceFormatError,
+        ScheduleError,
+        PromptSaltError,
+        TokenizerError,
+        OSError,
+    ) as exc:
         return _fail(exc)
     print_schedule_summary(schedule)
     print(f"schedule written to {output_dir / SCHEDULE_FILE}")
@@ -496,6 +533,11 @@ def _run_argv(args: argparse.Namespace) -> tuple[str, ...]:
         ("--temperature", args.temperature),
         ("--top-p", args.top_p),
         ("--seed", args.seed),
+        (
+            "--tokenizer",
+            None if args.tokenizer is None else display_name(args.tokenizer),
+        ),
+        ("--tokenizer-revision", args.tokenizer_revision),
     ):
         if value is not None:
             argv.extend((flag, str(value)))
@@ -576,6 +618,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         TraceFormatError,
         ScheduleError,
         PromptSaltError,
+        TokenizerError,
         ReplayRunError,
         OpenAIStreamCollectorError,
         ServerMetricsError,

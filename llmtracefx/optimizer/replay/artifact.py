@@ -7,6 +7,11 @@ Provenance labels scoped to these artifacts:
     ``input_length`` or a BurstGPT ``Response tokens``. The trace states it;
     nothing here measured it.
 
+``tokenizer_exact``
+    A token count from encoding the prompt text with the tokenizer the
+    schedule records, without special tokens or a chat template. Exact for
+    that text and that tokenizer file; it is not the count a server reports.
+
 The shared ``MetricProvenance`` labels keep their usual meaning:
 ``estimated`` for synthetic prompt lengths counted in words,
 ``derived`` for figures computed from other recorded values,
@@ -32,6 +37,7 @@ from .._artifact_io import (
 from ..collectors._shared import atomic_write_text
 
 TRACE_DECLARED = "trace_declared"
+TOKENIZER_EXACT = "tokenizer_exact"
 
 SCHEDULE_KIND = "llmtracefx.trace_replay_schedule"
 RESULT_KIND = "llmtracefx.trace_replay"
