@@ -48,7 +48,8 @@ research pass and are less thoroughly verified.
    phases at the client.
 5. **GPU telemetry and energy (NVML or DCGM).** LLMTraceFX covers Apple
    silicon through Instruments. **Built in this branch as `gpu-energy`, for
-   NVIDIA power and energy through NVML.** DCGM is not used.
+   NVIDIA power and energy through NVML, with dcgm-exporter as a second
+   source.**
 6. **Trace replay (Mooncake, ShareGPT timed replay, BurstGPT).** SGLang,
    AIPerf and AISBench all added Mooncake replay within the last year.
    **Built in this branch as `replay`.**
@@ -300,8 +301,16 @@ Only attributable windows of a command that exited 0 produce highlights.
 `gpu-energy capability` reports what the machine supports and exits 3 when
 NVML is unavailable, including on macOS.
 
-DCGM was not used: its exporter samples every 30 seconds by default and its
-scrapes carry no timestamp, which is too coarse for one request.
+NVML is the default source. `--source dcgm-exporter` reads a running
+dcgm-exporter instead (pinned against v4.9.0, `4e663a5`, and v4.8.4,
+`fafd151`). Its scrapes carry no timestamp and it refreshes every 30 s by
+default, so `record` brackets the run with the first counter change seen
+before and after it and states the bracket. The energy delta is refused with
+`bracket_too_wide` when the command is under 90 % of the widest span the
+delta can cover. Power is listed per scrape but not integrated, and the
+window is `unverifiable` because the exporter has no process list. The DCGM
+Python bindings are not on PyPI and need `nv-hostengine`, and `dcgmi dmon`
+prints no timestamps, so neither is used.
 
 ### `sweep-api`
 
@@ -417,7 +426,5 @@ Entries as submitted:
 ## Follow ups not built here
 
 - Load sweeps against non-OpenAI-compatible collectors (MLX, llama.cpp).
-- GPU energy in records: `gpu-energy` evidence now fills `ExperimentRecord`
-  power and feeds `export` and `gate`. Adding DCGM as a second source remains.
 - Running the evidence viewer Space on CPU basic hardware (see above).
 - Getting rafska/awesome-local-llm#364 reviewed.

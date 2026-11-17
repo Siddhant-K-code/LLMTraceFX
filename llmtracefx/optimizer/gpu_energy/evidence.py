@@ -355,6 +355,7 @@ def build_evidence(
         "kind": EVIDENCE_KIND,
         "schema_version": EVIDENCE_SCHEMA_VERSION,
         "scope": "device_wide_window",
+        "source": "nvml",
         "collector": {"name": "nvml", **versions},
         "started_at": started_at,
         "ended_at": ended_at,

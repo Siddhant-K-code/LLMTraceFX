@@ -95,6 +95,7 @@ class NvmlCapability:
         return {
             "kind": CAPABILITY_KIND,
             "schema_version": "1",
+            "source": "nvml",
             "state": self.state,
             "supported": self.is_supported,
             "message": self.message,
