@@ -269,7 +269,10 @@ def test_aiperf_single_turn_fixture() -> None:
         ),
         ({"timestamp": 0, "texts": ["a"], "output_length": 1}, "'texts'"),
         ({"timestamp": 0, "text": "a", "output_length": 1, "foo": 1}, "unknown field"),
-        ({"type": "multi_turn", "timestamp": 0, "text": "a", "output_length": 1}, "type"),
+        (
+            {"type": "multi_turn", "timestamp": 0, "text": "a", "output_length": 1},
+            "type",
+        ),
         (
             {"timestamp": 0, "text": "a", "output_length": 1, "role": "system"},
             "role must be 'user'",

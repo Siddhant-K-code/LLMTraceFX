@@ -69,7 +69,9 @@ EXCLUDED_ZERO_REQUEST = "zero_request_tokens"
 EXCLUDED_ZERO_RESPONSE = "zero_response_tokens"
 EXCLUDED_ZERO_BOTH = "zero_request_and_response_tokens"
 
-_AIPERF_SUPPORTED_KEYS = frozenset({"type", "timestamp", "text", "output_length", "role"})
+_AIPERF_SUPPORTED_KEYS = frozenset(
+    {"type", "timestamp", "text", "output_length", "role"}
+)
 _AIPERF_UNSUPPORTED_KEYS = {
     "delay": "replay schedules by timestamp only",
     "session_id": "replay sends independent requests with no session ordering",
@@ -233,7 +235,9 @@ def parse_trace(
 _ParseResult = tuple[tuple[TraceEntry, ...], int, float, dict[str, Any]]
 
 
-def _json_rows(lines: _HashingLines, label: str) -> Iterator[tuple[int, dict[str, Any]]]:
+def _json_rows(
+    lines: _HashingLines, label: str
+) -> Iterator[tuple[int, dict[str, Any]]]:
     for text in lines:
         line = lines.line
         if not text.strip():
@@ -460,14 +464,18 @@ def _parse_burstgpt(
                 output_tokens=response,
                 model=None if model is None else interned.setdefault(model, model),
                 log_type=(
-                    None if log_type is None else interned.setdefault(log_type, log_type)
+                    None
+                    if log_type is None
+                    else interned.setdefault(log_type, log_type)
                 ),
             )
         )
     if rows_total == 0 or origin_s is None:
         raise TraceFormatError(f"{label}: the trace has no rows")
     if excluded and not exclude_failed:
-        counts = ", ".join(f"{count} {name}" for name, count in sorted(excluded.items()))
+        counts = ", ".join(
+            f"{count} {name}" for name, count in sorted(excluded.items())
+        )
         raise TraceFormatError(
             f"{label}:{first_excluded_line}: the trace has rows with 0 request or "
             f"0 response tokens ({counts}). BurstGPT marks 0 response tokens as "

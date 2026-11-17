@@ -25,8 +25,7 @@ import re
 import secrets
 from collections.abc import Sequence
 
-WORDS: tuple[str, ...] = tuple(
-    """
+WORDS: tuple[str, ...] = tuple("""
     able acid aged also area army away baby back ball band bank base bath bear
     beat been beer bell belt best bird blow blue boat body bone book boot born
     boss both bowl bulk burn bush busy cake call calm came camp card care case
@@ -44,8 +43,7 @@ WORDS: tuple[str, ...] = tuple(
     kick kill kind king knee knew know lack lady laid lake land lane last late
     lead left less life lift like line link list live load loan lock logo long
     look lord lose loss lost loud love luck made mail main make male many mark mass
-    """.split()
-)
+    """.split())
 if len(WORDS) != 256 or len(set(WORDS)) != 256 or {len(w) for w in WORDS} != {4}:
     raise RuntimeError("the replay word list must hold 256 distinct 4-letter words")
 

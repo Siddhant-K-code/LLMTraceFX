@@ -51,6 +51,7 @@ research pass and are less thoroughly verified.
    NVIDIA power and energy through NVML.** DCGM is not used.
 6. **Trace replay (Mooncake, ShareGPT timed replay, BurstGPT).** SGLang,
    AIPerf and AISBench all added Mooncake replay within the last year.
+   **Built in this branch as `replay`.**
 7. **Prefix cache hit rate under load.** `server-metrics` now reports the
    vLLM `prefix_cache_queries` and `prefix_cache_hits` counter deltas, and
    SGLang's `cached_tokens_total`, for the measured window.
@@ -330,6 +331,35 @@ generator is a separate module, `load/dispatcher.py`, that also supports
 arrivals at given timestamps for trace replay. See
 [load-sweeps.md](load-sweeps.md).
 
+### `replay`
+
+`llmtracefx-optimizer replay validate|plan|run` reads Mooncake JSONL,
+BurstGPT CSV and AIPerf `single_turn` JSONL. Field names follow the upstream
+sources: the Mooncake `FAST25-release` traces, the BurstGPT README, and
+AIPerf's `SingleTurn` model. There is no separate "ShareGPT timed" format
+upstream; AIPerf `single_turn` with `timestamp` and `text` is how other tools
+replay ShareGPT prompts at given times, so that is the format read here.
+
+Parsing is strict. A row with a missing, extra or mistyped field, a timestamp
+that goes backwards, or a Mooncake hash id that names two different block
+lengths refuses the whole trace with its line number. Nothing is skipped or
+repaired. BurstGPT rows with zero tokens are refused unless
+`--exclude-failed` drops them and counts them by reason.
+
+The schedule records the trace sha256, the window, the time scale and the
+prompt salt. Mooncake prompts are built from `hash_ids`, so shared prefixes in
+the trace are shared prefixes on the wire, and the plan reports the share of
+prompt tokens that could at best be served from a prefix cache. Prompt
+lengths are word counts labelled `estimated`, and the provider's
+`prompt_tokens` and `cached_tokens` are recorded next to them.
+
+`run` sends requests through the shared load dispatcher at the scheduled
+offsets and checks itself: dispatch lag percentiles go into the result, and
+the verdict is `faithful`, `lagged` (p99 lag over `--max-dispatch-lag-s`) or
+`incomplete`. With `--server-metrics-url` the run is bracketed by
+`server-metrics` snapshots, so vLLM's prefix cache counters can be read
+against the trace's planned reuse.
+
 ### Evidence viewer Space
 
 `spaces/evidence-viewer/` is a Gradio app for Hugging Face Spaces. It shows a
@@ -371,8 +401,8 @@ Entries as submitted:
 
 ## Follow ups not built here
 
-- Trace replay (Mooncake, ShareGPT timed, BurstGPT) on the `sweep-api`
-  dispatcher.
+- Trace replay: multi-turn traces (AIPerf `multi_turn`, Mooncake
+  conversation traces) and a tokenizer option for exact prompt lengths.
 - Load sweeps against non-OpenAI-compatible collectors (MLX, llama.cpp).
 - GPU energy in records: feed `gpu-energy` evidence into `ExperimentRecord`
   power, `export` and `gate`, and add DCGM as a second source.

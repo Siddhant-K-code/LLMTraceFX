@@ -9,7 +9,13 @@ trace's prefix-sharing structure, and records the trace sha256, the
 selection and any time scaling it applied.
 """
 
-from .formats import TRACE_FORMATS, ParsedTrace, TraceEntry, TraceFormatError, parse_trace
+from .formats import (
+    TRACE_FORMATS,
+    ParsedTrace,
+    TraceEntry,
+    TraceFormatError,
+    parse_trace,
+)
 from .schedule import ReplaySchedule, ScheduleError, Selection, build_schedule
 
 __all__ = [

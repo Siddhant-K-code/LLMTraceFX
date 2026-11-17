@@ -144,6 +144,10 @@ class ReplaySchedule:
         for entry in self.entries:
             yield _prompt(builder, entry)
 
+    def prompt_at(self, builder: PromptBuilder, index: int) -> str:
+        """Regenerate the prompt for request ``index`` with a shared builder."""
+        return _prompt(builder, self.entries[index])
+
     @property
     def offsets_s(self) -> tuple[float, ...]:
         return tuple(request.arrival_offset_s for request in self.requests)
@@ -314,7 +318,9 @@ def build_schedule(
         if reuse is not None and entry.hash_ids is not None:
             hash_blocks = len(entry.hash_ids)
             reused, reusable = reuse[index]
-        offset = round((entry.arrival_s - first) * selection.time_scale, _OFFSET_DECIMALS)
+        offset = round(
+            (entry.arrival_s - first) * selection.time_scale, _OFFSET_DECIMALS
+        )
         requests.append(
             ScheduledRequest(
                 index=index,
