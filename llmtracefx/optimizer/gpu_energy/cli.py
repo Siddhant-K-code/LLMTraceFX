@@ -151,6 +151,7 @@ def _summary(evidence: dict[str, Any]) -> list[str]:
 
 
 def _misplaced_flags(args: argparse.Namespace) -> str | None:
+    flags: tuple[tuple[str, str], ...]
     if args.source == DCGM_EXPORTER:
         flags, owner = _NVML_ONLY, NVML
     else:
