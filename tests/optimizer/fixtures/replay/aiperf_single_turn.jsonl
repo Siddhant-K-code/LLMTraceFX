@@ -1,0 +1,3 @@
+{"type": "single_turn", "timestamp": 0, "text": "Summarize the release notes.", "output_length": 32}
+{"type": "single_turn", "timestamp": 1500.5, "text": "List three prime numbers.", "output_length": 8, "role": "user"}
+{"timestamp": 4000, "text": "Translate hello to French.", "output_length": 4}

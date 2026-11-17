@@ -1,0 +1,6 @@
+Timestamp,Model,Request tokens,Response tokens,Total tokens,Log Type
+3,ChatGPT,400,20,420,Conversation log
+40,ChatGPT,900,0,900,Conversation log
+110,GPT-4,350,250,600,API log
+115,ChatGPT,0,0,0,Conversation log
+200,ChatGPT,300,40,340,API log
