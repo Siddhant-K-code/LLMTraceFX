@@ -711,6 +711,11 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
 
 def _cmd_export_metrics(args: argparse.Namespace) -> int:
+    for given in args.inputs:
+        sweep = find_sweep_artifact(Path(given))
+        if sweep is not None:
+            print(f"Cannot export metrics: {sweep_refusal(sweep)}", file=sys.stderr)
+            return 1
     try:
         export = build_otlp_metrics(
             load_metrics_runs(args.inputs), include_paths=args.include_paths

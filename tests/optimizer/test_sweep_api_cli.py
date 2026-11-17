@@ -392,3 +392,10 @@ def test_gate_compare_and_export_refuse_sweep_artifacts(
     assert code == 1
     assert "concurrent load sweep" in err
     assert not (tmp_path / "t").exists()
+
+    code, _, err = run_main(
+        ["export", "otlp-metrics", str(out_dir), "--output", str(tmp_path / "m")]
+    )
+    assert code == 1
+    assert "concurrent load sweep" in err
+    assert not (tmp_path / "m").exists()
