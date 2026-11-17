@@ -56,14 +56,18 @@ PyPI accepts it only from `publish.yml` in the `pypi` environment.
 3. Add the repository variable `HF_SPACE` with the Space id, for example
    `Siddhant-K-code/llmtracefx-evidence-viewer`.
 
-The workflow creates the Space (Gradio SDK) if it does not exist. If either
-`HF_TOKEN` or `HF_SPACE` is missing, the deploy is skipped with a notice and
-the run still succeeds.
+The workflow creates the Space (Gradio SDK, CPU basic) if it does not exist. If
+either `HF_TOKEN` or `HF_SPACE` is missing, the deploy is skipped with a notice
+and the run still succeeds.
+
+After each upload, a Space on ZeroGPU or with no hardware set is moved to
+**CPU basic** and restarted if paused. The viewer has no `@spaces.GPU`
+function, so it fails to start on ZeroGPU. Other hardware is left as is.
 
 Free accounts can get HTTP 402 when the API creates a Space. In that case,
-create it by hand first. Pick the Gradio SDK and **CPU basic** hardware. The
-viewer has no `@spaces.GPU` function, so it fails to start on ZeroGPU, and
-moving an existing Space from ZeroGPU to CPU basic needs a PRO account.
+create it by hand first with the Gradio SDK and CPU basic hardware. Moving an
+existing Space off ZeroGPU can also need a PRO account; the deploy then fails
+and says so, and you switch the hardware in the Space settings.
 
 ## Cutting a release
 

@@ -27,6 +27,12 @@ NAME_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)")
 # Files the Space owns that this deploy may replace or remove. .gitattributes
 # and other files Hugging Face creates are left alone. fnmatch `*` crosses `/`.
 DELETE_PATTERNS = ["*.py", "*.txt", "*.md", "examples/*"]
+# The viewer has no @spaces.GPU function, so it cannot start on ZeroGPU.
+HARDWARE = "cpu-basic"
+
+
+class HardwareError(RuntimeError):
+    pass
 
 
 def _normalize(name: str) -> str:
@@ -63,11 +69,40 @@ def stage(source: Path, destination: Path, version: str) -> None:
     requirements.write_text(pin_requirements(requirements.read_text(), version))
 
 
+def ensure_hardware(api, space: str) -> str:
+    """Move a Space off ZeroGPU (or unset hardware) to CPU basic.
+
+    Other hardware is left alone. A Space that was moved is restarted if it is
+    paused, so it serves the deployed files.
+    """
+    runtime = api.get_space_runtime(space)
+    requested = runtime.requested_hardware or runtime.hardware
+    if requested and not str(requested).startswith("zero-"):
+        return f"Hardware: {requested} (unchanged)"
+    try:
+        runtime = api.request_space_hardware(space, HARDWARE)
+        if str(runtime.stage) == "PAUSED":
+            runtime = api.restart_space(space)
+    except Exception as exc:
+        raise HardwareError(
+            f"could not move {space} from {requested or 'no hardware'} to "
+            f"{HARDWARE}: {exc}. Moving a Space off ZeroGPU needs a PRO account; "
+            "switch it in the Space settings. See docs/releasing.md."
+        ) from exc
+    return f"Hardware: {requested or 'none'} -> {HARDWARE}, stage {str(runtime.stage)}"
+
+
 def upload(staged: Path, space: str, token: str, version: str, revision: str) -> str:
     from huggingface_hub import HfApi
 
     api = HfApi(token=token)
-    api.create_repo(space, repo_type="space", space_sdk="gradio", exist_ok=True)
+    api.create_repo(
+        space,
+        repo_type="space",
+        space_sdk="gradio",
+        space_hardware=HARDWARE,
+        exist_ok=True,
+    )
     info = api.upload_folder(
         repo_id=space,
         repo_type="space",
@@ -76,7 +111,8 @@ def upload(staged: Path, space: str, token: str, version: str, revision: str) ->
         commit_description=f"Source: {REPO_URL}/tree/{revision}",
         delete_patterns=DELETE_PATTERNS,
     )
-    return str(info.commit_url)
+    print(f"Commit: {info.commit_url}")
+    return ensure_hardware(api, space)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -110,11 +146,15 @@ def main(argv: list[str] | None = None) -> int:
             print("--- requirements.txt")
             print((staged / "requirements.txt").read_text(), end="")
             return 0
-        url = upload(staged, args.space, token, args.version, revision)
+        try:
+            hardware = upload(staged, args.space, token, args.version, revision)
+        except HardwareError as exc:
+            print(f"::error::{exc}", file=sys.stderr)
+            return 1
     print(
         f"Deployed {PACKAGE} {args.version} to https://huggingface.co/spaces/{args.space}"
     )
-    print(f"Commit: {url}")
+    print(hardware)
     return 0
 
 
