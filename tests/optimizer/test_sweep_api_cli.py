@@ -154,6 +154,7 @@ def test_constant_rate_sweep_records_target_and_achieved_rate(
     assert point["policy"]["distribution"] == "constant"
     rate = point["scheduling"]["dispatch_rate"]
     assert rate["target_rate_per_second"] == 40.0
+    assert rate["planned_schedule_rate_per_second"]["value"] == pytest.approx(40.0)
     assert rate["achieved_dispatch_rate_per_second"]["value"] == pytest.approx(
         40.0, rel=0.5
     )

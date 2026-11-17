@@ -259,8 +259,15 @@ def throughput_summary(rows: Sequence[RequestRow]) -> dict[str, Any]:
     }
 
 
+def _span_rate(offsets: Sequence[float]) -> float | None:
+    """Arrivals per second between the first and last offset."""
+    if len(offsets) < 2 or offsets[-1] <= offsets[0]:
+        return None
+    return (len(offsets) - 1) / (offsets[-1] - offsets[0])
+
+
 def _dispatch_rate(
-    point: SweepPoint, rows: Sequence[RequestRow]
+    point: SweepPoint, report: DispatchReport[RequestRow], rows: Sequence[RequestRow]
 ) -> dict[str, Any] | None:
     if not isinstance(point.policy, OpenLoopRate):
         return None
@@ -269,17 +276,18 @@ def _dispatch_rate(
         for row in rows
         if row.sent and row.dispatched_offset_s is not None
     )
-    achieved = None
-    if len(starts) >= 2 and starts[-1] > starts[0]:
-        achieved = (len(starts) - 1) / (starts[-1] - starts[0])
+    planned = sorted(report.planned_offsets_s or ())
     return {
         "target_rate_per_second": point.policy.rate_per_second,
+        "planned_schedule_rate_per_second": _withheld(
+            _span_rate(planned), "fewer than two planned arrivals", _DERIVED
+        ),
         "achieved_dispatch_rate_per_second": _withheld(
-            achieved, "fewer than two dispatches", _DERIVED
+            _span_rate(starts), "fewer than two dispatches", _DERIVED
         ),
         "note": (
             "a Poisson schedule's own rate over a finite run differs from the "
-            "target; compare against planned_offsets, not only the target"
+            "target; compare the achieved rate with the planned schedule's rate"
         ),
     }
 
@@ -311,7 +319,7 @@ def summarize_point(
     )
     dispatch_dict = report.to_dict()
     diagnostics = dispatch_dict.pop("diagnostics")
-    scheduling = {**diagnostics, "dispatch_rate": _dispatch_rate(point, rows)}
+    scheduling = {**diagnostics, "dispatch_rate": _dispatch_rate(point, report, rows)}
     return {
         **point.to_dict(),
         "status": status,

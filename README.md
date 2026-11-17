@@ -308,6 +308,28 @@ results), mixed with LLMTraceFX records, or gated across tools. See
 [`docs/ecosystem-gap-analysis.md`](docs/ecosystem-gap-analysis.md) for the
 full mapping and refusal rules.
 
+### Load sweeps and goodput
+
+`sweep-api` sends the same requests at several concurrency levels or request
+rates and reports latency percentiles, throughput, goodput against TTFT, TPOT
+and E2E targets, and whether the load generator kept up:
+
+```bash
+uv run llmtracefx-optimizer sweep-api --run-id sweep \
+  --endpoint http://127.0.0.1:8000/v1/chat/completions --model-id my-model \
+  --prompt-file prompt.txt --concurrency 1,4,16 --requests-per-point 64 \
+  --stream-include-usage --slo-ttft-ms 500 --slo-e2e-ms 8000 \
+  --output-dir results/sweep
+```
+
+Requests in a sweep overlap, so its numbers describe the server under that
+load, not any single request. A sweep writes `sweep.json` and no
+`record.json`, and `gate`, `compare` and `export` refuse it. Failed requests
+count against goodput, and a value that cannot be checked is withheld with a
+reason. Remote endpoints need `--allow-remote-load`. See
+[`docs/load-sweeps.md`](docs/load-sweeps.md) for what a sweep can claim,
+the goodput rules and the scheduling diagnostics.
+
 ### Verification and resumability
 
 The workload catalog covers code completion, structured JSON, and prose
