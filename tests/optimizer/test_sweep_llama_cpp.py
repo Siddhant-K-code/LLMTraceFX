@@ -392,9 +392,7 @@ def test_unreachable_server_is_refused(tmp_path: Path) -> None:
     assert "GET /props failed" in err
 
 
-def test_dry_run_sends_nothing(
-    tmp_path: Path, server: FakeLlamaServer
-) -> None:
+def test_dry_run_sends_nothing(tmp_path: Path, server: FakeLlamaServer) -> None:
     code, out, err = run_main(
         sweep_argv(tmp_path, server.root, "--concurrency", "1,8", "--dry-run")
     )
