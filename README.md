@@ -231,7 +231,8 @@ relabelled as measurements.
   tables are reported narrowly rather than treated as generic GPU utilization.
 - **NVIDIA GPU energy (NVML):** run one command and record device wide GPU
   energy from the driver's energy counter, plus sampled power. Totals are only
-  highlighted when no other process used the GPU during the window.
+  highlighted when no other process used the GPU during the window. A running
+  dcgm-exporter can be read instead with `--source dcgm-exporter`.
 - **Native Qwen MTP:** emit a capability report and an explicit unsupported
   record when the installed stack cannot produce trustworthy native-MTP
   evidence.
@@ -992,6 +993,21 @@ inference server that the command calls, pass its PID with `--gpu-pid`, for
 example around `collect-api`. Exit codes: 0 attributable, 2 written but not
 attributable, 1 on error or when the command fails, 3 when NVML is
 unavailable.
+
+To read a running [dcgm-exporter](https://github.com/NVIDIA/dcgm-exporter)
+instead, pass `--source dcgm-exporter --dcgm-exporter-url
+http://HOST:9400/metrics` to `capability` or `record`. No extra is needed.
+`record` scrapes `/metrics` until the energy counter
+(`DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION` in mJ, or
+`DCGM_FI_DEV_GPU_ENERGY_JOULES_TOTAL` in J from 4.9.0) changes before the
+command, and again after it exits. The exporter adds no timestamps and
+refreshes every `--collect-interval` (30 s by default), so the delta covers
+more than the command. The evidence records the shortest and longest span the
+delta can cover, and refuses `energy` with `bracket_too_wide` when the command
+is less than `--min-run-share` (0.9) of the longest span. Run the exporter
+with a short interval, for example `-c 1000`, and long commands. Power is
+listed per scrape but not integrated, and the window is `unverifiable`
+because the exporter has no process list.
 
 To attach the energy to a record, save the evidence as
 `gpu_energy_evidence.json` next to its `record.json`. `gate` and
