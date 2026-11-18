@@ -97,21 +97,25 @@ jobs:
           enable-cache: false
           python-version: "3.12"
 
+      # pip reads the /simple index, which updates after the JSON API and is
+      # cached at the CDN. The Space build runs pip, so wait for /simple to
+      # list the wheel, then give other CDN edges time to catch up.
       - name: Wait for the release on PyPI
         env:
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
           set -euo pipefail
-          url="https://pypi.org/pypi/llmtracefx/$VERSION/json"
+          url="https://pypi.org/simple/llmtracefx/"
           for attempt in $(seq 1 40); do
-            if curl -fsS -o /dev/null "$url"; then
-              echo "llmtracefx $VERSION is on PyPI"
+            if curl -fsS -H "Cache-Control: no-cache" "$url" | grep -q "llmtracefx-$VERSION-"; then
+              echo "llmtracefx $VERSION is in the PyPI index"
+              sleep 120
               exit 0
             fi
-            echo "Attempt $attempt: llmtracefx $VERSION is not on PyPI yet"
+            echo "Attempt $attempt: llmtracefx $VERSION is not in the PyPI index yet"
             sleep 30
           done
-          echo "::error::llmtracefx $VERSION did not appear on PyPI within 20 minutes. Check the Publish to PyPI run, then rerun this workflow."
+          echo "::error::llmtracefx $VERSION did not appear in the PyPI index within 20 minutes. Check the Publish to PyPI run, then rerun this workflow."
           exit 1
 
       - name: Deploy to Hugging Face
