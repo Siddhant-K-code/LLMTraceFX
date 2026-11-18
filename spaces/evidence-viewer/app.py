@@ -8,6 +8,7 @@ spans. Nothing is stored; files are processed in a temporary directory.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 try:
@@ -17,7 +18,32 @@ except ImportError:
     spaces = None
 
 import gradio as gr
+import gradio.queueing
+import gradio.utils
 from viewer import ViewerError, render
+
+
+def _lock() -> asyncio.Lock:
+    return asyncio.Lock()
+
+
+def _stop_event() -> asyncio.Event:
+    return asyncio.Event()
+
+
+# gradio's safe_get_lock and safe_get_stop_event create and set a new event
+# loop on every call made outside a running loop and never close the old one.
+# When the garbage collector later finalizes such a loop after its self-pipe
+# socket, Python logs "ValueError: Invalid file descriptor: -1" from
+# BaseEventLoop.__del__ (gradio-app/gradio#12699). On Python 3.10+ asyncio.Lock
+# and asyncio.Event bind to the running loop on first use, so no loop is needed.
+for _module, _name, _replacement in (
+    (gradio.utils, "safe_get_lock", _lock),
+    (gradio.utils, "safe_get_stop_event", _stop_event),
+    (gradio.queueing, "safe_get_lock", _lock),
+):
+    if hasattr(_module, _name):
+        setattr(_module, _name, _replacement)
 
 EXAMPLE = Path(__file__).parent / "examples" / "synthetic-record.json"
 
