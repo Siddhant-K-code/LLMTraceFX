@@ -10,10 +10,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
+try:
+    # Preinstalled on ZeroGPU Spaces. Import before gradio.
+    import spaces
+except ImportError:
+    spaces = None
+
 import gradio as gr
 from viewer import ViewerError, render
 
 EXAMPLE = Path(__file__).parent / "examples" / "synthetic-record.json"
+
+if spaces is not None:
+    # ZeroGPU refuses to start an app with no @spaces.GPU function. The viewer
+    # needs no GPU, so this is never called and uses no GPU quota.
+    @spaces.GPU
+    def _zerogpu_placeholder() -> None:
+        return None
 
 
 def view(record, api_evidence, server_metrics):
