@@ -123,39 +123,33 @@ class _FakeApi:
     def get_space_runtime(self, space: str) -> _Runtime:
         return self.runtime
 
-    def request_space_hardware(self, space: str, hardware: str) -> _Runtime:
-        self.calls.append(f"hardware {hardware}")
-        if self.fail:
-            raise RuntimeError("402 Payment Required")
-        self.runtime = _Runtime("PAUSED", None, hardware)
-        return self.runtime
-
     def restart_space(self, space: str) -> _Runtime:
         self.calls.append("restart")
+        if self.fail:
+            raise RuntimeError("403 Forbidden")
         self.runtime = _Runtime("BUILDING", None, self.runtime.requested_hardware)
         return self.runtime
 
 
-@pytest.mark.parametrize("requested", ["zero-a10g", None])
-def test_moves_a_zerogpu_space_to_cpu_basic_and_restarts_it(
-    requested: str | None,
-) -> None:
-    api = _FakeApi(_Runtime("PAUSED", None, requested))
-    message = deploy_space.ensure_hardware(api, "owner/space")
-    assert api.calls == ["hardware cpu-basic", "restart"]
-    assert "-> cpu-basic, stage BUILDING" in message
+def test_restarts_a_paused_space_without_changing_hardware() -> None:
+    api = _FakeApi(_Runtime("PAUSED", None, "zero-a10g"))
+    assert deploy_space.wake(api, "owner/space") == (
+        "Hardware: zero-a10g, restarted, stage BUILDING"
+    )
+    assert api.calls == ["restart"]
 
 
-@pytest.mark.parametrize("stage", ["PAUSED", "RUNNING"])
-def test_leaves_other_hardware_alone(stage: str) -> None:
-    api = _FakeApi(_Runtime(stage, "t4-small", "t4-small"))
-    assert deploy_space.ensure_hardware(api, "owner/space") == (
-        "Hardware: t4-small (unchanged)"
+@pytest.mark.parametrize("stage", ["BUILDING", "RUNNING"])
+def test_leaves_a_live_space_alone(stage: str) -> None:
+    api = _FakeApi(_Runtime(stage, "zero-a10g", "zero-a10g"))
+    assert deploy_space.wake(api, "owner/space") == (
+        f"Hardware: zero-a10g, stage {stage}"
     )
     assert api.calls == []
 
 
-def test_hardware_refusal_names_the_fix() -> None:
-    api = _FakeApi(_Runtime("PAUSED", None, "zero-a10g"), fail=True)
-    with pytest.raises(deploy_space.HardwareError, match="PRO account"):
-        deploy_space.ensure_hardware(api, "owner/space")
+def test_failed_restart_is_a_warning_not_an_error() -> None:
+    api = _FakeApi(_Runtime("PAUSED", None, None), fail=True)
+    message = deploy_space.wake(api, "owner/space")
+    assert message.startswith("::warning::owner/space is paused")
+    assert "403 Forbidden" in message

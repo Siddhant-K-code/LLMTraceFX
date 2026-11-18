@@ -399,10 +399,10 @@ which does not import Gradio and is tested in CI. The bundled example record
 is synthetic. `deploy-space.yml` deploys it on every release; the README in
 that directory has the manual deploy commands.
 
-The Space `siddhant-k-code/llmtracefx-evidence-viewer` exists but is paused.
-It was created on ZeroGPU hardware, where the viewer cannot start, so the
-`HF_SPACE` variable is unset and release deploys are skipped. See
-[releasing.md](releasing.md) for the hardware to pick.
+It runs at
+[siddhant-k-code/llmtracefx-evidence-viewer](https://huggingface.co/spaces/siddhant-k-code/llmtracefx-evidence-viewer)
+on ZeroGPU. `app.py` defines one `@spaces.GPU` function that is never called,
+because ZeroGPU will not start an app without one.
 
 ### README badges
 
@@ -431,5 +431,4 @@ Entries as submitted:
 
 ## Follow ups not built here
 
-- Running the evidence viewer Space on CPU basic hardware (see above).
 - Getting rafska/awesome-local-llm#364 reviewed.
