@@ -9,10 +9,12 @@ Publishing a GitHub release for a tag `vX.Y.Z` runs two workflows:
   moves the floating major tag (`v1` for 1.x) to the release commit, so
   `uses: Siddhant-K-code/LLMTraceFX@v1` gets the latest 1.x. The major tag only
   moves for the highest `vMAJOR.Y.Z` tag and never for a prerelease.
-- `deploy-space.yml` waits for the version to appear in the PyPI index that pip
-  reads, plus two minutes for CDN caches, then uploads
+- `deploy-space.yml` waits for the wheel to be on PyPI, then uploads
   `spaces/evidence-viewer/` to the Hugging Face Space with `requirements.txt`
-  rewritten to `llmtracefx==X.Y.Z`.
+  rewritten to the wheel's direct URL and sha256
+  (`llmtracefx @ https://files.pythonhosted.org/...whl#sha256=...`). pip then
+  reads no index, so a Space builder with a stale PyPI mirror still finds the
+  new release.
 
 Both workflows also run from the Actions tab (`workflow_dispatch`) with an
 existing tag, for example to publish a release made before they existed or to

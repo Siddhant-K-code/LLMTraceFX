@@ -35,8 +35,8 @@ are reduced to basenames in the exports.
 
 Releases deploy this directory automatically through
 `.github/workflows/deploy-space.yml`, with `requirements.txt` pinned to the
-released `llmtracefx==X.Y.Z`. See `docs/releasing.md` in the repository for the
-one-time setup.
+released wheel on PyPI by URL and sha256. See `docs/releasing.md` in the
+repository for the one-time setup.
 
 To deploy by hand from the repository root:
 

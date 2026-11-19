@@ -4,8 +4,8 @@
 # variable (owner/name). Without either one the workflow skips with a notice.
 # One-time setup is in docs/releasing.md.
 #
-# The Space installs the released package from PyPI (llmtracefx==X.Y.Z), so
-# this waits until publish.yml has uploaded that version. workflow_dispatch
+# The Space installs the released wheel from PyPI by its file URL and sha256,
+# so this waits until publish.yml has uploaded that version. workflow_dispatch
 # redeploys an existing release tag.
 
 name: Deploy Space
@@ -97,25 +97,24 @@ jobs:
           enable-cache: false
           python-version: "3.12"
 
-      # pip reads the /simple index, which updates after the JSON API and is
-      # cached at the CDN. The Space build runs pip, so wait for /simple to
-      # list the wheel, then give other CDN edges time to catch up.
+      # The Space installs the wheel by its file host URL, so only the upload
+      # needs to exist. PyPI's per-version JSON lists it as soon as it is
+      # uploaded; the index that pip reads, and its mirrors, can lag behind.
       - name: Wait for the release on PyPI
         env:
           VERSION: ${{ steps.tag.outputs.version }}
         run: |
           set -euo pipefail
-          url="https://pypi.org/simple/llmtracefx/"
+          url="https://pypi.org/pypi/llmtracefx/$VERSION/json"
           for attempt in $(seq 1 40); do
-            if curl -fsS -H "Cache-Control: no-cache" "$url" | grep -q "llmtracefx-$VERSION-"; then
-              echo "llmtracefx $VERSION is in the PyPI index"
-              sleep 120
+            if curl -fsS -H "Cache-Control: no-cache" "$url" 2>/dev/null | grep -q "llmtracefx-$VERSION-py3-none-any.whl"; then
+              echo "llmtracefx $VERSION wheel is on PyPI"
               exit 0
             fi
-            echo "Attempt $attempt: llmtracefx $VERSION is not in the PyPI index yet"
+            echo "Attempt $attempt: llmtracefx $VERSION wheel is not on PyPI yet"
             sleep 30
           done
-          echo "::error::llmtracefx $VERSION did not appear in the PyPI index within 20 minutes. Check the Publish to PyPI run, then rerun this workflow."
+          echo "::error::llmtracefx $VERSION did not appear on PyPI within 20 minutes. Check the Publish to PyPI run, then rerun this workflow."
           exit 1
 
       - name: Deploy to Hugging Face
