@@ -612,7 +612,8 @@ values, not diffed.
 
 #### Engines with no profile
 
-- TensorRT-LLM `trtllm-serve` serves `/metrics` with
+- TensorRT-LLM `trtllm-serve` serves Prometheus text on
+  `/prometheus/metrics` (its `/metrics` is JSON iteration stats) with
   `trtllm_request_success_total`, `trtllm_time_to_first_token_seconds`,
   `trtllm_request_queue_time_seconds`, prefill and decode histograms, and
   token counters
@@ -736,6 +737,20 @@ and BurstGPT v2.0 added a `Session ID` column that `replay` ignores.
 - llama.cpp `timings.cache_n`, `prompt_ms` and `predicted_ms` are already read
   by `sweep-llama-cpp`.
 
+### Built from this refresh
+
+- Speculative decoding acceptance: `server-metrics` derives acceptance rate,
+  length and per-position rates from the vLLM, SGLang, llama.cpp and
+  TensorRT-LLM counters, the speculative doctor uses them when present, and
+  `import vllm-bench` reads the `spec_decode_*` keys (#171, #172).
+- Per-request server numbers from the response: vLLM `metrics`, SGLang
+  `sglext`, TensorRT-LLM `trtllm.perf_metrics` and llama.cpp `draft_n` in
+  `collect-api`, `sweep-api`, `replay run` and `sweep-llama-cpp` (#174).
+- Cached prompt tokens by tier, KV usage point samples, vLLM KV offload,
+  llama.cpp cached prompt tokens, and a TensorRT-LLM profile (#172).
+- `replay --format weka` and `--format otel-genai`, which replays
+  `export otlp` output (#173).
+
 ## Follow ups not built here
 
 Sizes: **S** is about a day, one module and its tests. **M** is a few days: a
@@ -744,72 +759,55 @@ new execution model or output format.
 
 Ranked by value to the evidence model against cost:
 
-1. **Speculative decoding acceptance evidence (M).** vLLM, SGLang,
-   TensorRT-LLM and llama.cpp all export draft and accepted token counters,
-   and the doctor still judges speculation by client latency alone.
-2. **Per-request server timing from the response (M).** vLLM `metrics`,
-   SGLang `meta_info`, TensorRT-LLM `X-TRTLLM-*` headers and llama.cpp
-   `draft_n` give server-side numbers per request that survive under load,
-   where Prometheus windows cannot be attributed.
-3. **Cache tier and KV usage in `server-metrics` (M).** Servers now split
-   cached prompt tokens by tier and report KV usage, and replay's planned
-   prefix reuse can only be checked against local hits today; this includes
-   adding the llama.cpp cached and speculative counters (S on its own).
-4. **TensorRT-LLM `server-metrics` profile (M).** It has a request counter,
-   so windows can be attributed, and it is the main NVIDIA engine with no
-   profile.
-5. **OTel GenAI span and Weka trace replay (M each).** These, with Mooncake,
-   are now the shared agentic replay formats, and OTel replay would let users
-   replay LLMTraceFX's own exports.
-6. **GenAI cache and reasoning token attributes in `export otlp` (S).** The
+1. **GenAI cache and reasoning token attributes in `export otlp` (S).** The
    attributes exist in the conventions and the records already hold the
    values.
-7. **Dynamo frontend profile with a worker scrape (M).** Its frontend has a
+2. **Dynamo frontend profile with a worker scrape (M).** Its frontend has a
    request counter and KV router hit rates, and engine metrics sit on a
    second port.
-8. **Extend `import vllm-bench` to spec decode and `server_ttfts` fields (S).**
-   The fields are already in the files users have, and the importer drops them.
-9. **NVML instant power and per-process utilization (S, then M).** Timestamped
+3. **Extend `import vllm-bench` to `server_ttfts` fields (S).** The
+   fields are already in the files users have, and the importer drops them.
+4. **NVML instant power and per-process utilization (S, then M).** Timestamped
    instant power is a better sample than the smoothed reading, and per-PID
    utilization closes a contamination blind spot between polls.
-10. **Confidence intervals and warmup exclusion in sweeps (M).** GuideLLM and
+5. **Confidence intervals and warmup exclusion in sweeps (M).** GuideLLM and
     AIPerf now report intervals and exclude warmup, and `sweep-api` reports
     bare nearest rank percentiles.
-11. **AIPerf `profile_export.jsonl` import (M).** Per-request records would
+6. **AIPerf `profile_export.jsonl` import (M).** Per-request records would
     let `gate` use LLMTraceFX's own percentiles instead of `imported_derived`
     ones.
-12. **Re-pins and the Collector receiver rename (S).** Re-pin vLLM, SGLang,
+7. **Re-pins and the Collector receiver rename (S).** Re-pin vLLM, SGLang,
     llama.cpp and the GenAI conventions to the commits above, and document
     `otlp_json_file` with `start_at: beginning`.
-13. **`hw.energy` alongside `llmtracefx.gpu.energy` (S).** Backends that know
+8. **`hw.energy` alongside `llmtracefx.gpu.energy` (S).** Backends that know
     the hardware conventions could chart LLMTraceFX energy with no mapping.
-14. **Record the dcgm-exporter collect interval (S).** The bracket width
+9. **Record the dcgm-exporter collect interval (S).** The bracket width
     depends on it, and the evidence does not say what it was.
-15. **Importers for SGLang bench, GuideLLM, `trtllm-bench` and `llama-bench`
+10. **Importers for SGLang bench, GuideLLM, `trtllm-bench` and `llama-bench`
     (M each).** Each brings results users already have into `gate`.
-16. **Native Ollama collector (M).** Its `/api/*` responses carry load,
+11. **Native Ollama collector (M).** Its `/api/*` responses carry load,
     prompt and eval durations and the new cached count, which the OpenAI
     route drops.
-17. **Perfetto protobuf export (M to L).** Counter tracks, async slices and
+12. **Perfetto protobuf export (M to L).** Counter tracks, async slices and
     flows would show power, sweeps and requests together; JSON stays as the
     fallback.
-18. **AMD energy through `amdsmi` (M).** It has a timestamped energy counter
+13. **AMD energy through `amdsmi` (M).** It has a timestamped energy counter
     and a process list, so it fits the existing attribution model.
-19. **Azure Copilot agent traces, Bailian traces and BurstGPT sessions in
+14. **Azure Copilot agent traces, Bailian traces and BurstGPT sessions in
     `replay` (M, M, S).** These are the newest public traces with sessions
     and cached token counts.
-20. **Benchmark Report v0.2 export (M).** llm-d uses it to compare harnesses,
+15. **Benchmark Report v0.2 export (M).** llm-d uses it to compare harnesses,
     so it is a route into that tooling.
-21. **Client and server token reconciliation, and cost per token in sweeps
+16. **Client and server token reconciliation, and cost per token in sweeps
     (S to M).** inference-perf reports both; LLMTraceFX has provider usage
     and pricing data but does not join them.
-22. **Mark the TGI profile as legacy (S).** TGI is archived.
-23. **Import engine OTLP traces from vLLM, SGLang and TensorRT-LLM (L).**
+17. **Mark the TGI profile as legacy (S).** TGI is archived.
+18. **Import engine OTLP traces from vLLM, SGLang and TensorRT-LLM (L).**
     Server span timings would be `measured_native`, but each engine uses its
     own span layout.
-24. **Tool-calling, multimodal and embeddings workloads (L each).** Only if
+19. **Tool-calling, multimodal and embeddings workloads (L each).** Only if
     the scope widens beyond text generation.
-25. **vLLM KV event subscriber and profiler artifact capture (M).** Optional
+20. **vLLM KV event subscriber and profiler artifact capture (M).** Optional
     deeper evidence for the KV cache auditor.
 26. Getting rafska/awesome-local-llm#364 reviewed. It has been open with no
     review since it was filed (last updated 2026-11-09).
