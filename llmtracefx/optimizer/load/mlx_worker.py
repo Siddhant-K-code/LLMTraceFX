@@ -51,6 +51,10 @@ SINGLE_STREAM_REASON = (
     "that loaded the model (generation_stream is thread-local), and "
     "stream_generate does not batch requests"
 )
+IN_PROCESS_CPU_REASON = (
+    "mlx-lm runs in the load generator's process, so process CPU time "
+    "includes model work and does not measure the client alone"
+)
 
 FINISH_CODES: Mapping[str, str] = {"stop": "stop", "length": "length"}
 FAILURE_RUNTIME_ERROR = "runtime_error"
@@ -516,6 +520,7 @@ def mlx_attribution(backend: Mapping[str, Any]) -> dict[str, Any]:
 
 
 __all__ = [
+    "IN_PROCESS_CPU_REASON",
     "MAX_SUPPORTED_IN_FLIGHT",
     "MLX_COMMIT",
     "MLX_FIELD_PROVENANCE",

@@ -202,6 +202,17 @@ time, so they are not the client's TTFT and decode time. Token counts
 `word` count as `stop`, `limit` counts as `length`, and anything else fails
 the request as `unrecognized_stop_type`.
 
+Two things to know when reading these fields:
+
+- `tokens_predicted` counts the end-of-sequence token, which the server
+  streams as a chunk with empty content. `sweep-mlx` and `collect-mlx` do
+  not count it, so for the same text an `eos` stop reports one more output
+  token here than under MLX.
+- With more than one slot busy, `llama-server` evaluates prompts in a shared
+  batch and each slot's `server_prompt_ms` is the time of that whole batch.
+  Do not sum it across rows; the server metrics window has the server's
+  own total.
+
 `llama-bench` is not a worker. It runs its own fixed prompt and generation
 lengths and takes no requests, so the dispatcher cannot drive it.
 
@@ -214,13 +225,16 @@ Runs mlx-lm in the same process (ml-explore/mlx-lm at
 ```bash
 llmtracefx-optimizer sweep-mlx \
   --run-id mlx-sweep \
-  --model-path mlx-community/Qwen3-8B-4bit \
+  --model-path models/Qwen3-8B-4bit \
   --model-id qwen3-8b-4bit \
   --prompt-file prompt.txt \
   --request-rate 0.5,1 --max-in-flight 1 \
   --requests-per-point 32 \
   --output-dir results/mlx-sweep
 ```
+
+`--model-path` must be a local directory. A Hugging Face repo ID such as
+`mlx-community/Qwen3-8B-4bit` is refused, so download the model first.
 
 In-process mlx-lm runs one generation at a time. `stream_generate` does not
 batch, and its generation stream belongs to the thread that loaded the
@@ -248,6 +262,35 @@ Other behavior:
   `--allow-remote-load`, since nothing goes over the network.
 - A dry run does not load the model, and `--model-path` is optional for it.
   The backend block records the model load time as `measured_wall_clock`.
+- The model runs in the load generator's process, so process CPU time
+  cannot separate client work from model work. `client_cpu_seconds` and
+  `client_cpu_utilization` are `null`, `client_cpu_withheld_reason` says
+  why, and client CPU never marks an MLX point degraded. Dispatch lag and
+  slot refill are still judged.
+
+### Checked on real hardware
+
+Both commands were run on an Apple M5 Pro against
+Qwen2.5-0.5B-Instruct: the Q4_K_M GGUF under `llama-server` built at the
+pinned commit (`build_info` `b12485-ebc9fb933`, `--parallel 2 --metrics`),
+and `mlx-community/Qwen2.5-0.5B-Instruct-4bit` under mlx 0.32.2 and
+mlx-lm 0.31.3 (the releases in `pyproject.toml`, older than the pinned
+commits). What matched what the backends did:
+
+- llama.cpp: per-row `output_tokens` and `prompt_tokens` summed to the
+  `/metrics` `tokens_predicted` and `prompt_tokens` deltas. `eos` and
+  `limit` mapped to `stop` and `length`, a full context returned `limit`
+  with `truncated` true, and `--cache-prompt` reported `cache_n` as
+  `cached_prompt_tokens` with `server_prompt_n` 1. A point with more
+  requests in flight than `total_slots` was refused before anything was
+  written, and with `--allow-server-queue` the queued rows showed TTFT far
+  above `server_prompt_ms`.
+- MLX: `prompt_tokens` matched the tokenizer, an `eos` stop counted 1 token
+  for "Yes" and a `length` stop counted `--max-output-tokens`. Concurrency 2
+  and rate points without `--max-in-flight 1` were refused, timeouts were
+  recorded per request, and the backend block named the accelerator.
+- `gate`, `compare` and `export` refused both commands' `sweep.json`, its
+  directory and a renamed copy.
 
 ## Definitions
 
@@ -313,7 +356,9 @@ block reports:
 - `slot_refill` (closed loop): the gap between a request finishing and the
   next one starting in its slot;
 - `max_in_flight`, `max_observed_in_flight` and `deferred_by_in_flight_cap`;
-- `client_cpu_seconds` and `client_cpu_utilization` for the window;
+- `client_cpu_seconds` and `client_cpu_utilization` for the window, or
+  `null` with a `client_cpu_withheld_reason` when the backend shares the
+  client's process (`sweep-mlx`);
 - `dispatch_rate` (open loop): the target rate, the rate of the planned
   schedule and the achieved dispatch rate.
 

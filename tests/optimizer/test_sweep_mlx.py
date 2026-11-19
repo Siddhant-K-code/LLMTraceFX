@@ -346,6 +346,31 @@ def test_cli_rate_mode_needs_max_in_flight_one(
     assert point["scheduling"]["max_observed_in_flight"] == 1
 
 
+class BusyRuntime(FakeRuntime):
+    """Spends CPU on the owner thread, as a real in-process model does."""
+
+    def stream_generate(self, *args: Any, **kwargs: Any) -> Iterator[Response]:
+        started = time.thread_time()
+        while time.thread_time() - started < 0.1:
+            pass
+        yield from super().stream_generate(*args, **kwargs)
+
+
+def test_cli_does_not_blame_model_cpu_on_the_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(backend_cli, "MLXLMRuntime", BusyRuntime)
+    code, _, err = run_main(sweep_argv(tmp_path, "--concurrency", "1"))
+    assert code == 0, err
+    sweep = json.loads((tmp_path / "out" / "sweep.json").read_text())
+    scheduling = sweep["points"][0]["scheduling"]
+    assert scheduling["status"] == "ok"
+    assert scheduling["client_cpu_seconds"] is None
+    assert scheduling["client_cpu_utilization"] is None
+    assert "load generator's process" in scheduling["client_cpu_withheld_reason"]
+    assert sweep["summary"]["degraded_points"] == []
+
+
 def test_cli_dry_run_loads_nothing(tmp_path: Path, monkeypatch) -> None:
     def refuse(**_: Any) -> None:
         raise AssertionError("dry run must not create the runtime")

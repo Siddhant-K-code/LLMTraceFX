@@ -781,6 +781,7 @@ def run_sweep(
     server_metrics: ServerMetricsPairing | None,
     describe_error: Callable[[BaseException], str],
     fail: Fail,
+    client_cpu_withheld_reason: str | None = None,
 ) -> int:
     """Run every point, write ``sweep.json`` after each one, and report.
 
@@ -823,6 +824,7 @@ def run_sweep(
         server_metrics=server_metrics,
         describe_error=describe_error,
         on_point=on_point,
+        client_cpu_withheld_reason=client_cpu_withheld_reason,
     )
     print(
         f"Sweeping {len(output.points)} points x {output.requests_per_point} "
