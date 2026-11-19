@@ -48,6 +48,10 @@ from .formats import (
     AIPERF_UPSTREAM,
     BURSTGPT,
     MOONCAKE,
+    OTEL_GENAI,
+    SESSION_FORMATS,
+    SESSION_UPSTREAMS,
+    WEKA,
     ParsedTrace,
     TraceEntry,
 )
@@ -99,7 +103,7 @@ class Selection:
             raise ScheduleError("--end-s must be greater than --start-s")
         if self.max_requests is not None and self.max_requests < 1:
             raise ScheduleError("--max-requests must be at least 1")
-        if trace_format == AIPERF_MULTI_TURN:
+        if trace_format in SESSION_FORMATS:
             if self.max_requests is not None:
                 raise ScheduleError(
                     "--max-requests would cut a session part way; use "
@@ -113,13 +117,17 @@ class Selection:
             raise ScheduleError("--model and --log-type filter BurstGPT traces only")
 
     def to_dict(self, trace_format: str | None = None) -> dict[str, Any]:
-        if trace_format == AIPERF_MULTI_TURN:
+        if trace_format in SESSION_FORMATS:
             return {
                 "order": ["window", "max_sessions"],
                 "unit": "session",
                 "window_start_s": self.start_s,
                 "window_end_s": self.end_s,
-                "window_reference": "first data row of the trace file",
+                "window_reference": (
+                    "first data row of the trace file"
+                    if trace_format == AIPERF_MULTI_TURN
+                    else "earliest session start in the trace file"
+                ),
                 "window_applies_to": "each session's first turn",
                 "max_sessions": self.max_sessions,
                 "time_scale": self.time_scale,
@@ -230,10 +238,23 @@ class ReplaySchedule:
 
     def history_at(self, builder: PromptBuilder, index: int) -> History:
         """Regenerate the earlier turns sent before request ``index``."""
+        if not self.threads_history:
+            return ()
         return _history(builder, self.entries, index)
 
     @property
     def multi_turn(self) -> bool:
+        """Requests form sessions whose later turns wait for completions."""
+        return self.trace.format in SESSION_FORMATS
+
+    @property
+    def threads_history(self) -> bool:
+        """Earlier turns are resent as chat messages before each later turn.
+
+        Only an AIPerf conversation holds per-turn deltas. A Weka or OTel
+        request already declares its whole context length, so it is sent as
+        one prompt of that length.
+        """
         return self.trace.format == AIPERF_MULTI_TURN
 
     @property
@@ -277,17 +298,13 @@ class ReplaySchedule:
                 "offset of the last session's first turn; later turns wait for "
                 "completions, so the run takes longer"
             )
-        if self.trace.format == MOONCAKE:
+        if self.trace.format in _PREFIX_FORMATS:
             blocks = sum(r.hash_blocks or 0 for r in requests)
             reused = sum(r.reused_blocks or 0 for r in requests)
             reusable = sum(r.reusable_tokens or 0 for r in requests)
             summary["prefix_reuse"] = {
                 "provenance": MetricProvenance.DERIVED.value,
-                "basis": (
-                    "hash_ids already seen earlier in the selected requests; an "
-                    "upper bound that assumes an unbounded cache and block-aligned "
-                    "reuse"
-                ),
+                "basis": _PREFIX_FORMATS[self.trace.format],
                 "blocks_total": blocks,
                 "blocks_reused": reused,
                 "unique_blocks": blocks - reused,
@@ -313,9 +330,10 @@ class ReplaySchedule:
             "summary": self.summary(),
             "requests": [request.to_dict() for request in self.requests],
         }
-        if self.multi_turn:
+        if self.threads_history:
             document["prompts"]["history"] = self._history_record()
-            document["sessions"] = _SESSION_POLICY
+        if self.multi_turn:
+            document["sessions"] = _session_policy(self.trace.format)
         return seal(document, "schedule_sha256")
 
     def _prompts_record(self) -> dict[str, Any]:
@@ -397,6 +415,47 @@ _SESSION_POLICY: dict[str, Any] = {
 }
 
 
+_REQUEST_SESSION_POLICY: dict[str, Any] = {
+    "first_turn": "sent at its scaled start",
+    "later_turn": (
+        "sent after the previous request of the session completes, then after "
+        "the scaled gap between the previous request's recorded end and its "
+        "own recorded start, or not before its own scaled start when the "
+        "requests overlapped or the previous end is not recorded"
+    ),
+    "context": (
+        "each request is sent as one prompt of its declared input length; "
+        "earlier turns are not resent as messages"
+    ),
+    "failed_turn": "the session continues with the next request's planned prompt",
+    "delay_cap": None,
+    "stop": "turns not yet sent are recorded as not sent",
+}
+
+_PREFIX_BASIS = (
+    "hash_ids already seen earlier in the selected requests; an "
+    "upper bound that assumes an unbounded cache and block-aligned "
+    "reuse"
+)
+_PREFIX_FORMATS = {
+    MOONCAKE: _PREFIX_BASIS,
+    WEKA: (
+        "hash_ids already seen earlier in the same conversation, since Weka "
+        "numbers ids per conversation; an upper bound that assumes an "
+        "unbounded cache and block-aligned reuse"
+    ),
+}
+
+
+def _session_policy(trace_format: str) -> dict[str, Any]:
+    if trace_format == AIPERF_MULTI_TURN:
+        return _SESSION_POLICY
+    return {
+        "upstream": json.loads(json.dumps(SESSION_UPSTREAMS[trace_format])),
+        **_REQUEST_SESSION_POLICY,
+    }
+
+
 def _offset(request: ScheduledRequest) -> float:
     if request.arrival_offset_s is None:
         raise ScheduleError(f"{request.request_id} has no planned offset")
@@ -408,6 +467,14 @@ def _structure(trace_format: str) -> str:
         return "hash_ids: each block id maps to fixed text, so shared ids share bytes"
     if trace_format == BURSTGPT:
         return "none: each prompt is seeded by its source line"
+    if trace_format == WEKA:
+        return (
+            "hash_ids: each block id maps to fixed text within its conversation, "
+            "so a conversation's shared ids share bytes; tokens past the last "
+            "hashed block are seeded by the request"
+        )
+    if trace_format == OTEL_GENAI:
+        return "none: each prompt is seeded by its span; no prefix sharing is inferred"
     return "trace text sent as is"
 
 
@@ -417,7 +484,16 @@ def _prompt(builder: PromptBuilder, entry: TraceEntry) -> str:
     if entry.input_tokens is None:
         raise ScheduleError(f"line {entry.line} has neither text nor a prompt length")
     if entry.hash_ids is not None:
-        return builder.for_hash_ids(entry.hash_ids, entry.input_tokens)
+        if entry.block_scope is None:
+            return builder.for_hash_ids(entry.hash_ids, entry.input_tokens)
+        return builder.for_hash_ids(
+            entry.hash_ids,
+            entry.input_tokens,
+            scope=entry.block_scope,
+            tail_key=f"{entry.line}.{entry.line_turn}",
+        )
+    if entry.line_turn is not None:
+        return builder.for_item(entry.line, entry.line_turn, entry.input_tokens)
     return builder.for_line(entry.line, entry.input_tokens)
 
 
@@ -495,18 +571,19 @@ def prefix_reuse(
     entries: Sequence[TraceEntry], block_size: int
 ) -> list[tuple[int, int]]:
     """Leading blocks per entry already seen earlier, and their token count."""
-    seen: set[int] = set()
+    seen: set[tuple[int | None, int]] = set()
     result: list[tuple[int, int]] = []
     for entry in entries:
         reused = reusable = 0
-        hash_ids = entry.hash_ids or ()
+        scope = entry.block_scope
+        keys = [(scope, block) for block in entry.hash_ids or ()]
         input_tokens = entry.input_tokens or 0
-        for position, block in enumerate(hash_ids):
-            if block not in seen:
+        for position, key in enumerate(keys):
+            if key not in seen:
                 break
             reused += 1
             reusable += min(block_size, input_tokens - position * block_size)
-        seen.update(hash_ids)
+        seen.update(keys)
         result.append((reused, reusable))
     return result
 
@@ -530,7 +607,7 @@ def build_schedule(
     first = selected[0].arrival_s
     reuse = (
         prefix_reuse(selected, trace.block_size)
-        if trace.format == MOONCAKE and trace.block_size
+        if trace.format in _PREFIX_FORMATS and trace.block_size
         else None
     )
     requests: list[ScheduledRequest] = []
@@ -564,9 +641,16 @@ def build_schedule(
                     reuse=reuse,
                 )
             )
-    if trace.format == AIPERF_MULTI_TURN:
+    if trace.format in SESSION_FORMATS:
         requests = _with_sessions(
-            builder, selected, requests, first, selection, tokenizer, units
+            builder,
+            selected,
+            requests,
+            first,
+            selection,
+            tokenizer if trace.format == AIPERF_MULTI_TURN else None,
+            units,
+            threads_history=trace.format == AIPERF_MULTI_TURN,
         )
     return ReplaySchedule(
         trace=trace,
@@ -642,6 +726,8 @@ def _with_sessions(
     selection: Selection,
     tokenizer: ReplayTokenizer | None,
     units: TokenUnits | None,
+    *,
+    threads_history: bool = True,
 ) -> list[ScheduledRequest]:
     """Add history, session timing and whole-conversation lengths to each turn."""
 
@@ -651,8 +737,8 @@ def _with_sessions(
     replies = _reply_counts(builder, entries, tokenizer, units)
     result: list[ScheduledRequest] = []
     for index, (entry, request) in enumerate(zip(entries, requests, strict=True)):
-        history = _history(builder, entries, index)
-        earlier = range(index - (entry.turn or 0), index)
+        history = _history(builder, entries, index) if threads_history else ()
+        earlier = range(index - (entry.turn or 0), index) if history else range(0)
         tokens = request.tokenizer_prompt_tokens
         if tokens is not None:
             # Each message is encoded on its own; the template between them

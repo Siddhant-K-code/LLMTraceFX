@@ -336,3 +336,51 @@ def test_export_cli_rejects_an_invalid_record(tmp_path: Path) -> None:
     assert code == 1
     assert "Cannot export" in err
     assert not (tmp_path / "o").exists()
+
+
+# --- Replay round trip -------------------------------------------------------------
+
+
+def test_otlp_exports_replay_as_otel_genai_traces(tmp_path: Path) -> None:
+    record, evidence = api_run(tmp_path)
+    exports = []
+    for name, run_record in [("api", record), ("local", make_record())]:
+        run_record.write_json(tmp_path / f"{name}.json")
+        argv = ["export", "otlp", "--record", str(tmp_path / f"{name}.json")]
+        if name == "api":
+            evidence_path = tmp_path / "artifacts" / "api_evidence.json"
+            argv += ["--api-evidence", str(evidence_path)]
+        output = tmp_path / f"{name}.otlp.json"
+        code, _, err = run_cli([*argv, "--output", str(output)])
+        assert code == 0, err
+        exports.append(output.read_text())
+    runs = tmp_path / "runs.jsonl"
+    runs.write_text("".join(exports))
+    roots = [spans_of(json.loads(text))[0] for text in exports]
+    declared = [
+        (
+            attrs(root)["gen_ai.operation.name"],
+            attrs(root)["gen_ai.usage.input_tokens"],
+            attrs(root)["gen_ai.usage.output_tokens"],
+        )
+        for root in roots
+    ]
+    assert [op for op, _, _ in declared] == ["chat", "text_completion"]
+
+    out = tmp_path / "plan"
+    code, stdout, err = run_cli(
+        ["replay", "plan", str(runs), "--format", "otel-genai"]
+        + ["--prompt-salt", "s", "--output-dir", str(out)]
+    )
+    assert code == 0, err
+    text = (out / "replay_schedule.json").read_text()
+    document = json.loads(text)
+    requests = document["requests"]
+    assert [
+        (r["target_input_tokens"], r["target_output_tokens"]) for r in requests
+    ] == [(i, o) for _, i, o in declared]
+    assert document["source"]["sessions"] == 2
+    assert document["source"]["details"]["llmtracefx_token_provenance"]
+    for root in roots:
+        assert root["traceId"] not in text
+    assert record.run_id not in text

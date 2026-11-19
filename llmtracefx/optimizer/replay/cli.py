@@ -37,6 +37,7 @@ from .formats import (
     MOONCAKE,
     MOONCAKE_BLOCK_SIZE,
     TRACE_FORMATS,
+    WEKA,
     ParsedTrace,
     TraceFormatError,
     parse_trace,
@@ -96,15 +97,17 @@ def _add_trace_arguments(parser: argparse.ArgumentParser) -> None:
         default=MOONCAKE_BLOCK_SIZE,
         help=(
             "Tokens per hash_ids block for mooncake traces (default "
-            f"{MOONCAKE_BLOCK_SIZE}, as in the published Mooncake traces)"
+            f"{MOONCAKE_BLOCK_SIZE}, as in the published Mooncake traces). A "
+            "Weka trace declares its own block_size"
         ),
     )
     parser.add_argument(
         "--exclude-failed",
         action="store_true",
         help=(
-            "BurstGPT only: drop rows with 0 request or 0 response tokens and "
-            "count them by reason, instead of refusing the trace"
+            "BurstGPT: drop rows with 0 request or 0 response tokens. OTel "
+            "GenAI: drop failed inference spans. Either way, count them by "
+            "reason instead of refusing the trace"
         ),
     )
 
@@ -137,14 +140,17 @@ def _add_schedule_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help=(
             "Keep only the first N requests after filters and window. Refused "
-            "for a multi-turn trace, since it would cut a session"
+            "for a session trace, since it would cut a session"
         ),
     )
     parser.add_argument(
         "--max-sessions",
         type=int,
         default=None,
-        help="Multi-turn only: keep only the first N sessions after the window",
+        help=(
+            "Session traces only (aiperf-multi-turn, weka, otel-genai): keep "
+            "only the first N sessions after the window"
+        ),
     )
     parser.add_argument(
         "--model",
@@ -194,8 +200,8 @@ def add_replay_parser(subparsers: Any) -> argparse.ArgumentParser:
     replay: argparse.ArgumentParser = subparsers.add_parser(
         "replay",
         help=(
-            "Replay Mooncake, BurstGPT or AIPerf single_turn and multi_turn "
-            "arrival traces"
+            "Replay Mooncake, BurstGPT, AIPerf single_turn and multi_turn, "
+            "Weka and OTel GenAI arrival traces"
         ),
         allow_abbrev=False,
     )
@@ -388,13 +394,18 @@ def trace_stats(trace: ParsedTrace) -> dict[str, Any]:
     declared = [e.input_tokens for e in entries if e.input_tokens is not None]
     if len(declared) == len(entries):
         stats["input_tokens"] = _distribution(declared)
-    if trace.format == MOONCAKE and trace.block_size:
+    if trace.format in (MOONCAKE, WEKA) and trace.block_size:
         reuse = prefix_reuse(entries, trace.block_size)
         blocks = sum(len(e.hash_ids or ()) for e in entries)
         reusable = sum(tokens for _, tokens in reuse)
         stats["prefix_reuse"] = {
             "provenance": MetricProvenance.DERIVED.value,
-            "basis": "whole trace, unbounded cache, block-aligned reuse",
+            "basis": (
+                "whole trace, unbounded cache, block-aligned reuse"
+                if trace.format == MOONCAKE
+                else "within each conversation, unbounded cache, block-aligned "
+                "reuse; tokens past the last hashed block are never counted"
+            ),
             "blocks_total": blocks,
             "unique_blocks": blocks - sum(count for count, _ in reuse),
             "reusable_fraction_upper_bound": reusable / sum(declared),
@@ -432,6 +443,19 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         print(
             f"  sessions: {stats['sessions']}, turns per session median "
             f"{turns['median']}, max {turns['max']}"
+        )
+    details = source.get("details", {})
+    later = details.get("later_requests")
+    if later:
+        print(
+            "  later requests: "
+            + ", ".join(f"{count} {basis}" for basis, count in later.items())
+        )
+    skipped = details.get("skipped_spans")
+    if skipped:
+        print(
+            "  skipped spans: "
+            + ", ".join(f"{count} {name}" for name, count in skipped.items())
         )
     if "input_tokens" in stats:
         inputs = stats["input_tokens"]

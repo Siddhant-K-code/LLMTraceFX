@@ -383,3 +383,37 @@ def test_multi_turn_session_continues_after_a_failed_turn(tmp_path: Path) -> Non
         )
     assert [row.sent for row in replay.rows] == [True, True, True]
     assert not any(row.success for row in replay.rows)
+
+
+WEKA = str(FIXTURES / "weka_small.jsonl")
+
+
+def test_weka_run_sends_one_prompt_per_request_in_conversation_order(
+    tmp_path: Path,
+) -> None:
+    out = tmp_path / "out"
+    with fake_openai_server() as server:
+        argv = _argv(server.endpoint, out)
+        argv[2:5] = [WEKA, "--format", "weka"]
+        assert _run(argv) == 0
+        bodies = list(server.bodies)
+
+    assert len(bodies) == 5
+    assert {tuple(m["role"] for m in body["messages"]) for body in bodies} == {
+        ("user",)
+    }
+    lines = _lines(out / REQUESTS_FILE)
+    first = sorted(
+        (line for line in lines if line["session"] == 0), key=lambda r: r["turn"]
+    )
+    # At time scale 0.01 the 0.5 s gap after request 0 ends is 0.005 s; the
+    # overlapping request 2 waits only for its own start, 1.8 s scaled.
+    assert first[1]["dispatched_offset_s"] >= first[0]["completed_offset_s"] + 0.005
+    assert first[2]["dispatched_offset_s"] >= 0.018
+    result = read_result(out / RESULT_FILE)
+    assert result["counts"]["prompt_sha256_mismatches"] == 0
+    assert result["sessions"]["sessions"] == 2
+    assert result["dispatch"]["policy"]["kind"] == "session_arrivals"
+    assert "planned prompt" in result["sessions"]["note"]
+    for name in (REQUESTS_FILE, RESULT_FILE, SCHEDULE_FILE):
+        assert "conv-secret" not in (out / name).read_text()

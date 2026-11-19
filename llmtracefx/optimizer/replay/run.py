@@ -10,9 +10,10 @@ outcome to the replay artifacts:
   checked against the sha256 the schedule recorded;
 * the time spent building each prompt is recorded, because it falls
   between the dispatch timestamp and the moment the request is sent;
-* a multi-turn trace goes through the session policy, so each later turn
-  waits for the previous turn of its session, and its regenerated history
-  is checked against the schedule's sha256 too;
+* a session trace (AIPerf multi_turn, Weka or OTel GenAI) goes through the
+  session policy, so each later turn waits for the previous turn of its
+  session; an AIPerf turn's regenerated history is checked against the
+  schedule's sha256 too;
 * the verdict says whether the replay kept to the trace's arrival times.
 """
 
@@ -444,6 +445,9 @@ def session_counts(
         "note": (
             "A failed turn does not stop its session, as in AIPerf; the next "
             "turn still resends the planned history."
+            if schedule.threads_history
+            else "A failed turn does not stop its session, as in AIPerf; the "
+            "next request is still sent with its planned prompt."
         ),
         "provenance": MetricProvenance.DERIVED.value,
     }

@@ -263,3 +263,20 @@ def test_missing_package_is_refused_with_an_install_hint(
         TokenizerError, match=r"'tokenizers' package.*--extra tokenizer"
     ):
         load_tokenizer("org/model")
+
+
+@pytest.mark.parametrize("encoder", [ByteLevel(), Metaspace()])
+@pytest.mark.parametrize(
+    ("name", "fmt"),
+    [("weka_small.jsonl", "weka"), ("otel_genai_small.jsonl", "otel-genai")],
+)
+def test_session_trace_lengths_are_exact(encoder: Any, name: str, fmt: str) -> None:
+    trace = parse_trace(FIXTURES / name, fmt)
+    schedule = build_schedule(
+        trace, Selection(), salt="s", tokenizer=fake_tokenizer(encoder)
+    )
+    targets = [r.target_input_tokens for r in schedule.requests]
+    assert [r.tokenizer_prompt_tokens for r in schedule.requests] == targets
+    ids = encoder.encode_batch(list(schedule.prompts()))
+    assert [len(i) for i in ids] == targets
+    assert schedule.to_document()["prompts"]["length_provenance"] == "tokenizer_exact"
