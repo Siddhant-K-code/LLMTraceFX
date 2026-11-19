@@ -80,10 +80,21 @@ def vllm_body(
     return ("\n".join(lines) + "\n").encode()
 
 
-def llamacpp_body(*, prompt_tokens: int, prompt_seconds: float) -> bytes:
+def llamacpp_body(
+    *, prompt_tokens: int, prompt_seconds: float, cached: int | None = None
+) -> bytes:
+    cached_lines = (
+        ""
+        if cached is None
+        else (
+            "# TYPE llamacpp:prompt_tokens_cached_total counter\n"
+            f"llamacpp:prompt_tokens_cached_total {cached}\n"
+        )
+    )
     return (
         "# TYPE llamacpp:prompt_tokens_total counter\n"
         f"llamacpp:prompt_tokens_total {prompt_tokens}\n"
+        f"{cached_lines}"
         "# TYPE llamacpp:prompt_seconds_total counter\n"
         f"llamacpp:prompt_seconds_total {prompt_seconds}\n"
         "# TYPE llamacpp:requests_processing gauge\n"
@@ -269,9 +280,10 @@ def test_a_changed_created_timestamp_is_a_reset() -> None:
 
 
 def test_llama_cpp_has_no_request_counter_so_attribution_needs_an_assertion() -> None:
-    before = snap(llamacpp_body(prompt_tokens=10, prompt_seconds=0.5))
+    before = snap(llamacpp_body(prompt_tokens=10, prompt_seconds=0.5, cached=0))
     after = snap(
-        llamacpp_body(prompt_tokens=30, prompt_seconds=0.7), "2026-01-01T00:00:01Z"
+        llamacpp_body(prompt_tokens=30, prompt_seconds=0.7, cached=0),
+        "2026-01-01T00:00:01Z",
     )
 
     unverified = diff_snapshots(before, after, expected_requests=1)
@@ -587,6 +599,7 @@ def test_runtime_detection_uses_metric_prefixes() -> None:
     assert detect_runtime(["sglang:num_requests", "process_cpu_seconds"]) == "sglang"
     assert detect_runtime(["vllm:num_requests_running"]) == "vllm"
     assert detect_runtime(["llamacpp:prompt_tokens"]) == "llamacpp"
+    assert detect_runtime(["trtllm_request_success"]) == "trtllm"
     assert detect_runtime(["http_requests"]) == "generic"
 
 
@@ -610,6 +623,430 @@ def test_settled_capture_rescrapes_until_the_request_is_counted() -> None:
     assert diff_snapshots(BEFORE, after, expected_requests=1)["attribution"][
         "status"
     ] == ("attributed")
+
+
+# --- Cache tiers and KV usage -------------------------------------------------
+
+
+def with_lines(body: bytes, *lines: str) -> bytes:
+    return body + ("\n".join(lines) + "\n").encode()
+
+
+def vllm_window(before_lines: list[str], after_lines: list[str]) -> dict[str, Any]:
+    before = snap(
+        with_lines(vllm_body(requests=3, ttft_sum=0.09, generated=100), *before_lines)
+    )
+    after = snap(
+        with_lines(vllm_body(requests=4, ttft_sum=0.12, generated=150), *after_lines),
+        "2026-01-01T00:00:01Z",
+    )
+    return diff_snapshots(before, after, expected_requests=1)
+
+
+def vllm_cache_lines(
+    *, prompt: int, cached: int, device: int, host: int, ext_q: int, ext_h: int
+) -> list[str]:
+    return [
+        "# TYPE vllm:prompt_tokens_total counter",
+        f'vllm:prompt_tokens_total{{engine="0"}} {prompt}',
+        "# TYPE vllm:prompt_tokens_cached_total counter",
+        f'vllm:prompt_tokens_cached_total{{engine="0"}} {cached}',
+        "# TYPE vllm:prompt_tokens_cached_by_source_total counter",
+        f'vllm:prompt_tokens_cached_by_source_total{{engine="0",source="device"}} '
+        f"{device}",
+        f'vllm:prompt_tokens_cached_by_source_total{{engine="0",source="host"}} '
+        f"{host}",
+        "# TYPE vllm:external_prefix_cache_queries_total counter",
+        f'vllm:external_prefix_cache_queries_total{{engine="0"}} {ext_q}',
+        "# TYPE vllm:external_prefix_cache_hits_total counter",
+        f'vllm:external_prefix_cache_hits_total{{engine="0"}} {ext_h}',
+        "# TYPE vllm:kv_cache_usage_perc gauge",
+        f'vllm:kv_cache_usage_perc{{engine="0"}} {0.25 if prompt < 100 else 0.5}',
+    ]
+
+
+def test_vllm_reports_cached_prompt_tokens_by_tier_and_kv_usage() -> None:
+    evidence = vllm_window(
+        vllm_cache_lines(prompt=50, cached=10, device=10, host=0, ext_q=0, ext_h=0),
+        vllm_cache_lines(prompt=150, cached=70, device=40, host=30, ext_q=40, ext_h=10),
+    )
+    highlights = evidence["highlights"]
+    assert highlights["cached_prompt_tokens"]["value"] == 60
+    assert highlights["cached_prompt_token_ratio"]["value"] == pytest.approx(0.6)
+    assert highlights["cached_prompt_tokens_by_tier"]["breakdown"] == {
+        "source": {"device": 30, "host": 30}
+    }
+    assert highlights["external_prefix_cache_hit_rate"]["value"] == pytest.approx(0.25)
+    # Server state is a before and an after sample, never a delta, and is
+    # reported even when highlights would be withheld.
+    usage = evidence["kv_usage"]["kv_cache_usage"]
+    assert usage["statistic"] == "point_sample"
+    assert usage["before"]["value"] == 0.25
+    assert usage["after"]["value"] == 0.5
+
+
+def test_kv_usage_is_reported_for_an_unattributable_window() -> None:
+    lines = ["# TYPE vllm:kv_cache_usage_perc gauge", "vllm:kv_cache_usage_perc 0.4"]
+    before = snap(
+        with_lines(vllm_body(requests=3, ttft_sum=0.09, generated=100), *lines)
+    )
+    after = snap(
+        with_lines(vllm_body(requests=5, ttft_sum=0.15, generated=150), *lines),
+        "2026-01-01T00:00:01Z",
+    )
+    evidence = diff_snapshots(before, after, expected_requests=1)
+    assert evidence["attribution"]["status"] == "contaminated"
+    assert evidence["highlights"] == {}
+    usage = evidence["kv_usage"]["kv_cache_usage"]
+    assert (
+        usage["before"]
+        == usage["after"]
+        == {
+            "series": 1,
+            "min": 0.4,
+            "max": 0.4,
+            "value": 0.4,
+        }
+    )
+
+
+def test_vllm_offload_reads_new_counters_and_falls_back_to_deprecated_ones() -> None:
+    def offload(load: int, store: int, *, deprecated: bool) -> list[str]:
+        if deprecated:
+            return [
+                "# TYPE vllm:kv_offload_load_bytes_total counter",
+                "# TYPE vllm:kv_offload_total_bytes_total counter",
+                f'vllm:kv_offload_total_bytes_total{{transfer_type="CPU_to_GPU"}} '
+                f"{load}",
+                f'vllm:kv_offload_total_bytes_total{{transfer_type="GPU_to_CPU"}} '
+                f"{store}",
+                "# TYPE vllm:kv_offload_total_time_total counter",
+                'vllm:kv_offload_total_time_total{transfer_type="CPU_to_GPU"} 0.5',
+                'vllm:kv_offload_total_time_total{transfer_type="GPU_to_CPU"} 0.5',
+            ]
+        return [
+            "# TYPE vllm:kv_offload_load_bytes_total counter",
+            f"vllm:kv_offload_load_bytes_total {load}",
+            "# TYPE vllm:kv_offload_store_bytes_total counter",
+            f"vllm:kv_offload_store_bytes_total {store}",
+        ]
+
+    new = vllm_window(
+        offload(100, 200, deprecated=False), offload(400, 300, deprecated=False)
+    )["highlights"]
+    assert new["kv_offload_load_bytes"]["value"] == 300
+    assert new["kv_offload_store_bytes"]["value"] == 100
+    assert new["kv_offload_load_bytes"]["source"] == "vllm:kv_offload_load_bytes"
+
+    # The new family is declared with no samples; the deprecated totals carry
+    # the transfers, one direction per transfer_type.
+    old = vllm_window(
+        offload(100, 200, deprecated=True), offload(400, 300, deprecated=True)
+    )["highlights"]
+    assert old["kv_offload_load_bytes"]["value"] == 300
+    assert old["kv_offload_load_bytes"]["source"] == "vllm:kv_offload_total_bytes"
+    assert old["kv_offload_load_bytes"]["match"] == {"transfer_type": "CPU_to_GPU"}
+    assert old["kv_offload_store_bytes"]["value"] == 100
+    assert old["kv_offload_load_time"]["value"] == 0
+
+
+def sglang_ranked_body(*, requests: int, extra: list[str]) -> bytes:
+    labels = 'tp_rank="0",pp_rank="0",dp_rank="0"'
+    return with_lines(
+        b"",
+        "# TYPE sglang:num_requests_total counter",
+        f"sglang:num_requests_total{{{labels}}} {requests}",
+        "# TYPE sglang:num_running_reqs gauge",
+        f"sglang:num_running_reqs{{{labels}}} 0",
+        "# TYPE sglang:num_queue_reqs gauge",
+        f"sglang:num_queue_reqs{{{labels}}} 0",
+        *extra,
+    )
+
+
+def sglang_cache_lines(
+    *, device: int, host: int, load_back: tuple[int, int], prefetched: int
+) -> list[str]:
+    def ranked(name: str, values: tuple[int, int], extra: str = "") -> list[str]:
+        return [
+            f'{name}{{tp_rank="{rank}",pp_rank="0",dp_rank="0"{extra}}} {value}'
+            for rank, value in enumerate(values)
+        ]
+
+    return [
+        "# TYPE sglang:cached_tokens_total counter",
+        f'sglang:cached_tokens_total{{tp_rank="0",cache_source="device"}} {device}',
+        f'sglang:cached_tokens_total{{tp_rank="0",cache_source="host"}} {host}',
+        "# TYPE sglang:load_back_tokens_total counter",
+        *ranked("sglang:load_back_tokens_total", load_back, ',pool="kv"'),
+        *ranked("sglang:load_back_tokens_total", load_back, ',pool="mamba"'),
+        "# TYPE sglang:prefetched_tokens_total counter",
+        *ranked("sglang:prefetched_tokens_total", (prefetched, prefetched)),
+        "# TYPE sglang:token_usage gauge",
+        'sglang:token_usage{tp_rank="0"} 0.1',
+        'sglang:token_usage{tp_rank="1"} 0.3',
+    ]
+
+
+def test_sglang_splits_cached_tokens_and_reads_hicache_from_one_rank() -> None:
+    before = snap(
+        sglang_ranked_body(
+            requests=3,
+            extra=sglang_cache_lines(device=10, host=0, load_back=(5, 5), prefetched=0),
+        )
+    )
+    after = snap(
+        sglang_ranked_body(
+            requests=4,
+            extra=sglang_cache_lines(
+                device=30, host=16, load_back=(21, 21), prefetched=8
+            ),
+        ),
+        "2026-01-01T00:00:01Z",
+    )
+    evidence = diff_snapshots(before, after, expected_requests=1)
+    assert evidence["attribution"]["status"] == "attributed"
+    highlights = evidence["highlights"]
+    assert highlights["cached_prompt_tokens_by_tier"]["breakdown"] == {
+        "cache_source": {"device": 20, "host": 16}
+    }
+    # Two TP ranks report the same 16 tokens; summing them would claim 32,
+    # and the mamba pool repeats the same tokens again.
+    load_back = highlights["hicache_load_back_tokens"]
+    assert load_back["value"] == 16
+    assert load_back["statistic"] == "delta_one_rank"
+    assert load_back["ranks_agree"] is True
+    assert highlights["hicache_storage_prefetched_tokens"]["value"] == 8
+    token_usage = evidence["kv_usage"]["token_usage"]["after"]
+    assert token_usage == {"series": 2, "min": 0.1, "max": 0.3}
+
+
+def test_disagreeing_ranks_are_flagged() -> None:
+    before = snap(
+        sglang_ranked_body(
+            requests=3,
+            extra=sglang_cache_lines(device=0, host=0, load_back=(0, 0), prefetched=0),
+        )
+    )
+    after = snap(
+        sglang_ranked_body(
+            requests=4,
+            extra=sglang_cache_lines(device=0, host=0, load_back=(4, 6), prefetched=0),
+        ),
+        "2026-01-01T00:00:01Z",
+    )
+    load_back = diff_snapshots(before, after, expected_requests=1)["highlights"][
+        "hicache_load_back_tokens"
+    ]
+    assert load_back["value"] == 4
+    assert load_back["ranks_agree"] is False
+
+
+def test_llama_cpp_prompt_tokens_include_cached_tokens() -> None:
+    before = snap(llamacpp_body(prompt_tokens=10, prompt_seconds=0.5, cached=0))
+    after = snap(
+        llamacpp_body(prompt_tokens=30, prompt_seconds=0.7, cached=60),
+        "2026-01-01T00:00:01Z",
+    )
+    highlights = diff_snapshots(
+        before, after, expected_requests=1, assume_isolated=True
+    )["highlights"]
+    assert highlights["prompt_tokens"]["value"] == 80
+    assert highlights["computed_prompt_tokens"]["value"] == 20
+    assert highlights["cached_prompt_tokens"]["value"] == 60
+    assert highlights["cached_prompt_token_ratio"]["value"] == pytest.approx(0.75)
+    assert highlights["prompt_tokens_per_second"]["value"] == pytest.approx(100.0)
+
+
+def test_llama_cpp_without_the_cached_counter_does_not_call_it_prompt_tokens() -> None:
+    # Builds before the cached counter split still count only computed tokens.
+    before = snap(llamacpp_body(prompt_tokens=10, prompt_seconds=0.5))
+    after = snap(
+        llamacpp_body(prompt_tokens=30, prompt_seconds=0.7), "2026-01-01T00:00:01Z"
+    )
+    highlights = diff_snapshots(
+        before, after, expected_requests=1, assume_isolated=True
+    )["highlights"]
+    assert "prompt_tokens" not in highlights
+    assert highlights["computed_prompt_tokens"]["value"] == 20
+
+
+# --- TensorRT-LLM -------------------------------------------------------------
+
+
+def trtllm_body(
+    *,
+    succeeded: int | None,
+    running: int | None = 0,
+    gpu_hits: int = 0,
+    host_hits: int = 0,
+    utilization: float = 0.0,
+) -> bytes:
+    # trtllm-serve runs prometheus_client in multiprocess mode, so a family
+    # no process has touched is absent rather than declared.
+    lines = [
+        "# TYPE trtllm_prompt_cached_tokens_total counter",
+        f'trtllm_prompt_cached_tokens_total{{model_name="m"}} {gpu_hits + host_hits}',
+        "# TYPE trtllm_prompt_cache_hit_tokens_total counter",
+        'trtllm_prompt_cache_hit_tokens_total{model_name="m",dp_rank="0",'
+        f'cache_level="0",cache_tier="gpu"}} {gpu_hits}',
+        'trtllm_prompt_cache_hit_tokens_total{model_name="m",dp_rank="0",'
+        f'cache_level="1",cache_tier="host"}} {host_hits}',
+        "# TYPE trtllm_kv_cache_utilization gauge",
+        f'trtllm_kv_cache_utilization{{model_name="m",dp_rank="0",pid="7"}} '
+        f"{utilization}",
+    ]
+    if succeeded is not None:
+        lines += [
+            "# TYPE trtllm_request_success_total counter",
+            f'trtllm_request_success_total{{model_name="m",finished_reason="stop"}} '
+            f"{succeeded}",
+            "# TYPE trtllm_e2e_request_latency_seconds histogram",
+            f'trtllm_e2e_request_latency_seconds_bucket{{le="+Inf"}} {succeeded}',
+            f"trtllm_e2e_request_latency_seconds_count {succeeded}",
+            f"trtllm_e2e_request_latency_seconds_sum {succeeded * 0.4}",
+        ]
+    if running is not None:
+        lines += [
+            "# TYPE trtllm_num_requests_running gauge",
+            f'trtllm_num_requests_running{{model_name="m",pid="7"}} {running}',
+            "# TYPE trtllm_num_requests_waiting gauge",
+            'trtllm_num_requests_waiting{model_name="m",pid="7"} 0',
+        ]
+    return with_lines(b"", *lines)
+
+
+TRT_URL = "http://127.0.0.1:8000/prometheus/metrics"
+
+
+def trt_snap(body: bytes, captured_at: str = "2026-01-01T00:00:00Z") -> Any:
+    return snapshot_from_body(
+        TRT_URL, body, "text/plain", captured_at=captured_at, scrape_duration_ms=1.0
+    )
+
+
+def test_trtllm_window_is_attributed_with_cache_tiers() -> None:
+    before = trt_snap(trtllm_body(succeeded=2, gpu_hits=100, utilization=0.1))
+    after = trt_snap(
+        trtllm_body(succeeded=3, gpu_hits=164, host_hits=32, utilization=0.3),
+        "2026-01-01T00:00:01Z",
+    )
+    evidence = diff_snapshots(before, after, expected_requests=1)
+    assert evidence["runtime"] == "trtllm"
+    attribution = evidence["attribution"]
+    assert attribution["status"] == "attributed"
+    assert attribution["request_counter"] == "trtllm_request_success"
+    assert attribution["missing_stats"] == []
+    highlights = evidence["highlights"]
+    assert highlights["e2e_latency"]["value"] == pytest.approx(400.0)
+    assert highlights["cached_prompt_tokens"]["value"] == 96
+    assert highlights["cached_prompt_tokens_by_tier"]["breakdown"] == {
+        "cache_tier": {"gpu": 64, "host": 32}
+    }
+    usage = evidence["kv_usage"]["kv_cache_utilization"]
+    assert (usage["before"]["value"], usage["after"]["value"]) == (0.1, 0.3)
+
+
+def test_trtllm_acceptance_rate_comes_from_draft_and_accepted_counters() -> None:
+    # Untouched in the before scrape, so absent under multiprocess mode.
+    before = trt_snap(trtllm_body(succeeded=2))
+    after = trt_snap(
+        with_lines(
+            trtllm_body(succeeded=3),
+            "# TYPE trtllm_spec_decode_num_draft_tokens_total counter",
+            'trtllm_spec_decode_num_draft_tokens_total{model_name="m"} 40',
+            "# TYPE trtllm_spec_decode_num_accepted_tokens_total counter",
+            'trtllm_spec_decode_num_accepted_tokens_total{model_name="m"} 30',
+            "# TYPE trtllm_spec_decode_acceptance_length gauge",
+            'trtllm_spec_decode_acceptance_length{model_name="m",pid="7"} 9.0',
+        ),
+        "2026-01-01T00:00:01Z",
+    )
+    spec = diff_snapshots(before, after, expected_requests=1)["speculative"]
+    assert spec["status"] == "measured"
+    assert spec["counters"]["draft_tokens"]["value"] == 40
+    assert spec["counters"]["accepted_tokens"]["value"] == 30
+    assert spec["acceptance_rate"]["value"] == pytest.approx(0.75)
+    # No verification step counter, and the last-value gauge is not used.
+    assert "acceptance_length" not in spec
+    assert set(spec["not_derived"]) == {
+        "acceptance_length",
+        "per_position_acceptance_rate",
+    }
+    assert spec["ignored_gauges"] == ["trtllm_spec_decode_acceptance_length"]
+
+
+def test_trtllm_without_perf_metrics_says_stats_are_not_enabled() -> None:
+    before = trt_snap(trtllm_body(succeeded=None))
+    after = trt_snap(trtllm_body(succeeded=None), "2026-01-01T00:00:01Z")
+    for assume_isolated in (False, True):
+        evidence = diff_snapshots(
+            before, after, expected_requests=1, assume_isolated=assume_isolated
+        )
+        attribution = evidence["attribution"]
+        assert attribution["status"] == "stats_not_enabled"
+        assert attribution["attributable"] is False
+        assert "return_perf_metrics: true" in attribution["reason"]
+        assert "/prometheus/metrics" in attribution["reason"]
+        assert evidence["highlights"] == {}
+
+
+def test_trtllm_without_iteration_stats_needs_an_assertion() -> None:
+    before = trt_snap(trtllm_body(succeeded=2, running=None))
+    after = trt_snap(trtllm_body(succeeded=3, running=None), "2026-01-01T00:00:01Z")
+
+    unchecked = diff_snapshots(before, after, expected_requests=1)
+    attribution = unchecked["attribution"]
+    assert attribution["status"] == "stats_not_enabled"
+    assert "enable_iter_perf_stats: true" in attribution["reason"]
+    assert attribution["missing_stats"] == [
+        {
+            "setting": "enable_iter_perf_stats: true",
+            "families": ["trtllm_num_requests_running", "trtllm_num_requests_waiting"],
+            "required": False,
+        }
+    ]
+
+    asserted = diff_snapshots(before, after, expected_requests=1, assume_isolated=True)
+    attribution = asserted["attribution"]
+    assert attribution["status"] == "operator_asserted"
+    assert attribution["in_flight_before"] is None
+    assert "operator asserted" in attribution["reason"]
+    assert asserted["highlights"]["e2e_latency"]["value"] == pytest.approx(400.0)
+
+    extra = trt_snap(trtllm_body(succeeded=4, running=None), "2026-01-01T00:00:01Z")
+    assert (
+        diff_snapshots(before, extra, expected_requests=1, assume_isolated=True)[
+            "attribution"
+        ]["status"]
+        == "contaminated"
+    )
+
+
+def test_settled_capture_waits_for_the_trtllm_request_counter() -> None:
+    # On a fresh server the request family only appears once a request has
+    # finished, so its absence alone must not end the wait.
+    before = trt_snap(trtllm_body(succeeded=None))
+    bodies = iter([trtllm_body(succeeded=None), trtllm_body(succeeded=1)])
+    ticks = iter(float(i) for i in range(100))
+    after = capture_settled_after(
+        before,
+        TRT_URL,
+        expected_requests=1,
+        settle_timeout_seconds=10.0,
+        fetcher=lambda url, timeout: (next(bodies), None),
+        clock=lambda: next(ticks),
+        sleep=lambda seconds: None,
+    )
+    evidence = diff_snapshots(before, after, expected_requests=1)
+    assert evidence["attribution"]["status"] == "attributed"
+
+
+def test_a_json_metrics_body_points_at_the_prometheus_endpoint() -> None:
+    with pytest.raises(ServerMetricsError, match="/prometheus/metrics"):
+        snap(b"[]")
+    with pytest.raises(ServerMetricsError, match="JSON"):
+        snap(b'[{"iter": 1, "numActiveRequests": 0}]')
 
 
 # --- CLI ----------------------------------------------------------------------
@@ -670,6 +1107,44 @@ def test_diff_cli_exits_zero_when_attributed_and_two_when_not(
     assert code == 2
     assert "Highlights withheld" in out
     assert json.loads(output.read_text())["attribution"]["status"] == "incomplete"
+
+
+def test_diff_cli_prints_tier_breakdowns_and_kv_usage(tmp_path: Path) -> None:
+    before_path, after_path = tmp_path / "before.json", tmp_path / "after.json"
+    snap(
+        with_lines(
+            vllm_body(requests=3, ttft_sum=0.09, generated=100),
+            *vllm_cache_lines(
+                prompt=50, cached=10, device=10, host=0, ext_q=0, ext_h=0
+            ),
+        )
+    ).write_json(before_path)
+    snap(
+        with_lines(
+            vllm_body(requests=4, ttft_sum=0.12, generated=150),
+            *vllm_cache_lines(
+                prompt=150, cached=70, device=40, host=30, ext_q=40, ext_h=10
+            ),
+        ),
+        "2026-01-01T00:00:01Z",
+    ).write_json(after_path)
+
+    code, out, _ = run_cli(
+        [
+            "server-metrics",
+            "diff",
+            "--before",
+            str(before_path),
+            "--after",
+            str(after_path),
+            "--expected-requests",
+            "1",
+        ]
+    )
+    assert code == 0
+    assert "by source: device=30, host=30" in out
+    assert "KV usage (point samples at each scrape, not attributed):" in out
+    assert "kv_cache_usage: 0.25 -> 0.5" in out
 
 
 @pytest.mark.parametrize("count", ["0", "-1"])

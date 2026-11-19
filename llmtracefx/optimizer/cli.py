@@ -596,6 +596,10 @@ def _server_metrics_summary(evidence: dict[str, object]) -> list[str]:
             f"  {key}: {value:.6g} {entry['unit']} "
             f"[{entry['provenance']}, {entry['statistic']}]"
         )
+        breakdown = cast(dict[str, dict[str, float]], entry.get("breakdown") or {})
+        for label, split in breakdown.items():
+            parts = ", ".join(f"{k or '(none)'}={v:.6g}" for k, v in split.items())
+            lines.append(f"    by {label}: {parts}")
     if not highlights and evidence.get("highlights_withheld_reason"):
         lines.append("  Highlights withheld; raw deltas are still in the evidence.")
     speculative = cast(dict[str, Any] | None, evidence.get("speculative"))
@@ -610,7 +614,26 @@ def _server_metrics_summary(evidence: dict[str, object]) -> list[str]:
                 )
         if speculative["status"] != "measured":
             lines.append(f"  {speculative['reason']}")
+    kv_usage = cast(dict[str, dict[str, object]], evidence.get("kv_usage") or {})
+    if kv_usage:
+        lines.append("KV usage (point samples at each scrape, not attributed):")
+    for key in sorted(kv_usage):
+        entry = kv_usage[key]
+        lines.append(
+            f"  {key}: {_point_text(entry['before'])} -> "
+            f"{_point_text(entry['after'])} {entry['unit']}"
+        )
     return lines
+
+
+def _point_text(sample: object) -> str:
+    if not isinstance(sample, dict):
+        return "absent"
+    if "value" in sample:
+        return f"{sample['value']}"
+    if "min" in sample:
+        return f"{sample['min']}..{sample['max']} over {sample['series']} series"
+    return "no samples"
 
 
 def _record_server_metrics_window(

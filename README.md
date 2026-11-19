@@ -236,11 +236,13 @@ relabelled as measurements.
 - **Native Qwen MTP:** emit a capability report and an explicit unsupported
   record when the installed stack cannot produce trustworthy native-MTP
   evidence.
-- **Server-side metrics (vLLM, SGLang, llama.cpp, TGI):** snapshot a Prometheus
-  `/metrics` endpoint before and after a run and diff the two. Server numbers
-  such as queue time and server TTFT are only reported when the window
-  provably contains exactly the requests you sent. Otherwise the window is
-  marked `contaminated`, `incomplete`, `counter_reset`, or `unverifiable`.
+- **Server-side metrics (vLLM, SGLang, llama.cpp, TGI, TensorRT-LLM):**
+  snapshot a Prometheus endpoint before and after a run and diff the two.
+  Server numbers such as queue time, server TTFT and cached prompt tokens by
+  cache tier are only reported when the window provably contains exactly the
+  requests you sent. Otherwise the window is marked `contaminated`,
+  `incomplete`, `counter_reset`, `stats_not_enabled`, or `unverifiable`. KV
+  cache usage is recorded as a point sample at each scrape.
 - **Trace replay (Mooncake, BurstGPT, AIPerf `single_turn` and `multi_turn`,
   Weka agentic sessions, OpenTelemetry GenAI spans):** check a published
   arrival trace, plan its schedule offline, and replay it against an
@@ -841,7 +843,8 @@ counter, so its windows are `unverifiable` unless you pass
 
 The evidence also has a `speculative` block built from the server's
 speculative decoding counters (vLLM `vllm:spec_decode_*`, SGLang
-`sglang:spec_verify_calls_total`, llama.cpp `llamacpp:spec_decode_*`). Its
+`sglang:spec_verify_calls_total`, llama.cpp `llamacpp:spec_decode_*`,
+TensorRT-LLM `trtllm_spec_decode_num_{draft,accepted}_tokens_total`). Its
 `status` is `measured`, `no_drafts` (the counters exist but did not move),
 `not_exported`, `withheld` (the window is not attributable) or `unsupported`
 (the runtime profile names no such counters). Only `measured` carries values:
@@ -857,10 +860,14 @@ Each derived value states its `source` and `basis`, and anything the server's
 counters cannot give is listed under `not_derived`. SGLang counts verification
 calls but not accepted drafts, so only its acceptance length is derived, and
 its `sglang:spec_accept_*` series are last-value gauges that are never
-differenced (they are listed under `ignored_gauges`). Sources:
+differenced (they are listed under `ignored_gauges`). TensorRT-LLM counts
+proposed and accepted drafts but not verification steps, so only its
+acceptance rate is derived. It logs them from iteration stats, so they need
+`enable_iter_perf_stats: true`. Sources:
 [vLLM counters](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/v1/spec_decode/metrics.py#L195-L292),
 [SGLang gauges and counters](https://github.com/sgl-project/sglang/blob/b6d4389a77970e31817536c3e182256fae6a6f73/python/sglang/srt/observability/metrics_collector.py#L548-L583),
-[llama.cpp counters](https://github.com/ggml-org/llama.cpp/blob/ebc9fb933e774bb4ac0ba497a67948e16b7e5656/tools/server/server-task.cpp#L1568-L1660).
+[llama.cpp counters](https://github.com/ggml-org/llama.cpp/blob/ebc9fb933e774bb4ac0ba497a67948e16b7e5656/tools/server/server-task.cpp#L1568-L1660),
+[TensorRT-LLM counters](https://github.com/NVIDIA/TensorRT-LLM/blob/e6ecd280fd1f77cad6496f81a7194afe29f8d5e8/tensorrt_llm/metrics/collector.py#L550-L567).
 
 `doctor speculative` reads `server_metrics_evidence.json` next to each
 speculative record. When every speculative run has `measured` acceptance, the
@@ -870,6 +877,30 @@ verification step makes the result `inconclusive`, zero accepted drafts is a
 `inconclusive`. Otherwise the latency verdict stands. The report's `basis` is
 `server_acceptance` or `client_latency`, and `acceptance` holds the pooled
 counters.
+
+Cache counters are split where the engine splits them. `cached_prompt_tokens_by_tier`
+carries a `breakdown` by vLLM `source`, SGLang `cache_source`, or TensorRT-LLM
+`cache_tier`. vLLM also reports prompt tokens by `source`, external prefix
+cache hits, and KV offload load and store bytes and time. Offload falls back
+to the deprecated `kv_offload_total_*` counters, split by `transfer_type`,
+when the new ones are absent. SGLang HiCache
+host and storage counters are repeated on every tensor and pipeline parallel
+rank, so they are read from the lowest rank (`delta_one_rank`) with
+`ranks_agree` recorded, and host hits count the `kv` pool only. llama.cpp
+`prompt_tokens_total` excludes cached tokens, so `prompt_tokens` adds
+`prompt_tokens_cached_total`. Builds without that counter report
+`computed_prompt_tokens` instead. KV usage gauges (vLLM `kv_cache_usage_perc`,
+SGLang `token_usage` and `kv_*_tokens`, TensorRT-LLM KV utilization) are never
+diffed. They appear under `kv_usage` as before and after samples for every
+window, attributed or not.
+
+`trtllm-serve` serves Prometheus text on `/prometheus/metrics`, not
+`/metrics`, and only when the `--config` YAML sets `return_perf_metrics:
+true`. Set `enable_iter_perf_stats: true` too for the running and waiting
+gauges. Without the request counter the window is `stats_not_enabled`, and
+without the gauges it is `unverifiable` unless you pass
+`--server-metrics-assume-isolated`. Both are listed under
+`attribution.missing_stats`.
 
 #### Server numbers in the response
 
