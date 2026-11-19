@@ -53,6 +53,7 @@ from .llama_cpp_worker import (
     resolve_credential,
 )
 from .mlx_worker import (
+    IN_PROCESS_CPU_REASON,
     MLX_FIELD_PROVENANCE,
     MLXLoadConfig,
     MLXSession,
@@ -426,6 +427,7 @@ def cmd_sweep_mlx(args: argparse.Namespace) -> int:
             server_metrics=None,
             describe_error=detail,
             fail=fail,
+            client_cpu_withheld_reason=IN_PROCESS_CPU_REASON,
         )
     finally:
         session.close()

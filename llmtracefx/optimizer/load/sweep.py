@@ -462,6 +462,7 @@ class SweepRun:
     sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], float] = time.perf_counter
     on_point: Callable[[dict[str, Any]], None] | None = None
+    client_cpu_withheld_reason: str | None = None
 
 
 def run_points(run: SweepRun) -> list[dict[str, Any]]:
@@ -489,6 +490,7 @@ def run_points(run: SweepRun) -> list[dict[str, Any]]:
             point.policy,
             clock=run.clock,
             max_dispatch_lag_ms=run.max_dispatch_lag_ms,
+            client_cpu_withheld_reason=run.client_cpu_withheld_reason,
         )
         summary = summarize_point(point, report, slo=run.slo)
         if run.server_metrics is not None:

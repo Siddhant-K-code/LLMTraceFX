@@ -246,6 +246,24 @@ def test_client_cpu_saturation_marks_the_run_degraded() -> None:
     assert report.diagnostics.status == STATUS_DEGRADED
 
 
+def test_withheld_client_cpu_is_not_reported_or_judged() -> None:
+    readings = iter([0.0, 1_000.0])
+    report = dispatch(
+        [1],
+        _echo,
+        ClosedLoop(1),
+        cpu_clock=lambda: next(readings),
+        client_cpu_withheld_reason="backend shares the process",
+    )
+    document = report.diagnostics.to_dict()
+    assert report.diagnostics.status == STATUS_OK
+    assert document["client_cpu_seconds"] is None
+    assert document["client_cpu_utilization"] is None
+    assert document["client_cpu_withheld_reason"] == "backend shares the process"
+    with pytest.raises(DispatchConfigError):
+        dispatch([1], _echo, ClosedLoop(1), client_cpu_withheld_reason="")
+
+
 def test_report_identifies_the_dispatcher_and_serialises() -> None:
     report = dispatch(
         [1, 2], _echo, OpenLoopRate(50.0, "poisson", seed=3, max_in_flight=4)

@@ -468,6 +468,10 @@ class SchedulingDiagnostics:
     completion and its next dispatch. Both are client-side delays that the
     server never saw, so a high value means the offered load was lower or
     burstier than requested.
+
+    ``client_cpu_seconds`` and ``client_cpu_utilization`` are ``None``, with
+    ``client_cpu_withheld_reason`` set, when the process CPU time is not the
+    client's alone, for example when the backend runs in the same process.
     """
 
     mode: str
@@ -477,11 +481,12 @@ class SchedulingDiagnostics:
     max_in_flight: int
     max_observed_in_flight: int
     deferred_by_in_flight_cap: int
-    client_cpu_seconds: float
+    client_cpu_seconds: float | None
     window_seconds: float
     client_cpu_utilization: float | None
     status: str
     reasons: tuple[str, ...]
+    client_cpu_withheld_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -500,6 +505,7 @@ class SchedulingDiagnostics:
             "window_seconds": self.window_seconds,
             "client_cpu_utilization": self.client_cpu_utilization,
             "client_cpu_saturation_threshold": CLIENT_CPU_SATURATION,
+            "client_cpu_withheld_reason": self.client_cpu_withheld_reason,
             "status": self.status,
             "reasons": list(self.reasons),
         }
@@ -827,6 +833,7 @@ def dispatch(
     cpu_clock: Callable[[], float] = time.process_time,
     stop: _StopSignal | None = None,
     max_dispatch_lag_ms: float = DEFAULT_MAX_DISPATCH_LAG_MS,
+    client_cpu_withheld_reason: str | None = None,
 ) -> DispatchReport[R]:
     """Issue ``requests`` through ``send`` under ``policy`` and time each one.
 
@@ -835,7 +842,14 @@ def dispatch(
     ``result``. An exception from ``send`` is recorded by type name and
     does not stop the run. Setting ``stop`` prevents further dispatches;
     requests already in flight are allowed to finish.
+
+    Pass ``client_cpu_withheld_reason`` when ``send`` does the backend's
+    own work in this process. ``cpu_clock`` then measures the backend as
+    well as the client, so client CPU is not reported and cannot mark the
+    run degraded.
     """
+    if client_cpu_withheld_reason is not None and not client_cpu_withheld_reason:
+        raise DispatchConfigError("client_cpu_withheld_reason must be non-empty")
     items = list(requests)
     _check_int("request count", len(items), minimum=1, maximum=MAX_REQUESTS)
     threshold = _check_finite(
@@ -866,7 +880,9 @@ def dispatch(
         deferred = _run_scheduled(run, offsets, cap, sleep=sleep)
 
     window = clock() - run.origin
-    cpu_seconds = max(0.0, cpu_clock() - cpu_started)
+    cpu_seconds: float | None = max(0.0, cpu_clock() - cpu_started)
+    if client_cpu_withheld_reason is not None:
+        cpu_seconds = None
 
     outcomes: list[DispatchOutcome[R]] = []
     for index, outcome in enumerate(run.outcomes):
@@ -883,7 +899,9 @@ def dispatch(
     ]
     dispatch_lag = LagSummary.from_samples(lag_samples, threshold)
     slot_refill = LagSummary.from_samples(refill_ms, threshold)
-    utilization = cpu_seconds / window if window > 0 else None
+    utilization = (
+        cpu_seconds / window if cpu_seconds is not None and window > 0 else None
+    )
 
     reasons: list[str] = []
     if dispatch_lag is not None and dispatch_lag.p99_ms > threshold:
@@ -908,6 +926,7 @@ def dispatch(
         client_cpu_utilization=utilization,
         status=STATUS_DEGRADED if reasons else STATUS_OK,
         reasons=tuple(reasons),
+        client_cpu_withheld_reason=client_cpu_withheld_reason,
     )
     return DispatchReport(
         policy=policy,
