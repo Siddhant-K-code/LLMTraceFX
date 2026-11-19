@@ -3,8 +3,13 @@
 This note compares LLMTraceFX with the wider inference benchmarking and
 observability ecosystem. It covers what users of neighbouring tools expect,
 what LLMTraceFX already does that they do not, and which channels would make
-the project easier to find. It closes with the two features this analysis
-led to: `server-metrics` and `export`.
+the project easier to find. It then describes the features this analysis
+led to, from `server-metrics` and `export` to `sweep-api` and `replay`.
+
+Every follow-up from that first survey has been built. A second survey on
+2026-11-19 checked what changed upstream since then and what LLMTraceFX now
+lacks. Its findings and a new prioritized follow-up list are in
+[November 2026 refresh](#november-2026-refresh) at the end.
 
 The survey was carried out in late 2026 against upstream source where
 possible. Metric names for vLLM, SGLang and llama.cpp were checked against
@@ -429,6 +434,382 @@ Entries as submitted:
 - `antranapp/awesome-mlx`, next to `mlx-bench`:
   `- [LLMTraceFX](https://github.com/Siddhant-K-code/LLMTraceFX): MLX-LM and Apple Instruments (Metal) evidence collection with provenance, Perfetto export and a regression gate.`
 
+## November 2026 refresh
+
+This survey was carried out on 2026-11-19. Each upstream claim below was read
+in source at the commit or tag linked next to it, using `gh api` against the
+file at that ref. Claims that rest only on release notes are marked as such.
+It is analysis only: nothing listed here is built.
+
+### Upstream versions checked
+
+| Project | Release | Commit read |
+| --- | --- | --- |
+| vLLM | [v0.34.0](https://github.com/vllm-project/vllm/releases/tag/v0.34.0) | [`1ae1b64`](https://github.com/vllm-project/vllm/tree/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a) |
+| SGLang | [v0.5.23](https://github.com/sgl-project/sglang/releases/tag/v0.5.23) | [`b6d4389`](https://github.com/sgl-project/sglang/tree/b6d4389a77970e31817536c3e182256fae6a6f73) |
+| TensorRT-LLM | [v1.2.1](https://github.com/NVIDIA/TensorRT-LLM/releases/tag/v1.2.1), [v1.4.0rc4](https://github.com/NVIDIA/TensorRT-LLM/releases/tag/v1.4.0rc4) | [`e6ecd28`](https://github.com/NVIDIA/TensorRT-LLM/tree/e6ecd280fd1f77cad6496f81a7194afe29f8d5e8) |
+| NVIDIA Dynamo | [v1.6.2](https://github.com/ai-dynamo/dynamo/releases/tag/v1.6.2) | [`8c7ca7b`](https://github.com/ai-dynamo/dynamo/tree/8c7ca7b348c26c2d012c5767972690588dea7f52) |
+| llama.cpp | [b12535](https://github.com/ggml-org/llama.cpp/releases/tag/b12535) | [`f8caa5e`](https://github.com/ggml-org/llama.cpp/tree/f8caa5ea30b5775512906ae3b7ee53b21a7a6e1d) |
+| mlx-lm | [v0.32.2](https://github.com/ml-explore/mlx-lm/releases/tag/v0.32.2) | [`c4c9c76`](https://github.com/ml-explore/mlx-lm/tree/c4c9c762cc797fd979fc98645f5db5112753bbe9) |
+| Ollama | [v0.40.16](https://github.com/ollama/ollama/releases/tag/v0.40.16) | [`42ac2c0`](https://github.com/ollama/ollama/tree/42ac2c0c1e132c0b4f0d9cfcd4e7950f0c5470bc) |
+| AIPerf | [v0.13.0](https://github.com/ai-dynamo/aiperf/releases/tag/v0.13.0) | [`ebcdc98`](https://github.com/ai-dynamo/aiperf/tree/ebcdc98ad69388b86564e25bc1a6976fc50051a7) |
+| GuideLLM | [v0.8.1](https://github.com/vllm-project/guidellm/releases/tag/v0.8.1) | [`c3204f3`](https://github.com/vllm-project/guidellm/tree/c3204f37c5dbd51b5a4f3154c79894d5d2470d21) |
+| inference-perf | [v0.7.0](https://github.com/kubernetes-sigs/inference-perf/releases/tag/v0.7.0) | [`c34e956`](https://github.com/kubernetes-sigs/inference-perf/tree/c34e9562620e24581b77641d4a76ee3ada4eb1ec) |
+| llm-d-benchmark | v1.0.0 | [`0fb187f`](https://github.com/llm-d/llm-d-benchmark/tree/0fb187fbd34d571ee97c2383375a2e3b2491aa40) |
+| OTel GenAI semconv | no tags | [`76e0c19`](https://github.com/open-telemetry/semantic-conventions-genai/tree/76e0c19e7fe11dc693fe258642363a438af4d3aa) |
+| OTel semconv (hardware) | [v1.45.0](https://github.com/open-telemetry/semantic-conventions/releases/tag/v1.45.0) | [`fb30ca1`](https://github.com/open-telemetry/semantic-conventions/tree/fb30ca17193b551473b1f43c315482918ab6987c) |
+| OTel Collector contrib | [v0.165.1](https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v0.165.1) | tag |
+| Perfetto | [v59.1](https://github.com/google/perfetto/releases/tag/v59.1) | [`1e9c61e`](https://github.com/google/perfetto/tree/1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d) |
+| DCGM | [v4.7.0](https://github.com/NVIDIA/DCGM/tree/v4.7.0) (tag only) | [`9fae286`](https://github.com/NVIDIA/DCGM/tree/9fae2867e6e5264fa0fca22a07dc898d591baa21) |
+| dcgm-exporter | [4.9.0](https://github.com/NVIDIA/dcgm-exporter/releases/tag/4.9.0) | [`4e663a5`](https://github.com/NVIDIA/dcgm-exporter/tree/4e663a526c4624ad0e18ad816f09b7be2c5348a7) |
+| nvidia-ml-py | [13.615.71](https://pypi.org/project/nvidia-ml-py/13.615.71/) | PyPI wheel |
+| amdsmi | [27.2.0](https://pypi.org/project/amdsmi/27.2.0/) | [`1e91f3c`](https://github.com/ROCm/amdsmi/tree/1e91f3c1527617066f50c22f9ec4368fe82e1a3c) (rocm-7.2.4) |
+
+### What is still current
+
+The existing pins are not stale. The gaps below are about signals LLMTraceFX
+does not read yet, not about names that moved.
+
+- vLLM: every `name="vllm:..."` string in `vllm/v1/metrics/loggers.py` is the
+  same at `c26c9bf` and `1ae1b64`, so the `server-metrics` vLLM profile still
+  matches.
+- SGLang: the only metric names added since `e55e2ee` are the
+  `sglang:linker_*` family. Counter names end in `_total` in source, and the
+  Prometheus parser already strips the suffix.
+- llama.cpp: the server `/metrics` definitions in `tools/server/server-task.cpp`
+  are unchanged between the `ebc9fb9` pin and `f8caa5e`. There is still no
+  request counter, so `unverifiable` remains correct for llama.cpp windows.
+- mlx-lm `main` is still `c4c9c76`, the pin used by `sweep-mlx`. Native MTP is
+  still not merged (open PR
+  [ml-explore/mlx-lm#990](https://github.com/ml-explore/mlx-lm/pull/990)), so
+  the unsupported native-MTP record is still right.
+- AIPerf `main` is 2 commits ahead of `fc7d61e`, and
+  `profile_export_aiperf.json` is still schema `1.7`
+  ([`export_models.py#L296`](https://github.com/ai-dynamo/aiperf/blob/ebcdc98ad69388b86564e25bc1a6976fc50051a7/src/aiperf/common/models/export_models.py#L296)).
+- The GenAI conventions moved 4 commits past `e6658f1`, none of which change
+  the metrics `export otlp-metrics` writes. Everything in them is still
+  `development` stability.
+- dcgm-exporter 4.9.0 is still the latest release. It still writes no sample
+  timestamps and still defaults to a 30 s collect interval
+  ([`defaults.go#L27`](https://github.com/NVIDIA/dcgm-exporter/blob/4e663a526c4624ad0e18ad816f09b7be2c5348a7/internal/pkg/appconfig/defaults.go#L27)).
+- The DCGM Python bindings are still shipped only in the
+  `datacenter-gpu-manager-python3` deb and rpm, not on PyPI.
+- Ollama still has no Prometheus endpoint
+  ([ollama/ollama#3144](https://github.com/ollama/ollama/issues/3144) is
+  open).
+- Perfetto still documents Chrome JSON as a supported input
+  ([`other-formats.md`](https://github.com/google/perfetto/blob/1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d/docs/getting-started/other-formats.md)).
+
+Two status changes affect the tables above:
+
+- TGI is archived and in maintenance mode, with vLLM or SGLang recommended
+  instead
+  ([README](https://github.com/huggingface/text-generation-inference/blob/b4adbf2f6e2e721280bd0ea5f91d70f7d033f5ed/README.md)).
+  The TGI profile keeps working against existing servers but should not grow.
+- The Collector receiver is now registered as `otlp_json_file`, and
+  `otlpjsonfile` is a deprecated alias that logs a warning. `start_at`
+  defaults to `end`, so a Collector started after the file was written reads
+  nothing unless it is set to `beginning`
+  ([README](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/v0.165.1/receiver/otlpjsonfilereceiver/README.md)).
+
+### New gaps by area
+
+#### Speculative decoding telemetry
+
+Every major server now exports draft and accepted token counts. LLMTraceFX
+reads none of them, and the speculative decoding doctor compares client
+latency only.
+
+- vLLM: `vllm:spec_decode_num_drafts`, `_num_draft_tokens`,
+  `_num_accepted_tokens`, `_num_verified_tokens`, and per position
+  `_num_accepted_tokens_per_pos`
+  ([`spec_decode/metrics.py`](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/v1/spec_decode/metrics.py#L251-L292)).
+  `vllm bench serve` already writes `spec_decode_acceptance_rate`,
+  `spec_decode_acceptance_length` and the per-position rates into its result
+  file
+  ([`serve.py`](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/benchmarks/serve.py#L1386-L1399)),
+  and `import vllm-bench` ignores them.
+- SGLang: `sglang:spec_accept_length` and `spec_accept_rate` are gauges that
+  keep the most recent value, so they cannot be diffed. The counter
+  `sglang:spec_verify_calls_total` with `generation_tokens` gives a diffable
+  accept length
+  ([gauges](https://github.com/sgl-project/sglang/blob/b6d4389a77970e31817536c3e182256fae6a6f73/python/sglang/srt/observability/metrics_collector.py#L548-L583),
+  [counters](https://github.com/sgl-project/sglang/blob/b6d4389a77970e31817536c3e182256fae6a6f73/python/sglang/srt/observability/metrics_collector.py#L1939-L1948)).
+- TensorRT-LLM: `trtllm_spec_decode_num_draft_tokens_total`,
+  `_num_accepted_tokens_total`, `trtllm_spec_decode_acceptance_length` and
+  `trtllm_spec_decode_draft_overhead`
+  ([`collector.py`](https://github.com/NVIDIA/TensorRT-LLM/blob/e6ecd280fd1f77cad6496f81a7194afe29f8d5e8/tensorrt_llm/metrics/collector.py#L550-L566)).
+- llama.cpp: `llamacpp:spec_decode_num_drafts_total`,
+  `_num_draft_tokens_total`, `_num_accepted_tokens_total` and
+  `_num_accepted_tokens_per_pos_total{position}` were already present at the
+  `ebc9fb9` pin
+  ([`server-task.cpp`](https://github.com/ggml-org/llama.cpp/blob/ebc9fb933e774bb4ac0ba497a67948e16b7e5656/tools/server/server-task.cpp#L1566-L1660))
+  but are not in the profile. The response `timings` adds `draft_n` and
+  `draft_n_accepted`
+  ([`server-common.cpp`](https://github.com/ggml-org/llama.cpp/blob/f8caa5ea30b5775512906ae3b7ee53b21a7a6e1d/tools/server/server-common.cpp#L146-L168)),
+  which `sweep-llama-cpp` does not read.
+- mlx-lm: `GenerationResponse.from_draft` marks each drafted token
+  ([`generate.py`](https://github.com/ml-explore/mlx-lm/blob/c4c9c762cc797fd979fc98645f5db5112753bbe9/mlx_lm/generate.py#L287-L312)),
+  so an in-process acceptance count is possible.
+
+#### Per-request server timing in the response
+
+Under load a Prometheus window is contaminated by design, so `sweep-api`
+and `replay` get no server-side split. Several servers now return their own
+per-request numbers with the response.
+
+- vLLM `--enable-per-request-metrics` (since v0.25.0) adds a `metrics` object
+  with `time_to_first_token_ms`, `queue_time_ms`, `generation_time_ms`,
+  `mean_itl_ms` and, with `--per-request-spec-decode-metrics`, a
+  `speculative_decoding` block
+  ([`protocol.py`](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/entrypoints/generate/base/protocol.py#L104-L136),
+  [`cli_args.py`](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/entrypoints/common/cli_args.py#L158-L159)).
+  It covers `n == 1` and single prompts only.
+- SGLang `meta_info` carries `cached_tokens`, `cached_tokens_details`,
+  `reasoning_tokens` and the `spec_accept_rate`, `spec_accept_length` and
+  `spec_verify_ct` fields
+  ([`tokenizer_manager.py`](https://github.com/sgl-project/sglang/blob/b6d4389a77970e31817536c3e182256fae6a6f73/python/sglang/srt/managers/tokenizer_manager.py#L2929-L2950),
+  [`spec_decoding_metrics.py`](https://github.com/sgl-project/sglang/blob/b6d4389a77970e31817536c3e182256fae6a6f73/python/sglang/srt/speculative/spec_decoding_metrics.py#L48-L65)).
+- TensorRT-LLM returns `X-TRTLLM-Start-End-Time`, `X-TRTLLM-Step-Metrics`
+  and `X-TRTLLM-Ctx-Chunk-Metrics` headers in Server-Timing format when the
+  request sends `X-TRTLLM-return-metrics: 1`
+  ([`perf_metrics.py`](https://github.com/NVIDIA/TensorRT-LLM/blob/e6ecd280fd1f77cad6496f81a7194afe29f8d5e8/tensorrt_llm/serve/perf_metrics.py#L20-L46)).
+  `collect-api` stores headers but does not parse these.
+- Ollama native responses add `prompt_eval_cached_count`
+  ([`api/types.go`](https://github.com/ollama/ollama/blob/42ac2c0c1e132c0b4f0d9cfcd4e7950f0c5470bc/api/types.go#L683-L691))
+  next to `total_duration`, `load_duration`, `prompt_eval_duration` and
+  `eval_duration`. LLMTraceFX only talks to Ollama through its OpenAI route,
+  which drops the durations.
+
+#### KV and prefix cache tiers
+
+`server-metrics` reads local prefix cache hits only. Servers now report where
+a hit came from and how full the cache is.
+
+- vLLM: `vllm:kv_cache_usage_perc`, `vllm:prompt_tokens_cached`,
+  `vllm:prompt_tokens_by_source`, `vllm:prompt_tokens_cached_by_source`,
+  `vllm:external_prefix_cache_queries` and `_hits`, and opt-in
+  `vllm:kv_block_lifetime_seconds`
+  ([`loggers.py`](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/v1/metrics/loggers.py#L634),
+  [L772 to L802](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/v1/metrics/loggers.py#L772-L802)).
+  KV offload counters `vllm:kv_offload_{load,store}_*` replace the deprecated
+  `vllm:kv_offload_total_*`
+  ([`offloading/metrics.py`](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/distributed/kv_transfer/kv_connector/v1/offloading/metrics.py#L42-L55)).
+- SGLang: `sglang:token_usage`, `kv_{available,evictable,used}_tokens`,
+  HiCache host and storage counters, and the new `linker_*` family
+  ([`metrics_collector.py`](https://github.com/sgl-project/sglang/blob/b6d4389a77970e31817536c3e182256fae6a6f73/python/sglang/srt/observability/metrics_collector.py#L418-L470)).
+- TensorRT-LLM: `trtllm_prompt_cached_tokens_total`,
+  `trtllm_prompt_cache_hit_tokens_total{cache_level,cache_tier}` and a KV
+  cache utilization gauge
+  ([`collector.py`](https://github.com/NVIDIA/TensorRT-LLM/blob/e6ecd280fd1f77cad6496f81a7194afe29f8d5e8/tensorrt_llm/metrics/collector.py#L323-L610)).
+- llama.cpp: `llamacpp:prompt_tokens_cached_total`, while
+  `llamacpp:prompt_tokens_total` excludes cached tokens
+  ([`server-task.cpp`](https://github.com/ggml-org/llama.cpp/blob/f8caa5ea30b5775512906ae3b7ee53b21a7a6e1d/tools/server/server-task.cpp#L1566-L1580)).
+  The profile therefore under-reports prompt work on cache hits.
+
+Usage gauges are point samples and must be recorded as before and after
+values, not diffed.
+
+#### Engines with no profile
+
+- TensorRT-LLM `trtllm-serve` serves `/metrics` with
+  `trtllm_request_success_total`, `trtllm_time_to_first_token_seconds`,
+  `trtllm_request_queue_time_seconds`, prefill and decode histograms, and
+  token counters
+  ([`collector.py`](https://github.com/NVIDIA/TensorRT-LLM/blob/e6ecd280fd1f77cad6496f81a7194afe29f8d5e8/tensorrt_llm/metrics/collector.py#L226-L321)).
+  It has a request counter, so windows can be attributed. The metrics only
+  appear with `return_perf_metrics` and `enable_iter_perf_stats` on
+  ([docs](https://github.com/NVIDIA/TensorRT-LLM/blob/e6ecd280fd1f77cad6496f81a7194afe29f8d5e8/docs/source/commands/trtllm-serve/performance-metrics-collection.md)),
+  so a profile needs a "stats not enabled" result.
+- Dynamo's frontend exposes `dynamo_frontend_requests_total`,
+  `time_to_first_token_seconds`, `inter_token_latency_seconds`,
+  `queued_requests` and KV router metrics such as `kv_hit_rate`
+  ([`prometheus_names.rs`](https://github.com/ai-dynamo/dynamo/blob/8c7ca7b348c26c2d012c5767972690588dea7f52/lib/runtime/src/metrics/prometheus_names.rs#L173-L290)).
+  Engine metrics stay on a separate worker port, so a run needs two scrapes.
+
+#### Benchmark harnesses and result formats
+
+- AIPerf writes `profile_export.jsonl` with one record per request, plus
+  `gpu_telemetry_export.json` and server metrics exports
+  ([`working-with-profile-exports.md`](https://github.com/ai-dynamo/aiperf/blob/ebcdc98ad69388b86564e25bc1a6976fc50051a7/docs/tutorials/working-with-profile-exports.md)).
+  `import aiperf` reads only the summary, so its percentiles stay
+  `imported_derived`. AIPerf also added multi-run confidence intervals
+  (`--num-profile-runs`, `--confidence-level`) and HTTP connection timing
+  ([`multi-run-confidence.md`](https://github.com/ai-dynamo/aiperf/blob/ebcdc98ad69388b86564e25bc1a6976fc50051a7/docs/tutorials/multi-run-confidence.md),
+  [`http-trace-metrics.md`](https://github.com/ai-dynamo/aiperf/blob/ebcdc98ad69388b86564e25bc1a6976fc50051a7/docs/tutorials/http-trace-metrics.md)).
+- GuideLLM reports confidence intervals for per-request metrics, warmup and
+  cooldown windows, over-saturation stopping and throughput knee detection
+  ([`metrics.md`](https://github.com/vllm-project/guidellm/blob/c3204f37c5dbd51b5a4f3154c79894d5d2470d21/docs/en/guides/metrics.md),
+  [`knee_detection.md`](https://github.com/vllm-project/guidellm/blob/c3204f37c5dbd51b5a4f3154c79894d5d2470d21/docs/en/guides/knee_detection.md)).
+  `sweep-api` reports nearest rank percentiles with no interval and no
+  warmup exclusion.
+- inference-perf separates server `usage` from client tokenization and counts
+  mismatches, and reports price per million tokens
+  ([`metrics.md`](https://github.com/kubernetes-sigs/inference-perf/blob/c34e9562620e24581b77641d4a76ee3ada4eb1ec/docs/metrics.md)).
+- llm-d's Benchmark Report v0.2.1 is the closest thing to a shared result
+  format, with converters from GuideLLM, inference-perf, vLLM bench and AIPerf
+  ([`schema.py`](https://github.com/llm-d/llm-d-benchmark/blob/0fb187fbd34d571ee97c2383375a2e3b2491aa40/benchmark-report/llmd_benchmark_report/artifacts/benchmark_report/v0_2/schema.py)).
+- `import` covers vLLM bench and AIPerf only. SGLang's bench now lives in
+  `sglang/benchmark/serving.py`, fetches `/server_info` into its result and
+  has a `--cache-report` option
+  ([`serving.py`](https://github.com/sgl-project/sglang/blob/b6d4389a77970e31817536c3e182256fae6a6f73/python/sglang/benchmark/serving.py)).
+  GuideLLM `benchmarks.json` is version 2
+  ([`report.py`](https://github.com/vllm-project/guidellm/blob/c3204f37c5dbd51b5a4f3154c79894d5d2470d21/src/guidellm/benchmark/schemas/report.py#L35-L45)).
+  `trtllm-bench` and `llama-bench -o jsonl` have their own JSON reports.
+
+#### Trace replay formats
+
+Mooncake, Weka (Claude Code sessions) and OpenTelemetry GenAI spans are now
+the common replay formats. GuideLLM reads all three
+([`trace_replay.md`](https://github.com/vllm-project/guidellm/blob/c3204f37c5dbd51b5a4f3154c79894d5d2470d21/docs/en/guides/trace_replay.md#L9-L14)),
+inference-perf reads Weka and OTel
+([`otel_trace_replay.md`](https://github.com/kubernetes-sigs/inference-perf/blob/c34e9562620e24581b77641d4a76ee3ada4eb1ec/docs/otel_trace_replay.md)),
+and AIPerf added `bailian_trace`, `weka_trace` and DAG replay
+([`plugins.yaml`](https://github.com/ai-dynamo/aiperf/blob/ebcdc98ad69388b86564e25bc1a6976fc50051a7/src/aiperf/plugin/plugins.yaml)).
+LLMTraceFX reads Mooncake only of the three. Since `export otlp` already writes
+GenAI spans, OTel replay would let a user replay an exported run. Azure
+published GitHub Copilot coding agent traces with per-call cached token counts
+([`GitHubCopilotCodingAgentDataset2026.md`](https://github.com/Azure/AzurePublicDataset/blob/5d7424495ca07a30c89d30a2a534ac0d0d3a5e3e/GitHubCopilotCodingAgentDataset2026.md)),
+and BurstGPT v2.0 added a `Session ID` column that `replay` ignores.
+
+#### OpenTelemetry and Perfetto
+
+- The GenAI conventions define `gen_ai.usage.cache_read.input_tokens` and
+  `gen_ai.usage.reasoning.output_tokens` span attributes
+  ([`registry.yaml`](https://github.com/open-telemetry/semantic-conventions-genai/blob/76e0c19e7fe11dc693fe258642363a438af4d3aa/model/gen-ai/registry.yaml#L312-L359))
+  and `gen_ai.client.inference.usage.*` counters including cache read, cache
+  write and reasoning tokens
+  ([`token-metrics.yaml`](https://github.com/open-telemetry/semantic-conventions-genai/blob/76e0c19e7fe11dc693fe258642363a438af4d3aa/model/gen-ai/token-metrics.yaml#L17-L101)).
+  `export otlp` writes neither, although records hold provider cached tokens
+  and reasoning deltas. The counters were skipped earlier because modality is
+  unknown; the cache and reasoning attributes have no such problem.
+- The conventions still have no server queue, KV cache, speculative decoding
+  or energy metrics. Only open proposals exist
+  ([semantic-conventions-genai#87](https://github.com/open-telemetry/semantic-conventions-genai/issues/87)).
+  `llmtracefx.*` names remain the right choice for those.
+- The hardware conventions define `hw.energy` (J, counter) and `hw.power`
+  (W, gauge) with `hw.type=gpu`, at development stability
+  ([`common-metrics.yaml`](https://github.com/open-telemetry/semantic-conventions/blob/fb30ca17193b551473b1f43c315482918ab6987c/model/hardware/common-metrics.yaml#L4-L55)).
+  `llmtracefx.gpu.energy` could be written as `hw.energy` too.
+  `hw.power` is instantaneous, so the average stays custom.
+- vLLM's own traces use one `llm_request` span with custom
+  `gen_ai.latency.*` attributes and the older `gen_ai.usage.prompt_tokens`
+  name
+  ([`tracing/utils.py`](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/tracing/utils.py#L15-L44)).
+  SGLang and TensorRT-LLM also export OTLP spans. LLMTraceFX cannot import
+  any of them.
+- Perfetto recommends its protobuf format for custom tools, with named
+  counter tracks, async slices, flows and debug annotations, written with the
+  pure Python `perfetto.trace_builder` (PyPI `perfetto` 0.59.1)
+  ([`converting.md`](https://github.com/google/perfetto/blob/1e9c61e9844affd7dccd3d42d9ea9f3a3d10cf6d/docs/getting-started/converting.md)).
+  `export perfetto` writes Chrome JSON, where `X` slices must nest.
+
+#### GPU telemetry
+
+- NVML: `nvmlDeviceGetFieldValues` with `NVML_FI_DEV_POWER_INSTANT` returns
+  timestamped instantaneous power. `gpu-energy` uses
+  `nvmlDeviceGetPowerUsage`, which is a smoothed average on recent drivers.
+  `nvmlDeviceGetProcessesUtilizationInfo` reports per-PID SM use since a
+  timestamp, which would catch a process that started and finished between
+  two process-list polls. GPM (`nvmlGpmSampleGet`) gives SM occupancy and
+  tensor activity on Hopper and newer. All are in
+  [nvidia-ml-py 13.615.71](https://pypi.org/project/nvidia-ml-py/13.615.71/).
+- dcgm-exporter 4.9.0 lists `DCGM_FI_DEV_GPU_ENERGY_JOULES_TOTAL` as its
+  default energy counter, where older releases listed the millijoule
+  `DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION`
+  ([`default-counters.csv`](https://github.com/NVIDIA/dcgm-exporter/blob/4e663a526c4624ad0e18ad816f09b7be2c5348a7/etc/default-counters.csv)),
+  which `gpu-energy` already reads. The collect interval in effect is not
+  recorded in the evidence.
+- AMD: `amdsmi_get_energy_count` returns the energy accumulator with its own
+  timestamp, and `amdsmi_get_gpu_process_list` gives a process list
+  ([`amdsmi_interface.py`](https://github.com/ROCm/amdsmi/blob/1e91f3c1527617066f50c22f9ec4368fe82e1a3c/py-interface/amdsmi_interface.py#L4269-L4288)).
+  `gpu-energy` is NVIDIA only.
+
+#### Not gaps
+
+- Prometheus native histograms: vLLM and SGLang still expose classic
+  histograms in text format, which the parser reads, including optional
+  sample timestamps.
+- MLX moved memory APIs from `mx.metal.*` to `mx.*`
+  ([`memory.cpp`](https://github.com/ml-explore/mlx/blob/14dc9c673bce9a51dca4e58f5b2ccae80736431d/python/src/memory.cpp#L14-L150)).
+  The MLX collector already looks for the top level names first.
+- llama.cpp `timings.cache_n`, `prompt_ms` and `predicted_ms` are already read
+  by `sweep-llama-cpp`.
+
 ## Follow ups not built here
 
-- Getting rafska/awesome-local-llm#364 reviewed.
+Sizes: **S** is about a day, one module and its tests. **M** is a few days: a
+new profile, importer or subcommand with fixtures. **L** is a week or more: a
+new execution model or output format.
+
+Ranked by value to the evidence model against cost:
+
+1. **Speculative decoding acceptance evidence (M).** vLLM, SGLang,
+   TensorRT-LLM and llama.cpp all export draft and accepted token counters,
+   and the doctor still judges speculation by client latency alone.
+2. **Per-request server timing from the response (M).** vLLM `metrics`,
+   SGLang `meta_info`, TensorRT-LLM `X-TRTLLM-*` headers and llama.cpp
+   `draft_n` give server-side numbers per request that survive under load,
+   where Prometheus windows cannot be attributed.
+3. **Cache tier and KV usage in `server-metrics` (M).** Servers now split
+   cached prompt tokens by tier and report KV usage, and replay's planned
+   prefix reuse can only be checked against local hits today; this includes
+   adding the llama.cpp cached and speculative counters (S on its own).
+4. **TensorRT-LLM `server-metrics` profile (M).** It has a request counter,
+   so windows can be attributed, and it is the main NVIDIA engine with no
+   profile.
+5. **OTel GenAI span and Weka trace replay (M each).** These, with Mooncake,
+   are now the shared agentic replay formats, and OTel replay would let users
+   replay LLMTraceFX's own exports.
+6. **GenAI cache and reasoning token attributes in `export otlp` (S).** The
+   attributes exist in the conventions and the records already hold the
+   values.
+7. **Dynamo frontend profile with a worker scrape (M).** Its frontend has a
+   request counter and KV router hit rates, and engine metrics sit on a
+   second port.
+8. **Extend `import vllm-bench` to spec decode and `server_ttfts` fields (S).**
+   The fields are already in the files users have, and the importer drops them.
+9. **NVML instant power and per-process utilization (S, then M).** Timestamped
+   instant power is a better sample than the smoothed reading, and per-PID
+   utilization closes a contamination blind spot between polls.
+10. **Confidence intervals and warmup exclusion in sweeps (M).** GuideLLM and
+    AIPerf now report intervals and exclude warmup, and `sweep-api` reports
+    bare nearest rank percentiles.
+11. **AIPerf `profile_export.jsonl` import (M).** Per-request records would
+    let `gate` use LLMTraceFX's own percentiles instead of `imported_derived`
+    ones.
+12. **Re-pins and the Collector receiver rename (S).** Re-pin vLLM, SGLang,
+    llama.cpp and the GenAI conventions to the commits above, and document
+    `otlp_json_file` with `start_at: beginning`.
+13. **`hw.energy` alongside `llmtracefx.gpu.energy` (S).** Backends that know
+    the hardware conventions could chart LLMTraceFX energy with no mapping.
+14. **Record the dcgm-exporter collect interval (S).** The bracket width
+    depends on it, and the evidence does not say what it was.
+15. **Importers for SGLang bench, GuideLLM, `trtllm-bench` and `llama-bench`
+    (M each).** Each brings results users already have into `gate`.
+16. **Native Ollama collector (M).** Its `/api/*` responses carry load,
+    prompt and eval durations and the new cached count, which the OpenAI
+    route drops.
+17. **Perfetto protobuf export (M to L).** Counter tracks, async slices and
+    flows would show power, sweeps and requests together; JSON stays as the
+    fallback.
+18. **AMD energy through `amdsmi` (M).** It has a timestamped energy counter
+    and a process list, so it fits the existing attribution model.
+19. **Azure Copilot agent traces, Bailian traces and BurstGPT sessions in
+    `replay` (M, M, S).** These are the newest public traces with sessions
+    and cached token counts.
+20. **Benchmark Report v0.2 export (M).** llm-d uses it to compare harnesses,
+    so it is a route into that tooling.
+21. **Client and server token reconciliation, and cost per token in sweeps
+    (S to M).** inference-perf reports both; LLMTraceFX has provider usage
+    and pricing data but does not join them.
+22. **Mark the TGI profile as legacy (S).** TGI is archived.
+23. **Import engine OTLP traces from vLLM, SGLang and TensorRT-LLM (L).**
+    Server span timings would be `measured_native`, but each engine uses its
+    own span layout.
+24. **Tool-calling, multimodal and embeddings workloads (L each).** Only if
+    the scope widens beyond text generation.
+25. **vLLM KV event subscriber and profiler artifact capture (M).** Optional
+    deeper evidence for the KV cache auditor.
+26. Getting rafska/awesome-local-llm#364 reviewed. It has been open with no
+    review since it was filed (last updated 2026-11-09).
