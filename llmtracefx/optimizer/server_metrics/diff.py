@@ -39,6 +39,7 @@ CONTAMINATED = "contaminated"
 INCOMPLETE = "incomplete"
 COUNTER_RESET = "counter_reset"
 UNVERIFIABLE = "unverifiable"
+STATS_NOT_ENABLED = "stats_not_enabled"
 ATTRIBUTABLE_STATUSES = frozenset({ATTRIBUTED, OPERATOR_ASSERTED})
 
 # Labels kept when series are collapsed. Everything else (model names that
@@ -53,6 +54,10 @@ KEPT_LABELS = frozenset(
         "cache_source",
         "reason",
         "position",
+        "source",
+        "transfer_type",
+        "cache_level",
+        "cache_tier",
     }
 )
 _PROCESS_START = "process_start_time_seconds"
@@ -74,14 +79,46 @@ class CounterHighlight:
     key: str
     family: str
     unit: str
+    plus: tuple[str, ...] = ()
+    """Further families added to ``family``. Every one must be exposed."""
+    split_label: str | None = None
+    """Also report the delta for each value of this label."""
+    match: tuple[tuple[str, str], ...] = ()
+    """Only series carrying all of these label values count."""
+    one_rank_labels: tuple[str, ...] = ()
+    """Rank labels whose series each report the same logical count. The
+    lowest rank's delta is used instead of the sum over those ranks."""
+    fallback: CounterHighlight | None = None
+    """Read instead when ``family`` has no samples in the after snapshot."""
 
 
 @dataclass(frozen=True)
 class RatioHighlight:
     key: str
-    numerator: str
-    denominator: str
+    numerator: str | tuple[str, ...]
+    denominator: str | tuple[str, ...]
+    """A tuple is the sum of its families, all of which must be exposed."""
     unit: str
+
+
+@dataclass(frozen=True)
+class PointGauge:
+    """A gauge read as a before and an after point sample, never diffed."""
+
+    key: str
+    family: str
+    unit: str
+
+
+@dataclass(frozen=True)
+class StatsRequirement:
+    """Families a server only exposes when a setting is on."""
+
+    families: tuple[str, ...]
+    setting: str
+    consequence: str
+    required: bool = True
+    """When False, ``--assume-isolated`` may stand in for the families."""
 
 
 @dataclass(frozen=True)
@@ -101,8 +138,14 @@ class RuntimeProfile:
     counters: tuple[CounterHighlight, ...] = ()
     ratios: tuple[RatioHighlight, ...] = ()
     speculative: SpeculativeCounters | None = None
+    point_gauges: tuple[PointGauge, ...] = ()
+    stats_requirements: tuple[StatsRequirement, ...] = ()
+    stats_hint: str = ""
+    """Appended to a ``stats_not_enabled`` reason."""
     notes: tuple[str, ...] = field(default_factory=tuple)
 
+
+SGLANG_RANK_LABELS = ("tp_rank", "pp_rank")
 
 PROFILES: dict[str, RuntimeProfile] = {
     "vllm": RuntimeProfile(
@@ -137,6 +180,82 @@ PROFILES: dict[str, RuntimeProfile] = {
             ),
             CounterHighlight("prefix_cache_hits", "vllm:prefix_cache_hits", "tokens"),
             CounterHighlight("preemptions", "vllm:num_preemptions", "count"),
+            # Prompt tokens by where they came from and cached prompt tokens
+            # by tier: vllm/v1/metrics/loggers.py L762-810 at vLLM 1ae1b648.
+            CounterHighlight(
+                "cached_prompt_tokens", "vllm:prompt_tokens_cached", "tokens"
+            ),
+            CounterHighlight(
+                "prompt_tokens_by_source",
+                "vllm:prompt_tokens_by_source",
+                "tokens",
+                split_label="source",
+            ),
+            CounterHighlight(
+                "cached_prompt_tokens_by_tier",
+                "vllm:prompt_tokens_cached_by_source",
+                "tokens",
+                split_label="source",
+            ),
+            # KV connector cache (loggers.py L700-712).
+            CounterHighlight(
+                "external_prefix_cache_queries",
+                "vllm:external_prefix_cache_queries",
+                "tokens",
+            ),
+            CounterHighlight(
+                "external_prefix_cache_hits",
+                "vllm:external_prefix_cache_hits",
+                "tokens",
+            ),
+            # CPU offloading connector: per-direction counters, falling back
+            # to the deprecated transfer_type-labelled totals
+            # (vllm/distributed/kv_transfer/kv_connector/v1/offloading/
+            # metrics.py L42-62 and L149-151 at vLLM 1ae1b648).
+            CounterHighlight(
+                "kv_offload_load_bytes",
+                "vllm:kv_offload_load_bytes",
+                "bytes",
+                fallback=CounterHighlight(
+                    "kv_offload_load_bytes",
+                    "vllm:kv_offload_total_bytes",
+                    "bytes",
+                    match=(("transfer_type", "CPU_to_GPU"),),
+                ),
+            ),
+            CounterHighlight(
+                "kv_offload_load_time",
+                "vllm:kv_offload_load_time",
+                "seconds",
+                fallback=CounterHighlight(
+                    "kv_offload_load_time",
+                    "vllm:kv_offload_total_time",
+                    "seconds",
+                    match=(("transfer_type", "CPU_to_GPU"),),
+                ),
+            ),
+            CounterHighlight(
+                "kv_offload_store_bytes",
+                "vllm:kv_offload_store_bytes",
+                "bytes",
+                fallback=CounterHighlight(
+                    "kv_offload_store_bytes",
+                    "vllm:kv_offload_total_bytes",
+                    "bytes",
+                    match=(("transfer_type", "GPU_to_CPU"),),
+                ),
+            ),
+            CounterHighlight(
+                "kv_offload_store_time",
+                "vllm:kv_offload_store_time",
+                "seconds",
+                fallback=CounterHighlight(
+                    "kv_offload_store_time",
+                    "vllm:kv_offload_total_time",
+                    "seconds",
+                    match=(("transfer_type", "GPU_to_CPU"),),
+                ),
+            ),
         ),
         ratios=(
             RatioHighlight(
@@ -145,6 +264,22 @@ PROFILES: dict[str, RuntimeProfile] = {
                 "vllm:prefix_cache_queries",
                 "ratio",
             ),
+            RatioHighlight(
+                "cached_prompt_token_ratio",
+                "vllm:prompt_tokens_cached",
+                "vllm:prompt_tokens",
+                "ratio",
+            ),
+            RatioHighlight(
+                "external_prefix_cache_hit_rate",
+                "vllm:external_prefix_cache_hits",
+                "vllm:external_prefix_cache_queries",
+                "ratio",
+            ),
+        ),
+        # loggers.py L634: fraction of KV blocks in use, 0 to 1.
+        point_gauges=(
+            PointGauge("kv_cache_usage", "vllm:kv_cache_usage_perc", "ratio"),
         ),
         # vllm/v1/spec_decode/metrics.py registers these only when the server
         # runs with a speculative config.
@@ -184,6 +319,57 @@ PROFILES: dict[str, RuntimeProfile] = {
             CounterHighlight(
                 "aborted_requests", "sglang:num_aborted_requests", "count"
             ),
+            # cache_source is device, host or storage, or total on builds
+            # without the breakdown (python/sglang/srt/observability/
+            # metrics_collector.py L2013 and L2193-2213 at SGLang b6d4389a).
+            CounterHighlight(
+                "cached_prompt_tokens_by_tier",
+                "sglang:cached_tokens",
+                "tokens",
+                split_label="cache_source",
+            ),
+            # HiCache counters. Every TP rank reports the same logical count
+            # under its own rank labels, so summing ranks gives TP times the
+            # count (metrics_collector.py L2515-2530 and L2650-2700). The L2
+            # counters are split by host pool; the kv pool is the full KV
+            # cache (mem_cache/hicache_storage.py L109 and
+            # managers/cache_controller.py L1137-1138), and the others repeat
+            # the same tokens for other state.
+            CounterHighlight(
+                "hicache_load_back_tokens",
+                "sglang:load_back_tokens",
+                "tokens",
+                match=(("pool", "kv"),),
+                one_rank_labels=SGLANG_RANK_LABELS,
+            ),
+            CounterHighlight(
+                "hicache_backup_tokens",
+                "sglang:hicache_backup_tokens",
+                "tokens",
+                match=(("pool", "kv"),),
+                one_rank_labels=SGLANG_RANK_LABELS,
+            ),
+            # L3 storage counters carry the same rank keys
+            # (mem_cache/unified_cache/storage_attachment.py L333-341) and are
+            # read the same way; ranks_agree says whether the ranks did agree.
+            CounterHighlight(
+                "hicache_storage_prefetched_tokens",
+                "sglang:prefetched_tokens",
+                "tokens",
+                one_rank_labels=SGLANG_RANK_LABELS,
+            ),
+            CounterHighlight(
+                "hicache_storage_backup_tokens",
+                "sglang:backuped_tokens",
+                "tokens",
+                one_rank_labels=SGLANG_RANK_LABELS,
+            ),
+            CounterHighlight(
+                "hicache_storage_prefetch_hit_tokens",
+                "sglang:storage_prefetch_hit_tokens",
+                "tokens",
+                one_rank_labels=SGLANG_RANK_LABELS,
+            ),
         ),
         ratios=(
             RatioHighlight(
@@ -208,13 +394,43 @@ PROFILES: dict[str, RuntimeProfile] = {
                 "sglang:spec_num_steps",
             ),
         ),
+        # metrics_collector.py L418 and L458-470; the host gauges exist only
+        # with HiCache (L819-830).
+        point_gauges=(
+            PointGauge("token_usage", "sglang:token_usage", "ratio"),
+            PointGauge("kv_available_tokens", "sglang:kv_available_tokens", "tokens"),
+            PointGauge("kv_evictable_tokens", "sglang:kv_evictable_tokens", "tokens"),
+            PointGauge("kv_used_tokens", "sglang:kv_used_tokens", "tokens"),
+            PointGauge(
+                "hicache_host_used_tokens", "sglang:hicache_host_used_tokens", "tokens"
+            ),
+            PointGauge(
+                "hicache_host_total_tokens",
+                "sglang:hicache_host_total_tokens",
+                "tokens",
+            ),
+        ),
     ),
     "llamacpp": RuntimeProfile(
         name="llamacpp",
         family_prefix="llamacpp:",
         in_flight_gauges=("llamacpp:requests_processing", "llamacpp:requests_deferred"),
         counters=(
-            CounterHighlight("prompt_tokens", "llamacpp:prompt_tokens", "tokens"),
+            # prompt_tokens_total excludes cached tokens, which have their own
+            # counter (tools/server/server-task.cpp L1566-1580 at llama.cpp
+            # f8caa5ea, split in decaf508). Prompt work is their sum.
+            CounterHighlight(
+                "prompt_tokens",
+                "llamacpp:prompt_tokens",
+                "tokens",
+                plus=("llamacpp:prompt_tokens_cached",),
+            ),
+            CounterHighlight(
+                "computed_prompt_tokens", "llamacpp:prompt_tokens", "tokens"
+            ),
+            CounterHighlight(
+                "cached_prompt_tokens", "llamacpp:prompt_tokens_cached", "tokens"
+            ),
             CounterHighlight("prefill_time", "llamacpp:prompt_seconds", "seconds"),
             CounterHighlight(
                 "generation_tokens", "llamacpp:tokens_predicted", "tokens"
@@ -225,6 +441,12 @@ PROFILES: dict[str, RuntimeProfile] = {
             CounterHighlight("decode_calls", "llamacpp:n_decode", "count"),
         ),
         ratios=(
+            RatioHighlight(
+                "cached_prompt_token_ratio",
+                "llamacpp:prompt_tokens_cached",
+                ("llamacpp:prompt_tokens", "llamacpp:prompt_tokens_cached"),
+                "ratio",
+            ),
             RatioHighlight(
                 "prompt_tokens_per_second",
                 "llamacpp:prompt_tokens",
@@ -276,6 +498,88 @@ PROFILES: dict[str, RuntimeProfile] = {
         counters=(
             CounterHighlight("successful_requests", "tgi_request_success", "count"),
             CounterHighlight("failed_requests", "tgi_request_failure", "count"),
+        ),
+    ),
+    # trtllm-serve exposes Prometheus text on /prometheus/metrics, and only
+    # with return_perf_metrics: true; /metrics serves JSON iteration stats
+    # (tensorrt_llm/serve/openai_server.py L1093-1100 and L1408-1431 at
+    # TensorRT-LLM e6ecd280). Names are in tensorrt_llm/metrics/collector.py.
+    "trtllm": RuntimeProfile(
+        name="trtllm",
+        family_prefix="trtllm_",
+        # Counted when a finished request's perf metrics arrive (collector.py
+        # L236-239 and L1013-1017). The latency histograms are skipped when
+        # their value is zero, so they are not request counters.
+        request_counters=(("trtllm_request_success", "counter"),),
+        # Set from rank 0 iteration stats (collector.py L404-412 and
+        # L1153-1158); an idle engine publishes a heartbeat every second
+        # (tensorrt_llm/_torch/pyexecutor/py_executor.py L454-456, L9462-9500).
+        in_flight_gauges=("trtllm_num_requests_running", "trtllm_num_requests_waiting"),
+        histograms=(
+            HistogramHighlight(
+                "time_to_first_token", "trtllm_time_to_first_token_seconds"
+            ),
+            HistogramHighlight("e2e_latency", "trtllm_e2e_request_latency_seconds"),
+            HistogramHighlight("queue_time", "trtllm_request_queue_time_seconds"),
+            HistogramHighlight("prefill_time", "trtllm_request_prefill_time_seconds"),
+            HistogramHighlight("decode_time", "trtllm_request_decode_time_seconds"),
+            HistogramHighlight(
+                "inference_time", "trtllm_request_inference_time_seconds"
+            ),
+            HistogramHighlight(
+                "time_per_output_token", "trtllm_time_per_output_token_seconds"
+            ),
+        ),
+        counters=(
+            CounterHighlight("prompt_tokens", "trtllm_prompt_tokens", "tokens"),
+            CounterHighlight("generation_tokens", "trtllm_generation_tokens", "tokens"),
+            CounterHighlight(
+                "cached_prompt_tokens", "trtllm_prompt_cached_tokens", "tokens"
+            ),
+            # cache_tier is gpu, host, disk, or connector for tokens a KV
+            # connector loaded, per dp_rank (collector.py L579-603, L858-899).
+            CounterHighlight(
+                "cached_prompt_tokens_by_tier",
+                "trtllm_prompt_cache_hit_tokens",
+                "tokens",
+                split_label="cache_tier",
+            ),
+            CounterHighlight(
+                "kv_cache_onboard_bytes", "trtllm_kv_cache_onboard_bytes", "bytes"
+            ),
+            CounterHighlight(
+                "kv_cache_offload_bytes", "trtllm_kv_cache_offload_bytes", "bytes"
+            ),
+        ),
+        # collector.py L337-348; the fraction of blocks in use, 0 to 1
+        # (tensorrt_llm/metrics/perf.py L78).
+        point_gauges=(
+            PointGauge("kv_cache_utilization", "trtllm_kv_cache_utilization", "ratio"),
+            PointGauge(
+                "kv_cache_host_utilization", "trtllm_kv_cache_host_utilization", "ratio"
+            ),
+        ),
+        stats_requirements=(
+            StatsRequirement(
+                families=("trtllm_request_success",),
+                setting="return_perf_metrics: true",
+                consequence="no request counter, so the window cannot be checked",
+            ),
+            StatsRequirement(
+                families=("trtllm_num_requests_running", "trtllm_num_requests_waiting"),
+                setting="enable_iter_perf_stats: true",
+                consequence="no in-flight gauges, so overlapping traffic "
+                "cannot be ruled out",
+                required=False,
+            ),
+        ),
+        stats_hint=(
+            "Set both in the trtllm-serve --config YAML and scrape "
+            "/prometheus/metrics."
+        ),
+        notes=(
+            "trtllm-serve exposes Prometheus text on /prometheus/metrics, "
+            "not /metrics, and only with return_perf_metrics: true.",
         ),
     ),
     "generic": RuntimeProfile(name="generic", family_prefix=None),
@@ -537,6 +841,158 @@ def _highlight_histogram(
     return result
 
 
+def _has_samples(family: MetricFamily | None) -> bool:
+    return family is not None and any(
+        _is_value_sample(family, s) for s in family.samples
+    )
+
+
+def _rank_order(labels: SeriesKey, rank_labels: tuple[str, ...]) -> tuple[Any, ...]:
+    values = dict(labels)
+    order: list[Any] = []
+    for name in rank_labels:
+        value = values.get(name, "")
+        order.append((0, int(value), "") if value.isdigit() else (1, 0, value))
+    return tuple(order)
+
+
+def _counter_series_deltas(
+    spec: CounterHighlight,
+    before: ServerMetricsSnapshot,
+    after: ServerMetricsSnapshot,
+    notes: list[str],
+) -> tuple[dict[SeriesKey, float], bool | None] | None:
+    """Per series deltas for one highlight, before any label is summed away.
+
+    Series are keyed by their full label set, so ``one_rank_labels`` can be
+    told apart. The result is still only ever summed or split by a kept
+    label, so no other label value reaches the evidence."""
+    deltas: dict[SeriesKey, float] = {}
+    for name in (spec.family, *spec.plus):
+        family = after.families[name]
+        previous = before.families.get(name)
+        start = (
+            {}
+            if previous is None
+            else {
+                s.labels: s.value
+                for s in previous.samples
+                if _is_value_sample(previous, s)
+            }
+        )
+        for sample in family.samples:
+            if not _is_value_sample(family, sample):
+                continue
+            if any(dict(sample.labels).get(k) != v for k, v in spec.match):
+                continue
+            delta = sample.value - start.get(sample.labels, 0.0)
+            if not math.isfinite(delta) or delta < 0:
+                notes.append(f"{spec.key} skipped: a {name} series moved by {delta!r}")
+                return None
+            deltas[sample.labels] = deltas.get(sample.labels, 0.0) + delta
+    if not spec.one_rank_labels:
+        return deltas, None
+    groups: dict[SeriesKey, dict[SeriesKey, float]] = {}
+    for labels, delta in deltas.items():
+        rest = tuple((k, v) for k, v in labels if k not in spec.one_rank_labels)
+        groups.setdefault(rest, {})[labels] = delta
+    picked: dict[SeriesKey, float] = {}
+    agree = True
+    for rest, ranks in groups.items():
+        lowest = min(ranks, key=lambda key: _rank_order(key, spec.one_rank_labels))
+        picked[rest] = ranks[lowest]
+        agree = agree and len(set(ranks.values())) == 1
+    return picked, agree
+
+
+def _counter_highlight(
+    spec: CounterHighlight,
+    before: ServerMetricsSnapshot,
+    after: ServerMetricsSnapshot,
+    notes: list[str],
+) -> dict[str, Any] | None:
+    if (
+        spec.fallback is not None
+        and not _has_samples(after.families.get(spec.family))
+        and _has_samples(after.families.get(spec.fallback.family))
+    ):
+        spec = spec.fallback
+    if any(name not in after.families for name in (spec.family, *spec.plus)):
+        return None
+    computed = _counter_series_deltas(spec, before, after, notes)
+    if computed is None:
+        return None
+    deltas, ranks_agree = computed
+    value, unit = _scaled(math.fsum(deltas.values()), spec.unit)
+    entry = _measurement(value, MetricProvenance.MEASURED_NATIVE, unit)
+    entry.update(
+        statistic="delta" if ranks_agree is None else "delta_one_rank",
+        source=" + ".join((spec.family, *spec.plus)),
+    )
+    if spec.match:
+        entry["match"] = dict(spec.match)
+    if ranks_agree is not None:
+        entry["ranks_agree"] = ranks_agree
+    if spec.split_label is not None:
+        split: dict[str, float] = {}
+        for labels, delta in deltas.items():
+            label_value = dict(labels).get(spec.split_label, "")
+            split[label_value] = split.get(label_value, 0.0) + delta
+        entry["breakdown"] = {
+            spec.split_label: {
+                k: _scaled(split[k], spec.unit)[0] for k in sorted(split)
+            }
+        }
+    return entry
+
+
+def _family_sum(
+    names: str | tuple[str, ...],
+    after: ServerMetricsSnapshot,
+    deltas: Mapping[str, float],
+) -> tuple[float, str] | None:
+    names = (names,) if isinstance(names, str) else names
+    if any(name not in after.families for name in names):
+        return None
+    return math.fsum(deltas.get(name, 0.0) for name in names), " + ".join(names)
+
+
+def _point_sample(family: MetricFamily | None) -> dict[str, Any] | None:
+    if family is None:
+        return None
+    values = [s.value for s in family.samples if _is_value_sample(family, s)]
+    sample: dict[str, Any] = {"series": len(values)}
+    if values:
+        finite = [v for v in values if math.isfinite(v)]
+        sample["min"] = encode_value(min(finite)) if finite else "NaN"
+        sample["max"] = encode_value(max(finite)) if finite else "NaN"
+    if len(values) == 1:
+        sample["value"] = encode_value(values[0])
+    return sample
+
+
+def _kv_usage(
+    profile: RuntimeProfile,
+    before: ServerMetricsSnapshot,
+    after: ServerMetricsSnapshot,
+) -> dict[str, Any]:
+    usage: dict[str, Any] = {}
+    for spec in profile.point_gauges:
+        start = _point_sample(before.families.get(spec.family))
+        end = _point_sample(after.families.get(spec.family))
+        if start is None and end is None:
+            continue
+        usage[spec.key] = {
+            "family": spec.family,
+            "unit": spec.unit,
+            "provenance": MetricProvenance.MEASURED_NATIVE.value,
+            "statistic": "point_sample",
+            "before": start,
+            "after": end,
+        }
+    return usage
+
+
 def diff_snapshots(
     before: ServerMetricsSnapshot,
     after: ServerMetricsSnapshot,
@@ -641,19 +1097,39 @@ def diff_snapshots(
         _family_total(after.families.get(g), None) or 0.0
         for g in profile.in_flight_gauges
     )
+    missing = [
+        requirement
+        for requirement in profile.stats_requirements
+        if not any(_has_samples(after.families.get(f)) for f in requirement.families)
+    ]
+    blocking = [r for r in missing if r.required or not assume_isolated]
+    in_flight_unknown = any(
+        set(r.families) & set(profile.in_flight_gauges) for r in missing
+    )
 
     if state.resets:
         status = COUNTER_RESET
         reason = "a counter went backwards or a series vanished: " + "; ".join(
             state.resets[:5]
         )
+    elif blocking:
+        status = STATS_NOT_ENABLED
+        reason = "; ".join(
+            f"{' and '.join(r.families)} not exposed, which needs {r.setting}: "
+            f"{r.consequence}"
+            for r in blocking
+        )
+        if any(r.required for r in blocking):
+            reason += " (or no request has finished on this server yet)"
+        if profile.stats_hint:
+            reason += f". {profile.stats_hint}"
     elif over:
         status = CONTAMINATED
         reason = (
             f"{over[0][0]} counted {over[0][1]:g} requests in the window, "
             f"more than the {expected_requests} expected"
         )
-    elif in_flight_before > 0:
+    elif not in_flight_unknown and in_flight_before > 0:
         status = CONTAMINATED
         reason = (
             f"{in_flight_before:g} requests were already in flight at the before "
@@ -665,11 +1141,19 @@ def diff_snapshots(
             f"{under[0][0]} counted {under[0][1]:g} requests in the window, "
             f"fewer than the {expected_requests} expected"
         )
-    elif in_flight_after > 0:
+    elif not in_flight_unknown and in_flight_after > 0:
         status = INCOMPLETE
         reason = (
             f"{in_flight_after:g} requests were still in flight at the after "
             "snapshot, so the window did not close cleanly"
+        )
+    elif request_checks and in_flight_unknown:
+        status = OPERATOR_ASSERTED
+        reason = (
+            f"{', '.join(f for f, _ in request_checks)} each counted exactly "
+            f"{_requests(expected_requests)} in the window; the server exposes "
+            "no in-flight gauges, and the operator asserted that no other "
+            "traffic overlapped the window"
         )
     elif request_checks:
         status = ATTRIBUTED
@@ -702,31 +1186,24 @@ def diff_snapshots(
             for name in {r["family"] for r in counters}
         }
         for counter_spec in profile.counters:
-            if counter_spec.family not in after.families:
-                continue
-            value, unit = _scaled(
-                deltas.get(counter_spec.family, 0.0), counter_spec.unit
-            )
-            entry = _measurement(value, MetricProvenance.MEASURED_NATIVE, unit)
-            entry.update(statistic="delta", source=counter_spec.family)
-            highlights[counter_spec.key] = entry
+            entry = _counter_highlight(counter_spec, before, after, state.notes)
+            if entry is not None:
+                highlights[counter_spec.key] = entry
         for ratio in profile.ratios:
-            if (
-                ratio.numerator not in after.families
-                or ratio.denominator not in after.families
-            ):
-                continue
-            denominator = deltas.get(ratio.denominator, 0.0)
-            if denominator <= 0:
+            numerator = _family_sum(ratio.numerator, after, deltas)
+            denominator = _family_sum(ratio.denominator, after, deltas)
+            if numerator is None or denominator is None or denominator[0] <= 0:
                 continue
             entry = _measurement(
-                deltas.get(ratio.numerator, 0.0) / denominator,
-                MetricProvenance.DERIVED,
-                ratio.unit,
+                numerator[0] / denominator[0], MetricProvenance.DERIVED, ratio.unit
             )
             entry.update(
                 statistic="ratio_of_deltas",
-                source=f"{ratio.numerator} / {ratio.denominator}",
+                source=(
+                    f"{numerator[1]} / ({denominator[1]})"
+                    if " + " in denominator[1]
+                    else f"{numerator[1]} / {denominator[1]}"
+                ),
             )
             highlights[ratio.key] = entry
 
@@ -766,9 +1243,25 @@ def diff_snapshots(
             "request_checks": [
                 {"family": f, "observed": _as_count(c)} for f, c in request_checks
             ],
-            "in_flight_before": in_flight_before if profile.in_flight_gauges else None,
-            "in_flight_after": in_flight_after if profile.in_flight_gauges else None,
+            "in_flight_before": (
+                in_flight_before
+                if profile.in_flight_gauges and not in_flight_unknown
+                else None
+            ),
+            "in_flight_after": (
+                in_flight_after
+                if profile.in_flight_gauges and not in_flight_unknown
+                else None
+            ),
             "assume_isolated": assume_isolated,
+            "missing_stats": [
+                {
+                    "setting": r.setting,
+                    "families": list(r.families),
+                    "required": r.required,
+                }
+                for r in missing
+            ],
         },
         "highlights": highlights,
         "highlights_withheld_reason": (
@@ -782,6 +1275,7 @@ def diff_snapshots(
             attributable=status in ATTRIBUTABLE_STATUSES,
             withheld_reason=reason,
         ),
+        "kv_usage": _kv_usage(profile, before, after),
         "kept_labels": sorted(KEPT_LABELS),
         "counters": counters,
         "histograms": histograms,
@@ -816,9 +1310,13 @@ def capture_settled_after(
             before, after, expected_requests=expected_requests, runtime=runtime
         )
         attribution = evidence["attribution"]
-        settled = not attribution["in_flight_after"] and all(
-            check["observed"] >= expected_requests
-            for check in attribution["request_checks"]
+        settled = (
+            not attribution["in_flight_after"]
+            and not any(m["required"] for m in attribution["missing_stats"])
+            and all(
+                check["observed"] >= expected_requests
+                for check in attribution["request_checks"]
+            )
         )
         if settled or clock() >= deadline:
             return after

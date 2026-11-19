@@ -451,7 +451,9 @@ and attribution status. The window is judged the same way as the
 requests that succeeded. If the server also counted failed requests, the
 window comes out `contaminated`, which is the honest result. A point where
 nothing succeeded gets no window. A failed snapshot is recorded as an error
-on its point, the sweep goes on, and the exit code is 1.
+on its point, the sweep goes on, and the exit code is 1. For `trtllm-serve`,
+pass its `/prometheus/metrics` URL and enable `return_perf_metrics`, or every
+window comes out `stats_not_enabled`.
 
 ## Prefix cache warning
 

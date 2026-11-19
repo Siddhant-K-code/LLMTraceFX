@@ -230,6 +230,14 @@ def snapshot_from_body(
     try:
         families = parse_exposition(text)
     except ValueError as exc:
+        if text.lstrip()[:1] in ("[", "{"):
+            # trtllm-serve answers /metrics with JSON iteration stats; its
+            # Prometheus text is on /prometheus/metrics.
+            raise ServerMetricsError(
+                "metrics response is JSON, not Prometheus text; for "
+                "trtllm-serve scrape /prometheus/metrics with "
+                "return_perf_metrics: true"
+            ) from exc
         raise ServerMetricsError(f"metrics response did not parse: {exc}") from exc
     return ServerMetricsSnapshot(
         endpoint=endpoint,
