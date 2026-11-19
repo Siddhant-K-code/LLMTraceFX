@@ -750,7 +750,7 @@ def test_vllm_offload_reads_new_counters_and_falls_back_to_deprecated_ones() -> 
     assert old["kv_offload_load_time"]["value"] == 0
 
 
-def sglang_body(*, requests: int, extra: list[str]) -> bytes:
+def sglang_ranked_body(*, requests: int, extra: list[str]) -> bytes:
     labels = 'tp_rank="0",pp_rank="0",dp_rank="0"'
     return with_lines(
         b"",
@@ -790,13 +790,13 @@ def sglang_cache_lines(
 
 def test_sglang_splits_cached_tokens_and_reads_hicache_from_one_rank() -> None:
     before = snap(
-        sglang_body(
+        sglang_ranked_body(
             requests=3,
             extra=sglang_cache_lines(device=10, host=0, load_back=(5, 5), prefetched=0),
         )
     )
     after = snap(
-        sglang_body(
+        sglang_ranked_body(
             requests=4,
             extra=sglang_cache_lines(
                 device=30, host=16, load_back=(21, 21), prefetched=8
@@ -823,13 +823,13 @@ def test_sglang_splits_cached_tokens_and_reads_hicache_from_one_rank() -> None:
 
 def test_disagreeing_ranks_are_flagged() -> None:
     before = snap(
-        sglang_body(
+        sglang_ranked_body(
             requests=3,
             extra=sglang_cache_lines(device=0, host=0, load_back=(0, 0), prefetched=0),
         )
     )
     after = snap(
-        sglang_body(
+        sglang_ranked_body(
             requests=4,
             extra=sglang_cache_lines(device=0, host=0, load_back=(4, 6), prefetched=0),
         ),
@@ -945,6 +945,35 @@ def test_trtllm_window_is_attributed_with_cache_tiers() -> None:
     }
     usage = evidence["kv_usage"]["kv_cache_utilization"]
     assert (usage["before"]["value"], usage["after"]["value"]) == (0.1, 0.3)
+
+
+def test_trtllm_acceptance_rate_comes_from_draft_and_accepted_counters() -> None:
+    # Untouched in the before scrape, so absent under multiprocess mode.
+    before = trt_snap(trtllm_body(succeeded=2))
+    after = trt_snap(
+        with_lines(
+            trtllm_body(succeeded=3),
+            "# TYPE trtllm_spec_decode_num_draft_tokens_total counter",
+            'trtllm_spec_decode_num_draft_tokens_total{model_name="m"} 40',
+            "# TYPE trtllm_spec_decode_num_accepted_tokens_total counter",
+            'trtllm_spec_decode_num_accepted_tokens_total{model_name="m"} 30',
+            "# TYPE trtllm_spec_decode_acceptance_length gauge",
+            'trtllm_spec_decode_acceptance_length{model_name="m",pid="7"} 9.0',
+        ),
+        "2026-01-01T00:00:01Z",
+    )
+    spec = diff_snapshots(before, after, expected_requests=1)["speculative"]
+    assert spec["status"] == "measured"
+    assert spec["counters"]["draft_tokens"]["value"] == 40
+    assert spec["counters"]["accepted_tokens"]["value"] == 30
+    assert spec["acceptance_rate"]["value"] == pytest.approx(0.75)
+    # No verification step counter, and the last-value gauge is not used.
+    assert "acceptance_length" not in spec
+    assert set(spec["not_derived"]) == {
+        "acceptance_length",
+        "per_position_acceptance_rate",
+    }
+    assert spec["ignored_gauges"] == ["trtllm_spec_decode_acceptance_length"]
 
 
 def test_trtllm_without_perf_metrics_says_stats_are_not_enabled() -> None:

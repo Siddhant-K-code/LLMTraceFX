@@ -559,6 +559,19 @@ PROFILES: dict[str, RuntimeProfile] = {
                 "kv_cache_host_utilization", "trtllm_kv_cache_host_utilization", "ratio"
             ),
         ),
+        # Logged from rank 0 iteration stats, so they also need
+        # enable_iter_perf_stats, and only once a step drafts (collector.py
+        # L550-567 and L1200-1217). There is no verification step counter.
+        # The per-position counters are labelled token_position and are
+        # not read.
+        speculative=SpeculativeCounters(
+            draft_tokens="trtllm_spec_decode_num_draft_tokens",
+            accepted_tokens="trtllm_spec_decode_num_accepted_tokens",
+            ignored_gauges=(
+                "trtllm_spec_decode_acceptance_length",
+                "trtllm_spec_decode_draft_overhead",
+            ),
+        ),
         stats_requirements=(
             StatsRequirement(
                 families=("trtllm_request_success",),
