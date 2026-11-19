@@ -28,6 +28,7 @@ from .snapshot import (
     capture_snapshot,
     urllib_fetcher,
 )
+from .speculative import SpeculativeCounters, speculative_evidence
 
 EVIDENCE_KIND = "llmtracefx.server_metrics.evidence"
 EVIDENCE_SCHEMA_VERSION = "1"
@@ -44,7 +45,15 @@ ATTRIBUTABLE_STATUSES = frozenset({ATTRIBUTED, OPERATOR_ASSERTED})
 # may be local paths, engine indexes, pod names) is summed away so the
 # evidence is safe to share.
 KEPT_LABELS = frozenset(
-    {"le", "quantile", "finished_reason", "is_streaming", "cache_source", "reason"}
+    {
+        "le",
+        "quantile",
+        "finished_reason",
+        "is_streaming",
+        "cache_source",
+        "reason",
+        "position",
+    }
 )
 _PROCESS_START = "process_start_time_seconds"
 _QUANTILES = (0.5, 0.9, 0.99)
@@ -91,6 +100,7 @@ class RuntimeProfile:
     histograms: tuple[HistogramHighlight, ...] = ()
     counters: tuple[CounterHighlight, ...] = ()
     ratios: tuple[RatioHighlight, ...] = ()
+    speculative: SpeculativeCounters | None = None
     notes: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -136,6 +146,14 @@ PROFILES: dict[str, RuntimeProfile] = {
                 "ratio",
             ),
         ),
+        # vllm/v1/spec_decode/metrics.py registers these only when the server
+        # runs with a speculative config.
+        speculative=SpeculativeCounters(
+            verify_steps="vllm:spec_decode_num_drafts",
+            draft_tokens="vllm:spec_decode_num_draft_tokens",
+            accepted_tokens="vllm:spec_decode_num_accepted_tokens",
+            accepted_per_position="vllm:spec_decode_num_accepted_tokens_per_pos",
+        ),
     ),
     "sglang": RuntimeProfile(
         name="sglang",
@@ -175,6 +193,21 @@ PROFILES: dict[str, RuntimeProfile] = {
                 "ratio",
             ),
         ),
+        # SGLang counts verify calls but not accepted drafts, so only the
+        # acceptance length can come from counters. Its spec_accept_* series
+        # are last-value gauges and are never differenced.
+        speculative=SpeculativeCounters(
+            verify_steps="sglang:spec_verify_calls",
+            emitted_tokens="sglang:generation_tokens",
+            ignored_gauges=(
+                "sglang:spec_accept_length",
+                "sglang:spec_accept_rate",
+                "sglang:spec_block_accept_length",
+                "sglang:spec_cap_length",
+                "sglang:spec_num_draft_tokens",
+                "sglang:spec_num_steps",
+            ),
+        ),
     ),
     "llamacpp": RuntimeProfile(
         name="llamacpp",
@@ -204,6 +237,14 @@ PROFILES: dict[str, RuntimeProfile] = {
                 "llamacpp:tokens_predicted_seconds",
                 "tokens/s",
             ),
+        ),
+        # Exported at zero when speculation is off; spec_decode_num_drafts
+        # counts verification steps.
+        speculative=SpeculativeCounters(
+            verify_steps="llamacpp:spec_decode_num_drafts",
+            draft_tokens="llamacpp:spec_decode_num_draft_tokens",
+            accepted_tokens="llamacpp:spec_decode_num_accepted_tokens",
+            accepted_per_position="llamacpp:spec_decode_num_accepted_tokens_per_pos",
         ),
         notes=(
             "llama.cpp exposes no request counter, so a window can only be "
@@ -732,6 +773,14 @@ def diff_snapshots(
         "highlights": highlights,
         "highlights_withheld_reason": (
             None if status in ATTRIBUTABLE_STATUSES else reason
+        ),
+        "speculative": speculative_evidence(
+            profile.speculative,
+            runtime_name,
+            before.families,
+            after.families,
+            attributable=status in ATTRIBUTABLE_STATUSES,
+            withheld_reason=reason,
         ),
         "kept_labels": sorted(KEPT_LABELS),
         "counters": counters,

@@ -264,3 +264,81 @@ def test_cli_import_refusal_exits_2(tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
         cli.main(["import", "vllm-bench", str(source), "--output", str(source)])
     assert exc.value.code == 2
+
+
+SPEC_KEYS = {
+    "spec_decode_acceptance_rate": 62.5,
+    "spec_decode_acceptance_length": 2.875,
+    "spec_decode_num_drafts": 80,
+    "spec_decode_draft_tokens": 240,
+    "spec_decode_accepted_tokens": 150,
+    "spec_decode_verified_tokens": 240,
+    "spec_decode_per_position_acceptance_rates": [0.875, 0.625, 0.375],
+}
+
+
+def test_vllm_speculative_keys_map_to_the_speculative_section(tmp_path):
+    source = write(tmp_path, vllm(**SPEC_KEYS))
+    imported = import_benchmark_file(source, VLLM_BENCH_TOOL)
+
+    spec = imported.speculative
+    assert spec is not None and spec.status == "reported"
+    rate = spec.values["acceptance_rate"]
+    assert (rate.value, rate.unit, rate.provenance) == (
+        62.5,
+        "percent",
+        IMPORTED_DERIVED,
+    )
+    assert spec.values["acceptance_length"].unit == "tokens/step"
+    assert spec.values["drafts"].provenance == IMPORTED_REPORTED
+    assert spec.per_position_acceptance_rate == (0.875, 0.625, 0.375)
+    assert not set(SPEC_KEYS) & set(imported.unmapped_keys)
+    assert not any(name.startswith("spec") for name in imported.metrics)
+    out = write(tmp_path, imported.to_json(), "artifact.json")
+    assert read_imported_benchmark(out).to_dict() == imported.to_dict()
+
+
+def test_vllm_placeholder_acceptance_length_is_dropped(tmp_path):
+    source = write(
+        tmp_path,
+        vllm(
+            spec_decode_acceptance_rate=0.0,
+            spec_decode_acceptance_length=0.0,
+            spec_decode_num_drafts=0,
+            spec_decode_draft_tokens=4,
+            spec_decode_accepted_tokens=0,
+            spec_decode_verified_tokens=0,
+        ),
+    )
+    spec = import_benchmark_file(source, VLLM_BENCH_TOOL).speculative
+
+    assert spec is not None
+    assert "acceptance_length" not in spec.values
+    assert any("placeholder" in note for note in spec.notes)
+
+
+def test_vllm_without_speculative_keys_says_not_reported():
+    spec = import_benchmark_file(
+        FIXTURES / "vllm_default.json", VLLM_BENCH_TOOL
+    ).speculative
+
+    assert spec is not None and spec.status == "not_reported"
+    assert spec.values == {} and spec.reason
+
+
+def test_artifact_reader_refuses_relabelled_speculative_values(tmp_path):
+    good = import_benchmark_file(
+        write(tmp_path, vllm(**SPEC_KEYS)), VLLM_BENCH_TOOL
+    ).to_dict()
+    for path, value in (
+        (("values", "acceptance_rate", "unit"), "ratio"),
+        (("values", "drafts", "provenance"), IMPORTED_DERIVED),
+        (("status",), "not_reported"),
+    ):
+        bad = json.loads(json.dumps(good))
+        target = bad["speculative"]
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = value
+        with pytest.raises(ImportedArtifactError):
+            ImportedBenchmark.from_dict(bad)

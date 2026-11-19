@@ -1,6 +1,7 @@
 """Tests for the speculative-decoding regression doctor rule."""
 
 import dataclasses
+import json
 from pathlib import Path
 
 import pytest
@@ -421,3 +422,153 @@ def test_experiment_record_from_dict_rejects_malformed_speculative_enabled_befor
     payload["speculative"]["enabled"] = "false"
     with pytest.raises(SchemaValidationError, match="SpeculativeDecodingInfo.enabled"):
         ExperimentRecord.from_dict(payload)
+
+
+def _improvement_records():
+    return [
+        _record_from_fixture(
+            f"qwen3_8b_mtp_improvement_run{index}.log",
+            f"mtp-{index}",
+            speculative_method="mtp",
+        )
+        for index in (1, 2)
+    ]
+
+
+def _acceptance(status="measured", *, steps=100, drafted=300, accepted=150):
+    block = {"status": status, "reason": "test"}
+    if status == "measured":
+        block["counters"] = {
+            "verify_steps": {"value": steps},
+            "draft_tokens": {"value": drafted},
+            "accepted_tokens": {"value": accepted},
+        }
+    return {"speculative": block}
+
+
+def test_server_acceptance_consistent_with_latency_keeps_latency_basis():
+    report = diagnose_speculative_regression(
+        _baseline_records(),
+        _improvement_records(),
+        server_evidence={"mtp-1": _acceptance(), "mtp-2": _acceptance()},
+    )
+
+    assert report.verdict == DoctorVerdict.IMPROVEMENT
+    assert report.basis == "client_latency"
+    assert report.acceptance is not None
+    assert report.acceptance["acceptance_length"] == 2.5
+    assert report.acceptance["acceptance_rate"] == 0.5
+    assert report.acceptance["measured_runs"] == 2
+    assert "consistent" in report.reason
+
+
+def test_speedup_beyond_the_acceptance_length_is_inconclusive():
+    # 1.24x faster, but the server only emitted 1.1 tokens per step.
+    evidence = _acceptance(steps=100, drafted=300, accepted=10)
+    report = diagnose_speculative_regression(
+        _baseline_records(),
+        _improvement_records(),
+        server_evidence={"mtp-1": evidence, "mtp-2": evidence},
+    )
+
+    assert report.verdict == DoctorVerdict.INCONCLUSIVE
+    assert report.basis == "server_acceptance"
+    assert "cannot explain" in report.reason
+
+
+def test_zero_accepted_drafts_is_a_regression_on_server_evidence():
+    baseline = _baseline_records()
+    speculative = [
+        dataclasses.replace(
+            record,
+            run_id=f"mtp-{index}",
+            speculative=dataclasses.replace(
+                record.speculative, enabled=True, method="mtp"
+            ),
+        )
+        for index, record in enumerate(baseline, start=1)
+    ]
+    evidence = _acceptance(steps=100, drafted=300, accepted=0)
+
+    latency_only = diagnose_speculative_regression(baseline, speculative)
+    report = diagnose_speculative_regression(
+        baseline,
+        speculative,
+        server_evidence={"mtp-1": evidence, "mtp-2": evidence},
+    )
+
+    assert latency_only.verdict != DoctorVerdict.REGRESSION
+    assert report.verdict == DoctorVerdict.REGRESSION
+    assert report.basis == "server_acceptance"
+    assert "none of 600 draft tokens" in report.reason
+
+
+def test_a_window_without_verification_steps_is_inconclusive():
+    report = diagnose_speculative_regression(
+        _baseline_records(),
+        _improvement_records(),
+        server_evidence={"mtp-1": _acceptance(), "mtp-2": _acceptance("no_drafts")},
+    )
+
+    assert report.verdict == DoctorVerdict.INCONCLUSIVE
+    assert report.basis == "server_acceptance"
+    assert "mtp-2" in report.reason
+
+
+@pytest.mark.parametrize(
+    ("evidence", "covered"),
+    [
+        (None, None),
+        ({"mtp-1": _acceptance()}, "covers 1 of 2"),
+        ({"mtp-1": _acceptance("not_exported")}, "covers 0 of 2"),
+    ],
+    ids=["none", "partial", "not-exported"],
+)
+def test_latency_is_the_fallback_without_full_server_acceptance(evidence, covered):
+    report = diagnose_speculative_regression(
+        _baseline_records(), _improvement_records(), server_evidence=evidence
+    )
+
+    assert report.verdict == DoctorVerdict.IMPROVEMENT
+    assert report.basis == "client_latency"
+    if covered is None:
+        assert report.acceptance is None
+    else:
+        assert covered in report.reason
+
+
+def test_doctor_cli_reads_server_evidence_next_to_each_record(tmp_path, capsys):
+    from llmtracefx.optimizer import cli
+
+    def write(record, name, evidence=None):
+        folder = tmp_path / name
+        folder.mkdir()
+        record.write_json(folder / "record.json")
+        if evidence is not None:
+            evidence = {"kind": "llmtracefx.server_metrics.evidence", **evidence}
+            (folder / "server_metrics_evidence.json").write_text(json.dumps(evidence))
+        return str(folder / "record.json")
+
+    baseline = [write(r, r.run_id) for r in _baseline_records()]
+    short = _acceptance(steps=100, drafted=300, accepted=10)
+    speculative = [write(r, r.run_id, short) for r in _improvement_records()]
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(
+            [
+                "doctor",
+                "speculative",
+                "--baseline",
+                *baseline,
+                "--speculative",
+                *speculative,
+            ]
+        )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exc.value.code == 2
+    assert payload["basis"] == "server_acceptance"
+    assert payload["acceptance"]["run_status"] == {
+        "mtp-1": "measured",
+        "mtp-2": "measured",
+    }

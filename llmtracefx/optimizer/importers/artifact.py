@@ -16,6 +16,12 @@ Provenance labels are scoped to this artifact:
 ``imported_reported``
     A count, total or duration that the source tool reported as is.
 
+The optional ``speculative`` section holds the speculative decoding
+acceptance a tool read from the server's own counters (``vllm bench serve``
+does this). Those values are server side and cover every request the server
+handled while the benchmark ran, so they never enter ``metrics`` and the
+gate does not compare them.
+
 This module imports only the standard library so the perf gate can read
 imported artifacts without installing extras.
 """
@@ -56,6 +62,20 @@ TOTAL_NAMES = (
     "total_output_tokens",
     "duration",
 )
+
+SPECULATIVE_REPORTED = "reported"
+SPECULATIVE_NOT_REPORTED = "not_reported"
+
+# name -> (unit, provenance). Fixed here so the reader refuses relabelled
+# values.
+SPECULATIVE_VALUES: dict[str, tuple[str, str]] = {
+    "acceptance_rate": ("percent", IMPORTED_DERIVED),
+    "acceptance_length": ("tokens/step", IMPORTED_DERIVED),
+    "drafts": ("count", IMPORTED_REPORTED),
+    "draft_tokens": ("tokens", IMPORTED_REPORTED),
+    "accepted_tokens": ("tokens", IMPORTED_REPORTED),
+    "verified_tokens": ("tokens", IMPORTED_REPORTED),
+}
 
 _STAT_NAME = re.compile(r"^[a-z][a-z0-9_.]{0,31}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -132,6 +152,47 @@ class ImportedSource:
     user_metadata: Mapping[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ImportedSpeculative:
+    """Speculative decoding acceptance the source tool scraped from the server."""
+
+    status: str
+    """``reported`` or ``not_reported``."""
+    reason: str
+    values: Mapping[str, ImportedTotal] = field(default_factory=dict)
+    per_position_acceptance_rate: tuple[float, ...] = ()
+    """Accepted drafts at each position / drafts, as fractions; index is the
+    draft position."""
+    per_position_source_key: str | None = None
+    notes: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "reason": self.reason,
+            "values": {
+                name: {
+                    "value": item.value,
+                    "unit": item.unit,
+                    "provenance": item.provenance,
+                    "source_key": item.source_key,
+                }
+                for name, item in self.values.items()
+            },
+            "per_position_acceptance_rate": [
+                {
+                    "position": position,
+                    "value": value,
+                    "unit": "ratio",
+                    "provenance": IMPORTED_DERIVED,
+                    "source_key": f"{self.per_position_source_key}[{position}]",
+                }
+                for position, value in enumerate(self.per_position_acceptance_rate)
+            ],
+            "notes": list(self.notes),
+        }
+
+
 LoadValue = str | int | float | None
 EndpointValue = str | bool | None
 
@@ -148,6 +209,7 @@ class ImportedBenchmark:
     load_unresolved: tuple[str, ...] = ()
     unmapped_keys: tuple[str, ...] = ()
     importer_version: str | None = None
+    speculative: ImportedSpeculative | None = None
 
     @property
     def run_id(self) -> str:
@@ -193,6 +255,11 @@ class ImportedBenchmark:
                 }
                 for name, metric in self.metrics.items()
             },
+            **(
+                {}
+                if self.speculative is None
+                else {"speculative": self.speculative.to_dict()}
+            ),
             "unmapped_keys": list(self.unmapped_keys),
         }
 
@@ -375,6 +442,68 @@ def _parse_metrics(tool: str, data: Any) -> dict[str, ImportedMetric]:
     return metrics
 
 
+def _parse_speculative(data: Any) -> ImportedSpeculative | None:
+    if data is None:
+        return None
+    entry = _mapping(data, "speculative")
+    status = entry.get("status")
+    if status not in (SPECULATIVE_REPORTED, SPECULATIVE_NOT_REPORTED):
+        raise _fail(f"speculative.status {status!r} is not recognised")
+    values: dict[str, ImportedTotal] = {}
+    for name, item in _mapping(entry.get("values", {}), "speculative.values").items():
+        if name not in SPECULATIVE_VALUES:
+            raise _fail(f"unknown speculative value {name!r}")
+        unit, provenance = SPECULATIVE_VALUES[name]
+        value_entry = _mapping(item, f"speculative.values.{name}")
+        value = finite_number(value_entry.get("value"))
+        if value is None or value < 0:
+            raise _fail(f"speculative.values.{name}.value must be finite and >= 0")
+        if value_entry.get("unit") != unit:
+            raise _fail(f"speculative.values.{name}.unit must be {unit!r}")
+        if value_entry.get("provenance") != provenance:
+            raise _fail(f"speculative.values.{name}.provenance must be {provenance!r}")
+        values[name] = ImportedTotal(
+            value=value,
+            unit=unit,
+            source_key=_required_str(
+                value_entry.get("source_key"), f"speculative.values.{name}.source_key"
+            ),
+            provenance=provenance,
+        )
+    rates: list[float] = []
+    source_key: str | None = None
+    raw_positions = entry.get("per_position_acceptance_rate", [])
+    if not isinstance(raw_positions, list):
+        raise _fail("speculative.per_position_acceptance_rate must be a list")
+    for position, item in enumerate(raw_positions):
+        name = f"speculative.per_position_acceptance_rate[{position}]"
+        rate_entry = _mapping(item, name)
+        value = finite_number(rate_entry.get("value"))
+        if rate_entry.get("position") != position or value is None or value < 0:
+            raise _fail(f"{name} must hold position {position} and a value >= 0")
+        if (
+            rate_entry.get("unit") != "ratio"
+            or rate_entry.get("provenance") != IMPORTED_DERIVED
+        ):
+            raise _fail(f"{name} must be an {IMPORTED_DERIVED} ratio")
+        key = _required_str(rate_entry.get("source_key"), f"{name}.source_key")
+        prefix = key.removesuffix(f"[{position}]")
+        if prefix == key or (source_key is not None and prefix != source_key):
+            raise _fail(f"{name}.source_key {key!r} does not index one source list")
+        source_key = prefix
+        rates.append(value)
+    if status == SPECULATIVE_NOT_REPORTED and (values or rates):
+        raise _fail("a not_reported speculative section must hold no values")
+    return ImportedSpeculative(
+        status=status,
+        reason=_required_str(entry.get("reason"), "speculative.reason"),
+        values=values,
+        per_position_acceptance_rate=tuple(rates),
+        per_position_source_key=source_key,
+        notes=_string_list(entry.get("notes", []), "speculative.notes"),
+    )
+
+
 def _parse_artifact(data: Any) -> ImportedBenchmark:
     data = _mapping(data, "artifact")
     if data.get("kind") != IMPORTED_BENCHMARK_KIND:
@@ -409,4 +538,5 @@ def _parse_artifact(data: Any) -> ImportedBenchmark:
         ),
         unmapped_keys=_string_list(data.get("unmapped_keys", []), "unmapped_keys"),
         importer_version=_optional_str(importer.get("version"), "importer.version"),
+        speculative=_parse_speculative(data.get("speculative")),
     )

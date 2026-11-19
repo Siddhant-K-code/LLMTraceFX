@@ -7,24 +7,33 @@ Deliberately conservative: returns
 :attr:`DoctorVerdict.INCONCLUSIVE` rather than guessing whenever the runs
 are not comparable, too few, or the observed delta is smaller than the
 run-to-run noise.
+
+The latency comparison is the client's view. When server metrics evidence
+for the speculative runs carries counter-derived acceptance (see
+``llmtracefx.optimizer.server_metrics.speculative``), the server's view
+can overrule it: a run the server never verified a draft for, a run with no
+accepted draft, or a speed-up larger than the acceptance length allows.
+``SpeculativeRegressionReport.basis`` says which view decided.
 """
 
 from __future__ import annotations
 
 import math
 import statistics
-from collections.abc import Sequence
-from dataclasses import dataclass
-from enum import Enum
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from enum import StrEnum
+from typing import Any
 
 from ..schema import ExperimentRecord
 
 
-class DoctorVerdict(str, Enum):
+class DoctorVerdict(StrEnum):
     """Outcome of a doctor diagnosis."""
 
     REGRESSION = "regression"
-    """Speculative decoding measurably increased total latency."""
+    """Speculative decoding measurably increased total latency, or the
+    server accepted no draft token in any speculative run."""
 
     IMPROVEMENT = "improvement"
     """Speculative decoding measurably decreased total latency."""
@@ -33,7 +42,12 @@ class DoctorVerdict(str, Enum):
     """A delta was measurable but too small to matter."""
 
     INCONCLUSIVE = "inconclusive"
-    """Evidence was insufficient, incomparable, or too noisy to judge."""
+    """Evidence was insufficient, incomparable, or too noisy to judge, or
+    the server's acceptance evidence contradicts the latency comparison."""
+
+
+CLIENT_LATENCY = "client_latency"
+SERVER_ACCEPTANCE = "server_acceptance"
 
 
 ComparabilityKey = tuple[
@@ -85,6 +99,12 @@ class SpeculativeRegressionReport:
     speculative_mean_total_ms: float | None = None
     delta_ms: float | None = None
     delta_pct: float | None = None
+    basis: str = CLIENT_LATENCY
+    """``client_latency`` when the verdict comes from the timing comparison,
+    ``server_acceptance`` when server acceptance counters decided it."""
+    acceptance: Mapping[str, Any] | None = None
+    """Server acceptance pooled over the speculative runs, when evidence
+    was supplied."""
 
 
 def _eligible_totals(
@@ -105,6 +125,7 @@ def diagnose_speculative_regression(
     *,
     min_repetitions: int = 2,
     relative_threshold: float = 0.03,
+    server_evidence: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> SpeculativeRegressionReport:
     """Diagnose whether speculative decoding is a net regression.
 
@@ -113,7 +134,30 @@ def diagnose_speculative_regression(
     expected ``speculative.enabled`` flag are used. ``relative_threshold``
     is the minimum relative delta (default 3%) required to call a
     direction rather than "no significant difference".
+
+    ``server_evidence`` maps a speculative run's ``run_id`` to the server
+    metrics evidence recorded for its window. Without it, or when none of
+    it carries measured acceptance, the latency verdict stands with basis
+    ``client_latency``.
     """
+    report = _latency_report(
+        baseline_records,
+        speculative_records,
+        min_repetitions=min_repetitions,
+        relative_threshold=relative_threshold,
+    )
+    if server_evidence is None or report.speculative_mean_total_ms is None:
+        return report
+    return _apply_acceptance(report, server_evidence)
+
+
+def _latency_report(
+    baseline_records: Sequence[ExperimentRecord],
+    speculative_records: Sequence[ExperimentRecord],
+    *,
+    min_repetitions: int,
+    relative_threshold: float,
+) -> SpeculativeRegressionReport:
     baseline = _eligible_totals(baseline_records, speculative_enabled=False)
     speculative = _eligible_totals(speculative_records, speculative_enabled=True)
 
@@ -246,4 +290,164 @@ def diagnose_speculative_regression(
         speculative_mean_total_ms=speculative_mean,
         delta_ms=delta_ms,
         delta_pct=delta_pct,
+    )
+
+
+_COUNTER_ROLES = ("verify_steps", "draft_tokens", "accepted_tokens", "emitted_tokens")
+
+
+def _pool_acceptance(
+    run_ids: Sequence[str], server_evidence: Mapping[str, Mapping[str, Any]]
+) -> dict[str, Any]:
+    run_status: dict[str, str] = {}
+    pooled: dict[str, float] = {}
+    roles: set[str] | None = None
+    for run_id in run_ids:
+        evidence = server_evidence.get(run_id)
+        block = None if evidence is None else evidence.get("speculative")
+        if not isinstance(block, Mapping):
+            run_status[run_id] = "no_evidence"
+            continue
+        status = str(block.get("status"))
+        run_status[run_id] = status
+        if status != "measured":
+            continue
+        counters = block.get("counters")
+        if not isinstance(counters, Mapping):
+            run_status[run_id] = "no_evidence"
+            continue
+        values: dict[str, float] = {}
+        for role in _COUNTER_ROLES:
+            entry = counters.get(role)
+            value = entry.get("value") if isinstance(entry, Mapping) else None
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                and value >= 0
+            ):
+                values[role] = float(value)
+        roles = set(values) if roles is None else roles & set(values)
+        for role, value in values.items():
+            pooled[role] = pooled.get(role, 0.0) + value
+    measured = [r for r, status in run_status.items() if status == "measured"]
+    usable = sorted(roles or ())
+    totals = {role: pooled[role] for role in usable}
+    steps = totals.get("verify_steps", 0.0)
+    length: float | None = None
+    length_basis: str | None = None
+    if steps > 0 and "accepted_tokens" in totals:
+        length = 1.0 + totals["accepted_tokens"] / steps
+        length_basis = "1 + accepted draft tokens / verification steps"
+    elif steps > 0 and "emitted_tokens" in totals:
+        length = totals["emitted_tokens"] / steps
+        length_basis = "tokens emitted / verification steps"
+    rate: float | None = None
+    if totals.get("draft_tokens", 0.0) > 0 and "accepted_tokens" in totals:
+        rate = totals["accepted_tokens"] / totals["draft_tokens"]
+    return {
+        "provenance": "derived",
+        "statistic": "ratio_of_pooled_deltas",
+        "runs": len(run_ids),
+        "measured_runs": len(measured),
+        "run_status": run_status,
+        "pooled_counters": {
+            role: int(v) if v.is_integer() else v for role, v in totals.items()
+        },
+        "acceptance_length": length,
+        "acceptance_length_basis": length_basis,
+        "acceptance_rate": rate,
+    }
+
+
+def _apply_acceptance(
+    report: SpeculativeRegressionReport,
+    server_evidence: Mapping[str, Mapping[str, Any]],
+) -> SpeculativeRegressionReport:
+    acceptance = _pool_acceptance(report.speculative_run_ids, server_evidence)
+    run_status = acceptance["run_status"]
+    no_drafts = sorted(r for r, status in run_status.items() if status == "no_drafts")
+    if no_drafts:
+        return replace(
+            report,
+            verdict=DoctorVerdict.INCONCLUSIVE,
+            basis=SERVER_ACCEPTANCE,
+            acceptance=acceptance,
+            reason=(
+                f"run(s) {', '.join(no_drafts)} are labelled speculative but the "
+                "server ran no verification step in their window, so the "
+                "comparison does not measure speculative decoding"
+            ),
+        )
+    measured = acceptance["measured_runs"]
+    runs = acceptance["runs"]
+    length = acceptance["acceptance_length"]
+    if measured < runs or length is None:
+        unusable = sorted(
+            f"{r} ({status})"
+            for r, status in run_status.items()
+            if status != "measured"
+        )
+        detail = (
+            f"no usable acceptance for {', '.join(unusable)}"
+            if unusable
+            else "the pooled counters give no acceptance length"
+        )
+        return replace(
+            report,
+            acceptance=acceptance,
+            reason=(
+                f"{report.reason}; server acceptance covers {measured} of {runs} "
+                f"speculative run(s) ({detail}), so the latency verdict stands"
+            ),
+        )
+
+    baseline_mean = report.baseline_mean_total_ms
+    speculative_mean = report.speculative_mean_total_ms
+    if (
+        report.verdict is DoctorVerdict.IMPROVEMENT
+        and baseline_mean is not None
+        and speculative_mean is not None
+        and speculative_mean > 0
+        and baseline_mean / speculative_mean > length
+    ):
+        speedup = baseline_mean / speculative_mean
+        return replace(
+            report,
+            verdict=DoctorVerdict.INCONCLUSIVE,
+            basis=SERVER_ACCEPTANCE,
+            acceptance=acceptance,
+            reason=(
+                f"the speculative runs were {speedup:.2f}x faster, but the server "
+                f"emitted {length:.2f} tokens per verification step; a "
+                "verification step costs at least one ordinary decode step, so "
+                f"speculation alone cannot explain more than {length:.2f}x and "
+                "something else differs between the groups"
+            ),
+        )
+    accepted = acceptance["pooled_counters"].get("accepted_tokens")
+    if accepted == 0:
+        drafted = acceptance["pooled_counters"].get("draft_tokens")
+        none = (
+            "no draft token" if drafted is None else f"none of {drafted} draft tokens"
+        )
+        return replace(
+            report,
+            verdict=DoctorVerdict.REGRESSION,
+            basis=SERVER_ACCEPTANCE,
+            acceptance=acceptance,
+            reason=(
+                f"the server accepted {none} across "
+                f"{runs} speculative run(s); every verification step emitted "
+                "only the target model's token, so drafting was pure overhead "
+                f"(latency alone said: {report.reason})"
+            ),
+        )
+    return replace(
+        report,
+        acceptance=acceptance,
+        reason=(
+            f"{report.reason}; the server's acceptance length of {length:.2f} "
+            "tokens per verification step is consistent with it"
+        ),
     )

@@ -54,7 +54,7 @@ from contextvars import ContextVar
 from dataclasses import asdict
 from itertools import combinations
 from pathlib import Path
-from typing import NoReturn, Protocol, TypeVar, cast, overload
+from typing import Any, NoReturn, Protocol, TypeVar, cast, overload
 
 from .collectors._shared import atomic_write_text
 from .collectors.mlx import (
@@ -169,6 +169,7 @@ from .server_metrics import (
     validate_metrics_url,
     write_evidence,
 )
+from .server_metrics.diff import EVIDENCE_KIND
 from .tune.explain import format_report_text
 from .tune.loader import TuneInputError
 from .tune.policy import TunePolicy, TunePolicyError
@@ -587,6 +588,18 @@ def _server_metrics_summary(evidence: dict[str, object]) -> list[str]:
         )
     if not highlights and evidence.get("highlights_withheld_reason"):
         lines.append("  Highlights withheld; raw deltas are still in the evidence.")
+    speculative = cast(dict[str, Any] | None, evidence.get("speculative"))
+    if speculative is not None and speculative["status"] != "unsupported":
+        lines.append(f"Speculative decoding: {speculative['status']}")
+        for key in ("acceptance_rate", "acceptance_length"):
+            derived = speculative.get(key)
+            if derived is not None:
+                lines.append(
+                    f"  {key}: {derived['value']:.6g} {derived['unit']} "
+                    f"[{derived['provenance']}, {derived['source']}]"
+                )
+        if speculative["status"] != "measured":
+            lines.append(f"  {speculative['reason']}")
     return lines
 
 
@@ -1135,6 +1148,33 @@ def _cmd_parse_llama_cpp(args: argparse.Namespace) -> int:
     return 0
 
 
+def _speculative_server_evidence(
+    paths: Sequence[str], records: Sequence[ExperimentRecord]
+) -> dict[str, dict[str, Any]] | None:
+    """Server metrics evidence that ``collect-api`` wrote next to each record.
+
+    A directory holding more than one speculative record cannot say which
+    record its evidence belongs to, so its evidence is not used.
+    """
+    parents = [Path(path).resolve().parent for path in paths]
+    found: dict[str, dict[str, Any]] = {}
+    for parent, record in zip(parents, records, strict=True):
+        evidence_path = parent / SERVER_METRICS_EVIDENCE_NAME
+        if not evidence_path.is_file():
+            continue
+        if parents.count(parent) > 1:
+            print(
+                f"Ignoring {evidence_path}: several speculative records share "
+                "its directory",
+                file=sys.stderr,
+            )
+            continue
+        found[record.run_id] = read_json_artifact(
+            evidence_path, expected_kind=EVIDENCE_KIND
+        )
+    return found or None
+
+
 def _cmd_doctor_speculative(args: argparse.Namespace) -> int:
     try:
         baseline_records = [ExperimentRecord.read_json(path) for path in args.baseline]
@@ -1144,12 +1184,20 @@ def _cmd_doctor_speculative(args: argparse.Namespace) -> int:
     except SchemaValidationError as exc:
         print(f"Invalid ExperimentRecord input: {exc}", file=sys.stderr)
         return 1
+    try:
+        server_evidence = _speculative_server_evidence(
+            args.speculative, speculative_records
+        )
+    except ExportError as exc:
+        print(f"Invalid server metrics evidence: {exc}", file=sys.stderr)
+        return 1
 
     report = diagnose_speculative_regression(
         baseline_records,
         speculative_records,
         min_repetitions=args.min_repetitions,
         relative_threshold=args.relative_threshold,
+        server_evidence=server_evidence,
     )
     payload = asdict(report)
     payload["verdict"] = report.verdict.value
@@ -3584,7 +3632,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--speculative",
         nargs="+",
         required=True,
-        help="ExperimentRecord JSON files for speculative-decoding runs",
+        help=(
+            "ExperimentRecord JSON files for speculative-decoding runs. A "
+            f"{SERVER_METRICS_EVIDENCE_NAME} next to a record supplies the "
+            "server's acceptance counters for that run"
+        ),
     )
     speculative_parser.add_argument("--min-repetitions", type=int, default=2)
     speculative_parser.add_argument("--relative-threshold", type=float, default=0.03)

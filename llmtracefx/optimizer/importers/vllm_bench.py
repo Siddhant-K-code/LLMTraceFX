@@ -5,6 +5,13 @@ Keys and units follow ``vllm/benchmarks/serve.py`` (``benchmark`` and
 milliseconds, throughputs are per second, ``duration`` is in seconds, and
 ``request_rate`` is a number or the string ``"inf"``. vLLM writes no tool or
 schema version, so ``tool_version`` stays null.
+
+When the server runs speculative decoding, ``vllm bench serve`` scrapes the
+server's ``vllm:spec_decode_*`` counters before and after the run and writes
+``spec_decode_*`` keys. ``spec_decode_acceptance_rate`` is a percentage,
+``spec_decode_acceptance_length`` is ``1 + accepted / drafts`` and the
+per-position rates are fractions of drafts. These go to the artifact's
+``speculative`` section, never to ``metrics``.
 """
 
 from __future__ import annotations
@@ -13,12 +20,17 @@ import re
 from typing import Any
 
 from .artifact import (
+    IMPORTED_REPORTED,
     METRIC_DIRECTIONS,
+    SPECULATIVE_NOT_REPORTED,
+    SPECULATIVE_REPORTED,
+    SPECULATIVE_VALUES,
     VLLM_BENCH_TOOL,
     BenchmarkImportError,
     ImportedBenchmark,
     ImportedMetric,
     ImportedSource,
+    ImportedSpeculative,
     ImportedTotal,
     ImportedValue,
     LoadValue,
@@ -197,6 +209,78 @@ def _metrics(data: dict[str, Any], consumed: set[str]) -> dict[str, ImportedMetr
     return metrics
 
 
+_SPEC_KEYS = {
+    "acceptance_rate": "spec_decode_acceptance_rate",
+    "acceptance_length": "spec_decode_acceptance_length",
+    "drafts": "spec_decode_num_drafts",
+    "draft_tokens": "spec_decode_draft_tokens",
+    "accepted_tokens": "spec_decode_accepted_tokens",
+    "verified_tokens": "spec_decode_verified_tokens",
+}
+_SPEC_PER_POSITION_KEY = "spec_decode_per_position_acceptance_rates"
+_SPEC_SCOPE_NOTE = (
+    "vllm bench serve differenced the server's vllm:spec_decode_* counters "
+    "between scrapes taken before and after the run, so every request the "
+    "server handled in that window is counted, not only the benchmark's."
+)
+
+
+def _speculative(data: dict[str, Any], consumed: set[str]) -> ImportedSpeculative:
+    present = [
+        key for key in (*_SPEC_KEYS.values(), _SPEC_PER_POSITION_KEY) if key in data
+    ]
+    consumed.update(present)
+    if not present:
+        return ImportedSpeculative(
+            status=SPECULATIVE_NOT_REPORTED,
+            reason=(
+                "the result has no spec_decode_* keys: the server ran without "
+                "speculative decoding, proposed no draft token in the run, did "
+                "not expose its metrics to the benchmark, or the vLLM version "
+                "predates these keys"
+            ),
+        )
+    values: dict[str, ImportedTotal] = {}
+    notes = [_SPEC_SCOPE_NOTE]
+    for name, key in _SPEC_KEYS.items():
+        if key not in data:
+            continue
+        unit, provenance = SPECULATIVE_VALUES[name]
+        number = (
+            _non_negative(data[key], key)
+            if provenance != IMPORTED_REPORTED
+            else _count(data, key)
+        )
+        values[name] = ImportedTotal(
+            value=number, unit=unit, source_key=key, provenance=provenance
+        )
+    drafts = values.get("drafts")
+    length = values.get("acceptance_length")
+    if length is not None and (length.value == 0 or (drafts and drafts.value == 0)):
+        del values["acceptance_length"]
+        notes.append(
+            "spec_decode_acceptance_length was dropped: vLLM writes 0.0 when no "
+            "draft was counted, which is a placeholder, not a length."
+        )
+    rates: list[float] = []
+    if _SPEC_PER_POSITION_KEY in data:
+        raw = data[_SPEC_PER_POSITION_KEY]
+        if not isinstance(raw, list):
+            raise BenchmarkImportError(f"{_SPEC_PER_POSITION_KEY} must be a list")
+        rates = [
+            _non_negative(value, f"{_SPEC_PER_POSITION_KEY}[{index}]")
+            for index, value in enumerate(raw)
+        ]
+    return ImportedSpeculative(
+        status=SPECULATIVE_REPORTED,
+        reason="vllm bench serve reported speculative decoding counters",
+        values=values,
+        per_position_acceptance_rate=tuple(rates),
+        per_position_source_key=_SPEC_PER_POSITION_KEY if rates else None,
+        notes=tuple(notes),
+    )
+
+
 def _user_metadata(data: dict[str, Any], consumed: set[str]) -> dict[str, str]:
     metadata: dict[str, str] = {}
     for key in sorted(data):
@@ -253,6 +337,7 @@ def import_vllm_bench(
         *_ENDPOINT_KEYS,
     }
     metrics = _metrics(data, consumed)
+    speculative = _speculative(data, consumed)
     endpoint = {key: _optional_str(data, key) for key in _ENDPOINT_KEYS}
     run = {
         "started_at": _optional_str(data, "date"),
@@ -281,4 +366,5 @@ def import_vllm_bench(
         load_unresolved=tuple(unresolved),
         unmapped_keys=tuple(unmapped),
         importer_version=importer_version,
+        speculative=speculative,
     )

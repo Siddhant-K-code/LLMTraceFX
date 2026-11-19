@@ -291,7 +291,13 @@ uv run llmtracefx-optimizer import aiperf profile_export_aiperf.json --output ru
 records the source tool, its version if the file has one, and the sha256 of the
 source file. Statistics the tool computed, such as `p99_ttft_ms`, are labelled
 `imported_derived`, and counts it reported are labelled `imported_reported`.
-They are not LLMTraceFX measurements. Missing fields are omitted and listed,
+They are not LLMTraceFX measurements. When `vllm bench serve` wrote
+`spec_decode_*` keys, they go to a separate `speculative` section with their
+units (`acceptance_rate` stays a percent, per-position rates are fractions of
+drafts). vLLM scraped those from the server's counters, so they cover every
+request the server handled during the run, and `gate` does not compare them.
+Without the keys the section says `not_reported`. See
+[`vllm/benchmarks/serve.py`](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/benchmarks/serve.py#L1136-L1181). Missing fields are omitted and listed,
 never guessed. Malformed files, unsupported AIPerf schemas, cancelled or
 incomplete runs, runs mixing models or phases, and multi-document
 `--append-result` files are refused with exit code 2. Without `--output` the
@@ -831,6 +837,38 @@ counter, so its windows are `unverifiable` unless you pass
 `operator_asserted`, not as a measurement. For other workflows, use
 `server-metrics snapshot` before and after, then `server-metrics diff
 --expected-requests N`. It exits 2 when the window cannot be attributed.
+
+The evidence also has a `speculative` block built from the server's
+speculative decoding counters (vLLM `vllm:spec_decode_*`, SGLang
+`sglang:spec_verify_calls_total`, llama.cpp `llamacpp:spec_decode_*`). Its
+`status` is `measured`, `no_drafts` (the counters exist but did not move),
+`not_exported`, `withheld` (the window is not attributable) or `unsupported`
+(the runtime profile names no such counters). Only `measured` carries values:
+
+| Field | Provenance | How |
+| --- | --- | --- |
+| `counters.verify_steps`, `.draft_tokens`, `.accepted_tokens`, `.emitted_tokens` | `measured_native` | counter delta over the window |
+| `acceptance_rate` | `derived` | accepted draft tokens / proposed draft tokens |
+| `acceptance_length` | `derived` | 1 + accepted / verification steps, or emitted tokens / verification steps when the server counts no accepted tokens |
+| `per_position_acceptance_rate` | `derived` | accepted at each draft position / verification steps (vLLM, llama.cpp) |
+
+Each derived value states its `source` and `basis`, and anything the server's
+counters cannot give is listed under `not_derived`. SGLang counts verification
+calls but not accepted drafts, so only its acceptance length is derived, and
+its `sglang:spec_accept_*` series are last-value gauges that are never
+differenced (they are listed under `ignored_gauges`). Sources:
+[vLLM counters](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/v1/spec_decode/metrics.py#L195-L292),
+[SGLang gauges and counters](https://github.com/sgl-project/sglang/blob/b6d4389a77970e31817536c3e182256fae6a6f73/python/sglang/srt/observability/metrics_collector.py#L548-L583),
+[llama.cpp counters](https://github.com/ggml-org/llama.cpp/blob/ebc9fb933e774bb4ac0ba497a67948e16b7e5656/tools/server/server-task.cpp#L1568-L1660).
+
+`doctor speculative` reads `server_metrics_evidence.json` next to each
+speculative record. When every speculative run has `measured` acceptance, the
+server's view can overrule the latency comparison: a run whose server ran no
+verification step makes the result `inconclusive`, zero accepted drafts is a
+`regression`, and a speed-up larger than the acceptance length is
+`inconclusive`. Otherwise the latency verdict stands. The report's `basis` is
+`server_acceptance` or `client_latency`, and `acceptance` holds the pooled
+counters.
 
 #### Viewing a run as a trace
 
