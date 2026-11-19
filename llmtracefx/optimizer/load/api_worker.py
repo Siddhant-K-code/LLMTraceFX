@@ -42,6 +42,26 @@ TPOT_UNAVAILABLE = "unavailable"
 TTFT_EARLIEST_OUTPUT_EVENT = "earliest_output_event"
 TTFT_FIRST_CONTENT = "first_content_token_offset"
 
+SERVER_REPORTED_ROW_FIELDS: tuple[str, ...] = (
+    "server_queue_ms",
+    "server_ttft_ms",
+    "server_scheduled_ttft_ms",
+    "server_decode_ms",
+    "server_e2e_ms",
+    "server_mean_itl_ms",
+    "server_tokens_per_second",
+    "server_draft_tokens",
+    "server_accepted_draft_tokens",
+    "server_draft_acceptance_rate",
+    "server_mean_acceptance_length",
+    "server_verify_steps",
+)
+"""What the server reported about the request in its own response, under
+the definitions in ``collectors.server_reported.NORMALIZED_FIELDS``. These
+sit beside the client's ``ttft_ms`` and ``e2e_ms`` and never replace them:
+the server's clock starts at arrival or scheduling, the client's at send,
+and engines disagree on whether TTFT includes the queue."""
+
 ROW_FIELD_PROVENANCE: dict[str, str] = {
     "scheduled_offset_s": MetricProvenance.DERIVED.value,
     "dispatched_offset_s": MetricProvenance.MEASURED_WALL_CLOCK.value,
@@ -53,13 +73,18 @@ ROW_FIELD_PROVENANCE: dict[str, str] = {
     "prompt_tokens": MetricProvenance.PROVIDER_REPORTED.value,
     "cached_prompt_tokens": MetricProvenance.PROVIDER_REPORTED.value,
     "tpot_ms": MetricProvenance.DERIVED.value,
+    **dict.fromkeys(
+        SERVER_REPORTED_ROW_FIELDS, MetricProvenance.PROVIDER_REPORTED.value
+    ),
 }
 """How each ``RequestRow`` value was obtained. Offsets are on the
 dispatcher's clock; latencies are measured from the moment the collector
 sent the request. Labels and counters (``http_status``,
-``finish_reason``, ``in_flight_at_dispatch``) are observations, not
-metrics, and carry no provenance. ``tpot_ms`` is ``(e2e_ms - ttft_ms) / (output_tokens -
-1)``, so it inherits the provider's token count."""
+``finish_reason``, ``in_flight_at_dispatch``, ``server_metrics_source``)
+are observations, not metrics, and carry no provenance. ``tpot_ms`` is
+``(e2e_ms - ttft_ms) / (output_tokens - 1)``, so it inherits the
+provider's token count. ``server_*`` values are the server's own numbers,
+present only when the server sent them."""
 
 
 @dataclass(frozen=True)
@@ -187,9 +212,36 @@ class RequestRow:
     content_delta_count: int | None = None
     prompt_sha256: str | None = None
     workload_hash: str | None = None
+    server_metrics_source: str | None = None
+    """Which response block the ``server_*`` values came from, joined with
+    ``+`` when there was more than one; ``None`` when the server sent none."""
+    server_queue_ms: float | None = None
+    server_ttft_ms: float | None = None
+    server_scheduled_ttft_ms: float | None = None
+    server_decode_ms: float | None = None
+    server_e2e_ms: float | None = None
+    server_mean_itl_ms: float | None = None
+    server_tokens_per_second: float | None = None
+    server_draft_tokens: int | None = None
+    server_accepted_draft_tokens: int | None = None
+    server_draft_acceptance_rate: float | None = None
+    server_mean_acceptance_length: float | None = None
+    server_verify_steps: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
+
+
+def _server_reported_fields(result: APICollectionResult) -> dict[str, Any]:
+    reported = result.evidence.server_reported
+    if reported is None or not reported.sources:
+        return {}
+    fields: dict[str, Any] = {
+        f"server_{name}": reported.value(name)
+        for name in (field[len("server_") :] for field in SERVER_REPORTED_ROW_FIELDS)
+    }
+    fields["server_metrics_source"] = "+".join(reported.sources)
+    return fields
 
 
 def _ttft(result: APICollectionResult) -> tuple[float | None, str | None]:
@@ -266,6 +318,7 @@ def row_from_result(
         content_delta_count=evidence.statistics.content_delta_count,
         prompt_sha256=sha256_text(prompt),
         workload_hash=evidence.plan.workload_hash,
+        **_server_reported_fields(result),
     )
 
 

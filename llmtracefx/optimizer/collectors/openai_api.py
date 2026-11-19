@@ -107,6 +107,12 @@ from ._shared import (
     sha256_bytes,
     sha256_text,
 )
+from .server_reported import (
+    TRTLLM_PERF_METRICS_EVENT,
+    TRTLLM_RETURN_METRICS_HEADER,
+    ServerReportedAccumulator,
+    ServerReportedMetrics,
+)
 from .sse import SSEDecodeError, SSEDecoder, SSEEvent
 
 API_EVIDENCE_SCHEMA_VERSION = "1"
@@ -185,6 +191,11 @@ _EVENT_KIND_DONE = "done"
 
 _MAX_ERROR_BODY_BYTES = 64 * 1024
 _MAX_STREAM_BODY_BYTES = 64 * 1024 * 1024
+# Bounds on reading past ``[DONE]`` for TensorRT-LLM's trailing metrics
+# event. Its middleware caps the event near 80 KiB (perf_metrics.py
+# L520-537 at NVIDIA/TensorRT-LLM@e6ecd28), so these leave headroom.
+_MAX_TRAILING_BODY_BYTES = 256 * 1024
+_MAX_TRAILING_WAIT_SECONDS = 5.0
 _MAX_RESPONSE_CONTENT_CHARACTERS = _MAX_VERIFIED_ARTIFACT_BYTES // 16
 _MAX_CONTENT_DELTA_TIMINGS = 100_000
 _MAX_PERSISTED_MESSAGE_CHARS = 600
@@ -1374,6 +1385,15 @@ class APICollectionConfig:
     stream_include_usage: bool = False
     """Send ``stream_options.include_usage``. Portable OpenAI field that
     several servers require before they report token usage in a stream."""
+    trtllm_return_metrics: bool = False
+    """Send ``X-TRTLLM-return-metrics: 1`` and read the
+    ``trtllm.perf_metrics`` event TensorRT-LLM appends after ``[DONE]``.
+
+    Off by default because it is a request header other servers never asked
+    for, and because reading past ``[DONE]`` waits for the rest of the body.
+    The client's own end time is still taken at ``[DONE]``. Recorded in the
+    request plan and the config hash so runs with and without it are never
+    compared as one configuration."""
     retained_event_limit: int = DEFAULT_RETAINED_EVENT_LIMIT
     """How many per-event timing rows the timeline keeps.
 
@@ -1461,6 +1481,8 @@ class APICollectionConfig:
             )
         if not isinstance(self.stream_include_usage, bool):
             raise OpenAIStreamCollectorError("stream_include_usage must be a boolean")
+        if not isinstance(self.trtllm_return_metrics, bool):
+            raise OpenAIStreamCollectorError("trtllm_return_metrics must be a boolean")
         if self.extra_body is not None:
             object.__setattr__(self, "extra_body", _validated_extra_body(self))
         if not isinstance(self.extensions, ProviderExtensions):
@@ -2515,9 +2537,22 @@ def _config_identity_hash(config: APICollectionConfig) -> str:
                 if config.system_prompt is None
                 else sha256_text(config.system_prompt)
             ),
+            # Only written when set, so existing config hashes are unchanged.
+            **({"trtllm_return_metrics": True} if config.trtllm_return_metrics else {}),
         }
     )
     return identity
+
+
+def _request_headers(config: APICollectionConfig, credential: str) -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {credential}",
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+    }
+    if config.trtllm_return_metrics:
+        headers[TRTLLM_RETURN_METRICS_HEADER] = "1"
+    return headers
 
 
 def _endpoint_for_command(endpoint: str) -> str:
@@ -2641,7 +2676,7 @@ def build_request_plan(
         model_revision=config.model_revision,
         credential_env_var=env_var_display,
         credential_header_name="Authorization",
-        header_names=("Accept", "Authorization", "Content-Type"),
+        header_names=tuple(sorted(_request_headers(config, ""))),
         messages=messages,
         request_parameters=_core_request_parameters(config),
         provider_extensions=_extension_fields(config),
@@ -3000,6 +3035,11 @@ class APIEvidence:
     """Whether the provider returned reasoning deltas. The reasoning text
     itself is never persisted."""
     failure: APIFailure | None = None
+    server_reported: ServerReportedMetrics | None = None
+    """Numbers the server reported about this request in the response
+    (vLLM ``metrics``, SGLang ``sglext``, TensorRT-LLM perf metrics).
+    ``provider_reported``, never merged into the client timeline, and
+    absent from the persisted evidence when the server sent none."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -3023,6 +3063,11 @@ class APIEvidence:
             "reasoning_content_returned": self.reasoning_content_returned,
             "reasoning_text_persisted": False,
             "failure": None if self.failure is None else self.failure.to_dict(),
+            **(
+                {}
+                if self.server_reported is None
+                else {"server_reported": self.server_reported.to_dict()}
+            ),
         }
 
     def to_json(self, *, indent: int | None = 2) -> str:
@@ -3094,6 +3139,12 @@ class _StreamAccumulator:
         self.usage: ProviderUsage = ProviderUsage()
         self.terminated_with_done = False
         self.incomplete_event_discarded = False
+        self.server_reported = ServerReportedAccumulator(unsafe_text=redactor.search)
+        self.trailing_wait_started_at: float | None = None
+        """When ``[DONE]`` arrived and the collector began reading past it
+        for a trailing server-metrics event. The client's own completion
+        time; the wait after it is not part of the request."""
+        self._trailing_bytes = 0
 
     def offset_ms(self, moment: float | None) -> float | None:
         if moment is None:
@@ -3106,6 +3157,7 @@ class _StreamAccumulator:
         *,
         redact: _Redactor,
         deadline: float | None = None,
+        trailing_server_metrics: bool = False,
     ) -> APIFailure | None:
         """Drain the body. Returns a failure, or ``None`` when it streamed.
 
@@ -3114,11 +3166,25 @@ class _StreamAccumulator:
         so it only fires when the connection goes quiet; a server that emits
         a keepalive comment before each socket timeout expires resets it
         forever, and the run neither completes nor fails.
+
+        ``trailing_server_metrics`` keeps reading after ``[DONE]`` for
+        TensorRT-LLM's ``trtllm.perf_metrics`` event, which its middleware
+        appends to the final body message. The request has already
+        succeeded by then, so nothing after ``[DONE]`` can fail it: a decode
+        error, a timeout, a dropped connection or an oversized tail only
+        ends the wait.
         """
         decoder = SSEDecoder()
         observed_at: float | None = None
         try:
             for chunk in response.iter_bytes():
+                if self.trailing_wait_started_at is not None:
+                    if not self._trailing_chunk_allowed(chunk, deadline):
+                        return None
+                    for event in decoder.feed(chunk):
+                        if self._handle_trailing_event(event):
+                            return None
+                    continue
                 self.stream_body_bytes += len(chunk)
                 if self.stream_body_bytes > _MAX_STREAM_BODY_BYTES:
                     return APIFailure(
@@ -3147,6 +3213,12 @@ class _StreamAccumulator:
                         ),
                     )
                 for event in decoder.feed(chunk):
+                    # _handle_event can start the wait mid-chunk, so this is
+                    # re-read per event through a call mypy does not narrow.
+                    if self._in_trailing_wait():
+                        if self._handle_trailing_event(event):
+                            return None
+                        continue
                     failure = self._handle_event(event, observed_at, redact=redact)
                     if failure is not None:
                         self._record_event(
@@ -3154,7 +3226,14 @@ class _StreamAccumulator:
                         )
                         return failure
                     if self.terminated_with_done:
-                        return None
+                        if not trailing_server_metrics:
+                            return None
+                        self._begin_trailing_wait(decoder)
+            if self.trailing_wait_started_at is not None:
+                for event in decoder.close():
+                    if self._handle_trailing_event(event):
+                        break
+                return None
             final_at = self._clock() if observed_at is None else observed_at
             for event in decoder.close():
                 failure = self._handle_event(event, final_at, redact=redact)
@@ -3164,15 +3243,49 @@ class _StreamAccumulator:
                 if self.terminated_with_done:
                     return None
         except SSEDecodeError as exc:
+            if self.trailing_wait_started_at is not None:
+                return None
             return APIFailure(category=FAILURE_STREAM_DECODE, message=redact(str(exc)))
         except TransportTimeout as exc:
+            if self.trailing_wait_started_at is not None:
+                return None
             return APIFailure(category=FAILURE_TIMEOUT, message=redact(str(exc)))
         except TransportConnectionError as exc:
+            if self.trailing_wait_started_at is not None:
+                return None
             return APIFailure(category=FAILURE_CONNECTION, message=redact(str(exc)))
         finally:
-            self.comment_count = decoder.comment_count
-            self.incomplete_event_discarded = decoder.incomplete_event_discarded
+            # After ``[DONE]`` the stream's own shape was already decided;
+            # what the trailing wait reads does not change it.
+            if self.trailing_wait_started_at is None:
+                self.comment_count = decoder.comment_count
+                self.incomplete_event_discarded = decoder.incomplete_event_discarded
         return None
+
+    def _begin_trailing_wait(self, decoder: SSEDecoder) -> None:
+        self.trailing_wait_started_at = self._clock()
+        self.comment_count = decoder.comment_count
+        self.incomplete_event_discarded = decoder.incomplete_event_discarded
+
+    def _in_trailing_wait(self) -> bool:
+        return self.trailing_wait_started_at is not None
+
+    def _trailing_chunk_allowed(self, chunk: bytes, deadline: float | None) -> bool:
+        self._trailing_bytes += len(chunk)
+        if self._trailing_bytes > _MAX_TRAILING_BODY_BYTES:
+            return False
+        now = self._clock()
+        started = self.trailing_wait_started_at
+        if started is not None and now - started > _MAX_TRAILING_WAIT_SECONDS:
+            return False
+        return deadline is None or now < deadline
+
+    def _handle_trailing_event(self, event: SSEEvent) -> bool:
+        """Read one post-``[DONE]`` event; ``True`` once the metrics arrived."""
+        if (event.event or "").strip() != TRTLLM_PERF_METRICS_EVENT:
+            return False
+        self.server_reported.absorb_trtllm_perf_metrics(event.data)
+        return True
 
     def _budget_text(self, deadline: float) -> str:
         """The configured budget, rendered from the deadline and start."""
@@ -3267,6 +3380,13 @@ class _StreamAccumulator:
                     message="stream chunk 'usage' is not a JSON object",
                 )
             self.usage = ProviderUsage.from_payload(usage_payload)
+
+        # vLLM puts ``metrics`` on the final usage chunk and SGLang puts
+        # ``sglext`` on a ``choices: []`` chunk. Both are the server's own
+        # account of the request; a malformed block is recorded as such and
+        # never fails a stream that otherwise succeeded.
+        self.server_reported.absorb_vllm_metrics(payload.get("metrics"))
+        self.server_reported.absorb_sglext(payload.get("sglext"))
 
         choice, choices_malformed = _first_choice(payload)
         if choices_malformed:
@@ -4154,11 +4274,7 @@ def stream_chat_completion(
     request = HTTPRequest(
         url=config.endpoint,
         method="POST",
-        headers={
-            "Authorization": f"Bearer {credential}",
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        },
+        headers=_request_headers(config, credential),
         body=json.dumps(_request_body(config), allow_nan=False).encode("utf-8"),
         timeout_seconds=float(config.request_timeout_seconds),
     )
@@ -4204,6 +4320,7 @@ def stream_chat_completion(
                     response,
                     redact=redact,
                     deadline=started + float(config.request_timeout_seconds),
+                    trailing_server_metrics=config.trtllm_return_metrics,
                 )
         finally:
             try:
@@ -4212,7 +4329,13 @@ def stream_chat_completion(
                 # Releasing the socket must never discard collected evidence.
                 pass
 
-    completed = clock()
+    # A trailing wait for server metrics is not part of the request, so the
+    # client's completion time stays at the ``[DONE]`` it saw.
+    completed = (
+        clock()
+        if accumulator.trailing_wait_started_at is None
+        else accumulator.trailing_wait_started_at
+    )
     response_text = accumulator.content_text(force_boundary=failure is not None)
 
     if failure is None:
@@ -4243,6 +4366,7 @@ def stream_chat_completion(
         stream_had_unterminated_event=accumulator.incomplete_event_discarded,
         reasoning_content_returned=accumulator.reasoning_delta_count > 0,
         failure=failure,
+        server_reported=accumulator.server_reported.result(),
     )
 
     record = _build_record(

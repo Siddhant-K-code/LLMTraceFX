@@ -134,7 +134,11 @@ from .instruments.workflow import (
 )
 from .load.artifact import find_sweep_artifact, sweep_refusal
 from .load.backend_cli import add_backend_sweep_parsers
-from .load.cli import add_sweep_api_parser
+from .load.cli import (
+    add_server_reported_arguments,
+    add_sweep_api_parser,
+    server_reported_extra_body,
+)
 from .manifest import collect_environment_manifest
 from .optimize_summary import (
     OPTIMIZE_SUMMARY_SCHEMA_VERSION,
@@ -394,6 +398,10 @@ def _collect_api_argv(args: argparse.Namespace) -> tuple[str, ...]:
     ):
         if value is not None:
             reconstructed.extend((flag, str(value)))
+    if args.trtllm_return_metrics:
+        reconstructed.append("--trtllm-return-metrics")
+    if args.sglang_return_details:
+        reconstructed.append("--sglang-return-details")
     if args.dry_run:
         reconstructed.append("--dry-run")
     return tuple(reconstructed)
@@ -430,6 +438,8 @@ def _api_collection_config(args: argparse.Namespace) -> APICollectionConfig:
             provider_request_id=args.provider_request_id,
         ),
         model_revision=args.model_revision,
+        trtllm_return_metrics=args.trtllm_return_metrics,
+        extra_body=server_reported_extra_body(args),
     )
 
 
@@ -3161,6 +3171,7 @@ def build_parser() -> argparse.ArgumentParser:
             "has not yet counted the request"
         ),
     )
+    add_server_reported_arguments(collect_api_parser)
     collect_api_parser.set_defaults(func=_cmd_collect_api)
     add_sweep_api_parser(subparsers)
     add_backend_sweep_parsers(subparsers)

@@ -48,7 +48,8 @@ The same lists are written into every `sweep.json` under `attribution`.
 ### Provenance
 
 Values keep the existing provenance labels: latencies and offsets are
-`measured_wall_clock`, token counts are `provider_reported`, and TPOT,
+`measured_wall_clock`, token counts and the server's own per-request numbers
+are `provider_reported`, and TPOT,
 percentiles, rates and goodput are `derived`. No new label was added. What
 separates sweep evidence from single-request evidence is:
 
@@ -132,7 +133,9 @@ is false and `summary.interrupted` is true). Each point has:
   and `dispatch`;
 - `requests`, one row per request. Rows hold timings, token counts, the HTTP
   status and the raw finish reason. They hold no prompt or response text,
-  only the prompt's sha256.
+  only the prompt's sha256;
+- `server_reported`, only when at least one succeeded request carried the
+  server's own numbers (see [Per-request server numbers](#per-request-server-numbers)).
 
 An output directory that already holds sweep output is refused.
 
@@ -198,7 +201,13 @@ Rows add the server's own accounting from the final chunk: `truncated`,
 The server timers are `measured_native`. They exclude queueing and network
 time, so they are not the client's TTFT and decode time. Token counts
 (`tokens_predicted`, `tokens_evaluated`, `timings.cache_n`) are
-`provider_reported`. `finish_reason` holds the raw `stop_type`: `eos` and
+`provider_reported`. With speculative decoding, `server_draft_tokens` and
+`server_accepted_draft_tokens` hold `timings.draft_n` and
+`timings.draft_n_accepted`, also `provider_reported`. The server sends them
+only when it drafted at least one token
+([`server_slot_stats::to_json`](https://github.com/ggml-org/llama.cpp/blob/ebc9fb933e774bb4ac0ba497a67948e16b7e5656/tools/server/server-common.cpp#L146-L167)),
+so without a draft model they stay null. No acceptance rate is derived from
+them. `finish_reason` holds the raw `stop_type`: `eos` and
 `word` count as `stop`, `limit` counts as `length`, and anything else fails
 the request as `unrecognized_stop_type`.
 
@@ -371,6 +380,66 @@ before it shows up anywhere else.
 A Poisson schedule over a finite run does not hit its target rate exactly.
 Compare the achieved rate with the planned schedule's rate, not only with the
 target.
+
+## Per-request server numbers
+
+A Prometheus window covers every request in it, so under load it cannot say
+which request queued or how many drafts one request accepted. Some engines
+return those numbers inside the response to each request. `collect-api`,
+`sweep-api` and `replay run` read them when they are there and record
+nothing when they are not; no field is filled with zeros.
+
+| Engine | What it sends | How to get it |
+| --- | --- | --- |
+| vLLM | `metrics` on the final usage chunk ([protocol](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/entrypoints/generate/base/protocol.py#L105-L138), [docs](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/docs/features/per_request_metrics.md)) | Start vLLM with `--enable-per-request-metrics` (and `--per-request-spec-decode-metrics summary` for the speculative block). Pass `--stream-include-usage` (on by default for `replay run`). |
+| SGLang | `sglext` with `spec_tokens_details` and `cached_tokens_details` ([chunk](https://github.com/sgl-project/sglang/blob/b6d4389a77970e31817536c3e182256fae6a6f73/python/sglang/srt/entrypoints/openai/serving_chat.py#L2690-L2761), [request fields](https://github.com/sgl-project/sglang/blob/b6d4389a77970e31817536c3e182256fae6a6f73/python/sglang/srt/entrypoints/openai/protocol.py#L1038-L1039)) | Pass `--sglang-return-details`, which adds `return_spec_tokens_details` and `return_cached_tokens_details` to the request body. |
+| TensorRT-LLM | a `trtllm.perf_metrics` SSE event after `[DONE]`, holding the `Server-Timing` and `X-TRTLLM-*` values ([perf_metrics.py](https://github.com/NVIDIA/TensorRT-LLM/blob/e6ecd280fd1f77cad6496f81a7194afe29f8d5e8/tensorrt_llm/serve/perf_metrics.py#L322-L400), [streaming](https://github.com/NVIDIA/TensorRT-LLM/blob/e6ecd280fd1f77cad6496f81a7194afe29f8d5e8/tensorrt_llm/serve/perf_metrics.py#L842-L914)) | Start the server with `return_perf_metrics` ([server](https://github.com/NVIDIA/TensorRT-LLM/blob/e6ecd280fd1f77cad6496f81a7194afe29f8d5e8/tensorrt_llm/serve/openai_server.py#L760-L766)) and pass `--trtllm-return-metrics`, which sends `X-TRTLLM-return-metrics: 1`. |
+| llama.cpp | `timings.draft_n` and `timings.draft_n_accepted` | `sweep-llama-cpp`, see above. |
+
+Both opt-in flags change the request, so each is part of the config hash, the
+recorded command and, for sweeps, the `workload` block. A run with a flag is
+never compared silently with a run without it. Without the flags nothing
+changes in the request or in the output.
+
+Rows gain `server_metrics_source` (the sources joined with `+`) and these
+fields, all `provider_reported` and null when the server did not send them:
+
+| Field | vLLM | SGLang | TensorRT-LLM |
+| --- | --- | --- | --- |
+| `server_queue_ms` | `queue_time_ms` | | `server_queue` |
+| `server_ttft_ms` | | | `server_ttft`, from arrival, so it includes the queue |
+| `server_scheduled_ttft_ms` | `time_to_first_token_ms`, from scheduling, so it excludes the queue | | |
+| `server_decode_ms` | `generation_time_ms` | | |
+| `server_e2e_ms` | | | `server_e2e` |
+| `server_mean_itl_ms` | `mean_itl_ms` | | |
+| `server_tokens_per_second` | `tokens_per_second` | | |
+| `server_draft_tokens` | `num_draft_tokens` | `spec_num_proposed_drafts` | |
+| `server_accepted_draft_tokens` | `num_accepted_draft_tokens` | `spec_num_correct_drafts` | |
+| `server_draft_acceptance_rate` | `draft_acceptance_rate` | `spec_accept_rate` | |
+| `server_mean_acceptance_length` | `mean_acceptance_length` | `spec_accept_length` | |
+| `server_verify_steps` | `num_spec_steps` | `spec_verify_ct` | |
+
+The two TTFT fields are kept apart because the engines start the clock at
+different points. Both acceptance lengths count the bonus token. None of
+these replaces the client's `ttft_ms` or `e2e_ms`: the server's clock starts
+when the request reaches it and ends when it hands off the last token, so it
+leaves out the network and the client. SGLang's speculative values are kept
+only when `spec_verify_ct` is above zero, because the server defaults every
+one of them to 0 when no verify step ran.
+
+`collect-api` writes the parsed block to `api_evidence.json` under
+`server_reported`, with the normalized values, the raw fields each source
+sent (token ids and routed experts are never kept) and `malformed_fields`,
+the names of values that could not be read (not a finite, non-negative
+number of the expected kind). A malformed
+value is named and left out, and never fails the request. A sweep point
+adds a `server_reported` block with each field's distribution over the
+succeeded requests that had it.
+
+TensorRT-LLM sends its event after `[DONE]`. The client's completion time is
+taken at `[DONE]`, so waiting for the event does not add to `e2e_ms`. The
+wait is capped at 5 seconds and 256 KiB, and a broken or missing event
+leaves the request successful with no TensorRT-LLM values.
 
 ## Pairing server metrics
 

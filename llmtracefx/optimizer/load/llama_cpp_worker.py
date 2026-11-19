@@ -53,9 +53,16 @@ from ..collectors.openai_api import (
     _validate_endpoint,
     parse_endpoint,
 )
+from ..collectors.server_reported import SOURCE_LLAMA_CPP
 from ..collectors.sse import SSEDecodeError, SSEDecoder
 from ..schema import MetricProvenance
-from .api_worker import ROW_FIELD_PROVENANCE, ApiRequestSpec, RequestRow, _tpot
+from .api_worker import (
+    ROW_FIELD_PROVENANCE,
+    SERVER_REPORTED_ROW_FIELDS,
+    ApiRequestSpec,
+    RequestRow,
+    _tpot,
+)
 from .dispatcher import DispatchContext
 from .sweep import ATTRIBUTION, SweepPoint
 
@@ -79,8 +86,14 @@ _MAX_PROPS_BYTES = 1024 * 1024
 _MAX_LABEL_CHARS = 64
 _MAX_BUILD_INFO_CHARS = 200
 
+_LLAMA_CPP_SERVER_REPORTED = ("server_draft_tokens", "server_accepted_draft_tokens")
+
 LLAMA_CPP_FIELD_PROVENANCE: dict[str, str] = {
-    **ROW_FIELD_PROVENANCE,
+    **{
+        k: v
+        for k, v in ROW_FIELD_PROVENANCE.items()
+        if k not in SERVER_REPORTED_ROW_FIELDS or k in _LLAMA_CPP_SERVER_REPORTED
+    },
     "server_prompt_n": MetricProvenance.PROVIDER_REPORTED.value,
     "server_prompt_ms": MetricProvenance.MEASURED_NATIVE.value,
     "server_predicted_ms": MetricProvenance.MEASURED_NATIVE.value,
@@ -90,7 +103,13 @@ LLAMA_CPP_FIELD_PROVENANCE: dict[str, str] = {
 ``cached_prompt_tokens`` is ``timings.cache_n``, all reported by the
 server. ``server_prompt_ms`` and ``server_predicted_ms`` are the server's
 own prompt and decode timers, the same values the llama.cpp log parser
-labels ``measured_native``."""
+labels ``measured_native``. ``server_draft_tokens`` and
+``server_accepted_draft_tokens`` are ``timings.draft_n`` and
+``timings.draft_n_accepted``, which the server sends only when speculative
+decoding drafted at least one token (``server_slot_stats::to_json`` in
+``tools/server/server-common.cpp`` L146-167 at ``LLAMA_CPP_COMMIT``). The
+other ``server_*`` fields of the HTTP worker are never filled here and
+carry no label."""
 
 
 class LlamaCppLoadError(ValueError):
@@ -617,7 +636,22 @@ def _row(
         server_prompt_n=_count(timings.get("prompt_n")),
         server_prompt_ms=_millis(timings.get("prompt_ms")),
         server_predicted_ms=_millis(timings.get("predicted_ms")),
+        **_draft_fields(timings),
     )
+
+
+def _draft_fields(timings: Mapping[str, Any]) -> dict[str, Any]:
+    drafted = _count(timings.get("draft_n"))
+    accepted = _count(timings.get("draft_n_accepted"))
+    if drafted is None and accepted is None:
+        return {}
+    # No acceptance rate is derived: the server reports the two counts and
+    # this worker does not divide them for it.
+    return {
+        "server_metrics_source": SOURCE_LLAMA_CPP,
+        "server_draft_tokens": drafted,
+        "server_accepted_draft_tokens": accepted,
+    }
 
 
 __all__ = [

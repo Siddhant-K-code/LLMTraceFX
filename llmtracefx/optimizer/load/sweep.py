@@ -32,6 +32,7 @@ from ..server_metrics import (
 )
 from .api_worker import (
     ROW_FIELD_PROVENANCE,
+    SERVER_REPORTED_ROW_FIELDS,
     TPOT_DERIVED,
     ApiRequestSpec,
     RequestRow,
@@ -237,6 +238,34 @@ def latency_summary(rows: Sequence[RequestRow]) -> dict[str, Any]:
     return result
 
 
+def server_reported_summary(rows: Sequence[RequestRow]) -> dict[str, Any] | None:
+    """Distributions of what the server reported, beside the client's latency.
+
+    ``None`` when no succeeded request carried a server-reported value, so a
+    server that reports nothing leaves no block rather than empty
+    distributions. A field no request reported is left out.
+    """
+    succeeded = [row for row in rows if _succeeded(row)]
+    sources = Counter(
+        row.server_metrics_source
+        for row in succeeded
+        if row.server_metrics_source is not None
+    )
+    if not sources:
+        return None
+    result: dict[str, Any] = {
+        "covers": "succeeded requests the server reported a value for",
+        "sources": dict(sorted(sources.items())),
+    }
+    for name in SERVER_REPORTED_ROW_FIELDS:
+        values = [
+            value for row in succeeded if (value := getattr(row, name)) is not None
+        ]
+        if values:
+            result[name] = distribution(values, ROW_FIELD_PROVENANCE[name])
+    return result
+
+
 def _withheld(value: float | None, reason: str, provenance: str) -> dict[str, Any]:
     return {
         "value": value,
@@ -356,6 +385,11 @@ def summarize_point(
             "finish_reason_codes": dict(sorted(finish_codes.items())),
         },
         "latency": latency_summary(rows),
+        **(
+            {}
+            if (server_reported := server_reported_summary(rows)) is None
+            else {"server_reported": server_reported}
+        ),
         "throughput": throughput_summary(rows),
         "goodput": None if slo is None else summarize_goodput(rows, slo).to_dict(),
         "scheduling": scheduling,

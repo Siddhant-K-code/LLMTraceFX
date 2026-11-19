@@ -31,6 +31,7 @@ from ..collectors.openai_api import (
     build_request_plan,
     redact_text_for_dry_run,
 )
+from ..collectors.server_reported import SGLANG_DETAILS_REQUEST_FIELDS
 from ..schema import utc_now_iso
 from ..server_metrics import (
     RUNTIME_CHOICES,
@@ -159,6 +160,35 @@ def add_api_client_arguments(parser: argparse.ArgumentParser) -> None:
             "TPOT cannot be derived."
         ),
     )
+    add_server_reported_arguments(parser)
+
+
+def add_server_reported_arguments(parser: argparse.ArgumentParser) -> None:
+    """Opt-ins that ask the server for its own per-request numbers."""
+    parser.add_argument(
+        "--trtllm-return-metrics",
+        action="store_true",
+        help=(
+            "Send X-TRTLLM-return-metrics: 1 and read the trtllm.perf_metrics "
+            "event TensorRT-LLM appends after [DONE] (server started with "
+            "return_perf_metrics). Recorded in the config hash."
+        ),
+    )
+    parser.add_argument(
+        "--sglang-return-details",
+        action="store_true",
+        help=(
+            "Send return_spec_tokens_details and return_cached_tokens_details "
+            "so SGLang returns its sglext block. Recorded in the config hash."
+        ),
+    )
+
+
+def server_reported_extra_body(args: argparse.Namespace) -> dict[str, Any] | None:
+    """Request body fields the server-reported opt-ins add, or ``None``."""
+    if args.sglang_return_details:
+        return dict(SGLANG_DETAILS_REQUEST_FIELDS)
+    return None
 
 
 def add_server_metrics_arguments(parser: argparse.ArgumentParser) -> None:
@@ -206,6 +236,8 @@ def base_api_config(
         ),
         model_revision=args.model_revision,
         stream_include_usage=args.stream_include_usage,
+        trtllm_return_metrics=args.trtllm_return_metrics,
+        extra_body=server_reported_extra_body(args),
     )
 
 
@@ -382,6 +414,8 @@ def _sweep_argv(args: argparse.Namespace) -> tuple[str, ...]:
             argv.extend((flag, str(value)))
     for flag, enabled in (
         ("--stream-include-usage", args.stream_include_usage),
+        ("--trtllm-return-metrics", args.trtllm_return_metrics),
+        ("--sglang-return-details", args.sglang_return_details),
         ("--server-metrics-assume-isolated", args.server_metrics_assume_isolated),
         ("--allow-remote-load", args.allow_remote_load),
         ("--dry-run", args.dry_run),
@@ -522,6 +556,9 @@ def _workload(
         prompts,
         system_prompt,
         stream_include_usage=args.stream_include_usage,
+        # Only written when set, so existing sweep plans are unchanged.
+        **({"trtllm_return_metrics": True} if args.trtllm_return_metrics else {}),
+        **({"sglang_return_details": True} if args.sglang_return_details else {}),
     )
 
 
@@ -892,7 +929,9 @@ __all__ = [
     "add_remote_load_argument",
     "add_server_metrics_arguments",
     "add_sweep_api_parser",
+    "add_server_reported_arguments",
     "base_api_config",
+    "server_reported_extra_body",
     "cmd_sweep_api",
     "ensure_new_output_dir",
     "is_loopback_endpoint",

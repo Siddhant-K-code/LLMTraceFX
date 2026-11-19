@@ -40,6 +40,10 @@ class ServerBehaviour:
     metrics_text: str = ""
     fail_every: int | None = None
     """When set, every ``fail_every``-th request (1-based) gets a 503."""
+    final_extra: dict[str, Any] = field(default_factory=dict)
+    """Top-level fields merged into the final chunk (vLLM ``metrics``)."""
+    after_done: bytes = b""
+    """Bytes written after ``[DONE]`` (TensorRT-LLM's perf metrics event)."""
 
 
 class FakeOpenAIServer(ThreadingHTTPServer):
@@ -49,6 +53,7 @@ class FakeOpenAIServer(ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), _Handler)
         self.behaviour = ServerBehaviour()
         self.bodies: list[dict[str, Any]] = []
+        self.request_headers: list[dict[str, str]] = []
         self.active = 0
         self.peak_active = 0
         self.completed = 0
@@ -96,6 +101,7 @@ class _Handler(BaseHTTPRequestHandler):
         behaviour = server.behaviour
         with server.lock:
             server.bodies.append(body)
+            server.request_headers.append(dict(self.headers.items()))
             number = len(server.bodies)
             server.active += 1
             server.peak_active = max(server.peak_active, server.active)
@@ -140,8 +146,9 @@ class _Handler(BaseHTTPRequestHandler):
             }
             if behaviour.usage is not None:
                 final["usage"] = behaviour.usage
+            final.update(behaviour.final_extra)
             self.wfile.write(_sse(final))
-            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.write(b"data: [DONE]\n\n" + behaviour.after_done)
             self.wfile.flush()
         finally:
             with server.lock:

@@ -16,6 +16,7 @@ from ..collectors.openai_api import (
     OpenAIStreamCollectorError,
     UrllibStreamingTransport,
 )
+from ..load.cli import add_server_reported_arguments, server_reported_extra_body
 from ..load.dispatcher import MAX_CONCURRENCY, DispatchConfigError
 from ..schema import MetricProvenance
 from ..server_metrics import (
@@ -318,6 +319,7 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
             "SGLang report no token counts, so token fidelity stays empty."
         ),
     )
+    add_server_reported_arguments(parser)
     parser.add_argument(
         "--allow-remote-load",
         action="store_true",
@@ -610,6 +612,8 @@ def _run_argv(args: argparse.Namespace) -> tuple[str, ...]:
         ("--exclude-failed", args.exclude_failed),
         ("--ignore-eos", args.ignore_eos),
         ("--no-stream-usage", args.no_stream_usage),
+        ("--trtllm-return-metrics", args.trtllm_return_metrics),
+        ("--sglang-return-details", args.sglang_return_details),
         ("--allow-remote-load", args.allow_remote_load),
     ):
         if enabled:
@@ -634,6 +638,8 @@ def _base_config(args: argparse.Namespace) -> APICollectionConfig:
         request_timeout_seconds=args.request_timeout,
         model_revision=args.model_revision,
         stream_include_usage=not args.no_stream_usage,
+        trtllm_return_metrics=args.trtllm_return_metrics,
+        extra_body=server_reported_extra_body(args),
     )
 
 
