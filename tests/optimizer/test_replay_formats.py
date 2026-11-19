@@ -1,6 +1,7 @@
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -355,3 +356,253 @@ def test_aiperf_multi_turn_refuses_a_single_turn_row(tmp_path: Path) -> None:
     path = _write(tmp_path, AIPERF.read_text())
     with pytest.raises(TraceFormatError, match="unknown field"):
         parse_trace(path, "aiperf-multi-turn")
+
+
+WEKA = FIXTURES / "weka_small.jsonl"
+OTEL = FIXTURES / "otel_genai_small.jsonl"
+
+
+def test_weka_conversations_are_sessions_timed_by_idle_gaps() -> None:
+    trace = parse_trace(WEKA, "weka")
+    assert (trace.block_size, trace.sessions, trace.timestamp_unit) == (4, 2, "s")
+    entries = trace.entries
+    assert [(e.session, e.turn, e.line) for e in entries] == [
+        (0, 0, 1),
+        (0, 1, 1),
+        (0, 2, 1),
+        (1, 0, 2),
+        (1, 1, 2),
+    ]
+    # Every turn carries its session's start so a window selects whole sessions.
+    assert [e.arrival_s for e in entries] == [0.0, 0.0, 0.0, 0.25, 0.25]
+    # 1.5 - (0.0 + 1.0); then 1.8 overlaps the previous end 2.0; then no api_time.
+    assert [e.delay_s for e in entries] == [None, 0.5, None, None, None]
+    assert [e.not_before_s for e in entries] == [None, None, 1.8, None, 0.5]
+    assert [e.block_scope for e in entries] == [1, 1, 1, 2, 2]
+    assert entries[3].hash_ids == ()
+    details = trace.details
+    assert details["hash_blocks"] == {"partial_last_block": 2, "unhashed_tail": 2}
+    assert details["request_types"] == {"n": 1, "s": 4}
+    assert "requests[].api_time" in details["ignored_fields"]
+    source = json.dumps(trace.source_dict())
+    assert "conv-secret" not in source
+    assert '"commit": "15e88f72f902c7852c330caf2cc11722e5dbc1aa"' in source
+
+
+def _weka_line(**overrides: object) -> dict[str, object]:
+    line: dict[str, object] = {
+        "id": "c",
+        "block_size": 4,
+        "requests": [{"t": 0, "type": "s", "in": 8, "out": 1, "hash_ids": [0, 1]}],
+    }
+    line.update(overrides)
+    return line
+
+
+def _weka_request(**overrides: object) -> dict[str, object]:
+    request: dict[str, object] = {
+        "t": 0,
+        "type": "s",
+        "in": 8,
+        "out": 1,
+        "hash_ids": [0, 1],
+    }
+    request.update(overrides)
+    return request
+
+
+@pytest.mark.parametrize(
+    ("lines", "message"),
+    [
+        (
+            [_weka_line(requests=[{"type": "subagent", "requests": []}])],
+            "subagent entries are not supported",
+        ),
+        ([_weka_line(hash_id_scope="global")], "hash_id_scope must be 'local'"),
+        ([_weka_line(session="x")], "field 'session'"),
+        ([_weka_line(requests=[_weka_request(prompt="hi")])], "field 'prompt'"),
+        ([_weka_line(block_size=None)], "block_size is required"),
+        ([_weka_line(requests=[])], "requests must be a non-empty list"),
+        ([_weka_line(), _weka_line(block_size=8)], "one block size"),
+        (
+            [_weka_line(requests=[_weka_request(hash_ids=[0])])],
+            "needs 2 blocks of 4",
+        ),
+        (
+            [_weka_line(requests=[_weka_request(hash_ids=[0, 1, 2])])],
+            "needs 2 blocks of 4",
+        ),
+        (
+            [
+                _weka_line(
+                    requests=[_weka_request(t=2), _weka_request(t=1)],
+                )
+            ],
+            "t within the conversation goes backwards",
+        ),
+        (
+            [
+                _weka_line(
+                    requests=[_weka_request(), _weka_request(hash_ids=[1, 0])],
+                )
+            ],
+            "cannot name a shared prefix",
+        ),
+        ([_weka_line(requests=[_weka_request(type="x")])], "type must be"),
+        ([_weka_line(requests=[_weka_request(api_time=-1)])], "api_time must be"),
+    ],
+)
+def test_weka_refusals(
+    tmp_path: Path, lines: list[dict[str, object]], message: str
+) -> None:
+    path = _write(tmp_path, _mooncake_rows(*lines))
+    with pytest.raises(TraceFormatError, match=message):
+        parse_trace(path, "weka")
+
+
+def test_weka_hash_ids_are_scoped_to_their_conversation(tmp_path: Path) -> None:
+    # The same id names different text on each line, so a block that would
+    # conflict across lines is fine.
+    path = _write(
+        tmp_path,
+        _mooncake_rows(
+            _weka_line(),
+            _weka_line(requests=[_weka_request(**{"in": 6, "hash_ids": [1, 0]})]),
+        ),
+    )
+    trace = parse_trace(path, "weka")
+    assert [e.block_scope for e in trace.entries] == [1, 2]
+
+
+def test_weka_declares_its_block_size() -> None:
+    with pytest.raises(TraceFormatError, match="a Weka trace declares its block_size"):
+        parse_trace(WEKA, "weka", block_size=64)
+
+
+def test_otel_genai_spans_group_by_trace_and_skip_other_operations() -> None:
+    trace = parse_trace(OTEL, "otel-genai")
+    assert (trace.sessions, trace.timestamp_unit, trace.rows_total) == (2, "ns", 7)
+    entries = trace.entries
+    assert [(e.session, e.turn, e.line) for e in entries] == [
+        (0, 0, 1),
+        (0, 1, 1),
+        (0, 2, 2),
+        (1, 0, 2),
+    ]
+    assert [(e.input_tokens, e.output_tokens) for e in entries] == [
+        (100, 10),
+        (120, 12),
+        (130, 8),
+        (40, 4),
+    ]
+    assert [e.arrival_s for e in entries] == [1.0, 1.0, 1.0, 1.2]
+    # The second chat starts 0.5 s after the first ends; the third overlaps it.
+    assert [e.delay_s for e in entries] == [None, 0.5, None, None]
+    assert [e.not_before_s for e in entries] == [None, None, 2.8, None]
+    assert [e.line_turn for e in entries] == [1, 3, 1, 0]
+    details = trace.details
+    assert details["skipped_spans"] == {
+        "(no gen_ai.operation.name)": 1,
+        "execute_tool": 1,
+        "invoke_agent": 1,
+    }
+    assert details["deprecated_token_attributes"] == {
+        "gen_ai.usage.completion_tokens": 1,
+        "gen_ai.usage.prompt_tokens": 1,
+    }
+    source = json.dumps(trace.source_dict())
+    assert "0af7651916cd43dd8448eb211c80319c" not in source
+    assert "SECRET" not in source
+
+
+def _otel_span(*attributes: tuple[str, object], **fields: object) -> dict[str, Any]:
+    values = {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.usage.input_tokens": 5,
+        "gen_ai.usage.output_tokens": 2,
+    }
+    values.update(dict(attributes))
+    span: dict[str, Any] = {
+        "traceId": "0af7651916cd43dd8448eb211c80319c",
+        "spanId": "b7ad6b7169203331",
+        "startTimeUnixNano": "1000",
+        "endTimeUnixNano": "2000",
+        "attributes": [
+            {
+                "key": key,
+                "value": (
+                    {"stringValue": value}
+                    if isinstance(value, str)
+                    else (
+                        {"doubleValue": value}
+                        if isinstance(value, float)
+                        else {"intValue": str(value)}
+                    )
+                ),
+            }
+            for key, value in values.items()
+            if value is not None
+        ],
+    }
+    span.update(fields)
+    return span
+
+
+def _otel_rows(*spans: dict[str, Any]) -> str:
+    batch = {"resourceSpans": [{"scopeSpans": [{"spans": list(spans)}]}]}
+    return json.dumps(batch) + "\n"
+
+
+@pytest.mark.parametrize(
+    ("span", "message"),
+    [
+        (
+            _otel_span(("gen_ai.operation.name", None)),
+            "gen_ai.usage.input_tokens but no gen_ai.operation.name",
+        ),
+        (_otel_span(("gen_ai.usage.output_tokens", None)), "output_tokens is required"),
+        (_otel_span(("gen_ai.usage.input_tokens", 5.0)), "must be an integer"),
+        (_otel_span(("gen_ai.usage.input_tokens", 0)), "must be an integer"),
+        (
+            _otel_span(("gen_ai.usage.prompt_tokens", 6)),
+            "deprecated gen_ai.usage.prompt_tokens 6 disagree",
+        ),
+        (_otel_span(traceId="0" * 32), "traceId must be 32 hex digits"),
+        (_otel_span(traceId="xyz"), "traceId must be 32 hex digits"),
+        (_otel_span(endTimeUnixNano="999"), "endTimeUnixNano is before"),
+        (_otel_span(startTimeUnixNano=1.5), "must be an integer number"),
+        (_otel_span(body="x"), "field 'body'"),
+        (_otel_span(status={"code": 7}), "status.code must be 0, 1 or 2"),
+        (_otel_span(("gen_ai.operation.name", "embeddings")), "no successful chat"),
+    ],
+)
+def test_otel_genai_refusals(
+    tmp_path: Path, span: dict[str, Any], message: str
+) -> None:
+    path = _write(tmp_path, _otel_rows(span))
+    with pytest.raises(TraceFormatError, match=message):
+        parse_trace(path, "otel-genai")
+
+
+def test_otel_genai_refuses_repeated_attributes(tmp_path: Path) -> None:
+    span = _otel_span()
+    span["attributes"].append(span["attributes"][0])
+    path = _write(tmp_path, _otel_rows(span))
+    with pytest.raises(TraceFormatError, match="is repeated"):
+        parse_trace(path, "otel-genai")
+
+
+def test_otel_genai_failed_spans_need_exclude_failed(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        _otel_rows(
+            _otel_span(),
+            _otel_span(status={"code": 2, "message": "boom"}),
+            _otel_span(("error.type", "timeout")),
+        ),
+    )
+    with pytest.raises(TraceFormatError, match="2 failed inference spans"):
+        parse_trace(path, "otel-genai")
+    trace = parse_trace(path, "otel-genai", exclude_failed=True)
+    assert len(trace.entries) == 1
+    assert trace.excluded == {"error_spans": 2}

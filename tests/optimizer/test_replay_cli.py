@@ -155,3 +155,35 @@ def test_validate_and_plan_a_multi_turn_trace(
     refused = [*argv, "--max-requests", "1", "--output-dir", str(tmp_path / "x")]
     assert _run(refused) == 1
     assert "--max-sessions" in capsys.readouterr().err
+
+
+WEKA = str(FIXTURES / "weka_small.jsonl")
+OTEL = str(FIXTURES / "otel_genai_small.jsonl")
+
+
+def test_validate_reports_session_trace_timing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert _run(["replay", "validate", WEKA, "--format", "weka"]) == 0
+    out = capsys.readouterr().out
+    assert "sessions: 2" in out
+    assert "1 delay_after_recorded_end, 1 not_before_start_after_overlap" in out
+    assert "6 unique of 10" in out
+    assert _run(["replay", "validate", OTEL, "--format", "otel-genai"]) == 0
+    out = capsys.readouterr().out
+    assert "7 read, 4 replayable" in out
+    assert "skipped spans: 1 (no gen_ai.operation.name), 1 execute_tool" in out
+    assert "hash blocks" not in out
+
+
+def test_plan_writes_session_trace_schedules(tmp_path: Path) -> None:
+    for trace, fmt in [(WEKA, "weka"), (OTEL, "otel-genai")]:
+        out = tmp_path / fmt
+        argv = ["replay", "plan", trace, "--format", fmt, "--max-sessions", "1"]
+        assert _run([*argv, "--output-dir", str(out)]) == 0
+        schedule = read_schedule(out / "replay_schedule.json")
+        requests = schedule["requests"]
+        assert {r["session"] for r in requests} == {0}
+        assert len(requests) == 3
+        assert requests[0]["arrival_offset_s"] == 0.0
+        assert "history" not in schedule["prompts"]

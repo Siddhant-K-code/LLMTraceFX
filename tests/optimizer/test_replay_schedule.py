@@ -182,3 +182,56 @@ def test_multi_turn_selection_keeps_whole_sessions() -> None:
         build_schedule(AIPERF, Selection(max_sessions=1), salt="s")
     with pytest.raises(ScheduleError, match="at least 1"):
         build_schedule(MULTI, Selection(max_sessions=0), salt="s")
+
+
+WEKA = parse_trace(FIXTURES / "weka_small.jsonl", "weka")
+OTEL = parse_trace(FIXTURES / "otel_genai_small.jsonl", "otel-genai")
+
+
+def test_weka_blocks_share_bytes_within_a_conversation_only() -> None:
+    schedule = build_schedule(WEKA, Selection(time_scale=2.0), salt="s")
+    prompts = list(schedule.prompts())
+    assert [word_count(p) for p in prompts] == [10, 14, 8, 3, 6]
+    # Line 1's requests share hash ids 0 and 1: two 4-word blocks.
+    assert prompts[0].startswith(prompts[2]) and prompts[1].startswith(prompts[2])
+    # Request 1 hashes 3 full blocks; its last 2 words are its own tail.
+    assert prompts[1][:60] != prompts[0][:60]
+    # Line 2's id 0 is a different block from line 1's id 0.
+    assert prompts[4][:20] != prompts[0][:20]
+    requests = schedule.requests
+    assert [r.reused_blocks for r in requests] == [0, 2, 2, 0, 0]
+    assert [r.arrival_offset_s for r in requests] == [0.0, None, None, 0.5, None]
+    assert [r.delay_s for r in requests] == [None, 1.0, None, None, None]
+    assert [r.not_before_offset_s for r in requests] == [None, None, 3.6, None, 1.0]
+    assert {r.history_turns for r in requests} == {0}
+    assert {r.history_sha256 for r in requests} == {None}
+    builder = schedule.prompt_builder()
+    assert schedule.history_at(builder, 1) == ()
+    document = schedule.to_document()
+    assert "history" not in document["prompts"]
+    assert document["sessions"]["upstream"]["commit"].startswith("15e88f7")
+    assert "earlier turns are not resent" in document["sessions"]["context"]
+    assert document["summary"]["prefix_reuse"]["blocks_reused"] == 4
+    assert document["selection"]["window_reference"] == (
+        "earliest session start in the trace file"
+    )
+    assert "conv-secret" not in json.dumps(document)
+
+
+def test_otel_genai_prompts_are_seeded_per_span() -> None:
+    schedule = build_schedule(OTEL, Selection(), salt="s")
+    prompts = list(schedule.prompts())
+    assert [word_count(p) for p in prompts] == [100, 120, 130, 40]
+    assert len({p[:20] for p in prompts}) == 4
+    requests = schedule.requests
+    assert [r.arrival_offset_s for r in requests] == [0.0, None, None, 0.2]
+    assert [r.delay_s for r in requests] == [None, 0.5, None, None]
+    assert [r.not_before_offset_s for r in requests] == [None, None, 1.8, None]
+    document = schedule.to_document()
+    assert "history" not in document["prompts"]
+    assert "prefix_reuse" not in document["summary"]
+    assert document["sessions"]["upstream"]["commit"].startswith("76e0c19")
+    assert [
+        r.source_line
+        for r in build_schedule(OTEL, Selection(max_sessions=1), salt="s").requests
+    ] == [1, 1, 2]

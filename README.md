@@ -241,11 +241,12 @@ relabelled as measurements.
   such as queue time and server TTFT are only reported when the window
   provably contains exactly the requests you sent. Otherwise the window is
   marked `contaminated`, `incomplete`, `counter_reset`, or `unverifiable`.
-- **Trace replay (Mooncake, BurstGPT, AIPerf `single_turn` and `multi_turn`):**
-  check a published arrival trace, plan its schedule offline, and replay it
-  against an OpenAI-compatible endpoint at the recorded arrival times. Synthetic
-  prompts keep Mooncake's prefix sharing. A malformed trace is refused, not
-  repaired.
+- **Trace replay (Mooncake, BurstGPT, AIPerf `single_turn` and `multi_turn`,
+  Weka agentic sessions, OpenTelemetry GenAI spans):** check a published
+  arrival trace, plan its schedule offline, and replay it against an
+  OpenAI-compatible endpoint at the recorded arrival times. Synthetic prompts
+  keep Mooncake's and Weka's prefix sharing. `export otlp` output replays
+  directly. A malformed trace is refused, not repaired.
 
 ### Export to observability tools
 
@@ -874,7 +875,7 @@ skipped. Every value that is left out is listed as `Not exported: ...`.
 ### Trace replay
 
 `replay` sends a published arrival trace to an OpenAI-compatible endpoint at
-the times the trace records. Four formats are read, each named with
+the times the trace records. Six formats are read, each named with
 `--format` and never guessed from the file:
 
 - `mooncake`: Mooncake JSONL with `timestamp` (ms), `input_length`,
@@ -894,6 +895,27 @@ the times the trace records. Four formats are read, each named with
   Select with `--max-sessions`; `--max-requests` is refused because it would
   cut a session. Mooncake has no multi-turn format, so its conversation trace
   is read with `mooncake`.
+- `weka`: Weka's Claude Code session traces
+  ([spec](https://github.com/callanjfox/agentic-coding-analysis/blob/15e88f72f902c7852c330caf2cc11722e5dbc1aa/docs/TRACE_FORMAT.md)),
+  one conversation per line with its `block_size` and a `requests` list of
+  `t` (s), `in`, `out`, `hash_ids` and `api_time`. A conversation is a session.
+  Its `hash_ids` name blocks within that conversation only, so the same id on
+  two lines is two different texts. Every conversation in these traces starts
+  near `t` 0, so pick a few with `--max-sessions`. Subagent entries, a
+  `hash_id_scope` other than `local`, and a `block_size` that differs between
+  lines are refused; `--block-size` is refused because the file declares it.
+- `otel-genai`: OTLP/JSON trace exports, one `TracesData` per line, read with
+  the GenAI semantic conventions
+  ([pinned](https://github.com/open-telemetry/semantic-conventions-genai/tree/76e0c19e7fe11dc693fe258642363a438af4d3aa)).
+  Each `chat`, `text_completion` or `generate_content` span is one request,
+  with `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens` as its
+  lengths and its start time as its arrival. Spans of one `traceId` form a
+  session. Agent, tool and embedding spans are skipped and counted, and a span
+  with token usage but no `gen_ai.operation.name` is refused as ambiguous.
+  Deprecated `gen_ai.usage.prompt_tokens` and `completion_tokens` are used
+  only when the current name is absent. Failed spans (status `ERROR` or an
+  `error.type`) are refused unless `--exclude-failed` drops and counts them.
+  Prompt and message attributes are never read.
 
 ```bash
 # No network: check the file, then write the schedule.
@@ -910,7 +932,8 @@ uv run llmtracefx-optimizer replay run trace.jsonl --format mooncake \
   --server-metrics-url http://127.0.0.1:8000/metrics
 ```
 
-Mooncake and BurstGPT give lengths, not text, so prompts are synthetic. One
+Mooncake, BurstGPT, Weka and OTel give lengths, not text, so prompts are
+synthetic. One
 word stands in for one token, so the planned prompt length is labelled
 `estimated` and the provider's `prompt_tokens` is recorded next to it. Every
 Mooncake hash block becomes the same text wherever it appears, so requests
@@ -918,6 +941,35 @@ that share leading `hash_ids` share a byte-identical prefix. Prompt text
 comes from a salt that is random per run unless `--prompt-salt` is given, so
 a replay never hits cache entries left by an earlier one. Prompt text is never
 written to disk; only its sha256 is.
+
+In `weka` and `otel-genai` traces a session's first request is sent at its
+recorded start. Each later request waits until the previous one completes,
+then for the idle gap the trace recorded between the previous request's end
+(`t` plus `api_time`, or the span's end) and its own start. When the trace has
+no end for the previous request, or it overlapped this one, the request waits
+for the previous one and its own recorded start instead. AIPerf's Weka reader
+sends such a request at once; waiting for the recorded start keeps the trace's
+spacing. `validate` counts how many requests used each rule. Neither format
+resends earlier turns: each request is one prompt of its recorded input
+length. Weka prompts are built from hash blocks like Mooncake's, so requests
+in a conversation share their recorded prefix; leftover tokens past the last
+hashed block are text unique to that request. OTel spans carry no block ids,
+so their prompts share nothing. Concurrent spans of one trace, such as
+parallel subagent calls, are sent one after another.
+
+`export otlp` writes one line per run, so exported runs replay as they are.
+Each run becomes a session of one request:
+
+```bash
+uv run llmtracefx-optimizer export otlp --record run1/record.json \
+  --api-evidence run1/api_evidence.json --output run1.otlp.json
+cat run1.otlp.json run2.otlp.json > runs.jsonl
+uv run llmtracefx-optimizer replay plan runs.jsonl --format otel-genai \
+  --output-dir replay-plan
+```
+
+Raw session ids, `traceId`s and conversation ids are never written; sessions
+are numbered by first arrival.
 
 `--tokenizer` makes synthetic lengths exact. It takes a Hugging Face repo id
 (`--tokenizer-revision` pins a branch, tag or commit), a `tokenizer.json`

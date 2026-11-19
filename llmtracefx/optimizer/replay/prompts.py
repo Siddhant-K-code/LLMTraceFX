@@ -16,6 +16,14 @@ byte-identical text for those ``k`` blocks and differ from the next one. A
 partial last block is the leading words of that id's block. The parser has
 already checked that an id always names the same length.
 
+Weka: the same as Mooncake, except that ids are numbered per conversation,
+so a block's seed also holds its conversation's source line. A request whose
+input length is past its last full hashed block gets a tail seeded by the
+request itself, so the tail is never shared.
+
+OTel GenAI spans carry no prefix information, so each prompt is seeded by its
+span's place in the file and prompts share no structure.
+
 BurstGPT has no prefix information, so each prompt is seeded by its source
 line and prompts share no structure.
 
@@ -122,7 +130,7 @@ class PromptBuilder:
         self._trace = trace_sha256
         self._block_size = block_size
         self._vocabulary = vocabulary
-        self._blocks: dict[int, str] = {}
+        self._blocks: dict[tuple[int | None, int], str] = {}
 
     def _seed(self, kind: str, key: int | str) -> bytes:
         method = self._vocabulary.method
@@ -133,27 +141,53 @@ class PromptBuilder:
         # shared prefixes byte-identical.
         return text if self._vocabulary.leading_space else text[1:]
 
-    def block_text(self, hash_id: int) -> str:
-        """The full-length text for one Mooncake hash block."""
+    def block_text(self, hash_id: int, scope: int | None = None) -> str:
+        """The full-length text for one hash block.
+
+        ``scope`` is the conversation a Weka id belongs to; a Mooncake id is
+        global and has none.
+        """
         if self._block_size is None:
             raise ValueError("hash blocks need a block size")
-        text = self._blocks.get(hash_id)
+        text = self._blocks.get((scope, hash_id))
         if text is None:
+            key: int | str = hash_id if scope is None else f"{scope}.{hash_id}"
             text = _words(
-                self._seed("block", hash_id), self._block_size, self._vocabulary.words
+                self._seed("block", key), self._block_size, self._vocabulary.words
             )
             if len(self._blocks) < 65536:
-                self._blocks[hash_id] = text
+                self._blocks[(scope, hash_id)] = text
         return text
 
-    def for_hash_ids(self, hash_ids: Sequence[int], input_tokens: int) -> str:
+    def for_hash_ids(
+        self,
+        hash_ids: Sequence[int],
+        input_tokens: int,
+        *,
+        scope: int | None = None,
+        tail_key: str | None = None,
+    ) -> str:
+        """A prompt made of hash blocks.
+
+        With ``tail_key``, tokens past the last full block are words seeded
+        by that key, for a trace that hashes full blocks only.
+        """
         if self._block_size is None:
             raise ValueError("hash blocks need a block size")
+        hashed = len(hash_ids) * self._block_size
+        if tail_key is not None and hashed <= input_tokens:
+            blocks = "".join(self.block_text(block, scope) for block in hash_ids)
+            tail = _words(
+                self._seed("tail", tail_key),
+                input_tokens - hashed,
+                self._vocabulary.words,
+            )
+            return self._finish(blocks + tail)
         last = input_tokens - (len(hash_ids) - 1) * self._block_size
         if not hash_ids or not 1 <= last <= self._block_size:
             raise ValueError("hash_ids do not match input_tokens")
-        parts = [self.block_text(block) for block in hash_ids[:-1]]
-        final = self.block_text(hash_ids[-1])
+        parts = [self.block_text(block, scope) for block in hash_ids[:-1]]
+        final = self.block_text(hash_ids[-1], scope)
         if last < self._block_size:
             # Every word is one leading space plus four ASCII letters.
             final = final[: last * 5]
@@ -164,6 +198,16 @@ class PromptBuilder:
         """An unstructured prompt seeded by the source line."""
         return self._finish(
             _words(self._seed("line", line), input_tokens, self._vocabulary.words)
+        )
+
+    def for_item(self, line: int, position: int, input_tokens: int) -> str:
+        """An unstructured prompt seeded by one item of a source line."""
+        return self._finish(
+            _words(
+                self._seed("item", f"{line}.{position}"),
+                input_tokens,
+                self._vocabulary.words,
+            )
         )
 
     def for_reply(self, line: int, line_turn: int, words: int) -> str:
