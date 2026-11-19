@@ -136,6 +136,31 @@ def test_ignore_eos_is_sent_only_when_asked(tmp_path: Path) -> None:
     assert result["options"]["ignore_eos"] is True
 
 
+def test_trtllm_metrics_opt_in_is_sent_and_recorded(tmp_path: Path) -> None:
+    trailer = (
+        b"event: trtllm.perf_metrics\n"
+        b'data: {"Server-Timing": "server_queue;dur=2, server_ttft;dur=30"}\n\n'
+    )
+    with fake_openai_server() as server:
+        assert _run(_argv(server.endpoint, tmp_path / "plain")) == 0
+        server.behaviour.after_done = trailer
+        argv = _argv(server.endpoint, tmp_path / "out", "--trtllm-return-metrics")
+        assert _run(argv) == 0
+        headers = [{k.lower(): v for k, v in h.items()} for h in server.request_headers]
+    assert [h.get("x-trtllm-return-metrics") for h in headers] == [None] * 4 + ["1"] * 4
+
+    plain = read_result(tmp_path / "plain" / RESULT_FILE)
+    assert "trtllm_return_metrics" not in plain["target"]
+    result = read_result(tmp_path / "out" / RESULT_FILE)
+    assert result["target"]["trtllm_return_metrics"] is True
+    assert "X-TRTLLM-return-metrics" in result["target"]["header_names"]
+    assert "--trtllm-return-metrics" in result["target"]["command"]
+    rows = _lines(tmp_path / "out" / REQUESTS_FILE)
+    assert all(row["server_metrics_source"] == "trtllm_perf_metrics" for row in rows)
+    assert all(row["server_queue_ms"] == 2.0 for row in rows)
+    assert all(row["server_ttft_ms"] == 30.0 for row in rows)
+
+
 def test_a_tight_lag_limit_gives_lagged_and_exit_2(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

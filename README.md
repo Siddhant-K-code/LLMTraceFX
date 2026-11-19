@@ -871,6 +871,19 @@ verification step makes the result `inconclusive`, zero accepted drafts is a
 `server_acceptance` or `client_latency`, and `acceptance` holds the pooled
 counters.
 
+#### Server numbers in the response
+
+vLLM (`--enable-per-request-metrics`), SGLang and TensorRT-LLM can return
+their own queue time, TTFT and speculative decoding counts inside each
+response. `collect-api`, `sweep-api` and `replay run` record them as
+`provider_reported` under `server_reported` and in `server_*` row fields,
+next to the client's timing and never in place of it. SGLang needs
+`--sglang-return-details` and TensorRT-LLM needs `--trtllm-return-metrics`;
+both change the request, so both are part of the config hash. A server that
+sends nothing leaves nothing. See
+[Per-request server numbers](docs/load-sweeps.md#per-request-server-numbers)
+for the field mapping and the pinned upstream sources.
+
 #### Viewing a run as a trace
 
 ```bash

@@ -36,7 +36,13 @@ from ..collectors._shared import sha256_text
 from ..collectors.mlx import MLXRuntime
 from ..collectors.openai_api import FAILURE_TIMEOUT
 from ..schema import MetricProvenance
-from .api_worker import ROW_FIELD_PROVENANCE, ApiRequestSpec, RequestRow, _tpot
+from .api_worker import (
+    ROW_FIELD_PROVENANCE,
+    SERVER_REPORTED_ROW_FIELDS,
+    ApiRequestSpec,
+    RequestRow,
+    _tpot,
+)
 from .dispatcher import DispatchContext
 from .sweep import ATTRIBUTION, SweepPoint
 
@@ -62,14 +68,19 @@ FAILURE_NO_FINISH = "no_finish_reason"
 TTFT_FIRST_COUNTED_TOKEN = "first_counted_token"
 
 MLX_FIELD_PROVENANCE: dict[str, str] = {
-    **{k: v for k, v in ROW_FIELD_PROVENANCE.items() if k != "cached_prompt_tokens"},
+    **{
+        k: v
+        for k, v in ROW_FIELD_PROVENANCE.items()
+        if k != "cached_prompt_tokens" and k not in SERVER_REPORTED_ROW_FIELDS
+    },
     "output_tokens": MetricProvenance.MEASURED_NATIVE.value,
     "prompt_tokens": MetricProvenance.MEASURED_NATIVE.value,
 }
 """``output_tokens`` is counted from ``stream_generate`` responses with the
 ``collect-mlx`` rule and ``prompt_tokens`` is the length of the encoded
 prompt; both come from the runtime itself. There is no prompt cache, so
-``cached_prompt_tokens`` is always empty and has no label."""
+``cached_prompt_tokens`` is always empty and has no label. There is no
+server either, so the ``server_*`` fields are always empty and unlabeled."""
 
 _RUNTIME_ERRORS = (KeyError, RuntimeError, ValueError, OSError, MemoryError)
 _MAX_LABEL_CHARS = 64

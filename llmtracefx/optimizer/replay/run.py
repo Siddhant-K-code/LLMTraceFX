@@ -472,6 +472,10 @@ def _target(base: APICollectionConfig, environ: Mapping[str, str]) -> dict[str, 
         )
     }
     target["max_tokens"] = "per request: the trace's output length"
+    if base.trtllm_return_metrics:
+        # Only written when set, so existing replay results are unchanged.
+        target["header_names"] = plan["header_names"]
+        target["trtllm_return_metrics"] = True
     return target
 
 

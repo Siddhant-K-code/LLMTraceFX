@@ -21,6 +21,7 @@ from llmtracefx.optimizer.load.api_worker import ApiRequestSpec
 from llmtracefx.optimizer.load.artifact import SWEEP_KIND, SWEEP_PLAN_KIND
 from llmtracefx.optimizer.load.dispatcher import ClosedLoop, dispatch
 from llmtracefx.optimizer.load.llama_cpp_worker import (
+    LLAMA_CPP_FIELD_PROVENANCE,
     LlamaCppConfig,
     LlamaCppLoadError,
     make_llama_cpp_sender,
@@ -44,6 +45,7 @@ class Behaviour:
     mode: str = "ok"
     """ok, error_payload, truncate, bad_json"""
     delay_s: float = 0.005
+    timings_extra: dict[str, Any] = field(default_factory=dict)
     seen_auth: list[str | None] = field(default_factory=list)
 
 
@@ -175,6 +177,7 @@ class _Handler(BaseHTTPRequestHandler):
                             "prompt_ms": 12.5,
                             "predicted_n": len(behaviour.pieces),
                             "predicted_ms": 30.0,
+                            **behaviour.timings_extra,
                         },
                     }
                 )
@@ -504,6 +507,25 @@ def _one_row(server: FakeLlamaServer) -> dict[str, Any]:
     result = report.outcomes[0].result
     assert result is not None
     return result.to_dict()
+
+
+def test_speculative_draft_counts_are_recorded_only_when_sent(
+    server: FakeLlamaServer,
+) -> None:
+    plain = _one_row(server)
+    assert plain["server_metrics_source"] is None
+    assert plain["server_draft_tokens"] is None
+    assert plain["server_accepted_draft_tokens"] is None
+
+    server.behaviour.timings_extra = {"draft_n": 12, "draft_n_accepted": 9}
+    row = _one_row(server)
+    assert row["server_metrics_source"] == "llama_cpp_timings"
+    assert row["server_draft_tokens"] == 12
+    assert row["server_accepted_draft_tokens"] == 9
+    assert row["server_draft_acceptance_rate"] is None
+    assert row["ttft_ms"] is not None
+    assert LLAMA_CPP_FIELD_PROVENANCE["server_draft_tokens"] == "provider_reported"
+    assert "server_draft_acceptance_rate" not in LLAMA_CPP_FIELD_PROVENANCE
 
 
 @pytest.mark.parametrize(
