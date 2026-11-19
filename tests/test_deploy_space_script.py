@@ -81,10 +81,78 @@ def test_space_python_satisfies_requires_python() -> None:
     assert space >= (int(floor[1]), int(floor[2]))
 
 
+WHEEL = (
+    "https://files.pythonhosted.org/packages/d7/05/abc/"
+    "llmtracefx-1.10.0-py3-none-any.whl"
+)
+SHA = "3d" * 32
+
+
+def _pypi(version: str = "1.10.0", **wheel: object) -> dict:
+    entry = {
+        "packagetype": "bdist_wheel",
+        "filename": f"llmtracefx-{version}-py3-none-any.whl",
+        "url": WHEEL.replace("1.10.0", version),
+        "digests": {"sha256": SHA},
+    }
+    entry.update(wheel)
+    sdist = {
+        "packagetype": "sdist",
+        "filename": f"llmtracefx-{version}.tar.gz",
+        "url": "https://files.pythonhosted.org/packages/ff/x.tar.gz",
+        "digests": {"sha256": "ab" * 32},
+    }
+    return {"urls": [sdist, entry]}
+
+
+def test_resolves_the_release_wheel_with_its_hash() -> None:
+    urls: list[str] = []
+
+    def fetch(url: str) -> dict:
+        urls.append(url)
+        return _pypi()
+
+    assert deploy_space.release_wheel("1.10.0", fetch) == f"{WHEEL}#sha256={SHA}"
+    assert urls == ["https://pypi.org/pypi/llmtracefx/1.10.0/json"]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"urls": []},
+        _pypi(filename="llmtracefx-1.10.0-cp312-none-any.whl"),
+        _pypi(url="https://example.com/llmtracefx-1.10.0-py3-none-any.whl"),
+        _pypi(digests={"sha256": "nothex"}),
+        _pypi(digests={}),
+    ],
+)
+def test_refuses_a_missing_or_unexpected_wheel(data: dict) -> None:
+    with pytest.raises(deploy_space.WheelError):
+        deploy_space.release_wheel("1.10.0", lambda url: data)
+
+
+def test_unreachable_pypi_is_a_wheel_error() -> None:
+    def fetch(url: str) -> dict:
+        raise OSError("404 Not Found")
+
+    with pytest.raises(deploy_space.WheelError, match="404 Not Found"):
+        deploy_space.release_wheel("1.10.0", fetch)
+
+
+def test_pins_the_requirement_to_a_wheel_url() -> None:
+    wheel = f"{WHEEL}#sha256={SHA}"
+    assert deploy_space.pin_requirements(
+        "gradio==6.31.0\nllmtracefx\n", "1.10.0", wheel
+    ) == (f"gradio==6.31.0\nllmtracefx @ {wheel}\n")
+
+
 def test_dry_run_stages_the_space_without_uploading(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr(
+        deploy_space, "release_wheel", lambda version: f"{WHEEL}#sha256={SHA}"
+    )
     status = deploy_space.main(
         ["--version", "1.10.0", "--space", "owner/space", "--dry-run"]
     )
@@ -93,7 +161,21 @@ def test_dry_run_stages_the_space_without_uploading(
     for name in ("app.py", "viewer.py", "README.md", "requirements.txt"):
         assert name in out.splitlines()
     assert "examples/synthetic-record.json" in out.splitlines()
-    assert "llmtracefx==1.10.0" in out.splitlines()
+    assert f"llmtracefx @ {WHEEL}#sha256={SHA}" in out.splitlines()
+
+
+def test_unresolved_wheel_stops_the_deploy(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def missing(version: str) -> str:
+        raise deploy_space.WheelError("expected one wheel, found 0")
+
+    monkeypatch.setattr(deploy_space, "release_wheel", missing)
+    status = deploy_space.main(
+        ["--version", "1.10.0", "--space", "owner/space", "--dry-run"]
+    )
+    assert status == 1
+    assert "found 0" in capsys.readouterr().err
 
 
 def test_upload_requires_a_token(monkeypatch: pytest.MonkeyPatch) -> None:
