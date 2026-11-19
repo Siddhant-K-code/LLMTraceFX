@@ -408,6 +408,181 @@ def test_settled_capture_waits_for_finish_time_families() -> None:
     assert evidence["attribution"]["status"] == "attributed"
 
 
+# --- Speculative decoding counters ------------------------------------------
+
+
+def vllm_spec_lines(drafts: int, draft_tokens: int, accepted: int, per_pos) -> str:
+    labels = f'engine="0",model_name="{MODEL_PATH}"'
+    lines = []
+    for name, value in (
+        ("num_drafts", drafts),
+        ("num_draft_tokens", draft_tokens),
+        ("num_accepted_tokens", accepted),
+    ):
+        lines += [
+            f"# TYPE vllm:spec_decode_{name} counter",
+            f"vllm:spec_decode_{name}_total{{{labels}}} {value}",
+        ]
+    lines.append("# TYPE vllm:spec_decode_num_accepted_tokens_per_pos counter")
+    lines += [
+        f'vllm:spec_decode_num_accepted_tokens_per_pos_total{{{labels},position="{i}"}}'
+        f" {value}"
+        for i, value in enumerate(per_pos)
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def test_vllm_acceptance_is_derived_from_counter_deltas() -> None:
+    before = snap(
+        vllm_body(requests=3, ttft_sum=0.09, generated=100)
+        + vllm_spec_lines(10, 30, 15, [8, 5, 2]).encode()
+    )
+    after = snap(
+        vllm_body(requests=4, ttft_sum=0.12, generated=150)
+        + vllm_spec_lines(30, 90, 45, [24, 15, 6]).encode(),
+        "2026-01-01T00:00:01Z",
+    )
+    spec = diff_snapshots(before, after, expected_requests=1)["speculative"]
+
+    assert spec["status"] == "measured"
+    assert spec["counters"]["verify_steps"]["value"] == 20
+    assert spec["counters"]["verify_steps"]["provenance"] == "measured_native"
+    rate, length = spec["acceptance_rate"], spec["acceptance_length"]
+    assert rate["value"] == pytest.approx(0.5)
+    assert rate["provenance"] == "derived"
+    assert rate["basis"]
+    assert length["value"] == pytest.approx(2.5)
+    assert length["source"].startswith("1 + vllm:spec_decode_num_accepted_tokens")
+    positions = spec["per_position_acceptance_rate"]
+    assert [p["position"] for p in positions] == [0, 1, 2]
+    assert [p["value"] for p in positions] == pytest.approx([0.8, 0.5, 0.2])
+
+
+def test_vllm_without_speculative_counters_reports_not_exported() -> None:
+    spec = diff_snapshots(BEFORE, ONE_MORE, expected_requests=1)["speculative"]
+
+    assert spec["status"] == "not_exported"
+    assert "acceptance_rate" not in spec and "counters" not in spec
+
+
+def test_speculative_values_are_withheld_from_an_unattributed_window() -> None:
+    before = snap(
+        vllm_body(requests=3, ttft_sum=0.09, generated=100)
+        + vllm_spec_lines(10, 30, 15, []).encode()
+    )
+    after = snap(
+        vllm_body(requests=5, ttft_sum=0.15, generated=150)
+        + vllm_spec_lines(30, 90, 45, []).encode(),
+        "2026-01-01T00:00:01Z",
+    )
+    spec = diff_snapshots(before, after, expected_requests=1)["speculative"]
+
+    assert spec["status"] == "withheld"
+    assert "acceptance_length" not in spec
+
+
+def sglang_body(*, requests: int, generated: int, verify_calls: int | None) -> bytes:
+    lines = [
+        "# TYPE sglang:num_requests counter",
+        f"sglang:num_requests_total {requests}",
+        "# TYPE sglang:num_running_reqs gauge",
+        "sglang:num_running_reqs 0",
+        "# TYPE sglang:num_queue_reqs gauge",
+        "sglang:num_queue_reqs 0",
+        "# TYPE sglang:generation_tokens counter",
+        f'sglang:generation_tokens_total{{is_streaming="true"}} {generated}',
+        # Last-value gauges: a diff of these would be meaningless.
+        "# TYPE sglang:spec_accept_length gauge",
+        "sglang:spec_accept_length 9.5",
+        "# TYPE sglang:spec_accept_rate gauge",
+        "sglang:spec_accept_rate 0.99",
+    ]
+    if verify_calls is not None:
+        lines += [
+            "# TYPE sglang:spec_verify_calls counter",
+            f"sglang:spec_verify_calls_total {verify_calls}",
+        ]
+    return ("\n".join(lines) + "\n").encode()
+
+
+def test_sglang_length_comes_from_counters_and_never_from_gauges() -> None:
+    before = snap(sglang_body(requests=2, generated=100, verify_calls=40))
+    after = snap(
+        sglang_body(requests=3, generated=160, verify_calls=60),
+        "2026-01-01T00:00:01Z",
+    )
+    spec = diff_snapshots(before, after, expected_requests=1)["speculative"]
+
+    assert spec["status"] == "measured"
+    assert spec["acceptance_length"]["value"] == pytest.approx(3.0)
+    assert spec["acceptance_length"]["source"] == (
+        "sglang:generation_tokens / sglang:spec_verify_calls"
+    )
+    assert "acceptance_rate" not in spec
+    assert "acceptance_rate" in spec["not_derived"]
+    assert spec["ignored_gauges"] == [
+        "sglang:spec_accept_length",
+        "sglang:spec_accept_rate",
+    ]
+
+
+def test_sglang_without_verify_calls_reports_not_exported() -> None:
+    before = snap(sglang_body(requests=2, generated=100, verify_calls=None))
+    after = snap(
+        sglang_body(requests=3, generated=160, verify_calls=None),
+        "2026-01-01T00:00:01Z",
+    )
+    spec = diff_snapshots(before, after, expected_requests=1)["speculative"]
+
+    assert spec["status"] == "not_exported"
+    assert "acceptance_length" not in spec
+
+
+def llamacpp_spec_body(drafts: int, draft_tokens: int, accepted: int) -> bytes:
+    lines = [
+        "# TYPE llamacpp:spec_decode_num_draft_tokens_total counter",
+        f"llamacpp:spec_decode_num_draft_tokens_total {draft_tokens}",
+        "# TYPE llamacpp:spec_decode_num_accepted_tokens_total counter",
+        f"llamacpp:spec_decode_num_accepted_tokens_total {accepted}",
+        "# TYPE llamacpp:spec_decode_num_drafts_total counter",
+        f"llamacpp:spec_decode_num_drafts_total {drafts}",
+    ]
+    return (
+        llamacpp_body(prompt_tokens=10, prompt_seconds=0.5)
+        + ("\n".join(lines) + "\n").encode()
+    )
+
+
+def test_llama_cpp_zero_speculative_counters_are_not_reported_as_acceptance() -> None:
+    # llama.cpp exports these counters at zero when speculation is off.
+    spec = diff_snapshots(
+        snap(llamacpp_spec_body(0, 0, 0)),
+        snap(llamacpp_spec_body(0, 0, 0), "2026-01-01T00:00:01Z"),
+        expected_requests=1,
+        assume_isolated=True,
+    )["speculative"]
+
+    assert spec["status"] == "no_drafts"
+    assert "acceptance_rate" not in spec and "acceptance_length" not in spec
+
+
+def test_llama_cpp_acceptance_uses_verification_steps() -> None:
+    spec = diff_snapshots(
+        snap(llamacpp_spec_body(4, 16, 4)),
+        snap(llamacpp_spec_body(14, 56, 24), "2026-01-01T00:00:01Z"),
+        expected_requests=1,
+        assume_isolated=True,
+    )["speculative"]
+
+    assert spec["acceptance_rate"]["value"] == pytest.approx(0.5)
+    assert spec["acceptance_length"]["value"] == pytest.approx(3.0)
+    assert spec["not_derived"] == {
+        "per_position_acceptance_rate": (
+            "llamacpp:spec_decode_num_accepted_tokens_per_pos has no position series"
+        )
+    }
+
+
 def test_runtime_detection_uses_metric_prefixes() -> None:
     assert detect_runtime(["sglang:num_requests", "process_cpu_seconds"]) == "sglang"
     assert detect_runtime(["vllm:num_requests_running"]) == "vllm"

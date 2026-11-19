@@ -189,6 +189,13 @@
       ]
     }
   },
+  "speculative": {
+    "status": "not_reported",
+    "reason": "the result has no spec_decode_* keys: the server ran without speculative decoding, proposed no draft token in the run, did not expose its metrics to the benchmark, or the vLLM version predates these keys",
+    "values": {},
+    "per_position_acceptance_rate": [],
+    "notes": []
+  },
   "unmapped_keys": [
     "latencies",
     "max_concurrent_requests",
