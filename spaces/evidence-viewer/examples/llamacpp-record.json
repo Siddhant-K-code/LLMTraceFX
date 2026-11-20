@@ -1,0 +1,110 @@
+{
+  "schema_version": "1",
+  "run_id": "demo-llamacpp-qwen05b",
+  "started_at": "2026-11-20T22:29:19.278134Z",
+  "ended_at": "2026-11-20T22:29:19.675638Z",
+  "platform": {
+    "os_name": "Darwin",
+    "os_version": "27.2.0",
+    "architecture": "arm64",
+    "cpu_model": null,
+    "cpu_cores": 18,
+    "total_memory_gb": 24.0,
+    "accelerator": null
+  },
+  "model": {
+    "model_id": "qwen2.5-0.5b-instruct",
+    "model_revision": null,
+    "tokenizer_revision": null,
+    "quantization": null,
+    "model_family": null
+  },
+  "runtime": {
+    "name": "openai-compatible-api",
+    "version": null,
+    "backend": null,
+    "git_revision": null,
+    "provider": "llamacpp-local"
+  },
+  "command": {
+    "argv": [
+      "llmtracefx-optimizer",
+      "collect-api",
+      "--run-id",
+      "demo-llamacpp-qwen05b",
+      "--provider",
+      "llamacpp-local",
+      "--endpoint",
+      "http://127.0.0.1:8091/v1/chat/completions",
+      "--model-id",
+      "qwen2.5-0.5b-instruct",
+      "--prompt-file",
+      "/tmp/demo/prompt.txt",
+      "--output-dir",
+      "/tmp/demo/run1",
+      "--api-key-env",
+      "DEMO_LOCAL_KEY",
+      "--request-timeout",
+      "120.0",
+      "--retained-event-limit",
+      "20000",
+      "--max-output-tokens",
+      "128",
+      "--temperature",
+      "0.0",
+      "--seed",
+      "7"
+    ],
+    "config_hash": "sha256:b438b8c358a5a10edcc556e804216523c795b8f30705fb34e7edf63a25c75db5",
+    "workload_hash": "sha256:fba636d9936a346650ef377a1d4cc220003a39293261169c07af0a78fe2692d7"
+  },
+  "repetition": {
+    "warmup_repetitions": 0,
+    "measured_repetitions": 1,
+    "repetition_index": 0,
+    "seed": 7
+  },
+  "tokens": {
+    "input_tokens": null,
+    "context_tokens": null,
+    "generated_tokens": null,
+    "provenance": null
+  },
+  "timing": {
+    "model_load": null,
+    "tokenize": null,
+    "prefill": null,
+    "decode": null,
+    "total": {
+      "value": 397.32587500475347,
+      "provenance": "measured_wall_clock",
+      "unit": "ms"
+    }
+  },
+  "speculative": {
+    "enabled": false,
+    "method": null,
+    "configured_depth": null,
+    "proposed_tokens": null,
+    "accepted_tokens": null,
+    "verification_time": null
+  },
+  "memory": {
+    "active": null,
+    "cache": null,
+    "peak": null,
+    "wired": null
+  },
+  "power": {
+    "average_power": null,
+    "energy": null
+  },
+  "instruments": null,
+  "outcome": {
+    "success": true,
+    "quality_score": null,
+    "quality_metric": null,
+    "notes": null
+  },
+  "error": null
+}

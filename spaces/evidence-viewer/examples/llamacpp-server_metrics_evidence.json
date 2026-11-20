@@ -1,0 +1,258 @@
+{
+  "kind": "llmtracefx.server_metrics.evidence",
+  "schema_version": "1",
+  "scope": "server_wide_window",
+  "endpoint": "http://127.0.0.1:8091/metrics",
+  "runtime": "llamacpp",
+  "runtime_detection": "explicit",
+  "before": {
+    "captured_at": "2026-11-20T22:29:19.267226Z",
+    "body_sha256": "sha256:033056262d2dfed7ee1a6103733a5e445b13fb53daaa6de97304ae73a95d0f36",
+    "scrape_duration_ms": 7.528290967456996
+  },
+  "after": {
+    "captured_at": "2026-11-20T22:29:19.702158Z",
+    "body_sha256": "sha256:e53aa6d85ed506388be5dd07b49d24283ad85afca5b8f9beb238c122b2a0b25b",
+    "scrape_duration_ms": 3.444083034992218
+  },
+  "window": {
+    "value": 434.93199999999996,
+    "provenance": "measured_wall_clock",
+    "unit": "ms"
+  },
+  "attribution": {
+    "status": "operator_asserted",
+    "attributable": true,
+    "reason": "the server exposes no request counter; the operator asserted that no other traffic reached it during the window",
+    "expected_requests": 1,
+    "observed_requests": null,
+    "request_counter": null,
+    "request_checks": [],
+    "in_flight_before": 0.0,
+    "in_flight_after": 0.0,
+    "assume_isolated": true,
+    "missing_stats": []
+  },
+  "highlights": {
+    "prompt_tokens": {
+      "value": 47.0,
+      "provenance": "measured_native",
+      "unit": "tokens",
+      "statistic": "delta",
+      "source": "llamacpp:prompt_tokens + llamacpp:prompt_tokens_cached"
+    },
+    "computed_prompt_tokens": {
+      "value": 47.0,
+      "provenance": "measured_native",
+      "unit": "tokens",
+      "statistic": "delta",
+      "source": "llamacpp:prompt_tokens"
+    },
+    "cached_prompt_tokens": {
+      "value": 0.0,
+      "provenance": "measured_native",
+      "unit": "tokens",
+      "statistic": "delta",
+      "source": "llamacpp:prompt_tokens_cached"
+    },
+    "prefill_time": {
+      "value": 82.666,
+      "provenance": "measured_native",
+      "unit": "ms",
+      "statistic": "delta",
+      "source": "llamacpp:prompt_seconds"
+    },
+    "generation_tokens": {
+      "value": 93.0,
+      "provenance": "measured_native",
+      "unit": "tokens",
+      "statistic": "delta",
+      "source": "llamacpp:tokens_predicted"
+    },
+    "decode_time": {
+      "value": 308.273,
+      "provenance": "measured_native",
+      "unit": "ms",
+      "statistic": "delta",
+      "source": "llamacpp:tokens_predicted_seconds"
+    },
+    "decode_calls": {
+      "value": 93.0,
+      "provenance": "measured_native",
+      "unit": "count",
+      "statistic": "delta",
+      "source": "llamacpp:n_decode"
+    },
+    "cached_prompt_token_ratio": {
+      "value": 0.0,
+      "provenance": "derived",
+      "unit": "ratio",
+      "statistic": "ratio_of_deltas",
+      "source": "llamacpp:prompt_tokens_cached / (llamacpp:prompt_tokens + llamacpp:prompt_tokens_cached)"
+    },
+    "prompt_tokens_per_second": {
+      "value": 568.5529722013887,
+      "provenance": "derived",
+      "unit": "tokens/s",
+      "statistic": "ratio_of_deltas",
+      "source": "llamacpp:prompt_tokens / llamacpp:prompt_seconds"
+    },
+    "generation_tokens_per_second": {
+      "value": 301.6806531872723,
+      "provenance": "derived",
+      "unit": "tokens/s",
+      "statistic": "ratio_of_deltas",
+      "source": "llamacpp:tokens_predicted / llamacpp:tokens_predicted_seconds"
+    }
+  },
+  "highlights_withheld_reason": null,
+  "speculative": {
+    "status": "no_drafts",
+    "reason": "llamacpp:spec_decode_num_drafts, llamacpp:spec_decode_num_draft_tokens did not increase in the window; no speculative step ran, so there is no acceptance to report",
+    "ignored_gauges": []
+  },
+  "kv_usage": {},
+  "kept_labels": [
+    "cache_level",
+    "cache_source",
+    "cache_tier",
+    "finished_reason",
+    "is_streaming",
+    "le",
+    "position",
+    "quantile",
+    "reason",
+    "source",
+    "transfer_type"
+  ],
+  "counters": [
+    {
+      "family": "llamacpp:n_decode",
+      "labels": {},
+      "before": 0.0,
+      "after": 93.0,
+      "delta": 93.0
+    },
+    {
+      "family": "llamacpp:n_tokens_max",
+      "labels": {},
+      "before": 0.0,
+      "after": 139.0,
+      "delta": 139.0
+    },
+    {
+      "family": "llamacpp:prompt_seconds",
+      "labels": {},
+      "before": 0.0,
+      "after": 0.082666,
+      "delta": 0.082666
+    },
+    {
+      "family": "llamacpp:prompt_tokens",
+      "labels": {},
+      "before": 0.0,
+      "after": 47.0,
+      "delta": 47.0
+    },
+    {
+      "family": "llamacpp:tokens_predicted",
+      "labels": {},
+      "before": 0.0,
+      "after": 93.0,
+      "delta": 93.0
+    },
+    {
+      "family": "llamacpp:tokens_predicted_seconds",
+      "labels": {},
+      "before": 0.0,
+      "after": 0.308273,
+      "delta": 0.308273
+    }
+  ],
+  "histograms": [],
+  "gauges": [
+    {
+      "family": "llamacpp:n_busy_slots_per_decode",
+      "type": "gauge",
+      "before": {
+        "series": 1,
+        "min": 0.0,
+        "max": 0.0,
+        "sum": 0.0
+      },
+      "after": {
+        "series": 1,
+        "min": 1.0,
+        "max": 1.0,
+        "sum": 1.0
+      }
+    },
+    {
+      "family": "llamacpp:predicted_tokens_seconds",
+      "type": "gauge",
+      "before": {
+        "series": 1,
+        "min": 0.0,
+        "max": 0.0,
+        "sum": 0.0
+      },
+      "after": {
+        "series": 1,
+        "min": 298.437,
+        "max": 298.437,
+        "sum": 298.437
+      }
+    },
+    {
+      "family": "llamacpp:prompt_tokens_seconds",
+      "type": "gauge",
+      "before": {
+        "series": 1,
+        "min": 0.0,
+        "max": 0.0,
+        "sum": 0.0
+      },
+      "after": {
+        "series": 1,
+        "min": 568.553,
+        "max": 568.553,
+        "sum": 568.553
+      }
+    },
+    {
+      "family": "llamacpp:requests_deferred",
+      "type": "gauge",
+      "before": {
+        "series": 1,
+        "min": 0.0,
+        "max": 0.0,
+        "sum": 0.0
+      },
+      "after": {
+        "series": 1,
+        "min": 0.0,
+        "max": 0.0,
+        "sum": 0.0
+      }
+    },
+    {
+      "family": "llamacpp:requests_processing",
+      "type": "gauge",
+      "before": {
+        "series": 1,
+        "min": 0.0,
+        "max": 0.0,
+        "sum": 0.0
+      },
+      "after": {
+        "series": 1,
+        "min": 0.0,
+        "max": 0.0,
+        "sum": 0.0
+      }
+    }
+  ],
+  "notes": [
+    "llama.cpp exposes no request counter, so a window can only be attributed when the operator asserts the server was isolated."
+  ]
+}

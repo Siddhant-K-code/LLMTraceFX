@@ -45,7 +45,12 @@ for _module, _name, _replacement in (
     if hasattr(_module, _name):
         setattr(_module, _name, _replacement)
 
-EXAMPLE = Path(__file__).parent / "examples" / "synthetic-record.json"
+EXAMPLES = Path(__file__).parent / "examples"
+EXAMPLE = EXAMPLES / "synthetic-record.json"
+LLAMACPP = [
+    str(EXAMPLES / f"llamacpp-{name}.json")
+    for name in ("record", "api_evidence", "server_metrics_evidence")
+]
 
 if spaces is not None:
     # ZeroGPU refuses to start an app with no @spaces.GPU function. The viewer
@@ -66,6 +71,7 @@ def view(record, api_evidence, server_metrics):
         result.summary_markdown,
         result.measurements_markdown,
         result.spans_markdown,
+        result.evidence_markdown,
         str(result.perfetto_path),
         str(result.otlp_path),
     )
@@ -79,8 +85,10 @@ with gr.Blocks(title="LLMTraceFX evidence viewer") as demo:
         "wall clock, provider reported, or derived). Export the run to "
         "[Perfetto](https://ui.perfetto.dev) or any OpenTelemetry backend.\n\n"
         "Produce records with `llmtracefx-optimizer collect-api`, "
-        "`collect-mlx`, or `parse-llama-cpp`. The bundled example is "
-        "synthetic, not a benchmark result."
+        "`collect-mlx`, or `parse-llama-cpp`. Two examples are bundled: a "
+        "synthetic record, and one real `collect-api` request to a local "
+        "llama.cpp server (Qwen2.5-0.5B-Instruct Q4_K_M on an Apple M5 Pro) "
+        "with its server metrics. Neither is a benchmark result."
     )
     with gr.Row():
         record = gr.File(label="record.json", file_types=[".json"], type="filepath")
@@ -97,13 +105,14 @@ with gr.Blocks(title="LLMTraceFX evidence viewer") as demo:
     with gr.Row():
         measurements = gr.Markdown()
         spans = gr.Markdown()
+    evidence = gr.Markdown()
     with gr.Row():
         perfetto = gr.File(label="Perfetto / Chrome trace (open in ui.perfetto.dev)")
         otlp = gr.File(label="OTLP/JSON spans (GenAI semantic conventions)")
-    outputs = [summary, measurements, spans, perfetto, otlp]
+    outputs = [summary, measurements, spans, evidence, perfetto, otlp]
     button.click(view, [record, api_evidence, server_metrics], outputs)
     gr.Examples(
-        examples=[[str(EXAMPLE), None, None]],
+        examples=[[str(EXAMPLE), None, None], LLAMACPP],
         inputs=[record, api_evidence, server_metrics],
         outputs=outputs,
         fn=view,
