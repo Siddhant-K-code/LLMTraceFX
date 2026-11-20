@@ -26,7 +26,10 @@ Upload an [LLMTraceFX](https://github.com/Siddhant-K-code/LLMTraceFX)
 tree, and download it as a Perfetto trace or OTLP/JSON spans that follow the
 OpenTelemetry GenAI semantic conventions. Optionally add the matching
 `api_evidence.json` (streaming phases from `collect-api`) and
-`server_metrics_evidence.json` (server-side queue and TTFT from Prometheus).
+`server_metrics_evidence.json` (server-side numbers from Prometheus). The
+page lists the request fields and server values with their provenance and
+source counter. Server values are only shown when the scrape window can be
+tied to the run.
 
 Files are processed in a temporary directory and not stored. Local model paths
 are reduced to basenames in the exports.
