@@ -49,4 +49,4 @@ huggingface-cli repo create llmtracefx-evidence-viewer --type space --space_sdk 
 huggingface-cli upload <user>/llmtracefx-evidence-viewer spaces/evidence-viewer . --repo-type space
 ```
 
-Run it locally with `pip install -r requirements.txt && python app.py`.
+Run it locally with `uv run --no-project --with-requirements requirements.txt app.py`.

@@ -145,14 +145,21 @@ The main workflow is:
 ## Install
 
 ```bash
-pip install llmtracefx
+uv tool install llmtracefx
 ```
 
-This installs the library and the `llmtracefx-*` commands from
-[PyPI](https://pypi.org/project/llmtracefx/). Extras use the usual syntax, for
-example `pip install "llmtracefx[mlx]"` on macOS arm64. The Quickstart below
-clones the repository instead, because it reads example files from the source
-tree and uses the locked dependencies.
+This installs the `llmtracefx-*` commands from
+[PyPI](https://pypi.org/project/llmtracefx/) into their own environment and puts
+them on your `PATH`. Extras use the usual syntax, for example
+`uv tool install "llmtracefx[mlx]"` on macOS arm64.
+
+- Run one command without installing:
+  `uvx --from llmtracefx llmtracefx-optimizer --help`.
+- Use the library in a project: `uv add llmtracefx`.
+- `pip install llmtracefx` also works.
+
+The Quickstart below clones the repository instead, because it reads example
+files from the source tree and uses the locked dependencies.
 
 ## Quickstart
 
