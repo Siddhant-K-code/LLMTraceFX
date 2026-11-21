@@ -44,6 +44,15 @@ OpenAI-compatible streaming APIs. It collects measurements into one canonical
 schema, checks model output with deterministic workloads, and recommends a
 configuration only when it satisfies an explicit policy.
 
+## Demo
+
+The [evidence viewer Space](https://huggingface.co/spaces/siddhant-k-code/llmtracefx-evidence-viewer)
+loading one real `collect-api` request to a local llama.cpp server
+(Qwen2.5-0.5B-Instruct Q4_K_M, Apple M5 Pro) with its server metrics, then the
+exported trace in Perfetto. It is a single request, not a benchmark result.
+
+https://github.com/user-attachments/assets/cd80dcff-fc33-4dc4-971e-53eafdb54bc3
+
 ## Research / Publication
 
 Research based on earlier LLMTraceFX work is published as the peer-reviewed
