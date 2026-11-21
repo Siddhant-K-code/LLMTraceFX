@@ -44,6 +44,11 @@ OpenAI-compatible streaming APIs. It collects measurements into one canonical
 schema, checks model output with deterministic workloads, and recommends a
 configuration only when it satisfies an explicit policy.
 
+Related project: [agent-strace](https://github.com/Siddhant-K-code/agent-trace)
+records coding-agent sessions (tool calls and decisions). LLMTraceFX measures
+inference requests. The two share no code or dependencies; both can export
+OpenTelemetry.
+
 ## Demo
 
 The [evidence viewer Space](https://huggingface.co/spaces/siddhant-k-code/llmtracefx-evidence-viewer)

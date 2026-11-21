@@ -181,3 +181,6 @@ Thumbs.db
 .env.test.local
 .env.production.local
 secrets.toml
+
+# Local agent-strace session traces
+.agent-traces/
