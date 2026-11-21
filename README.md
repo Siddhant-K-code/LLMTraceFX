@@ -51,7 +51,7 @@ loading one real `collect-api` request to a local llama.cpp server
 (Qwen2.5-0.5B-Instruct Q4_K_M, Apple M5 Pro) with its server metrics, then the
 exported trace in Perfetto. It is a single request, not a benchmark result.
 
-https://github.com/user-attachments/assets/cd80dcff-fc33-4dc4-971e-53eafdb54bc3
+https://github.com/user-attachments/assets/fb060a1a-79d6-4f66-8d0c-735f92f0e793
 
 ## Research / Publication
 
@@ -145,14 +145,21 @@ The main workflow is:
 ## Install
 
 ```bash
-pip install llmtracefx
+uv tool install llmtracefx
 ```
 
-This installs the library and the `llmtracefx-*` commands from
-[PyPI](https://pypi.org/project/llmtracefx/). Extras use the usual syntax, for
-example `pip install "llmtracefx[mlx]"` on macOS arm64. The Quickstart below
-clones the repository instead, because it reads example files from the source
-tree and uses the locked dependencies.
+This installs the `llmtracefx-*` commands from
+[PyPI](https://pypi.org/project/llmtracefx/) into their own environment and puts
+them on your `PATH`. Extras use the usual syntax, for example
+`uv tool install "llmtracefx[mlx]"` on macOS arm64.
+
+- Run one command without installing:
+  `uvx --from llmtracefx llmtracefx-optimizer --help`.
+- Use the library in a project: `uv add llmtracefx`.
+- `pip install llmtracefx` also works.
+
+The Quickstart below clones the repository instead, because it reads example
+files from the source tree and uses the locked dependencies.
 
 ## Quickstart
 
