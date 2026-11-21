@@ -2478,20 +2478,22 @@ class TestSourceCheckoutGate:
                 },
             )
 
-    def test_the_known_untracked_agent_traces_is_ignored(
+    def test_an_untracked_trace_directory_is_refused(
         self, tmp_path: Path, app_module: Any, fake_modal: Any
     ) -> None:
-        _script(app_module, _Receipts())
-        document = _run(
-            tmp_path,
-            app_module,
-            fake_modal,
-            source_checkout_probe=lambda: {
-                "head": HEAD,
-                "status_porcelain": "?? .agent-traces/trace-01.json\n",
-            },
-        )
-        assert document["status"] == "complete"
+        with pytest.raises(execute_module.ModalExecutionError, match="not clean"):
+            _run(
+                tmp_path,
+                app_module,
+                fake_modal,
+                sdk_loader=lambda: (_ for _ in ()).throw(
+                    AssertionError("SDK must not load")
+                ),
+                source_checkout_probe=lambda: {
+                    "head": HEAD,
+                    "status_porcelain": "?? .agent-traces/trace-01.json\n",
+                },
+            )
 
     def test_the_gate_output_is_written(
         self, tmp_path: Path, app_module: Any, fake_modal: Any
@@ -2539,7 +2541,6 @@ class TestSourceCheckoutGate:
             "verified": True,
             "source_head": head,
             "tracked_workspace_clean": True,
-            "ignored_untracked_prefix": execute_module.IGNORED_UNTRACKED_PREFIX,
         }
 
         # A tracked modification: refused, and the path is never echoed.
@@ -2584,10 +2585,16 @@ class TestSourceCheckoutGate:
         assert receipt["tracked_workspace_clean"] is True
         assert receipt["source_head"] == head
 
-        # The one tolerated untracked path does not break the clean pass.
-        traces = repo / execute_module.IGNORED_UNTRACKED_EXACT
+        # An untracked trace directory blocks the run until it is ignored.
+        traces = repo / "local-traces"
         traces.mkdir()
         (traces / "trace-01.json").write_text("{}\n", encoding="utf-8")
+        with pytest.raises(execute_module.ModalExecutionError, match="not clean"):
+            execute_module.verify_source_checkout(source_head=head, repo_root=repo)
+        (repo / ".gitignore").write_text("local-traces/\n", encoding="utf-8")
+        _git(repo, "add", ".gitignore")
+        _git(repo, "commit", "-m", "ignore traces")
+        head = execute_module._default_source_checkout_probe(repo)["head"]
         assert execute_module.verify_source_checkout(source_head=head, repo_root=repo)[
             "verified"
         ]

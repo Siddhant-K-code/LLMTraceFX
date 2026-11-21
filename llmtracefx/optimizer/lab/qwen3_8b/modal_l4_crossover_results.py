@@ -182,8 +182,10 @@ SOURCE_CHECKOUT_KEYS = (
     "verified",
     "source_head",
     "tracked_workspace_clean",
-    "ignored_untracked_prefix",
 )
+# Receipts written before 1.32.0 also name the one untracked prefix the gate
+# then tolerated. They stay verifiable.
+LEGACY_SOURCE_CHECKOUT_KEYS = (*SOURCE_CHECKOUT_KEYS, "ignored_untracked_prefix")
 
 
 _GIT_HEAD = re.compile(r"^[0-9a-f]{40}$")
@@ -387,7 +389,12 @@ def _validate_source_checkout(
     receipt = orchestration.get("source_checkout")
     _require(isinstance(receipt, Mapping), "orchestration source checkout is missing")
     assert isinstance(receipt, Mapping)
-    _require_exact_keys(receipt, SOURCE_CHECKOUT_KEYS, label="source checkout")
+    legacy = "ignored_untracked_prefix" in receipt
+    _require_exact_keys(
+        receipt,
+        LEGACY_SOURCE_CHECKOUT_KEYS if legacy else SOURCE_CHECKOUT_KEYS,
+        label="source checkout",
+    )
     _require(
         receipt.get("verified") is True
         and receipt.get("tracked_workspace_clean") is True,
@@ -398,8 +405,8 @@ def _validate_source_checkout(
         "orchestration source checkout head differs from the orchestration head",
     )
     _require(
-        isinstance(receipt.get("ignored_untracked_prefix"), str),
-        "orchestration source checkout is missing its tolerated untracked prefix",
+        not legacy or isinstance(receipt.get("ignored_untracked_prefix"), str),
+        "orchestration source checkout has a malformed tolerated untracked prefix",
     )
     return dict(receipt)
 

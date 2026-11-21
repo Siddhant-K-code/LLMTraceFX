@@ -455,7 +455,6 @@ def _source_checkout() -> dict[str, Any]:
         "verified": True,
         "source_head": SOURCE_HEAD,
         "tracked_workspace_clean": True,
-        "ignored_untracked_prefix": execute.IGNORED_UNTRACKED_PREFIX,
     }
 
 

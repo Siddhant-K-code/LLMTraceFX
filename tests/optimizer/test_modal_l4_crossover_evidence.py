@@ -818,7 +818,7 @@ class TestResultContract:
 
     def test_a_swapped_source_checkout_is_refused(self, tmp_path: Path) -> None:
         swapped = dict(fixture.build_orchestration()["source_checkout"])
-        swapped["ignored_untracked_prefix"] = ".other-traces/"
+        swapped["source_head"] = "b" * 40
         root = _result_envelope(
             tmp_path / "results", **{"source-checkout.json": swapped}
         )
@@ -826,6 +826,30 @@ class TestResultContract:
             evidence.ModalL4EvidenceError, match="not bound to the orchestration"
         ):
             evidence.verify_result_bundle(root)
+
+    @staticmethod
+    def _legacy_orchestration(prefix: object) -> dict[str, Any]:
+        orch = fixture.build_orchestration()
+        orch["source_checkout"]["ignored_untracked_prefix"] = prefix
+        del orch["orchestration_sha256"]
+        orch["orchestration_sha256"] = fixture.execute._sha256_json(orch)
+        return orch
+
+    def test_a_legacy_source_checkout_with_a_prefix_still_verifies(
+        self, tmp_path: Path
+    ) -> None:
+        orch = self._legacy_orchestration(".agent-traces/")
+        root = _result_envelope(tmp_path / "results", orchestration=orch)
+        evidence.verify_result_bundle(root)
+
+    def test_a_legacy_source_checkout_with_a_malformed_prefix_is_refused(
+        self,
+    ) -> None:
+        orch = self._legacy_orchestration(None)
+        with pytest.raises(
+            results.ModalL4ResultsError, match="malformed tolerated untracked"
+        ):
+            evidence.analyze_modal_run(orchestration=orch, cells=fixture.build_cells())
 
     def test_a_swapped_profile_verdict_is_refused(self, tmp_path: Path) -> None:
         # cli_version == sdk_version keeps the closed schema valid, but the

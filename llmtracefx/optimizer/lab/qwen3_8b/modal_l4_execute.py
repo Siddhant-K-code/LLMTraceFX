@@ -119,11 +119,6 @@ _NONCE = re.compile(r"^[0-9a-f]{32,64}$")
 # state so a run can only start from source committed exactly at the signed
 # head.
 REPO_ROOT = Path(__file__).resolve().parents[4]
-# The only untracked path the source-checkout gate tolerates: an out-of-band
-# trace directory that no execution module imports. Everything else untracked,
-# and any tracked modification, blocks the run.
-IGNORED_UNTRACKED_PREFIX = ".agent-traces/"
-IGNORED_UNTRACKED_EXACT = ".agent-traces"
 
 APP_NAME_VAR = "LLMTRACEFX_MODAL_L4_APP_NAME"
 VOLUME_NAME_VAR = "LLMTRACEFX_MODAL_L4_VOLUME_NAME"
@@ -558,13 +553,6 @@ def _default_source_checkout_probe(repo_root: Path) -> dict[str, Any]:
     }
 
 
-def _is_ignored_untracked(path: str) -> bool:
-    normalized = path.strip().strip('"')
-    return normalized == IGNORED_UNTRACKED_EXACT or normalized.startswith(
-        IGNORED_UNTRACKED_PREFIX
-    )
-
-
 def verify_source_checkout(
     *,
     source_head: str,
@@ -574,13 +562,13 @@ def verify_source_checkout(
     """Bind execution to a clean git checkout at the authorized source head.
 
     This gate runs before any network fetch, SDK import, or provider call, so a
-    run can only start from source committed exactly at the signed head. The
-    known-untracked ``.agent-traces/`` directory is tolerated; any other
+    run can only start from source committed exactly at the signed head. Any
     untracked path -- especially untracked Python or package source that
-    execution imports -- and any tracked modification is a refusal. The probe
-    is injectable so offline tests exercise the policy with a fake checkout
-    state; production reads real git and refuses until the implementation is
-    committed exactly.
+    execution imports -- and any tracked modification is a refusal. Paths the
+    committed ``.gitignore`` ignores are not listed by ``git status`` and so
+    never block. The probe is injectable so offline tests exercise the policy
+    with a fake checkout state; production reads real git and refuses until the
+    implementation is committed exactly.
     """
 
     if not isinstance(source_head, str) or _GIT_HEAD.fullmatch(source_head) is None:
@@ -605,10 +593,9 @@ def verify_source_checkout(
             continue
         if len(line) < 4 or line[2] != " ":
             raise ModalExecutionError("source checkout status line is malformed")
-        code, path = line[:2], line[3:]
+        code = line[:2]
         if code == "??":
-            if not _is_ignored_untracked(path):
-                disallowed_untracked += 1
+            disallowed_untracked += 1
         else:
             # Any staged, modified, deleted, or renamed tracked path. Paths are
             # counted, never echoed, so a private path cannot leak into a
@@ -623,7 +610,6 @@ def verify_source_checkout(
         "verified": True,
         "source_head": source_head,
         "tracked_workspace_clean": True,
-        "ignored_untracked_prefix": IGNORED_UNTRACKED_PREFIX,
     }
 
 
@@ -1420,8 +1406,8 @@ class ModalOrchestrator:
                 dict(self.rate_refresh) if self.rate_refresh is not None else None
             ),
             # The source-checkout receipt binds the run to a clean git checkout
-            # at the authorized head. It is booleans plus the head and the one
-            # tolerated untracked prefix, so it is safe to embed and project.
+            # at the authorized head. It is booleans plus the head, so it is
+            # safe to embed and project.
             "source_checkout": (
                 dict(self.source_checkout) if self.source_checkout is not None else None
             ),
