@@ -19,6 +19,7 @@ from llmtracefx.optimizer.importers import (
     AIPERF_TOOL,
     VLLM_BENCH_TOOL,
     ImportedBenchmark,
+    import_aiperf_records_file,
     import_benchmark_file,
     read_imported_benchmark,
 )
@@ -449,3 +450,63 @@ def test_cli_gate_on_imported_fixtures(tmp_path, capsys, candidate, expected):
     assert report["input_kind"] == "imported_benchmark"
     assert report["source_tool"] == VLLM_BENCH_TOOL
     assert capsys.readouterr().out.startswith(("pass:", "regression:"))
+
+
+def records_imported(prefix: str, values: list[float], slo=None, edit=None):
+    importers = Path(__file__).parent / "fixtures" / "importers"
+    template = import_aiperf_records_file(
+        importers / "aiperf_records_summary.json",
+        importers / "aiperf_records.jsonl",
+        slo=slo or {"ttft_ms": 60.0},
+    ).to_dict()
+    items = []
+    for index, value in enumerate(values):
+        data = json.loads(json.dumps(template))
+        data["source"]["sha256"] = f"{prefix}{index}".encode().hex().ljust(64, "0")
+        data["metrics"]["goodput"]["stats"]["value"]["value"] = value
+        data["metrics"]["time_to_first_token"]["stats"]["p99"]["value"] = value
+        if edit is not None:
+            edit(index, data)
+        items.append(ImportedBenchmark.from_dict(data))
+    return items
+
+
+def test_aiperf_records_gate_goodput_and_refusals(tmp_path):
+    base = records_imported("b", [3.0, 3.02, 3.04])
+    report = evaluate_gate(
+        base, records_imported("c", [2.5, 2.52, 2.54]), metric="goodput.value"
+    )
+    assert report.verdict is GateVerdict.REGRESSION
+    assert report.higher_is_better
+    assert report.provenance == "derived"
+    assert "computed by LLMTraceFX from AIPerf's per-request" in report.to_markdown()
+
+    def failures(index, data):
+        data["totals"]["failed_requests"]["value"] = 2
+
+    # Failures count as missed SLOs in goodput, so the runs stay usable there.
+    flaky = records_imported("c", [3.0, 3.02, 3.04], edit=failures)
+    assert (
+        evaluate_gate(base, flaky, metric="goodput.value").verdict is GateVerdict.PASS
+    )
+    latency = evaluate_gate(base, flaky, metric="time_to_first_token.p99")
+    assert latency.verdict is GateVerdict.INCONCLUSIVE
+    assert any("this value covers successful" in e for e in latency.excluded)
+
+    stricter = records_imported("c", [3.0, 3.02, 3.04], slo={"ttft_ms": 50.0})
+    other_slo = evaluate_gate(base, stricter, metric="goodput.value")
+    assert other_slo.verdict is GateVerdict.INCONCLUSIVE
+    assert "SLO targets" in other_slo.reason
+
+    summary = (
+        Path(__file__).parent / "fixtures" / "importers" / "aiperf_records_summary.json"
+    )
+    with pytest.raises(GateInputError, match="different tools"):
+        evaluate_gate(
+            base, [import_benchmark_file(summary, AIPERF_TOOL)] * 3, metric="x.p99"
+        )
+
+    raw = tmp_path / "profile_export.jsonl"
+    raw.write_text((summary.parent / "aiperf_records.jsonl").read_text())
+    with pytest.raises(GateInputError, match="--records"):
+        load_gate_inputs([raw])

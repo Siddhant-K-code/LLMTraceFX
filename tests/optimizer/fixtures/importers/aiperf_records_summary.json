@@ -1,0 +1,240 @@
+{
+  "schema_version": "1.7",
+  "aiperf_version": "0.9.0",
+  "benchmark_id": "0c4f7d2e9a1b4c3d8e6f5a4b3c2d1e0f",
+  "request_throughput": {
+    "unit": "requests/sec",
+    "avg": 3.8124
+  },
+  "request_latency": {
+    "unit": "ms",
+    "avg": 1043.27,
+    "min": 968.41,
+    "max": 1198.05,
+    "p1": 970.3468,
+    "p5": 978.0941,
+    "p10": 987.7782,
+    "p25": 1003.035,
+    "p50": 1037.66,
+    "p75": 1063.29,
+    "p90": 1088.92,
+    "p95": 1130.11,
+    "p99": 1171.3,
+    "std": 41.84,
+    "count": 20,
+    "sum": 208654.0
+  },
+  "request_count": {
+    "unit": "requests",
+    "avg": 20.0
+  },
+  "time_to_first_token": {
+    "unit": "ms",
+    "avg": 48.913,
+    "min": 39.207,
+    "max": 88.614,
+    "p1": 39.2854,
+    "p5": 39.5991,
+    "p10": 39.9911,
+    "p25": 43.0135,
+    "p50": 46.82,
+    "p75": 50.997,
+    "p90": 55.174,
+    "p95": 67.2395,
+    "p99": 79.305,
+    "std": 7.122,
+    "count": 20,
+    "sum": 9782.6
+  },
+  "time_to_second_token": {
+    "unit": "ms",
+    "avg": 7.884,
+    "min": 6.912,
+    "max": 14.208,
+    "p1": 6.9258,
+    "p5": 6.9811,
+    "p10": 7.0502,
+    "p25": 7.3065,
+    "p50": 7.701,
+    "p75": 8.1655,
+    "p90": 8.63,
+    "p95": 10.8035,
+    "p99": 12.977,
+    "std": 0.981,
+    "count": 20,
+    "sum": 1576.8
+  },
+  "inter_token_latency": {
+    "unit": "ms",
+    "avg": 7.8336,
+    "min": 7.4021,
+    "max": 8.9177,
+    "p1": 7.4169,
+    "p5": 7.4761,
+    "p10": 7.5501,
+    "p25": 7.6066,
+    "p50": 7.811,
+    "p75": 7.9579,
+    "p90": 8.1048,
+    "p95": 8.379,
+    "p99": 8.6532,
+    "std": 0.2075,
+    "count": 20,
+    "sum": 1566.72
+  },
+  "inter_chunk_latency": {
+    "unit": "ms",
+    "avg": 7.8341,
+    "min": 0.0412,
+    "max": 31.552,
+    "p1": 0.0413,
+    "p5": 0.0416,
+    "p10": 0.042,
+    "p25": 3.9108,
+    "p50": 7.7804,
+    "p75": 8.0598,
+    "p90": 8.3391,
+    "p95": 10.6116,
+    "p99": 12.884,
+    "std": 1.441,
+    "count": 2540,
+    "sum": 198986.14
+  },
+  "output_token_throughput": {
+    "unit": "tokens/sec",
+    "avg": 487.99
+  },
+  "output_token_throughput_per_user": {
+    "unit": "tokens/sec/user",
+    "avg": 127.71,
+    "min": 112.14,
+    "max": 135.1,
+    "p1": 112.3643,
+    "p5": 113.2614,
+    "p10": 114.3828,
+    "p25": 120.085,
+    "p50": 128.03,
+    "p75": 129.95,
+    "p90": 131.87,
+    "p95": 133.175,
+    "p99": 134.48,
+    "std": 3.39,
+    "count": 20,
+    "sum": 25542.0
+  },
+  "output_sequence_length": {
+    "unit": "tokens",
+    "avg": 128.0,
+    "min": 128,
+    "max": 128,
+    "p1": 128.256,
+    "p5": 129.28,
+    "p10": 130.56,
+    "p25": 128.0,
+    "p50": 128.0,
+    "p75": 128.0,
+    "p90": 128.0,
+    "p95": 128.0,
+    "p99": 128.0,
+    "std": 0.0,
+    "count": 20,
+    "sum": 2560.0
+  },
+  "input_sequence_length": {
+    "unit": "tokens",
+    "avg": 512.0,
+    "min": 512,
+    "max": 512,
+    "p1": 513.024,
+    "p5": 517.12,
+    "p10": 522.24,
+    "p25": 512.0,
+    "p50": 512.0,
+    "p75": 512.0,
+    "p90": 512.0,
+    "p95": 512.0,
+    "p99": 512.0,
+    "std": 0.0,
+    "count": 20,
+    "sum": 10240.0
+  },
+  "benchmark_duration": {
+    "unit": "sec",
+    "avg": 5.43
+  },
+  "total_isl": {
+    "unit": "tokens",
+    "avg": 10240.0
+  },
+  "total_osl": {
+    "unit": "tokens",
+    "avg": 2560.0
+  },
+  "start_time": "2026-05-12T09:14:03.118402",
+  "end_time": "2026-05-12T09:14:08.712514",
+  "was_cancelled": false,
+  "is_complete": true,
+  "error_summary": [],
+  "input_config": {
+    "models": {
+      "strategy": "round_robin",
+      "items": [
+        {
+          "name": "meta-llama/Llama-3.1-8B-Instruct"
+        }
+      ]
+    },
+    "endpoint": {
+      "urls": [
+        "http://localhost:8000"
+      ],
+      "type": "chat",
+      "streaming": true,
+      "api_key": "sk-redacted-in-fixture"
+    },
+    "datasets": [
+      {
+        "name": "default",
+        "type": "synthetic",
+        "prompts": {
+          "isl": {
+            "mean": 512
+          },
+          "osl": {
+            "mean": 128
+          }
+        }
+      }
+    ],
+    "phases": [
+      {
+        "name": "warmup",
+        "kind": "warmup",
+        "type": "concurrency",
+        "exclude_from_results": true,
+        "requests": 2,
+        "concurrency": 4
+      },
+      {
+        "name": "profiling",
+        "kind": "profiling",
+        "type": "concurrency",
+        "exclude_from_results": false,
+        "requests": 20,
+        "concurrency": 4
+      }
+    ]
+  },
+  "run_info": {
+    "benchmark_id": "0c4f7d2e9a1b4c3d8e6f5a4b3c2d1e0f",
+    "sweep_id": null,
+    "random_seed": 42,
+    "trial": 0,
+    "run_label": "run_0001",
+    "variation_label": "base",
+    "variation_index": 0,
+    "variation_values": {},
+    "cli_command": "aiperf profile --model meta-llama/Llama-3.1-8B-Instruct --url http://localhost:8000 --endpoint-type chat --streaming --concurrency 4 --request-count 20 --warmup-request-count 2 --random-seed 42"
+  },
+  "runtime_submission_invalid_reasons": []
+}

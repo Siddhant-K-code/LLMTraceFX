@@ -113,6 +113,7 @@ from .importers import (
     VLLM_BENCH_TOOL,
     BenchmarkImportError,
     ImportedBenchmark,
+    import_aiperf_records_file,
     import_benchmark_file,
 )
 from .instruments import (
@@ -831,8 +832,15 @@ def _import_summary(imported: ImportedBenchmark) -> str:
         f" {imported.source.tool_version or '(version not recorded)'}"
         f" sha256 {imported.source.sha256[:12]}; model {imported.model_id}",
     ]
+    if imported.source.companion_filename is not None:
+        lines.append(
+            f"  computed by LLMTraceFX from the per-request records; summary "
+            f"{imported.source.companion_filename} sha256 "
+            f"{(imported.source.companion_sha256 or '')[:12]}"
+        )
     for name, metric in imported.metrics.items():
-        lines.append(f"  {name} [{metric.unit}]: {', '.join(metric.stats)}")
+        count = "" if metric.sample_count is None else f" (n={metric.sample_count})"
+        lines.append(f"  {name} [{metric.unit}]: {', '.join(metric.stats)}{count}")
     if imported.load_unresolved:
         lines.append(
             "  load settings unresolved (the gate will not use this file): "
@@ -848,10 +856,27 @@ def _import_summary(imported: ImportedBenchmark) -> str:
 def _cmd_import(args: argparse.Namespace) -> int:
     tool = VLLM_BENCH_TOOL if args.import_command == "vllm-bench" else AIPERF_TOOL
     source = Path(args.source)
+    records = getattr(args, "records", None)
+    slo = {
+        name: value
+        for name in ("ttft_ms", "tpot_ms", "e2e_ms")
+        if (value := getattr(args, f"slo_{name}", None)) is not None
+    }
     try:
-        if args.output is not None and Path(args.output).resolve() == source.resolve():
-            raise BenchmarkImportError("--output must not overwrite the source file")
-        imported = import_benchmark_file(source, tool)
+        if slo and records is None:
+            raise BenchmarkImportError(
+                "--slo-* targets need --records; goodput is computed from "
+                "per-request records"
+            )
+        inputs = [source] if records is None else [source, Path(records)]
+        if args.output is not None and any(
+            Path(args.output).resolve() == path.resolve() for path in inputs
+        ):
+            raise BenchmarkImportError("--output must not overwrite an input file")
+        if records is None:
+            imported = import_benchmark_file(source, tool)
+        else:
+            imported = import_aiperf_records_file(source, records, slo=slo)
     except BenchmarkImportError as exc:
         print(f"import: {exc}", file=sys.stderr)
         return 2
@@ -3337,6 +3362,28 @@ def build_parser() -> argparse.ArgumentParser:
             default=None,
             help="Write the artifact here instead of stdout",
         )
+        if name == "aiperf":
+            import_tool_parser.add_argument(
+                "--records",
+                default=None,
+                metavar="PROFILE_EXPORT_JSONL",
+                help=(
+                    "AIPerf per-request profile_export.jsonl from the same run "
+                    "(--export-level records). LLMTraceFX then computes the "
+                    "percentiles, confidence intervals and throughput itself."
+                ),
+            )
+            for target, label in (
+                ("ttft", "time to first token"),
+                ("tpot", "time per output token"),
+                ("e2e", "request latency"),
+            ):
+                import_tool_parser.add_argument(
+                    f"--slo-{target}-ms",
+                    type=float,
+                    default=None,
+                    help=f"Goodput target for {label} in ms (needs --records)",
+                )
         import_tool_parser.set_defaults(func=_cmd_import)
 
     export_parser = subparsers.add_parser(
