@@ -218,10 +218,12 @@ def _constraint(value: Any) -> str:
     return json.dumps(value, sort_keys=True)
 
 
-def _load(config: dict[str, Any]) -> tuple[dict[str, LoadValue], list[str]]:
+def _load(
+    config: dict[str, Any], prefix: str
+) -> tuple[dict[str, LoadValue], list[str]]:
     load: dict[str, LoadValue] = {}
     unresolved: list[str] = []
-    strategy = _mapping(config.get("strategy"), "config.strategy")
+    strategy = _mapping(config.get("strategy"), f"{prefix}.config.strategy")
     strategy_type = strategy.get("type_")
     if not isinstance(strategy_type, str):
         unresolved.append("strategy type")
@@ -237,7 +239,9 @@ def _load(config: dict[str, Any]) -> tuple[dict[str, LoadValue], list[str]]:
         unresolved.append(f"strategy.{needed}")
     # Constraint shapes differ across GuideLLM releases, so each is kept as
     # canonical JSON and runs compare only when it matches exactly.
-    constraints = _mapping(config.get("constraints", {}), "config.constraints")
+    constraints = _mapping(
+        config.get("constraints", {}), f"{prefix}.config.constraints"
+    )
     for name, value in sorted(constraints.items()):
         load[f"constraint.{name}"] = _constraint(value)
     for phase in ("warmup", "cooldown"):
@@ -251,14 +255,15 @@ def _load(config: dict[str, Any]) -> tuple[dict[str, LoadValue], list[str]]:
     return load, unresolved
 
 
-def _endpoint(backend: dict[str, Any]) -> dict[str, EndpointValue]:
+def _endpoint(backend: dict[str, Any], prefix: str) -> dict[str, EndpointValue]:
+    where = f"{prefix}.config.backend"
     stream = backend.get("stream")
     if stream is not None and not isinstance(stream, bool):
-        raise BenchmarkImportError("config.backend.stream must be a bool")
+        raise BenchmarkImportError(f"{where}.stream must be a bool")
     return {
-        "backend": _str(backend.get("kind"), "config.backend.kind"),
+        "backend": _str(backend.get("kind"), f"{where}.kind"),
         "request_format": _str(
-            backend.get("request_format"), "config.backend.request_format"
+            backend.get("request_format"), f"{where}.request_format"
         ),
         "stream": stream,
     }
@@ -401,7 +406,7 @@ def import_guidellm(
             f"{prefix} has no successful requests in its measurement window"
         )
 
-    load, unresolved = _load(config)
+    load, unresolved = _load(config, prefix)
     imported = _metrics(metrics, prefix)
     consumed = {"request_totals", *_TOKEN_TOTALS, *imported}
     return ImportedBenchmark(
@@ -415,7 +420,7 @@ def import_guidellm(
             schema_version=str(version),
         ),
         model_id=model,
-        endpoint=_endpoint(backend),
+        endpoint=_endpoint(backend, prefix),
         load=load,
         totals=totals,
         metrics=imported,
