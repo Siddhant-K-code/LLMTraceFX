@@ -654,8 +654,9 @@ values, not diffed.
   `gpu_telemetry_export.json` and server metrics exports
   ([`working-with-profile-exports.md`](https://github.com/ai-dynamo/aiperf/blob/ebcdc98ad69388b86564e25bc1a6976fc50051a7/docs/tutorials/working-with-profile-exports.md)).
   `import aiperf` read only the summary, so its percentiles stayed
-  `imported_derived`; `--records` now reads the per-request file. AIPerf also added multi-run confidence intervals
-  (`--num-profile-runs`, `--confidence-level`) and HTTP connection timing
+  `imported_derived`; `--records` now reads the per-request file. AIPerf also
+  added multi-run confidence intervals (`--num-profile-runs`,
+  `--confidence-level`) and HTTP connection timing
   ([`multi-run-confidence.md`](https://github.com/ai-dynamo/aiperf/blob/ebcdc98ad69388b86564e25bc1a6976fc50051a7/docs/tutorials/multi-run-confidence.md),
   [`http-trace-metrics.md`](https://github.com/ai-dynamo/aiperf/blob/ebcdc98ad69388b86564e25bc1a6976fc50051a7/docs/tutorials/http-trace-metrics.md)).
 - GuideLLM reports confidence intervals for per-request metrics, warmup and
@@ -782,7 +783,7 @@ and BurstGPT v2.0 added a `Session ID` column that `replay` ignores.
   [`registry.yaml`](https://github.com/open-telemetry/semantic-conventions-genai/blob/4181b1ebe55da7edb3538636c45ae64af369b5ef/model/gen-ai/registry.yaml#L315-L371),
   where all three are at development stability.
 - AIPerf per-request import: `import aiperf --records profile_export.jsonl`
-  computes LLMTraceFX's own percentiles, intervals and goodput.
+  computes LLMTraceFX's own percentiles, intervals and goodput (#190).
 
 ## Follow ups not built here
 

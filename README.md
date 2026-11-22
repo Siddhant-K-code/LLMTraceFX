@@ -355,7 +355,8 @@ same way and recorded with its sha256 as the companion. The import is refused
 when the records span more than one profiling phase, repeat a request id, have
 a field with the wrong type or unit, or do not add up to the summary's request
 counts and token totals. Goodput is refused when a successful record lacks a
-value for a target, for example TTFT from a non-streaming run.
+value for a target, for example TTFT from a non-streaming run. Each input file
+may be at most 64 MiB.
 
 Imported artifacts work with `gate` only. Gate N baseline imports against N
 candidate imports from the same tool, model, endpoint and load, naming a metric
