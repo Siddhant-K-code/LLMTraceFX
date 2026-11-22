@@ -135,6 +135,38 @@ def test_api_run_exports_genai_spans_with_otlp_json_encoding(tmp_path: Path) -> 
     assert len({span["spanId"] for span in spans}) == len(spans)
 
 
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        (
+            {
+                "prompt_tokens": 17,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 9},
+                "completion_tokens_details": {"reasoning_tokens": 3},
+            },
+            {"cache_read": 0, "cache_write": 9, "reasoning": 3},
+        ),
+        ({"prompt_tokens": 17, "completion_tokens": 5}, {}),
+    ],
+)
+def test_otlp_cache_and_reasoning_tokens_only_when_reported(
+    tmp_path: Path, usage: dict[str, Any], expected: dict[str, int]
+) -> None:
+    record, evidence = api_run(tmp_path, usage=usage)
+    model = build_trace(record, api_evidence=evidence)
+    root_attrs = attrs(spans_of(json.loads(render_otlp_json_line(model)))[0])
+
+    names = {
+        "cache_read": "gen_ai.usage.cache_read.input_tokens",
+        "cache_write": "gen_ai.usage.cache_write.input_tokens",
+        "reasoning": "gen_ai.usage.reasoning.output_tokens",
+    }
+    assert {
+        short: root_attrs[name] for short, name in names.items() if name in root_attrs
+    } == expected
+
+
 def test_export_is_deterministic(tmp_path: Path) -> None:
     record, evidence = api_run(tmp_path)
     first = render_otlp_json_line(build_trace(record, api_evidence=evidence))
@@ -381,6 +413,9 @@ def test_otlp_exports_replay_as_otel_genai_traces(tmp_path: Path) -> None:
     ] == [(i, o) for _, i, o in declared]
     assert document["source"]["sessions"] == 2
     assert document["source"]["details"]["llmtracefx_token_provenance"]
+    assert document["source"]["details"]["recorded_usage_parts"] == {
+        "gen_ai.usage.cache_read.input_tokens": {"spans": 1, "tokens": 4}
+    }
     for root in roots:
         assert root["traceId"] not in text
     assert record.run_id not in text

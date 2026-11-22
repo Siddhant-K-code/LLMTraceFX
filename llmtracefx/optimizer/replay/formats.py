@@ -62,6 +62,9 @@ Six formats are read, each checked against its upstream definition:
     ``gen_ai.operation.name`` is ``chat``, ``text_completion`` or
     ``generate_content`` are requests, sized by ``gen_ai.usage.input_tokens``
     and ``gen_ai.usage.output_tokens``. Other spans are counted and skipped.
+    Cache read, cache write and reasoning token counts are checked against
+    the totals the conventions count them in, and their sums are recorded
+    with the source; they do not change the request sizes.
     Spans that share a trace id form one session, ordered by start time; a
     later span waits for the previous one, then for the recorded gap from
     the previous span's end, so concurrent spans are sent one at a time.
@@ -280,6 +283,17 @@ _OTEL_TOKENS = (
     ("input", "gen_ai.usage.input_tokens", "gen_ai.usage.prompt_tokens"),
     ("output", "gen_ai.usage.output_tokens", "gen_ai.usage.completion_tokens"),
 )
+_OTEL_USAGE_PARTS = (
+    ("input", "gen_ai.usage.cache_read.input_tokens", None),
+    (
+        "input",
+        "gen_ai.usage.cache_write.input_tokens",
+        "gen_ai.usage.cache_creation.input_tokens",
+    ),
+    ("output", "gen_ai.usage.reasoning.output_tokens", None),
+)
+"""Usage parts the conventions count inside the input or output total.
+``cache_creation`` is the name before semantic-conventions-genai v0.1.0."""
 _OTEL_CONTENT_ATTRIBUTES = frozenset(
     {
         "gen_ai.input.messages",
@@ -1350,6 +1364,61 @@ def _otel_tokens(
     return values[0], values[1]
 
 
+def _otel_usage_parts(
+    attributes: dict[str, Any],
+    where: str,
+    aliases: dict[str, int],
+    totals: dict[str, int],
+) -> dict[str, int]:
+    """Cache and reasoning counts, checked against the totals they belong to.
+
+    The conventions include cache reads and writes in ``input_tokens`` and
+    reasoning in ``output_tokens``. A span whose parts exceed its total
+    reported the total without them, so replay would size it wrong.
+    """
+    parts: dict[str, int] = {}
+    within = {"input": 0, "output": 0}
+    for side, current, alias in _OTEL_USAGE_PARTS:
+        value = attributes.get(current)
+        old = None if alias is None else attributes.get(alias)
+        if alias is not None and old is not None:
+            if value is not None and value != old:
+                raise TraceFormatError(
+                    f"{where}: {current} {value!r} and the deprecated {alias} "
+                    f"{old!r} disagree"
+                )
+            if value is None:
+                value = old
+                aliases[alias] = aliases.get(alias, 0) + 1
+        if value is None:
+            continue
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 0 <= value <= _MAX_EXACT_INT
+        ):
+            raise TraceFormatError(
+                f"{where}: {current} must be an integer between 0 and "
+                f"{_MAX_EXACT_INT}, got {value!r}"
+            )
+        parts[current] = value
+        within[side] += value
+    for side, total in totals.items():
+        if within[side] > total:
+            named = " plus ".join(
+                key
+                for part, key, _ in _OTEL_USAGE_PARTS
+                if part == side and key in parts
+            )
+            raise TraceFormatError(
+                f"{where}: {named} ({within[side]}) exceeds "
+                f"gen_ai.usage.{side}_tokens ({total}); the conventions count "
+                f"them inside the {side} total, so replay cannot size this "
+                "request from it"
+            )
+    return parts
+
+
 def _otel_spans(row: dict[str, Any], where: str) -> Iterator[tuple[str, Any]]:
     _check_keys(row, where, _OTLP_TRACES_KEYS, {}, "an OTLP TracesData line")
     resource_spans = row.get("resourceSpans", [])
@@ -1386,6 +1455,7 @@ def _parse_otel_genai(
     skipped: dict[str, int] = {}
     aliases: dict[str, int] = {}
     provenance: dict[str, int] = {}
+    recorded: dict[str, list[int]] = {}
     content_spans = 0
     failed = 0
     first_failed_line: int | None = None
@@ -1441,6 +1511,16 @@ def _parse_otel_genai(
                     first_failed_line = line
                 continue
             input_tokens, output_tokens = _otel_tokens(attributes, where, aliases)
+            parts = _otel_usage_parts(
+                attributes,
+                where,
+                aliases,
+                {"input": input_tokens, "output": output_tokens},
+            )
+            for key, value in parts.items():
+                counts = recorded.setdefault(key, [0, 0])
+                counts[0] += 1
+                counts[1] += value
             model = attributes.get("gen_ai.request.model")
             if model is not None and (not isinstance(model, str) or not model):
                 raise TraceFormatError(
@@ -1490,6 +1570,11 @@ def _parse_otel_genai(
     }
     if provenance:
         details["llmtracefx_token_provenance"] = dict(sorted(provenance.items()))
+    if recorded:
+        details["recorded_usage_parts"] = {
+            key: {"spans": spans, "tokens": tokens}
+            for key, (spans, tokens) in sorted(recorded.items())
+        }
     return (
         tuple(entries),
         rows_total,
