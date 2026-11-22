@@ -7,6 +7,9 @@ Subcommands:
     collect-api      Stream one OpenAI-compatible chat completion (e.g. Z.ai GLM)
                      and record normalized, credential-free evidence;
                      optionally bracket it with server /metrics scrapes.
+    collect-ollama   Stream one request through Ollama's native API and record
+                     its server timers (load, prompt eval, eval) beside
+                     client-measured TTFT.
     server-metrics   Snapshot a Prometheus /metrics endpoint (vLLM, SGLang,
                      llama.cpp, TGI) and diff two snapshots into window
                      evidence that refuses to attribute contaminated windows.
@@ -69,6 +72,7 @@ from .collectors.native_mtp import (
     capability_report_for_target,
     collect_native_mtp,
 )
+from .collectors.ollama_cli import add_collect_ollama_parser
 from .collectors.openai_api import (
     DEFAULT_RETAINED_EVENT_LIMIT,
     GLM_REASONING_EFFORT_LEVELS,
@@ -3228,6 +3232,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_server_reported_arguments(collect_api_parser)
     collect_api_parser.set_defaults(func=_cmd_collect_api)
+    add_collect_ollama_parser(subparsers)
     add_sweep_api_parser(subparsers)
     add_backend_sweep_parsers(subparsers)
 

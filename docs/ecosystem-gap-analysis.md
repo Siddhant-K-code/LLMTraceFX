@@ -50,7 +50,8 @@ research pass and are less thoroughly verified.
    as `server-metrics`.**
 4. **Native vLLM, SGLang, TGI and Ollama collectors.** Partly addressed by
    item 3, which reads the server's own histograms instead of inferring
-   phases at the client.
+   phases at the client. **Ollama is built as `collect-ollama` and
+   `sweep-ollama`.**
 5. **GPU telemetry and energy (NVML or DCGM).** LLMTraceFX covers Apple
    silicon through Instruments. **Built in this branch as `gpu-energy`, for
    NVIDIA power and energy through NVML, with dcgm-exporter as a second
@@ -629,8 +630,8 @@ per-request numbers with the response.
 - Ollama native responses add `prompt_eval_cached_count`
   ([`api/types.go`](https://github.com/ollama/ollama/blob/42ac2c0c1e132c0b4f0d9cfcd4e7950f0c5470bc/api/types.go#L683-L691))
   next to `total_duration`, `load_duration`, `prompt_eval_duration` and
-  `eval_duration`. LLMTraceFX only talks to Ollama through its OpenAI route,
-  which drops the durations.
+  `eval_duration`. The OpenAI route drops the durations. `collect-ollama` and
+  `sweep-ollama` read them from the native API.
 
 #### KV and prefix cache tiers
 
@@ -816,6 +817,11 @@ and BurstGPT v2.0 added a `Session ID` column that `replay` ignores.
   where all three are at development stability.
 - AIPerf per-request import: `import aiperf --records profile_export.jsonl`
   computes LLMTraceFX's own percentiles, intervals and goodput (#190).
+- Native Ollama collection: `collect-ollama` and `sweep-ollama` stream
+  `/api/chat` or `/api/generate` and record `load_duration`,
+  `prompt_eval_duration`, `eval_duration`, `total_duration` and the token
+  counts, including `prompt_eval_cached_count`, as `provider_reported`
+  (follow up 11).
 
 ## Follow ups not built here
 
@@ -857,7 +863,7 @@ Ranked by value to the evidence model against cost:
     per-request lists is a follow-up).
 11. **Native Ollama collector (M).** Its `/api/*` responses carry load,
     prompt and eval durations and the new cached count, which the OpenAI
-    route drops.
+    route drops. **Built as `collect-ollama` and `sweep-ollama`.**
 12. **Perfetto protobuf export (M to L).** Counter tracks, async slices and
     flows would show power, sweeps and requests together; JSON stays as the
     fallback.

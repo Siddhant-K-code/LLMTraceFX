@@ -10,9 +10,10 @@ for each load point:
 - diagnostics that show whether the load generator kept up,
 - optionally, the server's own Prometheus window for the point.
 
-`sweep-llama-cpp` and `sweep-mlx` do the same against llama.cpp's native
-`/completion` endpoint and in-process mlx-lm; see
-[Sweeps against llama.cpp and MLX](#sweeps-against-llamacpp-and-mlx).
+`sweep-llama-cpp`, `sweep-mlx` and `sweep-ollama` do the same against
+llama.cpp's native `/completion` endpoint, in-process mlx-lm and Ollama's
+native `/api/chat` or `/api/generate`; see
+[Sweeps against llama.cpp, MLX and Ollama](#sweeps-against-llamacpp-mlx-and-ollama).
 
 Everything else in LLMTraceFX measures one request at a time. A sweep does
 not. Read the next section before using its numbers.
@@ -153,18 +154,19 @@ succeeded and every server metrics window was recorded. It exits 1 otherwise,
 and 130 when interrupted. Degraded scheduling prints a warning but does not
 change the exit code.
 
-## Sweeps against llama.cpp and MLX
+## Sweeps against llama.cpp, MLX and Ollama
 
-Two more commands run the same sweep against backends that do not speak the
-OpenAI API. They use the same dispatcher, load flags, goodput, scheduling
+Three more commands run the same sweep through a backend's native interface
+instead of an OpenAI-compatible API. They use the same dispatcher, load flags, goodput, scheduling
 diagnostics and `sweep.json` layout as `sweep-api`, and `gate`, `compare`
 and `export` refuse their output in the same way. Each `attribution` block
 gets a `backend` entry that names the backend, the pinned upstream commit,
 what the backend reported about itself and the in-flight limit it supports.
 
 Their rows are not comparable with `sweep-api` rows, even against the same
-server or model. Neither command applies a chat template, and each
-`attribution.cannot_claim` says so.
+server or model. `sweep-llama-cpp` and `sweep-mlx` apply no chat template,
+and each `attribution.cannot_claim` says so. Ollama applies the model's own
+template on both of its APIs.
 
 ### `sweep-llama-cpp`
 
@@ -286,9 +288,92 @@ Other behavior:
   why, and client CPU never marks an MLX point degraded. Dispatch lag and
   slot refill are still judged.
 
+### `sweep-ollama`
+
+Sends each request to Ollama's native `/api/chat` (default) or
+`/api/generate` (ollama/ollama at
+`42ac2c0c1e132c0b4f0d9cfcd4e7950f0c5470bc`). Ollama's OpenAI-compatible
+`/v1` route, which `sweep-api` can drive, drops the server's own timers.
+The native API sends them on the final chunk of each stream.
+
+```bash
+llmtracefx-optimizer sweep-ollama \
+  --run-id ollama-sweep \
+  --model qwen3:0.6b \
+  --prompt-file prompt.txt \
+  --max-output-tokens 256 \
+  --concurrency 1,2,4 \
+  --requests-per-point 32 \
+  --output-dir results/ollama-sweep
+```
+
+- `--endpoint` is the server root and defaults to
+  `http://127.0.0.1:11434`. The command adds the API path and
+  `/api/version`, and refuses a URL that already ends in `/api`, an API
+  path or `/v1`, or has a query string.
+- `--max-output-tokens` is required and is sent as `options.num_predict`,
+  because Ollama's default is no limit.
+- Sampling options (`--temperature`, `--top-p`, `--top-k`, `--seed`) and
+  `--num-ctx` are sent in `options` only when given. `--think true|false`
+  sends `think`; unset leaves the model's default.
+- `--api-key-env` names an environment variable with a bearer token for a
+  proxy in front of Ollama. Local Ollama needs none. The token is never
+  written.
+- Remote endpoints need `--allow-remote-load`, and non-local hosts need
+  https, as with `sweep-api`.
+- Before a real sweep, the command reads `/api/version` and refuses to run
+  if that fails. The version goes in the backend block. A dry run sends
+  nothing.
+- Ollama does not report how many requests it runs at once
+  (`OLLAMA_NUM_PARALLEL`), so unlike `sweep-llama-cpp` a point above that
+  limit is not refused. The extra requests wait inside Ollama. That wait is
+  in `server_e2e_ms` and the client's latency, and in no other server
+  field. `attribution.cannot_claim` says so. Ollama has no Prometheus
+  endpoint, so there are no server metrics flags.
+
+Rows fill the base fields from the final chunk, all `provider_reported`:
+`output_tokens` is `eval_count`, `prompt_tokens` is `prompt_eval_count` and
+`cached_prompt_tokens` is `prompt_eval_cached_count`. Rows add Ollama's
+timers, converted from nanoseconds to milliseconds and also
+`provider_reported`:
+
+| Row field | Ollama field | What it covers |
+| --- | --- | --- |
+| `server_e2e_ms` | `total_duration` | start of request handling to the final chunk |
+| `server_load_ms` | `load_duration` | until the model was scheduled and loaded |
+| `server_prompt_eval_ms` | `prompt_eval_duration` | evaluating the prompt tokens that were not cached |
+| `server_eval_ms` | `eval_duration` | generating the response tokens |
+
+Ollama leaves a field out when it is zero, so a missing field stays null
+and is never filled with 0. `prompt_eval_cached_count` is the exception: a
+reported 0 is kept. `prompt_eval_count` includes the cached tokens.
+`server_metrics_source` is `ollama_metrics` when the final chunk had any
+of these fields.
+
+`ttft_ms` is the first chunk with content, thinking or a tool call
+(`ttft_source` `first_output_chunk`); `first_content_ms` is the first with
+content. `finish_reason` holds the raw `done_reason`: `stop` and `length`
+count as themselves, anything else fails the request as
+`unrecognized_done_reason`. An `{"error": ...}` line mid-stream fails it as
+`provider_error_payload`, and a stream that ends without the `done: true`
+chunk as `stream_truncated`.
+
+A large `server_load_ms` means Ollama loaded the model for that request.
+Use `--warmup-requests` so the first load is left out, and compare
+`server_load_ms` across rows to spot a reload or eviction.
+
+`collect-ollama` sends one request the same way and writes `record.json`,
+`response.txt`, `environment.json` and `ollama_evidence.json`. The record
+maps `load_duration`, `prompt_eval_duration` and `eval_duration` to
+`timing.model_load`, `timing.prefill` and `timing.decode`, all
+`provider_reported`. `timing.total` is the client's wall clock. The
+evidence file keeps the raw nanosecond fields, which fields were absent or
+malformed, the version probe, client TTFT and the gaps between output
+chunks.
+
 ### Checked on real hardware
 
-Both commands were run on an Apple M5 Pro against
+The llama.cpp and MLX commands were run on an Apple M5 Pro against
 Qwen2.5-0.5B-Instruct: the Q4_K_M GGUF under `llama-server` built at the
 pinned commit (`build_info` `b12485-ebc9fb933`, `--parallel 2 --metrics`),
 and `mlx-community/Qwen2.5-0.5B-Instruct-4bit` under mlx 0.32.2 and
@@ -449,6 +534,7 @@ nothing when they are not; no field is filled with zeros.
 | SGLang | `sglext` with `spec_tokens_details` and `cached_tokens_details` ([chunk](https://github.com/sgl-project/sglang/blob/b6d4389a77970e31817536c3e182256fae6a6f73/python/sglang/srt/entrypoints/openai/serving_chat.py#L2690-L2761), [request fields](https://github.com/sgl-project/sglang/blob/b6d4389a77970e31817536c3e182256fae6a6f73/python/sglang/srt/entrypoints/openai/protocol.py#L1038-L1039)) | Pass `--sglang-return-details`, which adds `return_spec_tokens_details` and `return_cached_tokens_details` to the request body. |
 | TensorRT-LLM | a `trtllm.perf_metrics` SSE event after `[DONE]`, holding the `Server-Timing` and `X-TRTLLM-*` values ([perf_metrics.py](https://github.com/NVIDIA/TensorRT-LLM/blob/e6ecd280fd1f77cad6496f81a7194afe29f8d5e8/tensorrt_llm/serve/perf_metrics.py#L322-L400), [streaming](https://github.com/NVIDIA/TensorRT-LLM/blob/e6ecd280fd1f77cad6496f81a7194afe29f8d5e8/tensorrt_llm/serve/perf_metrics.py#L842-L914)) | Start the server with `return_perf_metrics` ([server](https://github.com/NVIDIA/TensorRT-LLM/blob/e6ecd280fd1f77cad6496f81a7194afe29f8d5e8/tensorrt_llm/serve/openai_server.py#L760-L766)) and pass `--trtllm-return-metrics`, which sends `X-TRTLLM-return-metrics: 1`. |
 | llama.cpp | `timings.draft_n` and `timings.draft_n_accepted` | `sweep-llama-cpp`, see above. |
+| Ollama | `load_duration`, `prompt_eval_duration`, `eval_duration`, `total_duration` and the token counts on the final chunk of the native API | `collect-ollama` and `sweep-ollama`, see above. |
 
 Both opt-in flags change the request, so each is part of the config hash, the
 recorded command and, for sweeps, the `workload` block. A run with a flag is

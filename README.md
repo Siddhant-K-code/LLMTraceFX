@@ -247,6 +247,12 @@ relabelled as measurements.
   state, and provider-reported usage without persisting the credential.
 - **llama.cpp:** convert captured stdout and stderr into the canonical evidence
   schema. This parser does not launch or configure llama.cpp.
+- **Ollama native API:** stream one request through `/api/chat` or
+  `/api/generate` and record the server's own `load_duration`,
+  `prompt_eval_duration`, `eval_duration`, `total_duration` and token counts
+  (including `prompt_eval_cached_count`) as `provider_reported`, next to the
+  client-measured TTFT and gaps between chunks. Ollama's OpenAI-compatible
+  route drops these timers.
 - **Apple Instruments:** check `xctrace` capability, print an execution plan,
   record a local command, or import an existing trace bundle. Supported Metal
   tables are reported narrowly rather than treated as generic GPU utilization.
@@ -428,9 +434,9 @@ there are enough requests (p95 needs 72, p99 needs 368), and
 `--warmup-requests N` leaves the first N requests of each point out of the
 numbers. Remote endpoints need `--allow-remote-load`. See
 [`docs/load-sweeps.md`](docs/load-sweeps.md) for what a sweep can claim,
-the goodput rules and the scheduling diagnostics. `sweep-llama-cpp` and
-`sweep-mlx` run the same sweep against llama.cpp's native `/completion`
-endpoint and in-process mlx-lm.
+the goodput rules and the scheduling diagnostics. `sweep-llama-cpp`,
+`sweep-mlx` and `sweep-ollama` run the same sweep against llama.cpp's native
+`/completion` endpoint, in-process mlx-lm and Ollama's native API.
 
 ### Verification and resumability
 
@@ -1036,6 +1042,26 @@ skipped. Every value that is left out is listed as `Not exported: ...`.
 | `gen_ai.server.request.duration` | vLLM, SGLang or TGI end to end latency histogram | as above |
 | `llmtracefx.gpu.energy`, `llmtracefx.gpu.power.average` | `gpu_energy_evidence.json` next to the record | the evidence is refused, its window is shared with another run, or the run failed |
 
+### Ollama native API
+
+```bash
+uv run llmtracefx-optimizer collect-ollama \
+  --run-id ollama-baseline \
+  --model qwen3:0.6b \
+  --prompt-file examples/optimizer/api-smoke-prompt.txt \
+  --output-dir output/ollama-baseline \
+  --max-output-tokens 64
+```
+
+`--endpoint` defaults to `http://127.0.0.1:11434` and `--api` to `chat`.
+The record's `timing.model_load`, `timing.prefill` and `timing.decode` come
+from Ollama's `load_duration`, `prompt_eval_duration` and `eval_duration`,
+labelled `provider_reported`. `ollama_evidence.json` keeps the raw
+nanosecond fields and the client TTFT. Add `--dry-run` to write the request
+plan without sending anything. See
+[`docs/load-sweeps.md`](docs/load-sweeps.md#sweep-ollama) for the field
+mapping and `sweep-ollama`.
+
 ### Trace replay
 
 `replay` sends a published arrival trace to an OpenAI-compatible endpoint at
@@ -1418,6 +1444,10 @@ The console scripts below come from `pyproject.toml`.
 | `llmtracefx` | Legacy compatibility | Earlier token trace analyzer |
 | `llmtracefx-serve` | Legacy compatibility | Local FastAPI surface for the earlier analyzer |
 | `llmtracefx-dashboard` | Legacy compatibility | Earlier Streamlit dashboard; not the current evidence workflow |
+
+Under `llmtracefx-optimizer`, the per-backend collectors are `collect-mlx`,
+`collect-api` and `collect-ollama`, and the load sweeps are `sweep-api`,
+`sweep-llama-cpp`, `sweep-mlx` and `sweep-ollama`.
 
 Use `uv run llmtracefx-optimizer --help`,
 `uv run llmtracefx-cache-audit --help`, and
