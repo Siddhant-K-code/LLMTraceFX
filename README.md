@@ -279,7 +279,13 @@ can read it, and it can be POSTed to any OTLP/HTTP `/v1/traces` endpoint, so
 Jaeger, Tempo, Phoenix, or Langfuse can show it. `export perfetto` writes a
 Chrome trace for [ui.perfetto.dev](https://ui.perfetto.dev). Both outputs are
 deterministic: IDs derive from the `run_id`, and every timing keeps its
-provenance as a `llmtracefx.*` attribute.
+provenance as a `llmtracefx.*` attribute. With `--api-evidence`, provider
+reported cache reads, cache writes and reasoning tokens are written as
+`gen_ai.usage.cache_read.input_tokens`,
+`gen_ai.usage.cache_write.input_tokens` and
+`gen_ai.usage.reasoning.output_tokens`, so trace backends show cache hits and
+reasoning natively. A count the provider did not report is left out, never
+written as zero.
 
 `export otlp-metrics` aggregates many API runs into GenAI histograms in
 OTLP/JSON: client duration, time to first chunk, time per chunk, token counts,
@@ -1076,6 +1082,13 @@ uv run llmtracefx-optimizer replay plan runs.jsonl --format otel-genai \
 
 Raw session ids, `traceId`s and conversation ids are never written; sessions
 are numbered by first arrival.
+
+Cache read, cache write and reasoning token attributes are read too, including
+the older `gen_ai.usage.cache_creation.input_tokens` name. The conventions
+count them inside the input and output totals, so a span whose parts exceed
+its total is refused. Their sums are recorded under
+`source.details.recorded_usage_parts`; request sizes still come from the
+input and output totals.
 
 `--tokenizer` makes synthetic lengths exact. It takes a Hugging Face repo id
 (`--tokenizer-revision` pins a branch, tag or commit), a `tokenizer.json`

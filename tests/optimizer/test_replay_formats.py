@@ -574,6 +574,28 @@ def _otel_rows(*spans: dict[str, Any]) -> str:
         (_otel_span(body="x"), "field 'body'"),
         (_otel_span(status={"code": 7}), "status.code must be 0, 1 or 2"),
         (_otel_span(("gen_ai.operation.name", "embeddings")), "no successful chat"),
+        (
+            _otel_span(
+                ("gen_ai.usage.cache_read.input_tokens", 4),
+                ("gen_ai.usage.cache_write.input_tokens", 2),
+            ),
+            r"cache_write.input_tokens \(6\) exceeds gen_ai.usage.input_tokens \(5\)",
+        ),
+        (
+            _otel_span(("gen_ai.usage.reasoning.output_tokens", 3)),
+            r"exceeds gen_ai.usage.output_tokens \(2\)",
+        ),
+        (
+            _otel_span(("gen_ai.usage.cache_read.input_tokens", -1)),
+            "must be an integer between 0",
+        ),
+        (
+            _otel_span(
+                ("gen_ai.usage.cache_write.input_tokens", 1),
+                ("gen_ai.usage.cache_creation.input_tokens", 2),
+            ),
+            "deprecated gen_ai.usage.cache_creation.input_tokens 2 disagree",
+        ),
     ],
 )
 def test_otel_genai_refusals(
@@ -582,6 +604,31 @@ def test_otel_genai_refusals(
     path = _write(tmp_path, _otel_rows(span))
     with pytest.raises(TraceFormatError, match=message):
         parse_trace(path, "otel-genai")
+
+
+def test_otel_genai_records_cache_and_reasoning_parts(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        _otel_rows(
+            _otel_span(
+                ("gen_ai.usage.cache_read.input_tokens", 3),
+                ("gen_ai.usage.cache_creation.input_tokens", 2),
+                ("gen_ai.usage.reasoning.output_tokens", 0),
+            ),
+            _otel_span(("gen_ai.usage.cache_read.input_tokens", 1)),
+            _otel_span(),
+        ),
+    )
+    trace = parse_trace(path, "otel-genai")
+    assert [(e.input_tokens, e.output_tokens) for e in trace.entries] == [(5, 2)] * 3
+    assert trace.details["recorded_usage_parts"] == {
+        "gen_ai.usage.cache_read.input_tokens": {"spans": 2, "tokens": 4},
+        "gen_ai.usage.cache_write.input_tokens": {"spans": 1, "tokens": 2},
+        "gen_ai.usage.reasoning.output_tokens": {"spans": 1, "tokens": 0},
+    }
+    assert trace.details["deprecated_token_attributes"] == {
+        "gen_ai.usage.cache_creation.input_tokens": 1
+    }
 
 
 def test_otel_genai_refuses_repeated_attributes(tmp_path: Path) -> None:

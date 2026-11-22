@@ -681,9 +681,11 @@ and BurstGPT v2.0 added a `Session ID` column that `replay` ignores.
   and `gen_ai.client.inference.usage.*` counters including cache read, cache
   write and reasoning tokens
   ([`token-metrics.yaml`](https://github.com/open-telemetry/semantic-conventions-genai/blob/76e0c19e7fe11dc693fe258642363a438af4d3aa/model/gen-ai/token-metrics.yaml#L17-L101)).
-  `export otlp` writes neither, although records hold provider cached tokens
-  and reasoning deltas. The counters were skipped earlier because modality is
-  unknown; the cache and reasoning attributes have no such problem.
+  `export otlp` already wrote these span attributes from API evidence usage,
+  though only the cache read was tested, and `replay --format otel-genai`
+  ignored them. Both are now covered (see "Built from this refresh"). The
+  counters were skipped earlier because modality is unknown; the cache and
+  reasoning attributes have no such problem.
 - The conventions still have no server queue, KV cache, speculative decoding
   or energy metrics. Only open proposals exist
   ([semantic-conventions-genai#87](https://github.com/open-telemetry/semantic-conventions-genai/issues/87)).
@@ -750,6 +752,15 @@ and BurstGPT v2.0 added a `Session ID` column that `replay` ignores.
   llama.cpp cached prompt tokens, and a TensorRT-LLM profile (#172).
 - `replay --format weka` and `--format otel-genai`, which replays
   `export otlp` output (#173).
+- GenAI cache and reasoning token attributes: `export otlp` writes
+  `gen_ai.usage.cache_read.input_tokens`,
+  `gen_ai.usage.cache_write.input_tokens` and
+  `gen_ai.usage.reasoning.output_tokens` only when the provider reported
+  them, and `replay --format otel-genai` reads them back, accepts the
+  pre-v0.1.0 `cache_creation` name, refuses parts larger than their total and
+  records their sums. Checked against
+  [`registry.yaml`](https://github.com/open-telemetry/semantic-conventions-genai/blob/4181b1ebe55da7edb3538636c45ae64af369b5ef/model/gen-ai/registry.yaml#L315-L371),
+  where all three are at development stability.
 
 ## Follow ups not built here
 
@@ -759,9 +770,8 @@ new execution model or output format.
 
 Ranked by value to the evidence model against cost:
 
-1. **GenAI cache and reasoning token attributes in `export otlp` (S).** The
-   attributes exist in the conventions and the records already hold the
-   values.
+1. **GenAI cache and reasoning token attributes in `export otlp` (S).**
+   **Built**, see "Built from this refresh".
 2. **Dynamo frontend profile with a worker scrape (M).** Its frontend has a
    request counter and KV router hit rates, and engine metrics sit on a
    second port.
