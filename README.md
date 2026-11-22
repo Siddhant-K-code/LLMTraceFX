@@ -365,7 +365,10 @@ Requests in a sweep overlap, so its numbers describe the server under that
 load, not any single request. A sweep writes `sweep.json` and no
 `record.json`, and `gate`, `compare` and `export` refuse it. Failed requests
 count against goodput, and a value that cannot be checked is withheld with a
-reason. Remote endpoints need `--allow-remote-load`. See
+reason. Each percentile gets a distribution-free 95% confidence interval when
+there are enough requests (p95 needs 72, p99 needs 368), and
+`--warmup-requests N` leaves the first N requests of each point out of the
+numbers. Remote endpoints need `--allow-remote-load`. See
 [`docs/load-sweeps.md`](docs/load-sweeps.md) for what a sweep can claim,
 the goodput rules and the scheduling diagnostics. `sweep-llama-cpp` and
 `sweep-mlx` run the same sweep against llama.cpp's native `/completion`
