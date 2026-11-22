@@ -234,6 +234,8 @@ module = [
     "transformers.*",
     "uvicorn.*",
     "streamlit.*",
+    "zmq.*",
+    "msgspec.*",
 ]
 ignore_missing_imports = true
 

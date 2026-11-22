@@ -1105,7 +1105,7 @@ def assess_live_vllm_capabilities(mapping: Mapping[str, Any]) -> CacheAuditCapab
 # ---------------------------------------------------------------------------
 
 
-class LiveKVEventType(str, Enum):
+class LiveKVEventType(str, Enum):  # noqa: UP042 - StrEnum changes str()
     BLOCK_STORED = "BlockStored"
     BLOCK_REMOVED = "BlockRemoved"
     ALL_BLOCKS_CLEARED = "AllBlocksCleared"
