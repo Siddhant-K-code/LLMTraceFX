@@ -35,15 +35,13 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any, Protocol
 
+from ...extras import extra_install_hint
 from .prompts import WORDS, Vocabulary
 
 TOKEN_PROMPT_METHOD = "llmtracefx.replay.shake256_tokens.v1"
 MIN_UNIT_WORDS = 64
 TOKENIZER_FILE = "tokenizer.json"
-INSTALL_HINT = (
-    "install the optional extra with `uv sync --extra tokenizer` or "
-    "`pip install 'llmtracefx[tokenizer]'`"
-)
+INSTALL_HINT = f"install the optional extra with {extra_install_hint('tokenizer')}"
 # A probe prefix, so the word under test is not the first thing in the text.
 _ANCHOR = "."
 _REPO_ID = re.compile(

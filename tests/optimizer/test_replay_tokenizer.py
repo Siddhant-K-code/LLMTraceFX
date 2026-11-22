@@ -260,7 +260,8 @@ def test_missing_package_is_refused_with_an_install_hint(
 ) -> None:
     monkeypatch.setitem(sys.modules, "tokenizers", None)
     with pytest.raises(
-        TokenizerError, match=r"'tokenizers' package.*--extra tokenizer"
+        TokenizerError,
+        match=r"'tokenizers' package.*uv tool install 'llmtracefx\[tokenizer\]'",
     ):
         load_tokenizer("org/model")
 

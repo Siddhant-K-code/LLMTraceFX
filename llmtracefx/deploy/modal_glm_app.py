@@ -36,13 +36,15 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from llmtracefx.extras import extra_install_hint
+
 try:
     import modal
 except ModuleNotFoundError as exc:  # pragma: no cover - exercised only on Modal
     raise SystemExit(
         "The Modal SDK is required to run this entrypoint. It is an optional "
-        "dependency of llmtracefx: install it with `uv sync --extra modal` or "
-        "`pip install 'llmtracefx[modal]'`. Planning does not need it: "
+        f"dependency of llmtracefx: install it with {extra_install_hint('modal')}. "
+        "Planning does not need it: "
         "`llmtracefx-deploy plan` runs without Modal installed."
     ) from exc
 
@@ -73,6 +75,10 @@ from llmtracefx.deploy.resources import (
     VERIFY_MEMORY_GIB,
     VERIFY_TIMEOUT_SECONDS,
 )
+
+# The serving image is user-pinned and may run Python 3.10, which lacks
+# datetime.UTC.
+_UTC = timezone.utc  # noqa: UP017
 
 # Resolved from PyPI on 2026-08-30. Pinned rather than floating because
 # the staging step's whole job is to produce a reproducible artifact, and
@@ -105,7 +111,7 @@ MOUNT_PATH = RECIPE.weights_mount_path
 # inherits the deploy-time value rather than extending its own window on
 # every cold start.
 DEPLOY_EXPIRES_AT = (os.environ.get(DEPLOY_EXPIRES_AT_VAR) or "").strip() or (
-    datetime.now(timezone.utc) + timedelta(seconds=CONTROLS.deployment_seconds)
+    datetime.now(_UTC) + timedelta(seconds=CONTROLS.deployment_seconds)
 ).isoformat(timespec="seconds")
 
 # Everything a remote container needs to rebuild this exact plan. No
@@ -151,7 +157,7 @@ serving_image = (
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(_UTC).isoformat(timespec="seconds")
 
 
 def _manifest_path(revision: str) -> Path:
@@ -395,9 +401,9 @@ def _deploy_expiry() -> datetime:
     try:
         parsed = datetime.fromisoformat(raw)
     except ValueError:
-        return datetime.min.replace(tzinfo=timezone.utc)
+        return datetime.min.replace(tzinfo=_UTC)
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
+        return parsed.replace(tzinfo=_UTC)
     return parsed
 
 
@@ -532,7 +538,7 @@ def serve() -> None:
     # the gate that bounds total spend. Everything below this line costs
     # accelerator time.
     expiry = _deploy_expiry()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(_UTC)
     if now >= expiry:
         raise RuntimeError(
             f"this deployment expired at {expiry.isoformat(timespec='seconds')} "

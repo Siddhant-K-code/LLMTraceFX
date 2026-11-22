@@ -17,6 +17,7 @@ from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from ...extras import extra_install_hint
 from ...profiler.mlx_tracer import mlx_memory_snapshot
 from ..manifest import collect_environment_manifest
 from ..schema import (
@@ -129,8 +130,7 @@ class MLXLMRuntime:
         except ImportError as exc:
             raise MLXCollectorError(
                 "MLX collection requires the optional runtime dependencies. "
-                "Install them with `uv sync --extra mlx` or "
-                "`pip install 'llmtracefx[mlx]'`."
+                f"Install them with {extra_install_hint('mlx')}."
             ) from exc
 
         self._mx = mx
@@ -281,7 +281,7 @@ class MLXVLMRuntime:
         except ImportError as exc:
             raise MLXCollectorError(
                 "MLX-VLM collection requires the optional runtime dependencies. "
-                "Install them with `uv sync --extra mlx`."
+                f"Install them with {extra_install_hint('mlx')}."
             ) from exc
 
         self._mx = mx
