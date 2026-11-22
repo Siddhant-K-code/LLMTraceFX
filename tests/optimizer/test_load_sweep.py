@@ -21,6 +21,7 @@ from llmtracefx.optimizer.load.sweep import (
     SweepRun,
     build_points,
     distribution,
+    min_interval_samples,
     point_specs,
     run_points,
     sweep_summary,
@@ -180,3 +181,52 @@ def test_distribution_uses_nearest_rank() -> None:
     empty = distribution([], "measured")
     assert empty["count"] == 0
     assert empty["p50"] is None
+
+
+def test_percentile_intervals_are_exact_and_withheld_when_too_few() -> None:
+    assert [min_interval_samples(q) for q in (0.5, 0.9, 0.95, 0.99)] == [
+        6,
+        36,
+        72,
+        368,
+    ]
+    summary = distribution([float(value) for value in range(1, 11)], "measured")
+    intervals = summary["confidence_intervals"]
+    assert intervals["level"] == 0.95
+    assert intervals["p50"]["lower"] == 2.0
+    assert intervals["p50"]["upper"] == 9.0
+    # P(2 <= Binomial(10, 0.5) <= 8) = 1002 / 1024.
+    assert intervals["p50"]["coverage"] == pytest.approx(1002 / 1024)
+    assert intervals["p90"]["lower"] is None
+    assert "at least 36 values; there are 10" in intervals["p90"]["withheld_reason"]
+    empty = distribution([], "measured")["confidence_intervals"]
+    assert empty["p50"]["lower"] is None
+
+
+def test_warmup_requests_are_sent_but_left_out_of_summaries(tmp_path: Path) -> None:
+    run = _run(
+        tmp_path,
+        _sender(fail={0}),
+        points=build_points(concurrency=[1]),
+        slo=SloTargets(e2e_ms=1000.0),
+        warmup_requests=2,
+    )
+    (point,) = run_points(run)
+    # A failed warmup request still marks the point.
+    assert point["status"] == POINT_FAILURES
+    assert point["counts"]["requests"] == 4
+    assert point["counts"]["failed"] == 1
+    assert point["warmup"]["requests"] == 2
+    assert point["warmup"]["succeeded"] == 1
+    assert point["latency"]["e2e_ms"]["count"] == 2
+    assert point["goodput"]["counts"]["failed"] == 0
+    assert point["goodput"]["request_goodput_fraction"]["value"] == 1.0
+    assert [row["warmup"] for row in point["requests"]] == [True, True, False, False]
+
+
+def test_points_without_warmup_keep_their_shape(tmp_path: Path) -> None:
+    (point,) = run_points(
+        _run(tmp_path, _sender(), points=build_points(concurrency=[1]))
+    )
+    assert "warmup" not in point
+    assert "warmup" not in point["requests"][0]

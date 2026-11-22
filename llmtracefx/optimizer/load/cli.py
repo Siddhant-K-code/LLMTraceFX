@@ -304,6 +304,15 @@ def add_load_arguments(parser: argparse.ArgumentParser) -> None:
         help="Requests dispatched at each load point",
     )
     parser.add_argument(
+        "--warmup-requests",
+        type=int,
+        default=0,
+        help=(
+            "Send the first N requests of each point but leave them out of "
+            "latency, throughput and goodput (default: 0)"
+        ),
+    )
+    parser.add_argument(
         "--cooldown-seconds",
         type=float,
         default=0.0,
@@ -395,6 +404,7 @@ def _sweep_argv(args: argparse.Namespace) -> tuple[str, ...]:
         ("--arrival-seed", args.arrival_seed),
         ("--max-in-flight", args.max_in_flight),
         ("--requests-per-point", args.requests_per_point),
+        ("--warmup-requests", args.warmup_requests or None),
         ("--cooldown-seconds", args.cooldown_seconds),
         ("--slo-ttft-ms", args.slo_ttft_ms),
         ("--slo-tpot-ms", args.slo_tpot_ms),
@@ -482,6 +492,10 @@ def validate_load_args(args: argparse.Namespace) -> None:
     """Checks on the options added by :func:`add_load_arguments`."""
     if not 1 <= args.requests_per_point <= MAX_REQUESTS:
         raise ValueError(f"--requests-per-point must be between 1 and {MAX_REQUESTS}")
+    if not 0 <= args.warmup_requests < args.requests_per_point:
+        raise ValueError(
+            "--warmup-requests must be at least 0 and below --requests-per-point"
+        )
     if args.cooldown_seconds < 0:
         raise ValueError("--cooldown-seconds must be at least 0")
     if args.concurrency is not None:
@@ -537,6 +551,7 @@ def load_argv(args: argparse.Namespace) -> list[str]:
         ("--arrival-seed", args.arrival_seed),
         ("--max-in-flight", args.max_in_flight),
         ("--requests-per-point", args.requests_per_point),
+        ("--warmup-requests", args.warmup_requests or None),
         ("--cooldown-seconds", args.cooldown_seconds),
         ("--slo-ttft-ms", args.slo_ttft_ms),
         ("--slo-tpot-ms", args.slo_tpot_ms),
@@ -586,6 +601,7 @@ def load_settings(args: argparse.Namespace) -> dict[str, Any]:
     rate_mode = args.request_rate is not None
     return {
         "requests_per_point": args.requests_per_point,
+        "warmup_requests": args.warmup_requests,
         "cooldown_seconds": args.cooldown_seconds,
         "max_dispatch_lag_ms": args.max_dispatch_lag_ms,
         "arrival": args.arrival if rate_mode else None,
@@ -609,12 +625,20 @@ def _point_line(point: dict[str, Any]) -> str:
     parts = [
         f"{point['label']}: {counts['succeeded']}/{counts['requests']} succeeded",
     ]
+    warmup = point.get("warmup")
+    if warmup is not None:
+        parts.append(f"{warmup['requests']} warmup excluded")
     for name in ("ttft_ms", "e2e_ms"):
         stats = latency[name]
         if stats["count"]:
-            parts.append(
-                f"{name[:-3]} p50 {stats['p50']:.1f} ms p99 {stats['p99']:.1f} ms"
-            )
+            text = f"{name[:-3]} p50 {stats['p50']:.1f} ms p99 {stats['p99']:.1f} ms"
+            interval = stats["confidence_intervals"]["p99"]
+            if interval["lower"] is not None:
+                text += (
+                    f" ({stats['confidence_intervals']['level']:.0%} CI "
+                    f"{interval['lower']:.1f} to {interval['upper']:.1f})"
+                )
+            parts.append(text)
     goodput = point.get("goodput")
     if goodput is not None:
         value = goodput["request_goodput_fraction"]["value"]
@@ -862,6 +886,7 @@ def run_sweep(
         describe_error=describe_error,
         on_point=on_point,
         client_cpu_withheld_reason=client_cpu_withheld_reason,
+        warmup_requests=output.load.get("warmup_requests", 0),
     )
     print(
         f"Sweeping {len(output.points)} points x {output.requests_per_point} "

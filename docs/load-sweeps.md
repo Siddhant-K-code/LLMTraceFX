@@ -112,6 +112,9 @@ Options worth knowing:
   degraded.
 - `--cooldown-seconds` pauses between points so one point's tail does not
   reach the next.
+- `--warmup-requests N` sends the first N requests of each point but leaves
+  them out of latency, server-reported numbers, throughput and goodput
+  (default 0). See [Warmup](#warmup).
 - `--max-dispatch-lag-ms` sets the threshold for the scheduling diagnostics
   (default 10).
 - `--stream-include-usage` asks the server for token usage in the stream.
@@ -135,7 +138,13 @@ is false and `summary.interrupted` is true). Each point has:
   status and the raw finish reason. They hold no prompt or response text,
   only the prompt's sha256;
 - `server_reported`, only when at least one succeeded request carried the
-  server's own numbers (see [Per-request server numbers](#per-request-server-numbers)).
+  server's own numbers (see [Per-request server numbers](#per-request-server-numbers));
+- `warmup`, only with `--warmup-requests`: how many requests were warmup,
+  how many succeeded, and which summaries leave them out. Each request row
+  then has a `warmup` flag.
+
+Every latency distribution carries `confidence_intervals` for p50, p90, p95
+and p99. See [Confidence intervals](#confidence-intervals).
 
 An output directory that already holds sweep output is refused.
 
@@ -266,8 +275,8 @@ Other behavior:
 - `--request-timeout` is checked between tokens.
 - A failed generation keeps only the exception type, in
   `runtime_error_type`.
-- There is no warmup, so the first request includes any one-time cost.
-  There is no draft model, chat template, server metrics or
+- Without `--warmup-requests`, the first request includes any one-time
+  cost. There is no draft model, chat template, server metrics or
   `--allow-remote-load`, since nothing goes over the network.
 - A dry run does not load the model, and `--model-path` is optional for it.
   The backend block records the model load time as `measured_wall_clock`.
@@ -313,9 +322,54 @@ commits). What matched what the backends did:
   available when the provider did not report one. For a response of one
   token or less it is not applicable.
 - **Percentiles** use the nearest rank method over the requests that
-  succeeded.
+  succeeded, after warmup requests are left out.
 - **The measured window** for a point runs from the first dispatch to the
   last completion. Rates divide by it.
+
+## Confidence intervals
+
+A percentile from 64 requests is an estimate, and two points or two runs can
+differ by chance. Each latency and server-reported distribution has a
+`confidence_intervals` block with a two-sided 95% interval for p50, p90, p95
+and p99:
+
+- `lower` and `upper` are two of the measured values, the order statistics
+  at `lower_rank` and `upper_rank` (1-based, in sorted order).
+- The interval is distribution-free: it assumes the requests are
+  independent draws from one distribution and nothing about its shape. The
+  number of values below the true percentile is binomial, and the ranks are
+  chosen so each tail has at most 2.5% probability.
+- `coverage` is the exact probability that the interval holds the true
+  percentile. It is at least 0.95 and can be well above it for small
+  counts, because ranks are whole numbers.
+- `method` is `order_statistic_binomial` and `provenance` is `derived`.
+
+A two-sided 95% interval needs at least 6 values for p50, 36 for p90, 72
+for p95 and 368 for p99. Below that, `lower` and `upper` are null and
+`withheld_reason` gives the count needed. The CLI line for each point shows
+the p99 interval when it exists.
+
+Requests in a sweep share a server and overlap in time, so they are not
+fully independent. Read the interval as the uncertainty from the number of
+requests, not as a bound on run-to-run variation from server state.
+
+## Warmup
+
+The first requests of a point can pay one-time costs: connection setup,
+graph capture, cache allocation, or a cold prefix cache. With
+`--warmup-requests N` those N requests, in dispatch order, are sent as part
+of the point and kept in `requests` and `counts`, but left out of
+`latency`, `server_reported`, `throughput` and `goodput`. The measured
+window starts at the first measured dispatch.
+
+- N must be below `--requests-per-point`, and the default is 0.
+- A failed warmup request still counts in `counts` and still marks the
+  point `failures`, since it is a failure the server produced.
+- Server metrics windows still span the whole point, warmup included.
+- In a closed loop the first N requests start before the rest, so set N to
+  at least the concurrency level to leave out the whole first wave. Warmup
+  requests still in flight overlap the measured window, so measured
+  throughput is slightly understated rather than overstated.
 
 ## Goodput
 

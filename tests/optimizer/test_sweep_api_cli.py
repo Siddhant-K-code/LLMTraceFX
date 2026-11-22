@@ -131,6 +131,31 @@ def test_closed_loop_sweep_reaches_each_concurrency_level(
     assert API_KEY not in (tmp_path / "out" / "sweep.json").read_text(encoding="utf-8")
 
 
+def test_warmup_requests_are_sent_and_excluded(
+    tmp_path: Path, server: FakeOpenAIServer
+) -> None:
+    code, out, err = run_main(
+        sweep_argv(
+            tmp_path,
+            server,
+            "--concurrency",
+            "1",
+            "--requests-per-point",
+            "4",
+            "--warmup-requests",
+            "3",
+        )
+    )
+    assert code == 0, err
+    assert "3 warmup excluded" in out
+    assert len(server.bodies) == 4
+    sweep = read_sweep(tmp_path)
+    assert sweep["load"]["warmup_requests"] == 3
+    (point,) = sweep["points"]
+    assert point["counts"]["succeeded"] == 4
+    assert point["latency"]["e2e_ms"]["count"] == 1
+
+
 def test_constant_rate_sweep_records_target_and_achieved_rate(
     tmp_path: Path, server: FakeOpenAIServer
 ) -> None:
@@ -258,6 +283,7 @@ def test_dry_run_writes_a_plan_and_sends_nothing(
         (["--concurrency", "2", "--arrival-seed", "3"], "only applies"),
         (["--concurrency", "0"], "concurrency"),
         (["--concurrency", "2", "--slo-ttft-ms", "0"], "ttft_ms"),
+        (["--concurrency", "2", "--warmup-requests", "2"], "--warmup-requests"),
     ],
 )
 def test_invalid_load_settings_are_refused_before_sending(

@@ -107,6 +107,10 @@ _LATENCY_FIELDS = ("ttft_ms", "first_content_ms", "tpot_ms", "e2e_ms")
 _PERCENTILES = (50, 90, 95, 99)
 _DERIVED = MetricProvenance.DERIVED.value
 
+CONFIDENCE_LEVEL = 0.95
+INTERVAL_METHOD = "order_statistic_binomial"
+WARMUP_EXCLUDED_FROM = ("latency", "server_reported", "throughput", "goodput")
+
 
 @dataclass(frozen=True)
 class SweepPoint:
@@ -196,8 +200,99 @@ def point_specs(
     ]
 
 
+def _log_binomial_pmf(n: int, k: int, q: float) -> float:
+    return (
+        math.lgamma(n + 1)
+        - math.lgamma(k + 1)
+        - math.lgamma(n - k + 1)
+        + k * math.log(q)
+        + (n - k) * math.log1p(-q)
+    )
+
+
+def _interval_possible(n: int, q: float, level: float) -> bool:
+    tail = (1.0 - level) / 2.0
+    return (1.0 - q) ** n <= tail and q**n <= tail
+
+
+def min_interval_samples(q: float, level: float = CONFIDENCE_LEVEL) -> int:
+    """The fewest values for which a two-sided interval on quantile ``q`` exists."""
+    n = 1
+    while order_statistic_ranks(n, q, level) is None:
+        n += 1
+    return n
+
+
+def order_statistic_ranks(
+    n: int, q: float, level: float = CONFIDENCE_LEVEL
+) -> tuple[int, int, float] | None:
+    """1-based ranks ``(l, u)`` and exact coverage of a distribution-free interval.
+
+    With ``B ~ Binomial(n, q)`` the count of values below the true
+    ``q``-quantile, ``[x_(l), x_(u)]`` covers it with probability
+    ``P(l <= B <= u - 1)``. ``l`` is the largest rank with
+    ``P(B <= l - 1) <= (1 - level) / 2`` and ``u`` the smallest with
+    ``P(B >= u) <= (1 - level) / 2``. ``None`` when ``n`` is too small for
+    either rank to exist. Binomial mass more than ``40 sigma + 40`` from
+    the mean is below 1e-25 and is not summed.
+    """
+    if n < 1 or not _interval_possible(n, q, level):
+        return None
+    tail = (1.0 - level) / 2.0
+    margin = 40.0 * math.sqrt(n * q * (1.0 - q)) + 40.0
+    odds = math.log(q) - math.log1p(-q)
+
+    k = max(0, math.floor(n * q - margin))
+    log_pmf = _log_binomial_pmf(n, k, q)
+    below = 0.0
+    while below + math.exp(log_pmf) <= tail:
+        below += math.exp(log_pmf)
+        k += 1
+        log_pmf += math.log(n - k + 1) - math.log(k) + odds
+    lower_rank = k
+
+    k = min(n, math.ceil(n * q + margin))
+    log_pmf = _log_binomial_pmf(n, k, q)
+    above = 0.0
+    while above + math.exp(log_pmf) <= tail:
+        above += math.exp(log_pmf)
+        log_pmf += math.log(k) - math.log(n - k + 1) - odds
+        k -= 1
+    upper_rank = k + 1
+    if lower_rank < 1 or upper_rank > n:
+        return None
+    return lower_rank, upper_rank, 1.0 - below - above
+
+
+def percentile_interval(
+    ordered: Sequence[float], percentile: int, level: float = CONFIDENCE_LEVEL
+) -> dict[str, Any]:
+    """A distribution-free interval for one percentile of sorted ``ordered``."""
+    q = percentile / 100.0
+    ranks = order_statistic_ranks(len(ordered), q, level)
+    if ranks is None:
+        return {
+            "lower": None,
+            "upper": None,
+            "withheld_reason": (
+                f"a two-sided {level:.0%} interval for p{percentile} needs at "
+                f"least {min_interval_samples(q, level)} values; there are "
+                f"{len(ordered)}"
+            ),
+        }
+    lower_rank, upper_rank, coverage = ranks
+    return {
+        "lower": ordered[lower_rank - 1],
+        "upper": ordered[upper_rank - 1],
+        "lower_rank": lower_rank,
+        "upper_rank": upper_rank,
+        "coverage": coverage,
+        "withheld_reason": None,
+    }
+
+
 def distribution(values: Sequence[float], sample_provenance: str) -> dict[str, Any]:
-    """Nearest-rank percentiles, mean, min and max; ``None`` values when empty."""
+    """Nearest-rank percentiles with intervals, mean, min and max; ``None`` values when empty."""
     ordered = sorted(values)
     summary: dict[str, Any] = {
         "count": len(ordered),
@@ -212,6 +307,15 @@ def distribution(values: Sequence[float], sample_provenance: str) -> dict[str, A
             _nearest_rank(ordered, percentile) if ordered else None
         )
     summary["max"] = ordered[-1] if ordered else None
+    summary["confidence_intervals"] = {
+        "level": CONFIDENCE_LEVEL,
+        "method": INTERVAL_METHOD,
+        "provenance": _DERIVED,
+        **{
+            f"p{percentile}": percentile_interval(ordered, percentile)
+            for percentile in _PERCENTILES
+        },
+    }
     return summary
 
 
@@ -341,8 +445,16 @@ def summarize_point(
     report: DispatchReport[RequestRow],
     *,
     slo: SloTargets | None,
+    warmup_requests: int = 0,
 ) -> dict[str, Any]:
+    """Summarise one point.
+
+    The first ``warmup_requests`` requests in dispatch order are sent and
+    kept in ``requests`` and ``counts``, but left out of latency,
+    server-reported, throughput and goodput summaries.
+    """
     rows = request_rows(report)
+    measured = [row for row in rows if row.index >= warmup_requests]
     sent = [row for row in rows if row.sent]
     failed = [row for row in sent if not _succeeded(row)]
     unsent = len(rows) - len(sent)
@@ -364,6 +476,17 @@ def summarize_point(
     dispatch_dict = report.to_dict()
     diagnostics = dispatch_dict.pop("diagnostics")
     scheduling = {**diagnostics, "dispatch_rate": _dispatch_rate(point, report, rows)}
+    warmup: dict[str, Any] = {}
+    if warmup_requests:
+        warmup_rows = [row for row in rows if row.index < warmup_requests]
+        warmup_sent = [row for row in warmup_rows if row.sent]
+        warmup["warmup"] = {
+            "requests": len(warmup_rows),
+            "sent": len(warmup_sent),
+            "succeeded": sum(1 for row in warmup_sent if _succeeded(row)),
+            "selection": "the first requests of the point in dispatch order",
+            "excluded_from": list(WARMUP_EXCLUDED_FROM),
+        }
     return {
         **point.to_dict(),
         "status": status,
@@ -384,17 +507,27 @@ def summarize_point(
             "failure_categories": dict(sorted(categories.items())),
             "finish_reason_codes": dict(sorted(finish_codes.items())),
         },
-        "latency": latency_summary(rows),
+        **warmup,
+        "latency": latency_summary(measured),
         **(
             {}
-            if (server_reported := server_reported_summary(rows)) is None
+            if (server_reported := server_reported_summary(measured)) is None
             else {"server_reported": server_reported}
         ),
-        "throughput": throughput_summary(rows),
-        "goodput": None if slo is None else summarize_goodput(rows, slo).to_dict(),
+        "throughput": throughput_summary(measured),
+        "goodput": (
+            None if slo is None else summarize_goodput(measured, slo).to_dict()
+        ),
         "scheduling": scheduling,
         "dispatch": dispatch_dict,
-        "requests": [row.to_dict() for row in rows],
+        "requests": [
+            (
+                {**row.to_dict(), "warmup": row.index < warmup_requests}
+                if warmup_requests
+                else row.to_dict()
+            )
+            for row in rows
+        ],
     }
 
 
@@ -497,6 +630,7 @@ class SweepRun:
     clock: Callable[[], float] = time.perf_counter
     on_point: Callable[[dict[str, Any]], None] | None = None
     client_cpu_withheld_reason: str | None = None
+    warmup_requests: int = 0
 
 
 def run_points(run: SweepRun) -> list[dict[str, Any]]:
@@ -526,7 +660,9 @@ def run_points(run: SweepRun) -> list[dict[str, Any]]:
             max_dispatch_lag_ms=run.max_dispatch_lag_ms,
             client_cpu_withheld_reason=run.client_cpu_withheld_reason,
         )
-        summary = summarize_point(point, report, slo=run.slo)
+        summary = summarize_point(
+            point, report, slo=run.slo, warmup_requests=run.warmup_requests
+        )
         if run.server_metrics is not None:
             summary["server_metrics"] = _close_metrics(
                 run, point, handle, metrics_error, summary["counts"]["succeeded"]
