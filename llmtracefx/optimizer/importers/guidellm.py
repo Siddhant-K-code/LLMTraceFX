@@ -1,0 +1,433 @@
+"""Map one benchmark from a GuideLLM ``benchmarks.json`` report.
+
+Field names follow GuideLLM's ``GenerativeBenchmarksReport``,
+``GenerativeBenchmark``, ``BenchmarkConfig`` and ``GenerativeMetrics``
+(``src/guidellm/benchmark/schemas/``). Report version 1 (GuideLLM 0.5 and
+0.6) and version 2 (GuideLLM 0.7 and later) are read. Any other
+``metadata.version`` is refused, as are reports from GuideLLM 0.4 and
+earlier, which state no version.
+
+A report can hold several benchmarks (a sweep, or several rates or stream
+counts). Each artifact holds exactly one, chosen with ``benchmark``.
+
+Every GuideLLM metric is a ``StatusDistributionSummary``. Only its
+``successful`` distribution is read, and only when it has observations;
+GuideLLM writes zero filled placeholders for empty statuses. The per-request
+``requests`` lists are never read or copied (they hold prompt and output
+text). Endpoint URLs and API keys are never copied either.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from .artifact import (
+    GUIDELLM_TOOL,
+    METRIC_DIRECTIONS,
+    BenchmarkImportError,
+    EndpointValue,
+    ImportedBenchmark,
+    ImportedMetric,
+    ImportedSource,
+    ImportedTotal,
+    ImportedValue,
+    LoadValue,
+    finite_number,
+)
+
+SUPPORTED_REPORT_VERSIONS = (1, 2)
+_UNITS = {
+    "time_to_first_token_ms": "ms",
+    "time_to_first_output_token_ms": "ms",
+    "time_per_output_token_ms": "ms",
+    "inter_token_latency_ms": "ms",
+    "request_latency": "s",
+    "requests_per_second": "requests/s",
+    "output_tokens_per_second": "tokens/s",
+    "prompt_tokens_per_second": "tokens/s",
+    "tokens_per_second": "tokens/s",
+}
+_RATES = frozenset(
+    {
+        "requests_per_second",
+        "output_tokens_per_second",
+        "prompt_tokens_per_second",
+        "tokens_per_second",
+    }
+)
+# (LLMTraceFX stat name, GuideLLM DistributionSummary key)
+_STATS = (
+    ("mean", "mean"),
+    ("median", "median"),
+    ("std", "std_dev"),
+    ("min", "min"),
+    ("max", "max"),
+)
+_PERCENTILES = (
+    ("p0.1", "p001"),
+    ("p1", "p01"),
+    ("p5", "p05"),
+    ("p10", "p10"),
+    ("p25", "p25"),
+    ("p50", "p50"),
+    ("p75", "p75"),
+    ("p90", "p90"),
+    ("p95", "p95"),
+    ("p99", "p99"),
+    ("p99.9", "p999"),
+)
+_TOTAL_COUNTS = {
+    "successful": "completed_requests",
+    "errored": "failed_requests",
+    "incomplete": "incomplete_requests",
+}
+_TOKEN_TOTALS = {
+    "prompt_token_count": "total_input_tokens",
+    "output_token_count": "total_output_tokens",
+}
+_STRATEGY_NEEDS = {
+    "concurrent": "streams",
+    "constant": "rate",
+    "poisson": "rate",
+}
+# Process count on the client machine, not load on the server.
+_STRATEGY_SKIP = frozenset({"type_", "worker_count"})
+_COMMON_NOTES = (
+    "Computed by GuideLLM from its client-side timings over the successful "
+    "requests in the measurement window (warmup and cooldown excluded).",
+)
+_LATENCY_NOTES = (
+    "std is GuideLLM's std_dev (population). GuideLLM counts a request with "
+    "no value for this metric as 0.",
+)
+_RATE_NOTES = (
+    "mean is the count in the measurement window divided by its duration. "
+    "GuideLLM's percentiles of a rate are instantaneous rates between events "
+    "and are not imported.",
+)
+_METRIC_NOTES = {
+    "time_per_output_token_ms": (
+        "Per request (last token - request start) / output tokens, so it "
+        "includes TTFT. Statistics are weighted by each request's output tokens.",
+    ),
+    "inter_token_latency_ms": (
+        "Per request (last token - first token) / (output tokens - 1); vLLM "
+        "bench calls this TPOT. Statistics are weighted by output tokens - 1, "
+        "so long responses count more than in vLLM bench or AIPerf.",
+    ),
+    "time_to_first_output_token_ms": (
+        "Time to the first content token, excluding reasoning tokens.",
+    ),
+}
+
+
+def looks_like_guidellm_report(data: Any) -> bool:
+    if not isinstance(data, dict) or not isinstance(data.get("benchmarks"), list):
+        return False
+    metadata = data.get("metadata")
+    if isinstance(metadata, dict) and "guidellm_version" in metadata:
+        return True
+    return any(
+        isinstance(item, dict) and item.get("type_") == "generative_benchmark"
+        for item in data["benchmarks"]
+    )
+
+
+def _mapping(value: Any, name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise BenchmarkImportError(f"{name} must be an object")
+    return value
+
+
+def _str(value: Any, name: str) -> str | None:
+    if value is not None and not isinstance(value, str):
+        raise BenchmarkImportError(f"{name} must be a string")
+    return value
+
+
+def _count(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise BenchmarkImportError(f"{name} must be a whole number >= 0")
+    return value
+
+
+def _number(value: Any, name: str) -> float:
+    number = finite_number(value)
+    if number is None or number < 0:
+        raise BenchmarkImportError(f"{name} must be a finite number >= 0")
+    return number
+
+
+def _strategy_label(benchmark: Any) -> str:
+    try:
+        strategy = benchmark["config"]["strategy"]
+        label = str(strategy["type_"])
+    except (KeyError, TypeError):
+        return "unknown strategy"
+    for key in ("streams", "rate"):
+        if isinstance(strategy.get(key), (int, float)):
+            return f"{label} {key}={strategy[key]:g}"
+    return label
+
+
+def _select(benchmarks: list[Any], index: int | None) -> int:
+    if not benchmarks:
+        raise BenchmarkImportError("the GuideLLM report holds no benchmarks")
+    if index is None:
+        if len(benchmarks) == 1:
+            return 0
+        listed = "; ".join(
+            f"{i}: {_strategy_label(item)}" for i, item in enumerate(benchmarks)
+        )
+        raise BenchmarkImportError(
+            f"the GuideLLM report holds {len(benchmarks)} benchmarks at different "
+            f"loads; choose one with --benchmark INDEX ({listed})"
+        )
+    if not 0 <= index < len(benchmarks):
+        raise BenchmarkImportError(
+            f"--benchmark {index} is out of range; the report holds "
+            f"{len(benchmarks)} benchmark(s), indexed from 0"
+        )
+    return index
+
+
+def _load_scalar(value: Any) -> LoadValue | dict[str, Any] | list[Any]:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None or isinstance(value, (str, dict, list)):
+        return value
+    number = finite_number(value)
+    if number is None:
+        raise BenchmarkImportError(f"load value {value!r} is not a finite number")
+    return int(value) if isinstance(value, int) else number
+
+
+def _has_list(value: Any) -> bool:
+    if isinstance(value, list):
+        return True
+    return isinstance(value, dict) and any(_has_list(v) for v in value.values())
+
+
+def _constraint(value: Any) -> str:
+    # current_index is the benchmark's position in a sweep. It only matters
+    # when it picks one entry from a list of limits; otherwise it would stop
+    # benchmark 0 of one report matching benchmark 2 of another.
+    if isinstance(value, dict) and not _has_list(value):
+        value = {k: v for k, v in value.items() if k != "current_index"}
+    return json.dumps(value, sort_keys=True)
+
+
+def _load(config: dict[str, Any]) -> tuple[dict[str, LoadValue], list[str]]:
+    load: dict[str, LoadValue] = {}
+    unresolved: list[str] = []
+    strategy = _mapping(config.get("strategy"), "config.strategy")
+    strategy_type = strategy.get("type_")
+    if not isinstance(strategy_type, str):
+        unresolved.append("strategy type")
+    load["strategy"] = strategy_type if isinstance(strategy_type, str) else None
+    for key, value in sorted(strategy.items()):
+        if key in _STRATEGY_SKIP:
+            continue
+        scalar = _load_scalar(value)
+        if not isinstance(scalar, (dict, list)):
+            load[f"strategy.{key}"] = scalar
+    needed = _STRATEGY_NEEDS.get(str(strategy_type))
+    if needed is not None and load.get(f"strategy.{needed}") is None:
+        unresolved.append(f"strategy.{needed}")
+    # Constraint shapes differ across GuideLLM releases, so each is kept as
+    # canonical JSON and runs compare only when it matches exactly.
+    constraints = _mapping(config.get("constraints", {}), "config.constraints")
+    for name, value in sorted(constraints.items()):
+        load[f"constraint.{name}"] = _constraint(value)
+    for phase in ("warmup", "cooldown"):
+        settings = config.get(phase)
+        if not isinstance(settings, dict):
+            continue
+        for key, value in sorted(settings.items()):
+            scalar = _load_scalar(value)
+            if not isinstance(scalar, (dict, list)):
+                load[f"{phase}.{key}"] = scalar
+    return load, unresolved
+
+
+def _endpoint(backend: dict[str, Any]) -> dict[str, EndpointValue]:
+    stream = backend.get("stream")
+    if stream is not None and not isinstance(stream, bool):
+        raise BenchmarkImportError("config.backend.stream must be a bool")
+    return {
+        "backend": _str(backend.get("kind"), "config.backend.kind"),
+        "request_format": _str(
+            backend.get("request_format"), "config.backend.request_format"
+        ),
+        "stream": stream,
+    }
+
+
+def _successful(metrics: dict[str, Any], name: str, prefix: str) -> dict | None:
+    summary = metrics.get(name)
+    if summary is None:
+        return None
+    summary = _mapping(summary, f"{prefix}.{name}")
+    successful = summary.get("successful")
+    if successful is None:
+        return None
+    successful = _mapping(successful, f"{prefix}.{name}.successful")
+    if _count(successful.get("count"), f"{prefix}.{name}.successful.count") == 0:
+        return None  # GuideLLM's zero filled placeholder for an empty status.
+    return successful
+
+
+def _totals(
+    benchmark: dict[str, Any], metrics: dict[str, Any], prefix: str
+) -> dict[str, ImportedTotal]:
+    request_totals = _mapping(
+        metrics.get("request_totals"), f"{prefix}.metrics.request_totals"
+    )
+    totals: dict[str, ImportedTotal] = {}
+    for key, name in _TOTAL_COUNTS.items():
+        source_key = f"{prefix}.metrics.request_totals.{key}"
+        totals[name] = ImportedTotal(
+            value=_count(request_totals.get(key), source_key),
+            unit="requests",
+            source_key=source_key,
+        )
+    for metric, name in _TOKEN_TOTALS.items():
+        successful = _successful(metrics, metric, f"{prefix}.metrics")
+        if successful is None:
+            continue
+        source_key = f"{prefix}.metrics.{metric}.successful.total_sum"
+        tokens = _number(successful.get("total_sum"), source_key)
+        totals[name] = ImportedTotal(
+            value=int(tokens) if tokens.is_integer() else tokens,
+            unit="tokens",
+            source_key=source_key,
+        )
+    if "duration" in benchmark:
+        source_key = f"{prefix}.duration"
+        totals["duration"] = ImportedTotal(
+            value=_number(benchmark["duration"], source_key),
+            unit="s",
+            source_key=source_key,
+        )
+    return totals
+
+
+def _metrics(metrics: dict[str, Any], prefix: str) -> dict[str, ImportedMetric]:
+    imported: dict[str, ImportedMetric] = {}
+    for name, direction in METRIC_DIRECTIONS[GUIDELLM_TOOL].items():
+        successful = _successful(metrics, name, f"{prefix}.metrics")
+        if successful is None:
+            continue
+        base = f"{prefix}.metrics.{name}.successful"
+        fields = [(stat, successful, key, base) for stat, key in _STATS]
+        if name in _RATES:
+            fields = fields[:1]
+        else:
+            where = f"{base}.percentiles"
+            percentiles = _mapping(successful.get("percentiles"), where)
+            fields += [(stat, percentiles, key, where) for stat, key in _PERCENTILES]
+        stats: dict[str, ImportedValue] = {}
+        for stat, holder, key, where in fields:
+            if holder.get(key) is None:
+                continue
+            source_key = f"{where}.{key}"
+            stats[stat] = ImportedValue(_number(holder[key], source_key), source_key)
+        if not stats:
+            continue
+        notes = _COMMON_NOTES + (_RATE_NOTES if name in _RATES else _LATENCY_NOTES)
+        imported[name] = ImportedMetric(
+            unit=_UNITS[name],
+            direction=direction,
+            stats=stats,
+            notes=notes + _METRIC_NOTES.get(name, ()),
+        )
+    return imported
+
+
+def import_guidellm(
+    data: Any,
+    *,
+    sha256: str,
+    filename: str,
+    importer_version: str | None,
+    benchmark: int | None = None,
+) -> ImportedBenchmark:
+    if not isinstance(data, dict):
+        raise BenchmarkImportError("a GuideLLM report must be a JSON object")
+    if not looks_like_guidellm_report(data):
+        raise BenchmarkImportError(
+            "not a GuideLLM benchmarks.json report (expected metadata and a "
+            "benchmarks list)"
+        )
+    metadata = data.get("metadata")
+    supported = ", ".join(str(v) for v in SUPPORTED_REPORT_VERSIONS)
+    if not isinstance(metadata, dict) or "version" not in metadata:
+        raise BenchmarkImportError(
+            "the GuideLLM report states no metadata.version; reports from "
+            f"GuideLLM 0.4 and earlier are not supported (supported: {supported})"
+        )
+    version = metadata["version"]
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or version not in SUPPORTED_REPORT_VERSIONS
+    ):
+        raise BenchmarkImportError(
+            f"GuideLLM report version {version!r} is not supported "
+            f"(supported: {supported})"
+        )
+
+    index = _select(data["benchmarks"], benchmark)
+    prefix = f"benchmarks[{index}]"
+    item = _mapping(data["benchmarks"][index], prefix)
+    if item.get("type_") != "generative_benchmark":
+        raise BenchmarkImportError(
+            f"{prefix}.type_ is {item.get('type_')!r}; only generative "
+            "benchmarks are imported"
+        )
+    config = _mapping(item.get("config"), f"{prefix}.config")
+    backend = _mapping(config.get("backend"), f"{prefix}.config.backend")
+    model = backend.get("model")
+    if not isinstance(model, str) or not model:
+        raise BenchmarkImportError(
+            f"{prefix}.config.backend.model names no model; results without "
+            "a model are not imported"
+        )
+    metrics = _mapping(item.get("metrics"), f"{prefix}.metrics")
+    totals = _totals(item, metrics, prefix)
+    if totals["completed_requests"].value < 1:
+        raise BenchmarkImportError(
+            f"{prefix} has no successful requests in its measurement window"
+        )
+
+    load, unresolved = _load(config)
+    imported = _metrics(metrics, prefix)
+    consumed = {"request_totals", *_TOKEN_TOTALS, *imported}
+    return ImportedBenchmark(
+        source=ImportedSource(
+            tool=GUIDELLM_TOOL,
+            sha256=sha256,
+            filename=filename,
+            tool_version=_str(
+                metadata.get("guidellm_version"), "metadata.guidellm_version"
+            ),
+            schema_version=str(version),
+        ),
+        model_id=model,
+        endpoint=_endpoint(backend),
+        load=load,
+        totals=totals,
+        metrics=imported,
+        run={
+            "benchmark_index": str(index),
+            "benchmark_count": str(len(data["benchmarks"])),
+            "benchmark_id": _str(config.get("id_"), f"{prefix}.config.id_"),
+            "run_id": _str(config.get("run_id"), f"{prefix}.config.run_id"),
+        },
+        load_unresolved=tuple(unresolved),
+        unmapped_keys=tuple(
+            sorted(f"metrics.{key}" for key in metrics if key not in consumed)
+        ),
+        importer_version=importer_version,
+    )

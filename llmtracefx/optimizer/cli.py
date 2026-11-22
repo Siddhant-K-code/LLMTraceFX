@@ -110,6 +110,7 @@ from .gpu_energy.cli import add_gpu_energy_parser
 from .gpu_energy.record_power import GpuEnergyEvidenceError, apply_gpu_energy
 from .importers import (
     AIPERF_TOOL,
+    GUIDELLM_TOOL,
     VLLM_BENCH_TOOL,
     BenchmarkImportError,
     ImportedBenchmark,
@@ -854,7 +855,11 @@ def _import_summary(imported: ImportedBenchmark) -> str:
 
 
 def _cmd_import(args: argparse.Namespace) -> int:
-    tool = VLLM_BENCH_TOOL if args.import_command == "vllm-bench" else AIPERF_TOOL
+    tool = {
+        "vllm-bench": VLLM_BENCH_TOOL,
+        "aiperf": AIPERF_TOOL,
+        "guidellm": GUIDELLM_TOOL,
+    }[args.import_command]
     source = Path(args.source)
     records = getattr(args, "records", None)
     slo = {
@@ -874,7 +879,9 @@ def _cmd_import(args: argparse.Namespace) -> int:
         ):
             raise BenchmarkImportError("--output must not overwrite an input file")
         if records is None:
-            imported = import_benchmark_file(source, tool)
+            imported = import_benchmark_file(
+                source, tool, benchmark=getattr(args, "benchmark", None)
+            )
         else:
             imported = import_aiperf_records_file(source, records, slo=slo)
     except BenchmarkImportError as exc:
@@ -3340,7 +3347,7 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser = subparsers.add_parser(
         "import",
         help=(
-            "Convert a saved vLLM bench serve or AIPerf result into an "
+            "Convert a saved vLLM bench serve, AIPerf or GuideLLM result into an "
             "imported benchmark artifact that `gate` accepts. Values keep "
             "the source tool's provenance; nothing is measured or guessed."
         ),
@@ -3351,6 +3358,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_text in (
         ("vllm-bench", "a `vllm bench serve --save-result` JSON file"),
         ("aiperf", "an AIPerf profile_export_aiperf.json file"),
+        ("guidellm", "a GuideLLM benchmarks.json report"),
     ):
         import_tool_parser = import_subparsers.add_parser(
             name,
@@ -3384,6 +3392,17 @@ def build_parser() -> argparse.ArgumentParser:
                     default=None,
                     help=f"Goodput target for {label} in ms (needs --records)",
                 )
+        if name == "guidellm":
+            import_tool_parser.add_argument(
+                "--benchmark",
+                type=int,
+                default=None,
+                metavar="INDEX",
+                help=(
+                    "Which benchmark to import, counted from 0, when the "
+                    "report holds more than one (a sweep or several rates)"
+                ),
+            )
         import_tool_parser.set_defaults(func=_cmd_import)
 
     export_parser = subparsers.add_parser(
