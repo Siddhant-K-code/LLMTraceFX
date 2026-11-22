@@ -7,7 +7,7 @@ import pytest
 
 from llmtracefx.cache_audit.schema import EvidenceBasis
 from llmtracefx.optimizer.schema import SchemaValidationError
-from vllm_kv_truth.vllm_live import (
+from llmtracefx.vllm_kv_truth.vllm_live import (
     DEFAULT_DATA_PARALLEL_RANK,
     END_OF_REPLAY_SEQUENCE,
     REQUIRED_KV_EVENTS_USE_INT_BLOCK_HASHES,

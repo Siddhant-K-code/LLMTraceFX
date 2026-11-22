@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from vllm_kv_truth import model_download
+from llmtracefx.vllm_kv_truth import model_download
 
 
 def test_downloader_attestation_binds_exact_package_interface_and_source() -> None:

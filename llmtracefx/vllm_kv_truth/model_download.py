@@ -76,7 +76,6 @@ def downloader_attestation(
 def _manifest_allow_patterns() -> list[str]:
     manifest_path = (
         Path(__file__).resolve().parents[1]
-        / "llmtracefx"
         / "optimizer"
         / "lab"
         / "qwen3_8b"

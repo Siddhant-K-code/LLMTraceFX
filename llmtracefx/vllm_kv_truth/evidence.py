@@ -1,13 +1,13 @@
 """Private/public evidence bundling for ``qwen3-8b-vllm-kv-truth-v1``.
 
 This module turns the raw, per-lane facts the host orchestrator collects
-(receipts from :mod:`vllm_kv_truth.runner`,
+(receipts from :mod:`llmtracefx.vllm_kv_truth.runner`,
 teardown/transfer receipts, the authorization/config public records) into:
 
 1. a **private raw bundle** -- everything, including whatever sensitive
    detail a real run legitimately produces (this module never itself reads
    host/user/key/IP values; it only ever sees what
-   :mod:`vllm_kv_truth.lifecycle` already redacted before
+   :mod:`llmtracefx.vllm_kv_truth.lifecycle` already redacted before
    handing data here);
 2. a **public-redacted bundle** -- deterministic, portable, and safe to
    publish: no host/user/IP/port/key path, GPU UUID, salt, native hash, raw
@@ -49,11 +49,11 @@ from llmtracefx.optimizer._artifact_io import (
     reject_non_finite_json_constant,
 )
 from llmtracefx.optimizer.collectors._shared import atomic_write_text
-from vllm_kv_truth.runner import (
+from llmtracefx.vllm_kv_truth.runner import (
     PROTOCOL_ID,
 )
-from vllm_kv_truth.vllm_live import parse_runtime_attestation
-from vllm_kv_truth.workload import NESTED_PROBES
+from llmtracefx.vllm_kv_truth.vllm_live import parse_runtime_attestation
+from llmtracefx.vllm_kv_truth.workload import NESTED_PROBES
 
 MAX_RECEIPT_ARTIFACT_BYTES = 8 * 1024 * 1024
 
@@ -479,8 +479,8 @@ class PrivateEvidenceBundle:
 
     This dataclass itself never contains a host/user/IP/key value -- those
     are excluded even from the *private* bundle by construction, because
-    :class:`~vllm_kv_truth.lifecycle.ProtectedExecutionConfig`
-    and :class:`~vllm_kv_truth.lifecycle.StrictSSHOptions`
+    :class:`~llmtracefx.vllm_kv_truth.lifecycle.ProtectedExecutionConfig`
+    and :class:`~llmtracefx.vllm_kv_truth.lifecycle.StrictSSHOptions`
     only ever expose ``public_record()`` views to callers outside that
     module. "Private" here means "not yet redacted for external
     publication" (e.g. it may still carry exact token arrays and native
@@ -600,7 +600,7 @@ class PrivateEvidenceBundle:
 #: Key names that legitimately contain a forbidden fragment as a mere
 #: substring but never carry a sensitive value themselves -- e.g.
 #: ``strict_host_key_checking`` is a fixed boolean *policy* flag from
-#: :meth:`~vllm_kv_truth.lifecycle.StrictSSHOptions.public_record`,
+#: :meth:`~llmtracefx.vllm_kv_truth.lifecycle.StrictSSHOptions.public_record`,
 #: never a host-identifying value, despite containing ``"host"``. Every
 #: entry here must be an exact key name, never a fragment, so this can never
 #: widen into an accidental bypass of the scanner it lives next to.

@@ -10,8 +10,8 @@ from typing import Any
 
 import pytest
 
-from vllm_kv_truth import runner
-from vllm_kv_truth.vllm_live import (
+from llmtracefx.vllm_kv_truth import runner
+from llmtracefx.vllm_kv_truth.vllm_live import (
     SourceFileDigest,
     canonical_json,
     compute_sha256_cbor_block_hashes,
@@ -21,7 +21,7 @@ from vllm_kv_truth.vllm_live import (
     required_source_file_digests,
     required_source_file_paths,
 )
-from vllm_kv_truth.workload import (
+from llmtracefx.vllm_kv_truth.workload import (
     BLOCK_SIZE,
     EVICTION_LANE_REQUESTS,
     NESTED_PROBES,
@@ -942,7 +942,7 @@ def test_verify_protocol_receipt_rejects_resealed_malformed_nested_evidence(
 
 def test_runner_module_executes_its_cli() -> None:
     completed = subprocess.run(
-        [sys.executable, "-m", "vllm_kv_truth.runner", "--help"],
+        [sys.executable, "-m", "llmtracefx.vllm_kv_truth.runner", "--help"],
         check=False,
         capture_output=True,
         text=True,

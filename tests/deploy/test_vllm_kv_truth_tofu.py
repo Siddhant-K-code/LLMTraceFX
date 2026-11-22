@@ -8,15 +8,15 @@ import json
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from vllm_kv_truth import lifecycle
+from llmtracefx.vllm_kv_truth import lifecycle
 
-OBSERVED_AT = datetime(2030, 1, 1, tzinfo=timezone.utc)
+OBSERVED_AT = datetime(2030, 1, 1, tzinfo=UTC)
 
 
 def _key_base64(fill: int = 7) -> str:

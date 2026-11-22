@@ -198,7 +198,7 @@ def test_fake_snapshot_refuses_even_with_forged_trusted_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_snapshot = tmp_path / "snapshot"
-    for package in ("llmtracefx", "vllm_kv_truth"):
+    for package in ("llmtracefx",):
         root = fake_snapshot / package
         root.mkdir(parents=True)
         (root / "__init__.py").write_text("", encoding="ascii")
@@ -349,7 +349,7 @@ def test_bootstrap_snapshot_matches_exact_commit_and_has_no_symlinks(
     ).stdout.strip()
     snapshot = namespace["_materialize_snapshot"](PROJECT_ROOT, commit, tmp_path)
     assert not any(path.is_symlink() for path in snapshot.rglob("*"))
-    for package in ("llmtracefx", "vllm_kv_truth"):
+    for package in ("llmtracefx",):
         tracked = subprocess.run(
             ["git", "ls-tree", "-r", "--name-only", commit, "--", package],
             cwd=PROJECT_ROOT,
@@ -460,8 +460,6 @@ def _external_bootstrap_repository(tmp_path: Path) -> tuple[Path, Path, str]:
     )
     checkout_script.parent.mkdir(parents=True)
     identity.parent.mkdir(parents=True)
-    (repository / "vllm_kv_truth").mkdir()
-    (repository / "vllm_kv_truth/__init__.py").write_text("", encoding="ascii")
     checkout_script.write_bytes(BOOTSTRAP.read_bytes())
     identity.write_bytes(
         (
