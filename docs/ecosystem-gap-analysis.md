@@ -771,7 +771,8 @@ Ranked by value to the evidence model against cost:
    instant power is a better sample than the smoothed reading, and per-PID
    utilization closes a contamination blind spot between polls.
 5. **Confidence intervals and warmup exclusion in sweeps (M). Built.**
-    Every sweep percentile now has a distribution-free 95% interval, and
+    Sweep percentiles now get a distribution-free 95% interval when there
+    are enough requests, and
     `--warmup-requests` leaves the first requests of each point out of the
     summaries. See [`docs/load-sweeps.md`](load-sweeps.md#confidence-intervals).
 6. **AIPerf `profile_export.jsonl` import (M).** Per-request records would
