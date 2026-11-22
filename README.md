@@ -306,7 +306,7 @@ differs, when the difference is within run-to-run noise, or when the noise is
 larger than the allowed regression, so a noisy runner cannot pass by chance.
 The same check ships as a GitHub Action; see [Perf gate in CI](#perf-gate-in-ci).
 
-### Import vLLM bench and AIPerf results
+### Import vLLM bench, AIPerf and GuideLLM results
 
 `import` converts results you already have into an
 `llmtracefx.imported_benchmark` artifact, without rerunning:
@@ -314,6 +314,7 @@ The same check ships as a GitHub Action; see [Perf gate in CI](#perf-gate-in-ci)
 ```bash
 uv run llmtracefx-optimizer import vllm-bench vllm-result.json --output runs/base-0.json
 uv run llmtracefx-optimizer import aiperf profile_export_aiperf.json --output runs/base-0.json
+uv run llmtracefx-optimizer import guidellm benchmarks.json --benchmark 0 --output runs/base-0.json
 ```
 
 `vllm-bench` reads the file written by `vllm bench serve --save-result`.
@@ -358,6 +359,21 @@ counts and token totals. Goodput is refused when a successful record lacks a
 value for a target, for example TTFT from a non-streaming run. Each input file
 may be at most 64 MiB.
 
+`guidellm` reads a GuideLLM `benchmarks.json` report, version 1 (GuideLLM 0.5
+and 0.6) or version 2 (0.7 and later). Other versions, and reports from 0.4 or
+earlier, are refused. A report can hold several benchmarks (a sweep or several
+rates); pick one with `--benchmark INDEX`, counted from 0. Without it, a report
+with more than one benchmark is refused and the benchmarks are listed. Only the
+successful requests' statistics are read: latency metrics such as
+`time_to_first_token_ms` and `request_latency` keep GuideLLM's mean, median,
+std, min, max and percentiles, and rates such as `requests_per_second` keep only
+the mean, because GuideLLM's rate percentiles are instantaneous rates between
+events. GuideLLM weights `inter_token_latency_ms` and `time_per_output_token_ms`
+by output tokens, so they are not directly comparable with vLLM bench or
+AIPerf. Errored and incomplete counts are kept; runs with errored requests are
+not used by `gate`. Prompt and output text, endpoint URLs and API keys are never
+copied.
+
 Imported artifacts work with `gate` only. Gate N baseline imports against N
 candidate imports from the same tool, model, endpoint and load, naming a metric
 and statistic:
@@ -366,6 +382,10 @@ and statistic:
 uv run llmtracefx-optimizer gate --baseline runs/base --candidate runs/head \
   --metric ttft_ms.p99
 ```
+
+The metric names differ per tool: `ttft_ms.p99` for vLLM bench,
+`time_to_first_token.p99` for AIPerf and `time_to_first_token_ms.p99` for
+GuideLLM.
 
 Runs are comparable only when their total input tokens match, and for latency
 metrics their total output tokens too. Use a fixed dataset and seed, and for
@@ -1328,9 +1348,9 @@ is derived from the counter energy and a measured or reported generated token
 count. Runs must use the same GPUs and attribution status. A successful run
 with no usable value makes the gate inconclusive rather than being dropped.
 
-The baseline and candidate can also be directories of imported vLLM bench or
-AIPerf artifacts (see
-[Import vLLM bench and AIPerf results](#import-vllm-bench-and-aiperf-results)),
+The baseline and candidate can also be directories of imported vLLM bench,
+AIPerf or GuideLLM artifacts (see
+[Import vLLM bench, AIPerf and GuideLLM results](#import-vllm-bench-aiperf-and-guidellm-results)),
 with a metric such as `ttft_ms.p99`.
 
 The same check runs locally:
