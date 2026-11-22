@@ -5530,7 +5530,7 @@ def _require_trusted_canonical_dispatch(expected_commit: Any) -> str:
         ) from exc
     if any(not _is_relative_to(origin, snapshot) for origin in origins):
         raise RealMLXExperimentError("canonical loaded package origin is untrusted")
-    for package_name in ("llmtracefx", "vllm_kv_truth"):
+    for package_name in ("llmtracefx",):
         package_root = snapshot / package_name
         if (
             package_root.is_symlink()

@@ -17,7 +17,7 @@ import sys
 import time
 import zipfile
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -124,8 +124,8 @@ def _record_hash(payload: bytes) -> str:
 def _write_wheel(path: Path, bootstrap: bytes, cli_source: str = FAKE_CLI) -> None:
     files = {
         "llmtracefx/__init__.py": b"",
-        "vllm_kv_truth/__init__.py": b"",
-        "vllm_kv_truth/cli.py": cli_source.encode(),
+        "llmtracefx/vllm_kv_truth/__init__.py": b"",
+        "llmtracefx/vllm_kv_truth/cli.py": cli_source.encode(),
         ("llmtracefx-1.0.0.data/scripts/run-vllm-kv-truth-clean-env.py"): bootstrap,
         "llmtracefx-1.0.0.dist-info/METADATA": (
             b"Metadata-Version: 2.1\nName: llmtracefx\nVersion: 1.0.0\n"
@@ -186,9 +186,9 @@ def _install_fake_environment(
     console_script.chmod(0o755)
     (site_packages / "llmtracefx").mkdir()
     (site_packages / "llmtracefx" / "__init__.py").write_bytes(b"")
-    (site_packages / "vllm_kv_truth").mkdir()
-    (site_packages / "vllm_kv_truth" / "__init__.py").write_bytes(b"")
-    (site_packages / "vllm_kv_truth" / "cli.py").write_text(FAKE_CLI)
+    (site_packages / "llmtracefx" / "vllm_kv_truth").mkdir()
+    (site_packages / "llmtracefx" / "vllm_kv_truth" / "__init__.py").write_bytes(b"")
+    (site_packages / "llmtracefx" / "vllm_kv_truth" / "cli.py").write_text(FAKE_CLI)
     dist_info = site_packages / "llmtracefx-1.0.0.dist-info"
     dist_info.mkdir()
     (dist_info / "METADATA").write_bytes(
@@ -334,6 +334,14 @@ def test_real_setuptools_wheel_install_and_public_cli_split(tmp_path: Path) -> N
     wheels = list(dist.glob("*.whl"))
     assert len(wheels) == 1
     wheel = wheels[0]
+    with zipfile.ZipFile(wheel) as archive:
+        top_level = {
+            PurePosixPath(name).parts[0]
+            for name in archive.namelist()
+            if ".dist-info" not in name.split("/", 1)[0]
+            and ".data" not in name.split("/", 1)[0]
+        }
+    assert top_level == {"llmtracefx"}
 
     venv = tmp_path / "real-wheel-venv"
     created = subprocess.run(
@@ -670,6 +678,7 @@ def test_trust_root_rejects_tampering(
             / "lib"
             / f"python{sys.version_info.major}.{sys.version_info.minor}"
             / "site-packages"
+            / "llmtracefx"
             / "vllm_kv_truth"
             / "cli.py"
         )
@@ -897,7 +906,7 @@ from pathlib import Path
 PROJECT_ROOT = Path({str(PROJECT_ROOT)!r})
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from vllm_kv_truth import cli, lifecycle
+from llmtracefx.vllm_kv_truth import cli, lifecycle
 
 spec = importlib.util.spec_from_file_location(
     "kv_truth_lifecycle_test_support",

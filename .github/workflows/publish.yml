@@ -110,7 +110,7 @@ jobs:
           test -f "$wheel"
           test "$(find dist -maxdepth 1 -type f ! -name .gitignore | wc -l)" -eq 2
           uvx --from twine==7.0.0 twine check --strict "$sdist" "$wheel"
-          git ls-files -- 'llmtracefx/**/data/*.json' 'vllm_kv_truth/data/*.json' > "$RUNNER_TEMP/required-data.txt"
+          git ls-files -- 'llmtracefx/**/data/*.json' > "$RUNNER_TEMP/required-data.txt"
           test -s "$RUNNER_TEMP/required-data.txt"
           uv run --no-project python - "$sdist" "$wheel" "$VERSION" "$RUNNER_TEMP/required-data.txt" <<'EOF'
           import sys

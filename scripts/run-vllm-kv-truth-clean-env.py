@@ -29,6 +29,11 @@ SAFE_ENVIRONMENT = {
 PLATFORM_ENVIRONMENT_NAMES = {"__CF_USER_TEXT_ENCODING"}
 SCHEMA_VERSION = 2
 MAX_SYMLINKS = 32
+REQUIRED_PACKAGE_FILES = {
+    "llmtracefx/__init__.py",
+    "llmtracefx/vllm_kv_truth/__init__.py",
+    "llmtracefx/vllm_kv_truth/cli.py",
+}
 
 
 class BootstrapError(Exception):
@@ -536,7 +541,7 @@ def _verify_wheel_install(wheel_bytes: bytes, root: Path, interpreter: Path) -> 
                 io.StringIO(archive.read(record_names[0]).decode("utf-8"))
             )
             bootstrap_payloads: list[bytes] = []
-            checked_packages: set[str] = set()
+            checked_files: set[str] = set()
             recorded_names: set[str] = set()
             for row in rows:
                 if len(row) != 3:
@@ -553,7 +558,6 @@ def _verify_wheel_install(wheel_bytes: bytes, root: Path, interpreter: Path) -> 
                 expected_data = expected_dist_info.removesuffix(".dist-info") + ".data"
                 if top_level not in {
                     "llmtracefx",
-                    "vllm_kv_truth",
                     expected_dist_info,
                     expected_data,
                 }:
@@ -574,7 +578,7 @@ def _verify_wheel_install(wheel_bytes: bytes, root: Path, interpreter: Path) -> 
                     or hashlib.sha256(payload).digest() != _record_digest(encoded)
                 ):
                     _fail("wheel payload does not match its RECORD digest")
-                if pure.parts[0] in {"llmtracefx", "vllm_kv_truth"}:
+                if pure.parts[0] == "llmtracefx":
                     installed = site_packages.joinpath(*pure.parts)
                     if (
                         _read_trusted_bytes(installed, "installed package file")
@@ -583,7 +587,7 @@ def _verify_wheel_install(wheel_bytes: bytes, root: Path, interpreter: Path) -> 
                         _fail(
                             "installed package contents do not match the trusted wheel"
                         )
-                    checked_packages.add(pure.parts[0])
+                    checked_files.add(name)
                 elif pure.parts[0].endswith(".dist-info"):
                     installed = site_packages.joinpath(*pure.parts)
                     if (
@@ -607,8 +611,8 @@ def _verify_wheel_install(wheel_bytes: bytes, root: Path, interpreter: Path) -> 
                 _fail("wheel contents do not exactly match RECORD")
     except (KeyError, OSError, UnicodeError, ValueError, zipfile.BadZipFile):
         _fail("wheel is malformed or unreadable")
-    if checked_packages != {"llmtracefx", "vllm_kv_truth"}:
-        _fail("wheel does not contain both required packages")
+    if not REQUIRED_PACKAGE_FILES <= checked_files:
+        _fail("wheel does not contain the required llmtracefx.vllm_kv_truth package")
     if len(bootstrap_payloads) != 1:
         _fail("wheel does not contain exactly one clean bootstrap")
     installed_bootstrap = _read_trusted_bytes(
@@ -910,7 +914,7 @@ def main(argv: list[str] | None = None) -> int:
 
     site_packages = _site_packages(root)
     sys.path.insert(0, str(site_packages))
-    from vllm_kv_truth.cli import bootstrap_dispatch
+    from llmtracefx.vllm_kv_truth.cli import bootstrap_dispatch
 
     return int(bootstrap_dispatch(cli_args))
 

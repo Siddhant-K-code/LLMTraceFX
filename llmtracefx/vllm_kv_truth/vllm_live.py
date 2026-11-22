@@ -26,7 +26,7 @@ present, self-consistent, and sealed inside the mappings handed to
 This module never imports ``vllm``, ``torch``, ``zmq``, or ``msgspec``, opens
 no socket, and performs no GPU or network work. It only parses and validates
 mappings that a separate, gated in-container exporter is expected to produce
-(see ``vllm_kv_truth.runner`` for the pinned
+(see ``llmtracefx.vllm_kv_truth.runner`` for the pinned
 protocol that consumes this validator) and normalizes already msgpack-decoded
 KV-cache event batches captured from vLLM's ZMQ publisher.
 

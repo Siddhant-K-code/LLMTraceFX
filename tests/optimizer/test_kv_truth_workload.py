@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from vllm_kv_truth import workload
+from llmtracefx.vllm_kv_truth import workload
 
 #: The plan's exact preregistered table:
 #: | Probe | Expected reusable tokens / blocks |

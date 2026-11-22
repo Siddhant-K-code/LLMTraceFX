@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from vllm_kv_truth import lifecycle
+from llmtracefx.vllm_kv_truth import lifecycle
 
 OBSERVED_AT = datetime(2030, 1, 1, tzinfo=timezone.utc)
 

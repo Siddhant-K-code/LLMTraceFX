@@ -240,7 +240,7 @@ point remains 175 minutes, and teardown retains its full 35-minute reserve.
 
 Set `authorization_expiry` no earlier than the end of cleanup. Calculate
 `authorization_sha256` with
-`vllm_kv_truth.lifecycle.build_authorization_seal` over the
+`llmtracefx.vllm_kv_truth.lifecycle.build_authorization_seal` over the
 authorization object without `authorization_sha256`. Optional detached
 OpenSSH signing uses both `signature_path` and `authorized_signers_path`;
 supplying only one is invalid.
@@ -348,12 +348,13 @@ every file, directory, and symlink in the dedicated environment. User and
 system site-packages are excluded from the base-runtime inventory because
 `-S` does not load them; executable bytecode caches are not excluded. OS
 system libraries loaded below Python remain part of the explicitly trusted OS
-boundary. The manifest also proves that installed `llmtracefx` and
-`vllm_kv_truth` package files and package data match the wheel. This complete
+boundary. The manifest also proves that the installed `llmtracefx` package
+files (including `llmtracefx.vllm_kv_truth`) and package data match the wheel,
+whose only top-level package is `llmtracefx`. This complete
 installed-environment manifest is used instead of direct zip execution because
 the runner intentionally reads packaged resources through filesystem paths.
 The dedicated install uses `--no-deps`: this runner path needs only the Python
-standard library and the two packages in the project wheel, so dependency
+standard library and the `llmtracefx` package in the project wheel, so dependency
 resolution cannot silently add executable code. The external wheel hash binds
 the project artifact, and the external manifest binds the complete installed
 environment after this no-dependency install.

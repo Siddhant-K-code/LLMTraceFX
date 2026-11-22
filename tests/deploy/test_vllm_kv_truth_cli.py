@@ -13,10 +13,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from vllm_kv_truth import cli as cli_module
-from vllm_kv_truth import evidence
-from vllm_kv_truth.cli import _build_parser, bootstrap_dispatch, main
-from vllm_kv_truth.lifecycle import HostOrchestrationError
+from llmtracefx.vllm_kv_truth import cli as cli_module
+from llmtracefx.vllm_kv_truth import evidence
+from llmtracefx.vllm_kv_truth.cli import _build_parser, bootstrap_dispatch, main
+from llmtracefx.vllm_kv_truth.lifecycle import HostOrchestrationError
 
 
 class TestArgumentParser:

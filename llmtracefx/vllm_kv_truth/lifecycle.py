@@ -88,7 +88,7 @@ from llmtracefx.optimizer._artifact_io import (
     read_bounded_regular_text,
     reject_non_finite_json_constant,
 )
-from vllm_kv_truth.runner import (
+from llmtracefx.vllm_kv_truth.runner import (
     BASE_IMAGE_REFERENCE,
     EXPECTED_DRIVER,
     EXPECTED_GPU_NAME,
@@ -2427,7 +2427,7 @@ class RunPaths:
 
 
 _COMMIT_HEAD_MEMBER = "COMMIT_HEAD"
-_RUNNER_SOURCE_MEMBER = "vllm_kv_truth/runner.py"
+_RUNNER_SOURCE_MEMBER = "llmtracefx/vllm_kv_truth/runner.py"
 
 
 def _validate_safe_tar_member(member: tarfile.TarInfo) -> None:
@@ -2686,7 +2686,7 @@ def build_docker_run_argv(
         derived_image_id,
         "python3",
         "-m",
-        "vllm_kv_truth.runner",
+        "llmtracefx.vllm_kv_truth.runner",
         "--lane",
         invocation.lane,
         "--model-path",
@@ -2727,7 +2727,7 @@ def build_model_download_argv(
         _require_pattern(derived_image_id, _SHA256_REF, field_name="derived_image_id"),
         "python3",
         "-m",
-        "vllm_kv_truth.model_download",
+        "llmtracefx.vllm_kv_truth.model_download",
         "download",
         "--destination",
         "/model",
@@ -3429,7 +3429,7 @@ class RemoteOrchestrator:
                     image_tag,
                     "python3",
                     "-m",
-                    "vllm_kv_truth.model_download",
+                    "llmtracefx.vllm_kv_truth.model_download",
                     "attest",
                 ),
                 "trap - EXIT",

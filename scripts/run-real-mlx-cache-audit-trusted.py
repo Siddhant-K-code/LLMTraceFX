@@ -70,7 +70,7 @@ _CANONICAL_COMMANDS = {
 }
 _FORBIDDEN_FILENAMES = {"sitecustomize.py", "usercustomize.py"}
 _FORBIDDEN_SUFFIXES = {".pth", ".pyc", ".pyo"}
-_SNAPSHOT_PREFIXES = ("llmtracefx/", "vllm_kv_truth/", "scripts/")
+_SNAPSHOT_PREFIXES = ("llmtracefx/", "scripts/")
 _IDENTITY_PATH = (
     "llmtracefx/cache_audit/data/" "apple-silicon-python313-mlx-lm-runtime-v1.json"
 )
@@ -549,7 +549,6 @@ def _materialize_snapshot(
             expected_commit,
             "--",
             "llmtracefx",
-            "vllm_kv_truth",
             _BOOTSTRAP_PATH,
         ],
     )
@@ -595,7 +594,7 @@ def _materialize_snapshot(
                 target.chmod(0o400)
     except (OSError, tarfile.TarError) as exc:
         raise BootstrapError("trusted source archive is invalid") from exc
-    for required in ("llmtracefx", "vllm_kv_truth"):
+    for required in ("llmtracefx",):
         if not (snapshot / required).is_dir():
             raise BootstrapError("trusted source snapshot is incomplete")
     if not (snapshot / _BOOTSTRAP_PATH).is_file():
