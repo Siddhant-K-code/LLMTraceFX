@@ -7,6 +7,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from ..extras import extra_install_hint
+
 PathLike = str | Path
 
 
@@ -66,8 +68,8 @@ class MLXTraceRecorder:
             import mlx.core as mx
         except ImportError as exc:
             raise RuntimeError(
-                "MLX tracing requires MLX. On Apple Silicon run "
-                "`uv sync --extra mlx` or `pip install mlx`."
+                "MLX tracing requires MLX. On Apple Silicon install the mlx "
+                f"extra with {extra_install_hint('mlx')}."
             ) from exc
         return mx
 

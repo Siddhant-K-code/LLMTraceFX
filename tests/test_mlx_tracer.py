@@ -260,5 +260,5 @@ def test_missing_mlx_dependency_has_install_instructions(tmp_path, monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", block_mlx)
 
-    with pytest.raises(RuntimeError, match="uv sync --extra mlx"):
+    with pytest.raises(RuntimeError, match=r"uv tool install 'llmtracefx\[mlx\]'"):
         MLXTraceRecorder(tmp_path / "trace.json")

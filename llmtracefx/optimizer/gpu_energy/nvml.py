@@ -17,6 +17,8 @@ import importlib.metadata
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from ...extras import extra_install_hint
+
 #: Capability states :class:`NvmlUnavailable` can carry.
 EXTRA_MISSING = "extra_missing"
 LIBRARY_UNAVAILABLE = "library_unavailable"
@@ -218,6 +220,6 @@ def load_backend() -> NvmlBackend:
         raise NvmlUnavailable(
             EXTRA_MISSING,
             "the pynvml module is not installed. Install the optional extra "
-            "with `uv sync --extra nvml` or `pip install 'llmtracefx[nvml]'`",
+            f"with {extra_install_hint('nvml')}",
         ) from exc
     return PynvmlBackend(module)

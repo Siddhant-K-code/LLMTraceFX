@@ -36,13 +36,15 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from llmtracefx.extras import extra_install_hint
+
 try:
     import modal
 except ModuleNotFoundError as exc:  # pragma: no cover - exercised only on Modal
     raise SystemExit(
         "The Modal SDK is required to run this entrypoint. It is an optional "
-        "dependency of llmtracefx: install it with `uv sync --extra modal` or "
-        "`pip install 'llmtracefx[modal]'`. Planning does not need it: "
+        f"dependency of llmtracefx: install it with {extra_install_hint('modal')}. "
+        "Planning does not need it: "
         "`llmtracefx-deploy plan` runs without Modal installed."
     ) from exc
 

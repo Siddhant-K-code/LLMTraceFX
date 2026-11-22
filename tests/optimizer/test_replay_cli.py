@@ -134,7 +134,7 @@ def test_plan_refuses_tokenizer_problems(
     assert "--tokenizer-revision needs --tokenizer" in capsys.readouterr().err
     monkeypatch.setitem(sys.modules, "tokenizers", None)
     assert _run([*base, "--tokenizer", "org/model", *out]) == 1
-    assert "--extra tokenizer" in capsys.readouterr().err
+    assert "uv tool install 'llmtracefx[tokenizer]'" in capsys.readouterr().err
     assert not (tmp_path / "x").exists()
 
 

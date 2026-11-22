@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from ...extras import extra_install_hint
 from ..collectors.openai_api import (
     APICollectionConfig,
     OpenAIStreamCollectorError,
@@ -183,7 +184,7 @@ def _add_schedule_arguments(parser: argparse.ArgumentParser) -> None:
             "Make synthetic prompt lengths exact in this tokenizer: a "
             "Hugging Face repo id, a tokenizer.json file, or a directory "
             "holding one. Counts the prompt text only, not the chat template. "
-            "Needs the optional extra: uv sync --extra tokenizer"
+            f"Needs the optional extra: {extra_install_hint('tokenizer')}"
         ),
     )
     parser.add_argument(
