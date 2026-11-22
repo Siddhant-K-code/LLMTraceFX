@@ -92,7 +92,6 @@ from .workload import (
 #: copy of the same real upstream facts.
 _QWEN3_8B_MODEL_MANIFEST_PATH = (
     Path(__file__).resolve().parents[1]
-    / "llmtracefx"
     / "optimizer"
     / "lab"
     / "qwen3_8b"

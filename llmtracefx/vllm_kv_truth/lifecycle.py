@@ -135,7 +135,6 @@ MINIMUM_DISK_FREE_BYTES = 250_000_000_000
 
 MODEL_CONVERSION_MANIFEST_PATH = (
     Path(__file__).resolve().parents[1]
-    / "llmtracefx"
     / "optimizer"
     / "lab"
     / "qwen3_8b"
