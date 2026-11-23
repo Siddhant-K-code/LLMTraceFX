@@ -14,9 +14,10 @@ the groups, because they are usually what the pull request changed.
 
 The gate also accepts imported benchmark artifacts written by
 ``llmtracefx-optimizer import``. Their values are summary statistics that
-vLLM bench or AIPerf computed, so the metric names one statistic
-(``ttft_ms.p99``), each imported file counts as one run, and imported
-artifacts are never mixed with records or with another tool's imports.
+vLLM bench or AIPerf computed, or that LLMTraceFX computed from AIPerf's
+per-request records, so the metric names one statistic (``ttft_ms.p99``),
+each imported file counts as one run, and imported artifacts are never
+mixed with records or with another tool's imports.
 """
 
 from __future__ import annotations
@@ -45,7 +46,9 @@ from .gpu_energy.record_power import (
     shared_window_refusals,
 )
 from .importers.aiperf import looks_like_aiperf_profile
+from .importers.aiperf_records import looks_like_aiperf_records
 from .importers.artifact import (
+    AIPERF_RECORDS_TOOL,
     HIGHER_IS_BETTER,
     IMPORTED_BENCHMARK_KIND,
     MAX_IMPORTED_ARTIFACT_BYTES,
@@ -204,9 +207,14 @@ class GateReport:
         if self.input_kind == IMPORTED_INPUT:
             lines += [
                 "",
-                f"Values were computed by `{self.source_tool}` and imported; "
-                "LLMTraceFX did not measure them. Each imported file counts "
-                "as one run.",
+                (
+                    "Values were computed by LLMTraceFX from AIPerf's per-request "
+                    "records; LLMTraceFX did not send the requests."
+                    if self.source_tool == AIPERF_RECORDS_TOOL
+                    else f"Values were computed by `{self.source_tool}` and "
+                    "imported; LLMTraceFX did not measure them."
+                )
+                + " Each imported file counts as one run.",
             ]
         if self.excluded:
             lines += ["", "Excluded runs:", ""]
@@ -258,6 +266,12 @@ def _read_input(file: Path) -> GateInput:
         data = None  # Let the record parser report the error.
     if IMPORTED_BENCHMARK_KIND in text and is_imported_benchmark(data):
         return _imported_artifact(file, text)
+    if data is None and looks_like_aiperf_records(text):
+        raise GateInputError(
+            f"{file} holds raw AIPerf per-request records; convert them first "
+            "with `llmtracefx-optimizer import aiperf <profile_export_aiperf.json> "
+            f"--records {file} --output ...`"
+        )
     for looks_like, command in (
         (looks_like_vllm_bench, "vllm-bench"),
         (looks_like_aiperf_profile, "aiperf"),
@@ -448,7 +462,11 @@ def _record_adapter(metric: str) -> _Adapter:
 _EXAMPLE_METRIC = {
     "vllm-bench-serve": "ttft_ms.p99 or request_throughput.value",
     "aiperf": "time_to_first_token.p99 or request_throughput.avg",
+    AIPERF_RECORDS_TOOL: "time_to_first_token.p99 or goodput.value",
 }
+# Failed requests count as missed SLOs in goodput, so a run with failures
+# still has a faithful goodput value.
+_COUNTS_FAILURES = frozenset({"goodput", "goodput_fraction"})
 
 
 def _imported_metric(tool: str, metric: str) -> tuple[str, str]:
@@ -467,10 +485,17 @@ def _imported_sample(item: ImportedBenchmark, name: str, stat: str) -> _Sample |
     failed = item.totals.get("failed_requests")
     if failed is None:
         return "the source does not state how many requests failed"
-    if failed.value > 0:
+    if failed.value > 0 and not (
+        item.source.tool == AIPERF_RECORDS_TOOL and name in _COUNTS_FAILURES
+    ):
+        summarised_by = (
+            "this value covers"
+            if item.source.tool == AIPERF_RECORDS_TOOL
+            else "the source tool summarises"
+        )
         return (
-            f"{failed.value:g} request(s) failed; the source tool summarises "
-            "successful requests only, so the run is not used"
+            f"{failed.value:g} request(s) failed; {summarised_by} successful "
+            "requests only, so the run is not used"
         )
     if item.load_unresolved:
         return "load settings unresolved: " + ", ".join(item.load_unresolved)
@@ -485,7 +510,9 @@ def _imported_sample(item: ImportedBenchmark, name: str, stat: str) -> _Sample |
     return _Sample(item.run_id, value.value, metric.unit, metric.provenance)
 
 
-def _imported_key(item: ImportedBenchmark, higher_is_better: bool) -> tuple[Any, ...]:
+def _imported_key(
+    item: ImportedBenchmark, name: str, higher_is_better: bool
+) -> tuple[Any, ...]:
     def total(name: str) -> float | None:
         found = item.totals.get(name)
         return None if found is None else found.value
@@ -497,8 +524,15 @@ def _imported_key(item: ImportedBenchmark, higher_is_better: bool) -> tuple[Any,
         item.model_id,
         tuple(sorted(item.endpoint.items())),
         tuple(sorted(item.load.items())),
-        total("total_input_tokens"),
     )
+    if name in _COUNTS_FAILURES:
+        # Token totals cover successful requests only, so they change with
+        # which requests failed. Goodput counts failures as misses, so runs
+        # match on the requests sent instead.
+        completed, failed = total("completed_requests"), total("failed_requests")
+        sent = None if completed is None or failed is None else completed + failed
+        return key + (sent, tuple(sorted(item.slo.items())))
+    key += (total("total_input_tokens"),)
     if not higher_is_better:
         key += (total("total_output_tokens"),)
     return key
@@ -524,9 +558,14 @@ def _imported_adapter(items: Sequence[ImportedBenchmark], metric: str) -> _Adapt
     return _Adapter(
         higher_is_better=higher,
         sample=lambda item: _imported_sample(item, name, stat),
-        key=lambda item: _imported_key(item, higher),
+        key=lambda item: _imported_key(item, name, higher),
         run_id=lambda item: item.run_id,
-        differs=("tool version, model, endpoint, load settings or token totals differ"),
+        differs=(
+            "tool version, model, endpoint, load settings, requests sent or SLO "
+            "targets differ"
+            if name in _COUNTS_FAILURES
+            else "tool version, model, endpoint, load settings or token totals differ"
+        ),
         source_tool=tool,
     )
 

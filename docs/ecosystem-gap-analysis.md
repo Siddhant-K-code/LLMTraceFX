@@ -283,8 +283,30 @@ failed requests, an unstated failure count or unresolved load is excluded and
 listed. Imports cannot be used with `compare`, `tune` or the lab, cannot be
 mixed with LLMTraceFX records in one gate, and vLLM and AIPerf results cannot
 be gated against each other, because the two tools define their metrics
-differently. Neither format has per-request data or correctness results, so
-neither is available from an import.
+differently. Neither summary has per-request data or correctness results, so
+neither is available from a summary import.
+
+`import aiperf <summary> --records profile_export.jsonl` reads AIPerf's
+per-request records (the `MetricRecordInfo` lines in
+[`record_models.py`](https://github.com/ai-dynamo/aiperf/blob/ebcdc98ad69388b86564e25bc1a6976fc50051a7/src/aiperf/common/models/record_models.py),
+unchanged in the fields read from AIPerf 0.2.0 to 0.14.0) and writes an
+artifact with tool `aiperf-records`. LLMTraceFX computes the statistics:
+nearest rank percentiles over successful profiling records with
+distribution-free 95% intervals, throughput over the records' window, and,
+with `--slo-ttft-ms`, `--slo-tpot-ms` or `--slo-e2e-ms`, goodput and the share
+of requests that met every target. These values are labelled `derived`; each
+percentile also states its sample count, whose per-request inputs are
+`imported_reported`. The records hold no model, endpoint, load or version, so
+the summary from the same run is required, goes through the summary checks,
+and is recorded as the companion with its sha256. The import is refused when
+the records and summary disagree on successful or failed requests or token
+totals, when the records span more than one profiling phase or repeat an
+`x_request_id`, when a used field has the wrong type or unit or a duplicate
+key, and when goodput would need a value a record lacks. `gate` keeps
+`aiperf-records` artifacts apart from summary imports, uses runs with failures
+for goodput only, and compares goodput only across runs with the same targets
+and number of requests sent (token totals leave failed requests out, so they
+are not used for goodput).
 
 ### `gpu-energy`
 
@@ -633,9 +655,10 @@ values, not diffed.
 - AIPerf writes `profile_export.jsonl` with one record per request, plus
   `gpu_telemetry_export.json` and server metrics exports
   ([`working-with-profile-exports.md`](https://github.com/ai-dynamo/aiperf/blob/ebcdc98ad69388b86564e25bc1a6976fc50051a7/docs/tutorials/working-with-profile-exports.md)).
-  `import aiperf` reads only the summary, so its percentiles stay
-  `imported_derived`. AIPerf also added multi-run confidence intervals
-  (`--num-profile-runs`, `--confidence-level`) and HTTP connection timing
+  `import aiperf` read only the summary, so its percentiles stayed
+  `imported_derived`; `--records` now reads the per-request file. AIPerf also
+  added multi-run confidence intervals (`--num-profile-runs`,
+  `--confidence-level`) and HTTP connection timing
   ([`multi-run-confidence.md`](https://github.com/ai-dynamo/aiperf/blob/ebcdc98ad69388b86564e25bc1a6976fc50051a7/docs/tutorials/multi-run-confidence.md),
   [`http-trace-metrics.md`](https://github.com/ai-dynamo/aiperf/blob/ebcdc98ad69388b86564e25bc1a6976fc50051a7/docs/tutorials/http-trace-metrics.md)).
 - GuideLLM reports confidence intervals for per-request metrics, warmup and
@@ -761,6 +784,8 @@ and BurstGPT v2.0 added a `Session ID` column that `replay` ignores.
   records their sums. Checked against
   [`registry.yaml`](https://github.com/open-telemetry/semantic-conventions-genai/blob/4181b1ebe55da7edb3538636c45ae64af369b5ef/model/gen-ai/registry.yaml#L315-L371),
   where all three are at development stability.
+- AIPerf per-request import: `import aiperf --records profile_export.jsonl`
+  computes LLMTraceFX's own percentiles, intervals and goodput (#190).
 
 ## Follow ups not built here
 
@@ -785,9 +810,10 @@ Ranked by value to the evidence model against cost:
     are enough requests, and
     `--warmup-requests` leaves the first requests of each point out of the
     summaries. See [`docs/load-sweeps.md`](load-sweeps.md#confidence-intervals).
-6. **AIPerf `profile_export.jsonl` import (M).** Per-request records would
-    let `gate` use LLMTraceFX's own percentiles instead of `imported_derived`
-    ones.
+6. **AIPerf `profile_export.jsonl` import (M). Built.**
+    `import aiperf --records` lets `gate` use LLMTraceFX's own percentiles,
+    intervals and goodput instead of `imported_derived` ones. See
+    [`import vllm-bench` and `import aiperf`](#import-vllm-bench-and-import-aiperf).
 7. **Re-pins and the Collector receiver rename (S).** Re-pin vLLM, SGLang,
     llama.cpp and the GenAI conventions to the commits above, and document
     `otlp_json_file` with `start_at: beginning`.

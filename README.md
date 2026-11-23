@@ -333,6 +333,31 @@ incomplete runs, runs mixing models or phases, and multi-document
 `--append-result` files are refused with exit code 2. Without `--output` the
 artifact is written to stdout.
 
+AIPerf also writes one record per request to `profile_export.jsonl` when run
+with `--export-level records`. Pass it with `--records` and LLMTraceFX computes
+the statistics itself instead of copying AIPerf's:
+
+```bash
+uv run llmtracefx-optimizer import aiperf profile_export_aiperf.json \
+  --records profile_export.jsonl --slo-ttft-ms 500 --slo-tpot-ms 50 \
+  --output runs/base-0.json
+```
+
+The artifact's tool is `aiperf-records`. Percentiles are nearest rank over
+successful profiling records, with warmup and failed records left out, and
+each carries its sample count and a distribution-free 95% interval when there
+are enough records (the method `sweep-api` uses). Throughput is computed over
+the records' own time window. With `--slo-*-ms` targets it also writes
+`goodput` and `goodput_fraction`, where failed requests count as missed. These
+values are labelled `derived`. The summary file is still required, because
+the records name no model, endpoint, load or AIPerf version; it is checked the
+same way and recorded with its sha256 as the companion. The import is refused
+when the records span more than one profiling phase, repeat a request id, have
+a field with the wrong type or unit, or do not add up to the summary's request
+counts and token totals. Goodput is refused when a successful record lacks a
+value for a target, for example TTFT from a non-streaming run. Each input file
+may be at most 64 MiB.
+
 Imported artifacts work with `gate` only. Gate N baseline imports against N
 candidate imports from the same tool, model, endpoint and load, naming a metric
 and statistic:
@@ -346,10 +371,14 @@ Runs are comparable only when their total input tokens match, and for latency
 metrics their total output tokens too. Use a fixed dataset and seed, and for
 vLLM pass `--ignore-eos` so every run generates the same number of tokens.
 Otherwise the gate reports inconclusive. Runs with failed requests are not
-used.
+used, except for `goodput` and `goodput_fraction` from `--records` imports,
+which count failures as misses. Goodput runs are matched on SLO targets and
+the number of requests sent instead of token totals, because token totals
+leave failed requests out.
 
 They cannot be used with `compare` (no per-prompt hashes or correctness
-results), mixed with LLMTraceFX records, or gated across tools. See
+results), mixed with LLMTraceFX records, or gated across tools. AIPerf summary
+imports and `--records` imports count as different tools. See
 [`docs/ecosystem-gap-analysis.md`](docs/ecosystem-gap-analysis.md) for the
 full mapping and refusal rules.
 

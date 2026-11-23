@@ -16,6 +16,13 @@ Provenance labels are scoped to this artifact:
 ``imported_reported``
     A count, total or duration that the source tool reported as is.
 
+The ``aiperf-records`` tool is different: LLMTraceFX reads AIPerf's
+per-request records and computes the statistics itself. Its metrics and
+totals are ``derived``, each distribution states its ``sample_count`` and
+``sample_provenance`` (``imported_reported``, the per-request values AIPerf
+wrote) and carries order statistic confidence intervals. ``source.companion``
+names the AIPerf summary file that supplied the model, endpoint and load.
+
 The optional ``speculative`` section holds the speculative decoding
 acceptance a tool read from the server's own counters (``vllm bench serve``
 does this). Those values are server side and cover every request the server
@@ -48,12 +55,16 @@ MAX_IMPORTED_ARTIFACT_BYTES = 4 * 1024 * 1024
 
 IMPORTED_DERIVED = "imported_derived"
 IMPORTED_REPORTED = "imported_reported"
+DERIVED = "derived"
+NEAREST_RANK = "nearest_rank"
 LOWER_IS_BETTER = "lower_is_better"
 HIGHER_IS_BETTER = "higher_is_better"
 
 VLLM_BENCH_TOOL = "vllm-bench-serve"
 AIPERF_TOOL = "aiperf"
-SUPPORTED_TOOLS = (VLLM_BENCH_TOOL, AIPERF_TOOL)
+AIPERF_RECORDS_TOOL = "aiperf-records"
+SUPPORTED_TOOLS = (VLLM_BENCH_TOOL, AIPERF_TOOL, AIPERF_RECORDS_TOOL)
+SLO_TARGETS = ("ttft_ms", "tpot_ms", "e2e_ms")
 
 TOTAL_NAMES = (
     "completed_requests",
@@ -108,7 +119,32 @@ METRIC_DIRECTIONS: dict[str, dict[str, str]] = {
         "prefill_throughput": HIGHER_IS_BETTER,
         "goodput": HIGHER_IS_BETTER,
     },
+    AIPERF_RECORDS_TOOL: {
+        "time_to_first_token": LOWER_IS_BETTER,
+        "time_to_second_token": LOWER_IS_BETTER,
+        "time_to_first_output_token": LOWER_IS_BETTER,
+        "inter_token_latency": LOWER_IS_BETTER,
+        "request_latency": LOWER_IS_BETTER,
+        "output_token_throughput_per_user": HIGHER_IS_BETTER,
+        "request_throughput": HIGHER_IS_BETTER,
+        "output_token_throughput": HIGHER_IS_BETTER,
+        "goodput": HIGHER_IS_BETTER,
+        "goodput_fraction": HIGHER_IS_BETTER,
+    },
 }
+
+# Statistics LLMTraceFX computes itself are ``derived``; everything else in
+# an imported artifact was computed or reported by the source tool.
+_METRIC_PROVENANCE = {AIPERF_RECORDS_TOOL: DERIVED}
+_TOTAL_PROVENANCE = {AIPERF_RECORDS_TOOL: DERIVED}
+
+
+def metric_provenance(tool: str) -> str:
+    return _METRIC_PROVENANCE.get(tool, IMPORTED_DERIVED)
+
+
+def total_provenance(tool: str) -> str:
+    return _TOTAL_PROVENANCE.get(tool, IMPORTED_REPORTED)
 
 
 class BenchmarkImportError(ValueError):
@@ -134,12 +170,75 @@ class ImportedTotal:
 
 
 @dataclass(frozen=True)
+class ImportedInterval:
+    """A distribution-free confidence interval for one percentile.
+
+    ``lower`` and ``upper`` are order statistics at 1-based ranks; both are
+    ``None`` with a ``withheld_reason`` when there are too few values.
+    """
+
+    lower: float | None
+    upper: float | None
+    lower_rank: int | None = None
+    upper_rank: int | None = None
+    coverage: float | None = None
+    withheld_reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        if self.withheld_reason is not None:
+            return {
+                "lower": None,
+                "upper": None,
+                "withheld_reason": self.withheld_reason,
+            }
+        return {
+            "lower": self.lower,
+            "upper": self.upper,
+            "lower_rank": self.lower_rank,
+            "upper_rank": self.upper_rank,
+            "coverage": self.coverage,
+            "withheld_reason": None,
+        }
+
+
+@dataclass(frozen=True)
 class ImportedMetric:
     unit: str
     direction: str
     stats: Mapping[str, ImportedValue]
     provenance: str = IMPORTED_DERIVED
     notes: tuple[str, ...] = ()
+    sample_count: int | None = None
+    """Per-request values the statistics were computed from (``aiperf-records``)."""
+    sample_provenance: str | None = None
+    statistic: str | None = None
+    intervals: Mapping[str, ImportedInterval] = field(default_factory=dict)
+    interval_level: float | None = None
+    interval_method: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "unit": self.unit,
+            "direction": self.direction,
+            "provenance": self.provenance,
+            "stats": {
+                stat: {"value": item.value, "source_key": item.source_key}
+                for stat, item in self.stats.items()
+            },
+        }
+        if self.sample_count is not None:
+            result["sample_count"] = self.sample_count
+            result["sample_provenance"] = self.sample_provenance
+            result["statistic"] = self.statistic
+        if self.intervals:
+            result["confidence_intervals"] = {
+                "level": self.interval_level,
+                "method": self.interval_method,
+                "provenance": DERIVED,
+                **{stat: item.to_dict() for stat, item in self.intervals.items()},
+            }
+        result["notes"] = list(self.notes)
+        return result
 
 
 @dataclass(frozen=True)
@@ -150,6 +249,9 @@ class ImportedSource:
     tool_version: str | None = None
     schema_version: str | None = None
     user_metadata: Mapping[str, str] = field(default_factory=dict)
+    companion_filename: str | None = None
+    """The summary file read alongside the source (``aiperf-records``)."""
+    companion_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -210,29 +312,38 @@ class ImportedBenchmark:
     unmapped_keys: tuple[str, ...] = ()
     importer_version: str | None = None
     speculative: ImportedSpeculative | None = None
+    slo: Mapping[str, float] = field(default_factory=dict)
+    """SLO targets in ms that ``goodput`` was computed against (``<=``)."""
 
     @property
     def run_id(self) -> str:
         return f"{self.source.filename}#{self.source.sha256[:12]}"
 
     def to_dict(self) -> dict[str, Any]:
+        source: dict[str, Any] = {
+            "tool": self.source.tool,
+            "tool_version": self.source.tool_version,
+            "schema_version": self.source.schema_version,
+            "sha256": self.source.sha256,
+            "filename": self.source.filename,
+            "user_metadata": dict(sorted(self.source.user_metadata.items())),
+        }
+        if self.source.companion_filename is not None:
+            source["companion"] = {
+                "filename": self.source.companion_filename,
+                "sha256": self.source.companion_sha256,
+            }
         return {
             "kind": IMPORTED_BENCHMARK_KIND,
             "schema_version": IMPORTED_BENCHMARK_SCHEMA_VERSION,
             "importer": {"name": "llmtracefx", "version": self.importer_version},
-            "source": {
-                "tool": self.source.tool,
-                "tool_version": self.source.tool_version,
-                "schema_version": self.source.schema_version,
-                "sha256": self.source.sha256,
-                "filename": self.source.filename,
-                "user_metadata": dict(sorted(self.source.user_metadata.items())),
-            },
+            "source": source,
             "run": dict(self.run),
             "model_id": self.model_id,
             "endpoint": dict(self.endpoint),
             "load": dict(self.load),
             "load_unresolved": list(self.load_unresolved),
+            **({"slo": {**self.slo, "comparison": "<="}} if self.slo else {}),
             "totals": {
                 name: {
                     "value": total.value,
@@ -243,17 +354,7 @@ class ImportedBenchmark:
                 for name, total in self.totals.items()
             },
             "metrics": {
-                name: {
-                    "unit": metric.unit,
-                    "direction": metric.direction,
-                    "provenance": metric.provenance,
-                    "stats": {
-                        stat: {"value": item.value, "source_key": item.source_key}
-                        for stat, item in metric.stats.items()
-                    },
-                    "notes": list(metric.notes),
-                }
-                for name, metric in self.metrics.items()
+                name: metric.to_dict() for name, metric in self.metrics.items()
             },
             **(
                 {}
@@ -370,6 +471,24 @@ def _parse_source(data: Any) -> ImportedSource:
     user_metadata = _mapping(source.get("user_metadata", {}), "source.user_metadata")
     if not all(isinstance(value, str) for value in user_metadata.values()):
         raise _fail("source.user_metadata values must be strings")
+    companion_filename: str | None = None
+    companion_sha256: str | None = None
+    if "companion" in source:
+        if tool != AIPERF_RECORDS_TOOL:
+            raise _fail(f"source.companion is not used by {tool} imports")
+        companion = _mapping(source["companion"], "source.companion")
+        companion_filename = _required_str(
+            companion.get("filename"), "source.companion.filename"
+        )
+        if "/" in companion_filename or "\\" in companion_filename:
+            raise _fail("source.companion.filename must be a file name, not a path")
+        companion_sha256 = companion.get("sha256")
+        if not isinstance(companion_sha256, str) or not _SHA256.fullmatch(
+            companion_sha256
+        ):
+            raise _fail("source.companion.sha256 must be a lowercase hex sha256")
+    elif tool == AIPERF_RECORDS_TOOL:
+        raise _fail("source.companion is required for aiperf-records imports")
     return ImportedSource(
         tool=tool,
         sha256=sha256,
@@ -379,10 +498,13 @@ def _parse_source(data: Any) -> ImportedSource:
             source.get("schema_version"), "source.schema_version"
         ),
         user_metadata=dict(user_metadata),
+        companion_filename=companion_filename,
+        companion_sha256=companion_sha256,
     )
 
 
-def _parse_totals(data: Any) -> dict[str, ImportedTotal]:
+def _parse_totals(tool: str, data: Any) -> dict[str, ImportedTotal]:
+    provenance = total_provenance(tool)
     totals: dict[str, ImportedTotal] = {}
     for name, item in _mapping(data, "totals").items():
         if name not in TOTAL_NAMES:
@@ -391,22 +513,103 @@ def _parse_totals(data: Any) -> dict[str, ImportedTotal]:
         value = finite_number(entry.get("value"))
         if value is None or value < 0:
             raise _fail(f"totals.{name}.value must be a finite number >= 0")
-        if entry.get("provenance") != IMPORTED_REPORTED:
-            raise _fail(f"totals.{name}.provenance must be {IMPORTED_REPORTED!r}")
+        if entry.get("provenance") != provenance:
+            raise _fail(f"totals.{name}.provenance must be {provenance!r}")
         totals[name] = ImportedTotal(
             value=value,
             unit=_required_str(entry.get("unit"), f"totals.{name}.unit"),
             source_key=_required_str(
                 entry.get("source_key"), f"totals.{name}.source_key"
             ),
+            provenance=provenance,
         )
     if "completed_requests" not in totals:
         raise _fail("totals.completed_requests is required")
     return totals
 
 
+def _optional_rank(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise _fail(f"{name} must be an integer >= 1")
+    return value
+
+
+def _parse_interval(data: Any, name: str, count: int) -> ImportedInterval:
+    entry = _mapping(data, name)
+    reason = _optional_str(entry.get("withheld_reason"), f"{name}.withheld_reason")
+    if reason is not None:
+        if entry.get("lower") is not None or entry.get("upper") is not None:
+            raise _fail(f"{name} is withheld and must hold no bounds")
+        return ImportedInterval(lower=None, upper=None, withheld_reason=reason)
+    lower = finite_number(entry.get("lower"))
+    upper = finite_number(entry.get("upper"))
+    coverage = finite_number(entry.get("coverage"))
+    if lower is None or upper is None or lower > upper:
+        raise _fail(f"{name} needs finite lower <= upper or a withheld_reason")
+    if coverage is None or not 0 < coverage <= 1:
+        raise _fail(f"{name}.coverage must be in (0, 1]")
+    lower_rank = _optional_rank(entry.get("lower_rank"), f"{name}.lower_rank")
+    upper_rank = _optional_rank(entry.get("upper_rank"), f"{name}.upper_rank")
+    if not lower_rank <= upper_rank <= count:
+        raise _fail(f"{name} ranks must satisfy lower <= upper <= sample_count")
+    return ImportedInterval(
+        lower=lower,
+        upper=upper,
+        lower_rank=lower_rank,
+        upper_rank=upper_rank,
+        coverage=coverage,
+    )
+
+
+def _parse_samples(
+    tool: str, name: str, entry: dict[str, Any], stats: Mapping[str, ImportedValue]
+) -> dict[str, Any]:
+    """The optional sample count and intervals; only ``aiperf-records`` has them."""
+    has_samples = "sample_count" in entry or "confidence_intervals" in entry
+    if not has_samples:
+        return {}
+    if tool != AIPERF_RECORDS_TOOL:
+        raise _fail(f"metrics.{name} holds sample fields that {tool} imports lack")
+    count = entry.get("sample_count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        raise _fail(f"metrics.{name}.sample_count must be an integer >= 1")
+    if entry.get("sample_provenance") != IMPORTED_REPORTED:
+        raise _fail(f"metrics.{name}.sample_provenance must be {IMPORTED_REPORTED!r}")
+    if entry.get("statistic") != NEAREST_RANK:
+        raise _fail(f"metrics.{name}.statistic must be {NEAREST_RANK!r}")
+    result: dict[str, Any] = {
+        "sample_count": count,
+        "sample_provenance": IMPORTED_REPORTED,
+        "statistic": NEAREST_RANK,
+    }
+    if "confidence_intervals" not in entry:
+        return result
+    block = _mapping(entry["confidence_intervals"], f"metrics.{name}.ci")
+    level = finite_number(block.get("level"))
+    if level is None or not 0 < level < 1:
+        raise _fail(f"metrics.{name}.confidence_intervals.level must be in (0, 1)")
+    if block.get("provenance") != DERIVED:
+        raise _fail(f"metrics.{name}.confidence_intervals.provenance must be derived")
+    intervals: dict[str, ImportedInterval] = {}
+    for stat, item in block.items():
+        if stat in ("level", "method", "provenance"):
+            continue
+        if stat not in stats:
+            raise _fail(f"metrics.{name} has an interval for missing stat {stat!r}")
+        intervals[stat] = _parse_interval(
+            item, f"metrics.{name}.confidence_intervals.{stat}", count
+        )
+    result["intervals"] = intervals
+    result["interval_level"] = level
+    result["interval_method"] = _required_str(
+        block.get("method"), f"metrics.{name}.confidence_intervals.method"
+    )
+    return result
+
+
 def _parse_metrics(tool: str, data: Any) -> dict[str, ImportedMetric]:
     directions = METRIC_DIRECTIONS[tool]
+    provenance = metric_provenance(tool)
     metrics: dict[str, ImportedMetric] = {}
     for name, item in _mapping(data, "metrics").items():
         if name not in directions:
@@ -414,8 +617,8 @@ def _parse_metrics(tool: str, data: Any) -> dict[str, ImportedMetric]:
         entry = _mapping(item, f"metrics.{name}")
         if entry.get("direction") != directions[name]:
             raise _fail(f"metrics.{name}.direction must be {directions[name]!r}")
-        if entry.get("provenance") != IMPORTED_DERIVED:
-            raise _fail(f"metrics.{name}.provenance must be {IMPORTED_DERIVED!r}")
+        if entry.get("provenance") != provenance:
+            raise _fail(f"metrics.{name}.provenance must be {provenance!r}")
         stats: dict[str, ImportedValue] = {}
         for stat, stat_item in _mapping(entry.get("stats"), f"{name}.stats").items():
             if not _STAT_NAME.fullmatch(stat):
@@ -437,9 +640,36 @@ def _parse_metrics(tool: str, data: Any) -> dict[str, ImportedMetric]:
             unit=_required_str(entry.get("unit"), f"metrics.{name}.unit"),
             direction=directions[name],
             stats=stats,
+            provenance=provenance,
             notes=_string_list(entry.get("notes", []), f"metrics.{name}.notes"),
+            **_parse_samples(tool, name, entry, stats),
         )
     return metrics
+
+
+def _parse_slo(tool: str, data: Any, metrics: Mapping[str, Any]) -> dict[str, float]:
+    if data is None:
+        if tool == AIPERF_RECORDS_TOOL and {"goodput", "goodput_fraction"} & set(
+            metrics
+        ):
+            raise _fail("goodput metrics need the slo they were computed against")
+        return {}
+    if tool != AIPERF_RECORDS_TOOL:
+        raise _fail(f"slo is not used by {tool} imports")
+    entry = _mapping(data, "slo")
+    if entry.get("comparison") != "<=":
+        raise _fail("slo.comparison must be '<='")
+    slo: dict[str, float] = {}
+    for name, value in entry.items():
+        if name == "comparison":
+            continue
+        number = finite_number(value)
+        if name not in SLO_TARGETS or number is None or number <= 0:
+            raise _fail(f"slo.{name} must be one of {', '.join(SLO_TARGETS)} > 0")
+        slo[name] = number
+    if not slo:
+        raise _fail("slo states no target")
+    return slo
 
 
 def _parse_speculative(data: Any) -> ImportedSpeculative | None:
@@ -525,13 +755,14 @@ def _parse_artifact(data: Any) -> ImportedBenchmark:
         key: _load_value(value, f"load.{key}")
         for key, value in _mapping(data.get("load"), "load").items()
     }
+    metrics = _parse_metrics(source.tool, data.get("metrics"))
     return ImportedBenchmark(
         source=source,
         model_id=_required_str(data.get("model_id"), "model_id"),
         endpoint=endpoint,
         load=load,
-        totals=_parse_totals(data.get("totals")),
-        metrics=_parse_metrics(source.tool, data.get("metrics")),
+        totals=_parse_totals(source.tool, data.get("totals")),
+        metrics=metrics,
         run=run,
         load_unresolved=_string_list(
             data.get("load_unresolved", []), "load_unresolved"
@@ -539,4 +770,5 @@ def _parse_artifact(data: Any) -> ImportedBenchmark:
         unmapped_keys=_string_list(data.get("unmapped_keys", []), "unmapped_keys"),
         importer_version=_optional_str(importer.get("version"), "importer.version"),
         speculative=_parse_speculative(data.get("speculative")),
+        slo=_parse_slo(source.tool, data.get("slo"), metrics),
     )
