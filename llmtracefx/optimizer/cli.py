@@ -11,7 +11,7 @@ Subcommands:
                      its server timers (load, prompt eval, eval) beside
                      client-measured TTFT.
     server-metrics   Snapshot a Prometheus /metrics endpoint (vLLM, SGLang,
-                     llama.cpp, TGI) and diff two snapshots into window
+                     llama.cpp, legacy TGI) and diff two snapshots into window
                      evidence that refuses to attribute contaminated windows.
     export           Export a record as OTLP/JSON spans (OpenTelemetry GenAI
                      conventions) or a Chrome/Perfetto trace timeline, or
@@ -171,6 +171,8 @@ from .schema import (
 )
 from .server_metrics import (
     RUNTIME_CHOICES,
+    RUNTIME_HELP,
+    TGI_LEGACY_NOTE,
     ServerMetricsError,
     ServerMetricsSnapshot,
     capture_settled_after,
@@ -717,6 +719,8 @@ def _cmd_server_metrics_diff(args: argparse.Namespace) -> int:
         print(line)
     if args.output is not None:
         print(f"Server metrics evidence written to {args.output}")
+    if evidence["runtime"] == "tgi":
+        print(f"Note: {TGI_LEGACY_NOTE}", file=sys.stderr)
     attribution = cast(dict[str, object], evidence["attribution"])
     return 0 if attribution["attributable"] else 2
 
@@ -3200,8 +3204,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Optional Prometheus /metrics URL of the serving engine (vLLM, "
-            "SGLang, llama.cpp --metrics, TGI). It is scraped before and after "
-            "the request and the window is written to "
+            "SGLang, llama.cpp --metrics, legacy TGI). It is scraped before "
+            "and after the request and the window is written to "
             f"{SERVER_METRICS_EVIDENCE_NAME}. Server-side numbers are only "
             "reported when the window provably contains this one request."
         ),
@@ -3210,7 +3214,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--server-metrics-runtime",
         choices=RUNTIME_CHOICES,
         default="auto",
-        help="Metric profile for --server-metrics-url (default: detect)",
+        help=f"For --server-metrics-url. {RUNTIME_HELP}",
     )
     collect_api_parser.add_argument(
         "--server-metrics-assume-isolated",
@@ -3275,7 +3279,9 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="How many requests you sent inside the window (at least 1)",
     )
-    sm_diff_parser.add_argument("--runtime", choices=RUNTIME_CHOICES, default="auto")
+    sm_diff_parser.add_argument(
+        "--runtime", choices=RUNTIME_CHOICES, default="auto", help=RUNTIME_HELP
+    )
     sm_diff_parser.add_argument(
         "--assume-isolated",
         action="store_true",
@@ -3425,7 +3431,7 @@ def build_parser() -> argparse.ArgumentParser:
         (
             "otlp",
             "OTLP/JSON (JSON Lines) using the OpenTelemetry GenAI semantic "
-            "conventions; readable by the Collector otlpjsonfile receiver",
+            "conventions; readable by the Collector otlp_json_file receiver",
         ),
         (
             "perfetto",

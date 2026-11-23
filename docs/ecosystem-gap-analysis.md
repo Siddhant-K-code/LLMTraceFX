@@ -124,7 +124,7 @@ Items 1 to 5 are now done; see below.
    a measurement tool.
 6. **OTLP export makes LLMTraceFX visible inside tools people already run.**
    A run exported with `export otlp` can be loaded by an OpenTelemetry
-   Collector (`otlpjsonfile` receiver) and forwarded to Datadog, Honeycomb,
+   Collector (`otlp_json_file` receiver) and forwarded to Datadog, Honeycomb,
    Langfuse or Grafana Tempo.
 7. The OpenTelemetry ecosystem registry is frozen
    (open-telemetry/opentelemetry.io#11377). Track it rather than submitting.
@@ -163,8 +163,8 @@ scrape window does not bracket the run.
 
 `export otlp` turns a record, and optionally its API evidence and server
 metrics evidence, into one OTLP/JSON `TracesData` line. The output follows the
-file exporter format, so the OpenTelemetry Collector `otlpjsonfile` receiver
-can read it. Spans use the GenAI semantic conventions (`gen_ai.operation.name`,
+file exporter format, so the OpenTelemetry Collector `otlp_json_file` receiver
+can read it with `start_at: beginning` (see the README for a full config). Spans use the GenAI semantic conventions (`gen_ai.operation.name`,
 `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.usage.*`,
 `gen_ai.response.time_to_first_chunk`). Every timing keeps its provenance as
 `llmtracefx.*` attributes.
@@ -182,7 +182,7 @@ assumption, not a measurement.
 `export otlp-metrics` aggregates API runs into one OTLP/JSON `MetricsData`
 line in the same file exporter format. Names, units, bucket boundaries and
 attributes follow the GenAI metrics in
-`open-telemetry/semantic-conventions-genai` at commit `e6658f1`, where the
+`open-telemetry/semantic-conventions-genai` at commit `76e0c19`, where the
 GenAI conventions now live. It records the client inference metrics
 (`gen_ai.client.inference.duration`, `.time_to_first_chunk`,
 `.time_per_output_chunk`, `.operation.input_tokens` and `.output_tokens`) and
@@ -197,8 +197,9 @@ exemplar that points at its `export otlp` root span. Failed runs keep their
 duration and token points with `error.type`. Server values come only from an
 attributable window that held exactly one request, from vLLM and SGLang
 histograms whose definitions match the conventions, and for TGI only from the
-end to end duration. These mappings were checked against vLLM `c26c9bf`,
-SGLang `e55e2ee` and TGI `b4adbf2`.
+end to end duration. These mappings were checked against vLLM `1ae1b64`,
+SGLang `b6d4389` and TGI `b4adbf2`. TGI is archived upstream, so its
+profile is legacy.
 
 Where it departs from the conventions on purpose:
 
@@ -213,7 +214,7 @@ Where it departs from the conventions on purpose:
   were, so every value would be `unknown`.
 
 The output was checked with OpenTelemetry Collector contrib 0.165.0: the
-`otlpjsonfile` receiver parsed it with no errors, the `prometheus` exporter
+`otlp_json_file` receiver (`start_at: beginning`) parsed it with no errors, the `prometheus` exporter
 produced the expected `_bucket`, `_sum` and `_count` series, and the `file`
 exporter wrote it back unchanged apart from the receiver's own file name
 metadata.
@@ -519,8 +520,9 @@ It is analysis only: nothing listed here is built.
 
 ### What is still current
 
-The existing pins are not stale. The gaps below are about signals LLMTraceFX
-does not read yet, not about names that moved.
+The pins in use at the survey were not stale. The gaps below are about
+signals LLMTraceFX does not read yet, not about names that moved. Follow up 7
+has since moved the pins to the commits above.
 
 - vLLM: every `name="vllm:..."` string in `vllm/v1/metrics/loggers.py` is the
   same at `c26c9bf` and `1ae1b64`, so the `server-metrics` vLLM profile still
@@ -594,8 +596,8 @@ latency only.
 - llama.cpp: `llamacpp:spec_decode_num_drafts_total`,
   `_num_draft_tokens_total`, `_num_accepted_tokens_total` and
   `_num_accepted_tokens_per_pos_total{position}` were already present at the
-  `ebc9fb9` pin
-  ([`server-task.cpp`](https://github.com/ggml-org/llama.cpp/blob/ebc9fb933e774bb4ac0ba497a67948e16b7e5656/tools/server/server-task.cpp#L1566-L1660))
+  previous `ebc9fb9` pin
+  ([`server-task.cpp`](https://github.com/ggml-org/llama.cpp/blob/f8caa5ea30b5775512906ae3b7ee53b21a7a6e1d/tools/server/server-task.cpp#L1566-L1660))
   but are not in the profile. The response `timings` adds `draft_n` and
   `draft_n_accepted`
   ([`server-common.cpp`](https://github.com/ggml-org/llama.cpp/blob/f8caa5ea30b5775512906ae3b7ee53b21a7a6e1d/tools/server/server-common.cpp#L146-L168)),
@@ -822,6 +824,18 @@ and BurstGPT v2.0 added a `Session ID` column that `replay` ignores.
   `prompt_eval_duration`, `eval_duration`, `total_duration` and the token
   counts, including `prompt_eval_cached_count`, as `provider_reported`
   (follow up 11).
+- Re-pins (follow up 7): `sweep-llama-cpp` records llama.cpp `f8caa5e`
+  (b12535) as its `upstream_reference`, `export otlp-metrics` cites GenAI
+  semconv `76e0c19`, and the vLLM and SGLang citations point at `1ae1b64`
+  and `b6d4389`. Every metric and attribute name LLMTraceFX reads exists
+  unchanged at the new commits, so no name needed dual handling. The README
+  shows a Collector config with the `otlp_json_file` receiver and
+  `start_at: beginning`, checked with otelcol-contrib 0.165.0.
+- TGI is a legacy profile (follow up 17): the `--runtime` and
+  `--server-metrics-runtime` help says so, and TGI evidence carries a note
+  that the server is archived upstream, which `server-metrics diff` also
+  prints to stderr. Parsing, attribution and exit codes
+  are unchanged.
 
 ## Follow ups not built here
 
@@ -850,9 +864,10 @@ Ranked by value to the evidence model against cost:
     `import aiperf --records` lets `gate` use LLMTraceFX's own percentiles,
     intervals and goodput instead of `imported_derived` ones. See
     [`import vllm-bench` and `import aiperf`](#import-vllm-bench-and-import-aiperf).
-7. **Re-pins and the Collector receiver rename (S).** Re-pin vLLM, SGLang,
+7. **Re-pins and the Collector receiver rename (S). Built.** Re-pin vLLM, SGLang,
     llama.cpp and the GenAI conventions to the commits above, and document
-    `otlp_json_file` with `start_at: beginning`.
+    `otlp_json_file` with `start_at: beginning`. See "Built from this
+    refresh".
 8. **`hw.energy` alongside `llmtracefx.gpu.energy` (S).** Backends that know
     the hardware conventions could chart LLMTraceFX energy with no mapping.
 9. **Record the dcgm-exporter collect interval (S).** The bracket width
@@ -877,7 +892,8 @@ Ranked by value to the evidence model against cost:
 16. **Client and server token reconciliation, and cost per token in sweeps
     (S to M).** inference-perf reports both; LLMTraceFX has provider usage
     and pricing data but does not join them.
-17. **Mark the TGI profile as legacy (S).** TGI is archived.
+17. **Mark the TGI profile as legacy (S). Built.** TGI is archived. See
+    "Built from this refresh".
 18. **Import engine OTLP traces from vLLM, SGLang and TensorRT-LLM (L).**
     Server span timings would be `measured_native`, but each engine uses its
     own span layout.

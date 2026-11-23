@@ -99,7 +99,7 @@ class _Handler(BaseHTTPRequestHandler):
             200,
             {
                 "total_slots": behaviour.total_slots,
-                "build_info": "b9999-ebc9fb93",
+                "build_info": "b9999-f8caa5ea",
                 "model_path": MODEL_PATH,
                 "default_generation_settings": {"n_ctx": 4096},
             },
@@ -278,11 +278,11 @@ def test_sweep_records_server_accounting_and_goodput(
     assert backend["name"] == "llama.cpp"
     assert backend["server"]["total_slots"] == 2
     assert backend["server"]["provenance"] == "provider_reported"
-    assert backend["server"]["build_info"] == "b9999-ebc9fb93"
+    assert backend["server"]["build_info"] == "b9999-f8caa5ea"
     assert backend["max_supported_in_flight"] == 2
     assert backend["server_queueing_allowed"] is False
     assert backend["upstream_reference"]["commit"] == (
-        "ebc9fb933e774bb4ac0ba497a67948e16b7e5656"
+        "f8caa5ea30b5775512906ae3b7ee53b21a7a6e1d"
     )
     assert sweep["field_provenance"]["server_prompt_ms"] == "measured_native"
     assert sweep["field_provenance"]["output_tokens"] == "provider_reported"

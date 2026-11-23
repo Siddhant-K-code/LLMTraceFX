@@ -67,7 +67,7 @@ from .dispatcher import DispatchContext
 from .sweep import ATTRIBUTION, SweepPoint
 
 LLAMA_CPP_REPOSITORY = "ggml-org/llama.cpp"
-LLAMA_CPP_COMMIT = "ebc9fb933e774bb4ac0ba497a67948e16b7e5656"
+LLAMA_CPP_COMMIT = "f8caa5ea30b5775512906ae3b7ee53b21a7a6e1d"
 COMPLETION_PATH = "/completion"
 PROPS_PATH = "/props"
 
@@ -107,7 +107,7 @@ labels ``measured_native``. ``server_draft_tokens`` and
 ``server_accepted_draft_tokens`` are ``timings.draft_n`` and
 ``timings.draft_n_accepted``, which the server sends only when speculative
 decoding drafted at least one token (``server_slot_stats::to_json`` in
-``tools/server/server-common.cpp`` L146-167 at ``LLAMA_CPP_COMMIT``). The
+``tools/server/server-common.cpp`` L146-168 at ``LLAMA_CPP_COMMIT``). The
 other ``server_*`` fields of the HTTP worker are never filled here and
 carry no label."""
 

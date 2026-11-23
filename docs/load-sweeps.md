@@ -171,7 +171,7 @@ template on both of its APIs.
 ### `sweep-llama-cpp`
 
 Sends each request to `llama-server`'s native `/completion` endpoint
-(ggml-org/llama.cpp at `ebc9fb933e774bb4ac0ba497a67948e16b7e5656`).
+(ggml-org/llama.cpp at `f8caa5ea30b5775512906ae3b7ee53b21a7a6e1d`, release b12535).
 
 ```bash
 llmtracefx-optimizer sweep-llama-cpp \
@@ -216,7 +216,7 @@ time, so they are not the client's TTFT and decode time. Token counts
 `server_accepted_draft_tokens` hold `timings.draft_n` and
 `timings.draft_n_accepted`, also `provider_reported`. The server sends them
 only when it drafted at least one token
-([`server_slot_stats::to_json`](https://github.com/ggml-org/llama.cpp/blob/ebc9fb933e774bb4ac0ba497a67948e16b7e5656/tools/server/server-common.cpp#L146-L167)),
+([`server_slot_stats::to_json`](https://github.com/ggml-org/llama.cpp/blob/f8caa5ea30b5775512906ae3b7ee53b21a7a6e1d/tools/server/server-common.cpp#L146-L168)),
 so without a draft model they stay null. No acceptance rate is derived from
 them. `finish_reason` holds the raw `stop_type`: `eos` and
 `word` count as `stop`, `limit` counts as `length`, and anything else fails
@@ -375,7 +375,9 @@ chunks.
 
 The llama.cpp and MLX commands were run on an Apple M5 Pro against
 Qwen2.5-0.5B-Instruct: the Q4_K_M GGUF under `llama-server` built at the
-pinned commit (`build_info` `b12485-ebc9fb933`, `--parallel 2 --metrics`),
+previous pin (`build_info` `b12485-ebc9fb933`, `--parallel 2 --metrics`;
+`server-task.cpp` is byte identical at `f8caa5e` and the `/completion`
+stream fields this worker reads did not change),
 and `mlx-community/Qwen2.5-0.5B-Instruct-4bit` under mlx 0.32.2 and
 mlx-lm 0.31.3 (the releases in `pyproject.toml`, older than the pinned
 commits). What matched what the backends did:

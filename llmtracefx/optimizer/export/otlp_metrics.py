@@ -1,9 +1,9 @@
 """Aggregate LLMTraceFX runs into OTLP/JSON GenAI histograms.
 
 The output is one ``MetricsData`` object per line, the format of the
-OpenTelemetry file exporter, so the Collector's ``otlpjsonfile`` receiver
-reads it and the object can be POSTed to any OTLP/HTTP ``/v1/metrics``
-endpoint. Metric names, units, bucket boundaries and attributes follow the
+OpenTelemetry file exporter, so the Collector's ``otlp_json_file`` receiver
+(``start_at: beginning``) reads it and the object can be POSTed to any
+OTLP/HTTP ``/v1/metrics`` endpoint. Metric names, units, bucket boundaries and attributes follow the
 GenAI semantic conventions in ``open-telemetry/semantic-conventions-genai``
 (see :data:`SEMCONV_REFERENCE`).
 The conventions define no energy or power metric, so GPU energy and
@@ -57,7 +57,7 @@ from .trace_model import (
     trace_id,
 )
 
-SEMCONV_REFERENCE = "open-telemetry/semantic-conventions-genai@e6658f1"
+SEMCONV_REFERENCE = "open-telemetry/semantic-conventions-genai@76e0c19"
 AGGREGATION_TEMPORALITY_CUMULATIVE = 2
 API_EVIDENCE_FILE = "api_evidence.json"
 SERVER_METRICS_EVIDENCE_FILE = "server_metrics_evidence.json"
@@ -263,9 +263,10 @@ METRICS = (
 )
 
 # Server highlights whose runtime definition was checked against the
-# convention. vLLM and SGLang measure TTFT and e2e latency from request
-# arrival and TPOT as (last token - first token) / (tokens - 1). TGI's
-# mean time per token divides the whole inference time, prefill included,
+# convention (vLLM 1ae1b648, SGLang b6d4389a). vLLM and SGLang measure TTFT
+# and e2e latency from request arrival and TPOT as
+# (last token - first token) / (tokens - 1). TGI's mean time per token
+# divides the whole inference time, prefill included,
 # by every generated token, so only its request duration is mapped.
 _SERVER_MAPPING: dict[str, dict[str, MetricSpec]] = {
     "vllm": {

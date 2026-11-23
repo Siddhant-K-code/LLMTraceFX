@@ -1,10 +1,10 @@
 """Server-side evidence from an inference server's Prometheus endpoint.
 
 Client timing includes the network and cannot split queueing from
-prefill. vLLM, SGLang, llama.cpp, TGI and TensorRT-LLM record those phases
-themselves and expose them on a Prometheus endpoint (``/metrics``, or
-``/prometheus/metrics`` for ``trtllm-serve``). Scraping before and after a measured
-request and differencing the two scrapes recovers the server's own view,
+prefill. vLLM, SGLang, llama.cpp, TGI (legacy, archived upstream) and
+TensorRT-LLM record those phases themselves and expose them on a Prometheus
+endpoint (``/metrics``, or ``/prometheus/metrics`` for ``trtllm-serve``).
+Scraping before and after a measured request and differencing the two scrapes recovers the server's own view,
 provided nothing else touched the server in between. :func:`diff_snapshots`
 checks that and refuses to attribute a window it cannot vouch for.
 """
@@ -13,6 +13,8 @@ from .diff import (
     ATTRIBUTABLE_STATUSES,
     PROFILES,
     RUNTIME_CHOICES,
+    RUNTIME_HELP,
+    TGI_LEGACY_NOTE,
     capture_settled_after,
     detect_runtime,
     diff_snapshots,
@@ -31,6 +33,8 @@ __all__ = [
     "ATTRIBUTABLE_STATUSES",
     "PROFILES",
     "RUNTIME_CHOICES",
+    "RUNTIME_HELP",
+    "TGI_LEGACY_NOTE",
     "ExpositionParseError",
     "MetricFamily",
     "Sample",

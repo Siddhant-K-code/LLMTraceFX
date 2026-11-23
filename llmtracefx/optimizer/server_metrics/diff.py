@@ -147,6 +147,19 @@ class RuntimeProfile:
 
 SGLANG_RANK_LABELS = ("tp_rank", "pp_rank")
 
+# huggingface/text-generation-inference is archived and in maintenance mode
+# (README at b4adbf2f), so the profile reads existing servers but is not
+# extended.
+TGI_LEGACY_NOTE = (
+    "tgi is a legacy profile: Text Generation Inference is archived upstream. "
+    "It still reads existing TGI servers but gets no new metrics; vLLM or "
+    "SGLang are the maintained alternatives."
+)
+RUNTIME_HELP = (
+    "Metric profile (default: auto, detected from the metric names). tgi is "
+    "legacy: TGI is archived upstream."
+)
+
 PROFILES: dict[str, RuntimeProfile] = {
     "vllm": RuntimeProfile(
         name="vllm",
@@ -499,6 +512,7 @@ PROFILES: dict[str, RuntimeProfile] = {
             CounterHighlight("successful_requests", "tgi_request_success", "count"),
             CounterHighlight("failed_requests", "tgi_request_failure", "count"),
         ),
+        notes=(TGI_LEGACY_NOTE,),
     ),
     # trtllm-serve exposes Prometheus text on /prometheus/metrics, and only
     # with return_perf_metrics: true; /metrics serves JSON iteration stats

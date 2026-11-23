@@ -22,6 +22,7 @@ from ..load.dispatcher import MAX_CONCURRENCY, DispatchConfigError
 from ..schema import MetricProvenance
 from ..server_metrics import (
     RUNTIME_CHOICES,
+    RUNTIME_HELP,
     ServerMetricsError,
     capture_settled_after,
     capture_snapshot,
@@ -339,7 +340,10 @@ def _add_run_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
-        "--server-metrics-runtime", choices=RUNTIME_CHOICES, default="auto"
+        "--server-metrics-runtime",
+        choices=RUNTIME_CHOICES,
+        default="auto",
+        help=RUNTIME_HELP,
     )
     parser.add_argument("--server-metrics-assume-isolated", action="store_true")
     parser.add_argument("--server-metrics-settle-timeout", type=float, default=2.0)
