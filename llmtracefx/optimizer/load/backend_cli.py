@@ -1,7 +1,7 @@
-"""``sweep-llama-cpp`` and ``sweep-mlx``: load sweeps for backends without
-an OpenAI-compatible API.
+"""``sweep-llama-cpp``, ``sweep-mlx`` and ``sweep-ollama``: load sweeps for
+backends driven through their native API instead of an OpenAI-compatible one.
 
-Both reuse the ``sweep-api`` load options, dispatcher, goodput and artifact.
+All reuse the ``sweep-api`` load options, dispatcher, goodput and artifact.
 Only the worker, the request plan and the attribution ``backend`` block
 differ. See ``docs/load-sweeps.md``.
 """
@@ -17,9 +17,18 @@ from pathlib import Path
 from typing import Any
 
 from ..collectors.mlx import MLXCollectorError, MLXLMRuntime
+from ..collectors.ollama import (
+    API_CHAT,
+    API_PATHS,
+    DEFAULT_BASE_URL,
+    OllamaSettings,
+    probe_version,
+)
+from ..collectors.ollama import request_plan as ollama_request_plan
+from ..collectors.ollama import resolve_credential as resolve_ollama_credential
 from ..collectors.openai_api import UrllibStreamingTransport
 from ..server_metrics import ServerMetricsError, validate_metrics_url
-from . import llama_cpp_worker, mlx_worker
+from . import llama_cpp_worker, mlx_worker, ollama_worker
 from .api_worker import ApiRequestSpec
 from .cli import (
     Fail,
@@ -61,6 +70,11 @@ from .mlx_worker import (
     make_mlx_sender,
     mlx_attribution,
     request_settings,
+)
+from .ollama_worker import (
+    OLLAMA_FIELD_PROVENANCE,
+    make_ollama_sender,
+    ollama_attribution,
 )
 from .sweep import SweepPoint, point_specs
 
@@ -433,15 +447,195 @@ def cmd_sweep_mlx(args: argparse.Namespace) -> int:
         session.close()
 
 
+# sweep-ollama
+
+
+def _think(value: str | None) -> bool | None:
+    return None if value is None else value == "true"
+
+
+def add_sweep_ollama_parser(subparsers: Any) -> argparse.ArgumentParser:
+    parser: argparse.ArgumentParser = subparsers.add_parser(
+        "sweep-ollama",
+        help=(
+            "Run a load sweep against Ollama's native /api/chat or /api/generate, "
+            "recording its server timers per request"
+        ),
+        allow_abbrev=False,
+    )
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument(
+        "--endpoint",
+        default=DEFAULT_BASE_URL,
+        help=(
+            f"Ollama root URL (default {DEFAULT_BASE_URL}). /api/chat or "
+            "/api/generate and /api/version are added."
+        ),
+    )
+    parser.add_argument("--model", required=True, help="Ollama model name")
+    parser.add_argument(
+        "--api",
+        choices=sorted(API_PATHS),
+        default=API_CHAT,
+        help="Native API to call (default chat)",
+    )
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument(
+        "--api-key-env",
+        default=None,
+        help=(
+            "Name of an environment variable holding a bearer token for a proxy "
+            "in front of Ollama. Only the name is recorded."
+        ),
+    )
+    parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        required=True,
+        help="options.num_predict for every request; Ollama's default is no limit",
+    )
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--top-p", type=float, default=None)
+    parser.add_argument("--top-k", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--num-ctx", type=int, default=None)
+    parser.add_argument(
+        "--think",
+        choices=("true", "false"),
+        default=None,
+        help="Send think: true or false; unset leaves the model's default",
+    )
+    parser.add_argument("--request-timeout", type=float, default=300.0)
+    add_load_arguments(parser)
+    add_remote_load_argument(parser)
+    add_dry_run_argument(parser)
+    parser.set_defaults(func=cmd_sweep_ollama)
+    return parser
+
+
+def _ollama_argv(args: argparse.Namespace) -> list[str]:
+    return _argv(
+        "sweep-ollama",
+        [
+            ("--run-id", args.run_id),
+            ("--endpoint", args.endpoint),
+            ("--model", args.model),
+            ("--api", args.api),
+            ("--output-dir", args.output_dir),
+            ("--api-key-env", args.api_key_env),
+            ("--max-output-tokens", args.max_output_tokens),
+            ("--temperature", args.temperature),
+            ("--top-p", args.top_p),
+            ("--top-k", args.top_k),
+            ("--seed", args.seed),
+            ("--num-ctx", args.num_ctx),
+            ("--think", args.think),
+            ("--request-timeout", args.request_timeout),
+            ("--allow-remote-load", args.allow_remote_load),
+        ],
+        args,
+    )
+
+
+def cmd_sweep_ollama(args: argparse.Namespace) -> int:
+    detail, fail = _fail_with(args.api_key_env)
+    output_dir = Path(args.output_dir)
+    try:
+        validate_load_args(args)
+        settings = OllamaSettings(
+            base_url=args.endpoint,
+            model=args.model,
+            api=args.api,
+            num_predict=args.max_output_tokens,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
+            seed=args.seed,
+            num_ctx=args.num_ctx,
+            think=_think(args.think),
+            request_timeout_seconds=args.request_timeout,
+            credential_env_var=args.api_key_env,
+        )
+        refuse_remote_endpoint(args.endpoint, allowed=args.allow_remote_load)
+        slo = slo_from_args(args)
+        prompts = read_prompts(args)
+        points = points_from_args(args)
+        plan = ollama_request_plan(settings)
+        plan["command_argv"] = _ollama_argv(args)
+    except (OSError, UnicodeError, ValueError) as exc:
+        return fail("Failed to configure sweep", exc)
+
+    credential = (
+        os.environ.get(args.api_key_env, "").strip() or None
+        if args.api_key_env
+        else None
+    )
+
+    def output(version: Any) -> SweepOutput:
+        return SweepOutput(
+            output_dir=output_dir,
+            mode=sweep_mode(args),
+            load=load_settings(args),
+            slo=slo,
+            request_plan=plan,
+            workload=workload_summary(args, prompts, None),
+            points=points,
+            requests_per_point=args.requests_per_point,
+            credential=credential,
+            attribution=ollama_attribution(
+                ollama_worker.backend_block(settings, version)
+            ),
+            field_provenance=OLLAMA_FIELD_PROVENANCE,
+        )
+
+    if args.dry_run:
+        extra: dict[str, Any] = {
+            "credential_env_var_present": (
+                None if args.api_key_env is None else credential is not None
+            )
+        }
+        return write_sweep_plan(output(None), extra, fail)
+
+    transport = UrllibStreamingTransport()
+    try:
+        resolved = resolve_ollama_credential(settings, os.environ)
+        version = probe_version(settings, transport=transport, credential=resolved)
+        if version.version is None:
+            raise ValueError(
+                f"GET /api/version failed ({version.error}); is Ollama running "
+                "at the server URL?"
+            )
+        ensure_new_output_dir(output_dir)
+        send = make_ollama_sender(
+            settings, transport=transport, environ=os.environ, run_id=args.run_id
+        )
+    except (OSError, ValueError, DispatchConfigError) as exc:
+        return fail("Failed to configure sweep", exc)
+
+    return run_sweep(
+        output(version),
+        send=send,
+        specs_for=_specs_for(args, prompts),
+        cooldown_seconds=args.cooldown_seconds,
+        max_dispatch_lag_ms=args.max_dispatch_lag_ms,
+        server_metrics=None,
+        describe_error=detail,
+        fail=fail,
+    )
+
+
 def add_backend_sweep_parsers(subparsers: Any) -> None:
     add_sweep_llama_cpp_parser(subparsers)
     add_sweep_mlx_parser(subparsers)
+    add_sweep_ollama_parser(subparsers)
 
 
 __all__ = [
     "add_backend_sweep_parsers",
     "add_sweep_llama_cpp_parser",
     "add_sweep_mlx_parser",
+    "add_sweep_ollama_parser",
     "cmd_sweep_llama_cpp",
     "cmd_sweep_mlx",
+    "cmd_sweep_ollama",
 ]

@@ -44,6 +44,7 @@ SOURCE_VLLM = "vllm_metrics"
 SOURCE_SGLANG = "sglang_sglext"
 SOURCE_TRTLLM = "trtllm_perf_metrics"
 SOURCE_LLAMA_CPP = "llama_cpp_timings"
+SOURCE_OLLAMA = "ollama_metrics"
 
 TRTLLM_RETURN_METRICS_HEADER = "X-TRTLLM-return-metrics"
 TRTLLM_PERF_METRICS_EVENT = "trtllm.perf_metrics"
@@ -449,6 +450,7 @@ __all__ = [
     "PROVENANCE",
     "SGLANG_DETAILS_REQUEST_FIELDS",
     "SOURCE_LLAMA_CPP",
+    "SOURCE_OLLAMA",
     "SOURCE_SGLANG",
     "SOURCE_TRTLLM",
     "SOURCE_VLLM",
