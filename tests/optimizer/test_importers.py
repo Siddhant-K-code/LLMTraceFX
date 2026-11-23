@@ -197,6 +197,12 @@ def guidellm_v1(data):
     """Reshape the v2 fixture the way GuideLLM 0.5 and 0.6 wrote reports."""
     data["metadata"].update(version=1, guidellm_version="0.6.0")
     data["args"] = data.pop("config")
+    data["args"]["backend"] = "openai_http"
+    data["args"]["backend_kwargs"] = {
+        "target": "http://localhost:8000",
+        "model": "Qwen/Qwen3-0.6B",
+        "request_format": None,
+    }
     del data["conclusions"]
     for item in data["benchmarks"]:
         config = item["config"]
@@ -785,11 +791,13 @@ def test_guidellm_v1_report(tmp_path):
         "0.6.0",
         "1",
     )
+    # 0.6 records only what the user passed, so GuideLLM's defaults apply.
     assert dict(imported.endpoint) == {
-        "backend": None,
-        "request_format": None,
-        "stream": None,
+        "backend": "openai_http",
+        "request_format": "/v1/chat/completions",
+        "stream": True,
     }
+    assert imported.load_unresolved == ()
     assert imported.load["constraint.max_number"] == (
         '{"max_num": 64, "type_": "max_number"}'
     )
@@ -797,19 +805,85 @@ def test_guidellm_v1_report(tmp_path):
     assert "time_to_first_token_ms" in imported.metrics
 
 
-def test_guidellm_keeps_current_index_when_it_picks_from_a_list(tmp_path):
+@pytest.mark.parametrize(
+    ("args", "endpoint", "unresolved"),
+    [
+        (
+            {"backend_kwargs": {"request_format": "text_completions", "stream": False}},
+            ("/v1/completions", False),
+            (),
+        ),
+        ({"data_request_formatter": "text_completions"}, ("/v1/completions", True), ()),
+        (
+            {
+                "data_request_formatter": {
+                    "request_type": "chat_completions",
+                    "stream": False,
+                }
+            },
+            ("/v1/chat/completions", False),
+            (),
+        ),
+        (
+            {"data_request_formatter": {"stream": False}},
+            (None, False),
+            ("endpoint.request_format",),
+        ),
+    ],
+)
+def test_guidellm_v1_endpoint_settings(tmp_path, args, endpoint, unresolved):
     def edit(data):
-        data["benchmarks"][1]["config"]["constraints"] = {
-            "max_seconds": {
-                "type_": "max_seconds",
-                "max_num": [30, 60],
-                "current_index": 1,
-            }
-        }
+        guidellm_v1(data)
+        data["args"].pop("backend_kwargs")
+        data["args"].update(args)
 
     source = write(tmp_path, guidellm(edit))
-    imported = import_benchmark_file(source, GUIDELLM_TOOL, benchmark=1)
-    assert '"current_index": 1' in imported.load["constraint.max_seconds"]
+    imported = import_benchmark_file(source, GUIDELLM_TOOL, benchmark=0)
+    assert (imported.endpoint["request_format"], imported.endpoint["stream"]) == (
+        endpoint
+    )
+    assert imported.load_unresolved == unresolved
+
+
+def test_guidellm_v2_endpoint_without_stream_is_unresolved(tmp_path):
+    def edit(data):
+        del data["benchmarks"][0]["config"]["backend"]["stream"]
+
+    source = write(tmp_path, guidellm(edit))
+    imported = import_benchmark_file(source, GUIDELLM_TOOL, benchmark=0)
+    assert imported.load_unresolved == ("endpoint.stream",)
+
+
+def test_guidellm_sweep_limits_key_like_a_single_run(tmp_path):
+    def sweep(data):
+        data["benchmarks"][1]["config"]["constraints"]["max_requests"].update(
+            args={
+                "kind": "max_requests",
+                "stopping_scope": "current",
+                "count": [32, 64],
+            },
+            current_index=1,
+        )
+
+    def empty(data):
+        data["benchmarks"][1]["config"]["constraints"]["max_requests"]["args"][
+            "count"
+        ] = []
+
+    single = import_benchmark_file(
+        write(tmp_path, guidellm()), GUIDELLM_TOOL, benchmark=1
+    )
+    swept = import_benchmark_file(
+        write(tmp_path, guidellm(sweep), "sweep.json"), GUIDELLM_TOOL, benchmark=1
+    )
+    assert swept.load == single.load
+    assert '"count": 64' in swept.load["constraint.max_requests"]
+    assert "current_index" not in swept.load["constraint.max_requests"]
+
+    broken = import_benchmark_file(
+        write(tmp_path, guidellm(empty), "empty.json"), GUIDELLM_TOOL, benchmark=1
+    )
+    assert broken.load_unresolved == ("constraint.max_requests",)
 
 
 def test_guidellm_never_copies_text_targets_or_keys(tmp_path):

@@ -371,7 +371,10 @@ the mean, because GuideLLM's rate percentiles are instantaneous rates between
 events. GuideLLM weights `inter_token_latency_ms` and `time_per_output_token_ms`
 by output tokens, so they are not directly comparable with vLLM bench or
 AIPerf. Errored and incomplete counts are kept; runs with errored requests are
-not used by `gate`. Prompt and output text, endpoint URLs and API keys are never
+not used by `gate`. A sweep benchmark and a single run with the same limits and
+the same API route and streaming mode compare; version 1 reports get GuideLLM's
+defaults for settings they leave out, and a run whose settings cannot be
+resolved is not used by `gate`. Prompt and output text, endpoint URLs and API keys are never
 copied.
 
 Imported artifacts work with `gate` only. Gate N baseline imports against N

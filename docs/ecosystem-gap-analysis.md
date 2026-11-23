@@ -283,7 +283,13 @@ output tokens minus one, and counts a request with no value as 0; each metric
 carries these as notes. `request_totals` gives completed, failed (errored) and
 incomplete counts. The strategy fields, warmup and cooldown settings and each
 constraint (as canonical JSON) form the load, so only runs with the same
-settings compare. The per-request `requests` lists are not read in this
+settings compare. A sweep stores each limit as a list with a `current_index`;
+the entry that applied is picked the way GuideLLM does, so a sweep benchmark
+and a single run with the same limit match. The endpoint is the backend, API
+route and streaming mode. Version 2 reports state them; version 1 reports
+state only what the user passed, so GuideLLM's defaults
+(`/v1/chat/completions`, streaming on) fill the rest. A setting that still
+cannot be resolved marks the run unresolved and the gate refuses it. The per-request `requests` lists are not read in this
 version: they hold prompt and output text, and reading them is a follow-up
 once the AIPerf per-request import design lands. Endpoint URLs and API keys
 are never copied.

@@ -37,6 +37,14 @@ from .artifact import (
 )
 
 SUPPORTED_REPORT_VERSIONS = (1, 2)
+# GuideLLM's DEFAULT_API and LEGACY_API_ALIASES (backends/openai/http.py).
+_DEFAULT_REQUEST_FORMAT = "/v1/chat/completions"
+_LEGACY_REQUEST_FORMATS = {
+    "text_completions": "/v1/completions",
+    "chat_completions": "/v1/chat/completions",
+    "audio_transcriptions": "/v1/audio/transcriptions",
+    "audio_translations": "/v1/audio/translations",
+}
 _UNITS = {
     "time_to_first_token_ms": "ms",
     "time_to_first_output_token_ms": "ms",
@@ -203,19 +211,36 @@ def _load_scalar(value: Any) -> LoadValue | dict[str, Any] | list[Any]:
     return int(value) if isinstance(value, int) else number
 
 
-def _has_list(value: Any) -> bool:
+def _pick(value: Any, index: int) -> Any:
     if isinstance(value, list):
-        return True
-    return isinstance(value, dict) and any(_has_list(v) for v in value.values())
+        if not value:
+            raise ValueError("empty list")
+        return _pick(value[min(index, len(value) - 1)], index)
+    if isinstance(value, dict):
+        return {k: _pick(v, index) for k, v in value.items()}
+    return value
 
 
-def _constraint(value: Any) -> str:
-    # current_index is the benchmark's position in a sweep. It only matters
-    # when it picks one entry from a list of limits; otherwise it would stop
-    # benchmark 0 of one report matching benchmark 2 of another.
-    if isinstance(value, dict) and not _has_list(value):
-        value = {k: v for k, v in value.items() if k != "current_index"}
-    return json.dumps(value, sort_keys=True)
+def _constraint(value: Any) -> str | None:
+    """Canonical JSON for one constraint, or None when it cannot be resolved.
+
+    A multi-benchmark run stores each limit as a list, one entry per
+    benchmark, and ``current_index`` says which entry applied. GuideLLM
+    resolves it as ``value[min(max(0, current_index), len(value) - 1)]``.
+    The same is done here and ``current_index`` is dropped, so a limit of 20
+    keys the same whether it came from a single run or from a sweep.
+    """
+    if not isinstance(value, dict):
+        return json.dumps(value, sort_keys=True)
+    index = value.get("current_index", -1)
+    if isinstance(index, bool) or not isinstance(index, int):
+        return None
+    body = {k: v for k, v in value.items() if k != "current_index"}
+    try:
+        body = _pick(body, max(0, index))
+    except ValueError:
+        return None
+    return json.dumps(body, sort_keys=True)
 
 
 def _load(
@@ -243,7 +268,10 @@ def _load(
         config.get("constraints", {}), f"{prefix}.config.constraints"
     )
     for name, value in sorted(constraints.items()):
-        load[f"constraint.{name}"] = _constraint(value)
+        resolved = _constraint(value)
+        if resolved is None:
+            unresolved.append(f"constraint.{name}")
+        load[f"constraint.{name}"] = resolved
     for phase in ("warmup", "cooldown"):
         settings = config.get(phase)
         if not isinstance(settings, dict):
@@ -255,17 +283,58 @@ def _load(
     return load, unresolved
 
 
-def _endpoint(backend: dict[str, Any], prefix: str) -> dict[str, EndpointValue]:
+def _stream(value: Any, where: str) -> bool | None:
+    if value is not None and not isinstance(value, bool):
+        raise BenchmarkImportError(f"{where} must be a bool")
+    return value
+
+
+def _request_format(value: Any, where: str) -> str | None:
+    found = _str(value, where)
+    return None if found is None else _LEGACY_REQUEST_FORMATS.get(found, found)
+
+
+def _endpoint_v2(backend: dict[str, Any], prefix: str) -> dict[str, EndpointValue]:
+    # GuideLLM 0.7 and later record the backend's resolved settings.
     where = f"{prefix}.config.backend"
-    stream = backend.get("stream")
-    if stream is not None and not isinstance(stream, bool):
-        raise BenchmarkImportError(f"{where}.stream must be a bool")
     return {
         "backend": _str(backend.get("kind"), f"{where}.kind"),
-        "request_format": _str(
+        "request_format": _request_format(
             backend.get("request_format"), f"{where}.request_format"
         ),
-        "stream": stream,
+        "stream": _stream(backend.get("stream"), f"{where}.stream"),
+    }
+
+
+def _endpoint_v1(data: dict[str, Any]) -> dict[str, EndpointValue]:
+    # GuideLLM 0.5 and 0.6 record only what the user passed, under the
+    # top-level args, so GuideLLM's own defaults are applied here.
+    args = _mapping(data.get("args", {}), "args")
+    request_format: Any
+    stream: Any
+    if "data_request_formatter" in args:
+        # 0.5: the request formatter sets the API route and streaming.
+        formatter = args["data_request_formatter"]
+        if isinstance(formatter, str):
+            request_format, stream = formatter, True
+        elif isinstance(formatter, dict):
+            # Without request_type GuideLLM falls back to an environment
+            # setting the report does not record, so it stays unresolved.
+            request_format = formatter.get("request_type")
+            stream = formatter.get("stream", True)
+        else:
+            request_format, stream = None, None
+        where = "args.data_request_formatter"
+    else:
+        # 0.6: the backend arguments carry them, with these defaults.
+        kwargs = _mapping(args.get("backend_kwargs") or {}, "args.backend_kwargs")
+        request_format = kwargs.get("request_format") or _DEFAULT_REQUEST_FORMAT
+        stream = kwargs.get("stream", True)
+        where = "args.backend_kwargs"
+    return {
+        "backend": _str(args.get("backend"), "args.backend"),
+        "request_format": _request_format(request_format, f"{where}.request_format"),
+        "stream": _stream(stream, f"{where}.stream"),
     }
 
 
@@ -407,6 +476,10 @@ def import_guidellm(
         )
 
     load, unresolved = _load(config, prefix)
+    endpoint = _endpoint_v1(data) if version == 1 else _endpoint_v2(backend, prefix)
+    # Runs only compare with the same API route and streaming mode, so an
+    # endpoint setting the report does not state blocks the gate.
+    unresolved.extend(f"endpoint.{k}" for k, v in endpoint.items() if v is None)
     imported = _metrics(metrics, prefix)
     consumed = {"request_totals", *_TOKEN_TOTALS, *imported}
     return ImportedBenchmark(
@@ -420,7 +493,7 @@ def import_guidellm(
             schema_version=str(version),
         ),
         model_id=model,
-        endpoint=_endpoint(backend, prefix),
+        endpoint=endpoint,
         load=load,
         totals=totals,
         metrics=imported,
