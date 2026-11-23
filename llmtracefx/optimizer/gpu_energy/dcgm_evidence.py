@@ -8,6 +8,8 @@ way. What differs is stated, not hidden:
   contains the command and is longer than it. ``bracket`` records the
   bounds of that span, and the energy is refused when the command is less
   than ``required_min_run_share`` of the longest span it could cover.
+  ``power_sampling.collect_interval`` records the collect interval the
+  bracket reasoning used and where that value came from.
 * ``average_power`` and every sampled power statistic are refused, because
   the exporter does not say when DCGM took each reading.
 * attribution is never verified: the exporter does not list GPU processes.
@@ -15,6 +17,7 @@ way. What differs is stated, not hidden:
 
 from __future__ import annotations
 
+import math
 import statistics
 from collections.abc import Sequence
 from typing import Any
@@ -39,6 +42,18 @@ NO_COUNTER_UPDATE_AFTER_RUN = "no_counter_update_after_run"
 COUNTER_RESET = "counter_reset"
 SAMPLE_TIMES_UNKNOWN = "sample_times_unknown"
 
+#: dcgm-exporter's ``--collect-interval`` default, ``internal/pkg/appconfig/
+#: defaults.go`` at 4.9.0.
+EXPORTER_DEFAULT_COLLECT_INTERVAL_MS = 30000.0
+EXPORTER_DEFAULT_PIN = "dcgm-exporter 4.9.0"
+
+#: Where ``collect_interval.value_ms`` came from.
+STATED_AND_OBSERVED = "operator_stated_and_observed"
+STATED = "operator_stated"
+OBSERVED = "observed"
+OBSERVED_CONTRADICTS_STATED = "observed_contradicts_operator_stated"
+DEFAULT_ASSUMED = "exporter_default_assumed"
+
 NOTES = (
     "Energy and power are device wide. They include idle power and the "
     "command's own start up and shut down, not only inference.",
@@ -53,11 +68,58 @@ NOTES = (
     "computed from them.",
     "dcgm-exporter does not list GPU processes, so the window cannot be "
     "verified as free of other work.",
+    "dcgm-exporter does not report its collect interval, and from 4.9.0 a "
+    "watch group can override it per field. collect_interval.value_ms is "
+    "the operator's --dcgm-collect-interval-ms, the gap between counter "
+    "changes observed by the scrapes, or the exporter default, and "
+    "collect_interval.basis says which. The observed gap is the one that "
+    "applies to the energy field.",
 )
 
 
+def _collect_interval(
+    stated_ms: float | None,
+    observed: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Pick the collect interval the bracket reasoning uses, and say why."""
+    observed_ms: float | None = None if observed is None else observed["value"]
+    consistent: bool | None = None
+    if stated_ms is not None and observed_ms is not None and observed is not None:
+        consistent = abs(stated_ms - observed_ms) <= observed["uncertainty_ms"]
+    if consistent:
+        value, basis = stated_ms, STATED_AND_OBSERVED
+    elif observed_ms is not None:
+        value = observed_ms
+        basis = OBSERVED if stated_ms is None else OBSERVED_CONTRADICTS_STATED
+    elif stated_ms is not None:
+        value, basis = stated_ms, STATED
+    else:
+        value, basis = EXPORTER_DEFAULT_COLLECT_INTERVAL_MS, DEFAULT_ASSUMED
+    return {
+        "value_ms": value,
+        "basis": basis,
+        "stated_ms": stated_ms,
+        "observed_ms": observed_ms,
+        "stated_consistent_with_observed": consistent,
+        "exporter_default_ms": EXPORTER_DEFAULT_COLLECT_INTERVAL_MS,
+        "exporter_default_source": EXPORTER_DEFAULT_PIN,
+    }
+
+
+def _min_command_ms(min_run_share: float, overhead_ms: float) -> float | None:
+    """Shortest command whose share of ``command + overhead`` meets the bar."""
+    if min_run_share >= 1:
+        return None
+    # Rounded first so 1 - 0.9 in binary does not push it up a millisecond.
+    needed = round(min_run_share * overhead_ms / (1 - min_run_share), 6)
+    return float(math.ceil(needed))
+
+
 def _bracket(
-    device: DcgmDeviceReadings, record: DcgmWindowRecord, min_run_share: float
+    device: DcgmDeviceReadings,
+    record: DcgmWindowRecord,
+    min_run_share: float,
+    collect_interval: dict[str, Any],
 ) -> dict[str, Any] | None:
     start, end = device.start, device.end
     if start is None or end is None:
@@ -66,6 +128,10 @@ def _bracket(
     max_span_ms = end.by_ms - start.after_ms
     min_span_ms = max(0.0, end.after_ms - start.by_ms)
     share = run_ms / max_span_ms if max_span_ms > 0 else 0.0
+    # The command starts within one scrape of the start edge. The end edge is
+    # the first counter change after it exits, up to one collect interval
+    # later, and is itself seen within one scrape.
+    overhead_ms = collect_interval["value_ms"] + 2 * record.scrape_interval_ms
     return {
         "method": "counter_change_edges_on_host_monotonic_clock",
         "start_sampled_after_offset_ms": _ms(start.after_ms),
@@ -77,7 +143,30 @@ def _bracket(
         "max_span_ms": _ms(max_span_ms),
         "min_command_share": round(share, 6),
         "required_min_run_share": min_run_share,
+        "collect_interval_ms": collect_interval["value_ms"],
+        "collect_interval_basis": collect_interval["basis"],
+        "expected_max_overhead_ms": _ms(overhead_ms),
+        "expected_max_overhead_method": "collect_interval_plus_two_scrape_intervals",
+        "min_command_ms_for_required_share": _min_command_ms(
+            min_run_share, overhead_ms
+        ),
     }
+
+
+def _refused_detail(bracket: dict[str, Any]) -> str:
+    detail = (
+        f"the {bracket['command_ms'] / 1000:.1f} s command is "
+        f"{bracket['min_command_share']:.2f} of the {bracket['max_span_ms'] / 1000:.1f} s "
+        f"the delta can cover, below {bracket['required_min_run_share']}"
+    )
+    needed = bracket["min_command_ms_for_required_share"]
+    if needed is not None:
+        detail += (
+            f"; with a {bracket['collect_interval_ms'] / 1000:.1f} s collect "
+            f"interval ({bracket['collect_interval_basis']}) the command needs "
+            f"about {needed / 1000:.1f} s, or a shorter --collect-interval"
+        )
+    return detail
 
 
 def _energy(
@@ -117,10 +206,16 @@ def _counter(device: DcgmDeviceReadings) -> dict[str, Any]:
 
 
 def _device_entry(
-    device: DcgmDeviceReadings, record: DcgmWindowRecord, min_run_share: float
+    device: DcgmDeviceReadings,
+    record: DcgmWindowRecord,
+    min_run_share: float,
+    collect_interval: dict[str, Any],
 ) -> dict[str, Any]:
-    bracket = _bracket(device, record, min_run_share)
+    bracket = _bracket(device, record, min_run_share, collect_interval)
     energy, refused = _energy(device, bracket)
+    detail = None
+    if refused == BRACKET_TOO_WIDE and bracket is not None:
+        detail = _refused_detail(bracket)
     return {
         "index": device.index,
         "name": device.name,
@@ -133,6 +228,7 @@ def _device_entry(
         "average_power": None,
         "average_power_refused_reason": SAMPLE_TIMES_UNKNOWN,
         "energy_refused_reason": refused,
+        "energy_refused_detail": detail,
         "sampled_power_mean": None,
         "sampled_power_max": None,
         "sampled_power_integral": None,
@@ -166,6 +262,7 @@ def _observed_update_gap(
         "median_gap_between_counter_changes_seen_by_scrapes",
     )
     out["uncertainty_ms"] = scrape_interval_ms
+    out["gaps"] = len(gaps)
     return out
 
 
@@ -211,8 +308,11 @@ def build_dcgm_evidence(
     stated_collect_interval_ms: float | None = None,
     assume_isolated: bool = False,
 ) -> dict[str, Any]:
+    observed = _observed_update_gap(record.devices, record.scrape_interval_ms)
+    collect_interval = _collect_interval(stated_collect_interval_ms, observed)
     entries = [
-        _device_entry(device, record, min_run_share) for device in record.devices
+        _device_entry(device, record, min_run_share, collect_interval)
+        for device in record.devices
     ]
     totals = _totals(entries)
     attribution = _attribution(record.devices, record, assume_isolated=assume_isolated)
@@ -271,9 +371,8 @@ def build_dcgm_evidence(
             "scrape_errors": dict(sorted(record.scrape_errors.items())),
             "edge_timeout_ms": record.edge_timeout_ms,
             "collect_interval_stated": stated,
-            "collect_interval_observed": _observed_update_gap(
-                record.devices, record.scrape_interval_ms
-            ),
+            "collect_interval_observed": observed,
+            "collect_interval": collect_interval,
         },
         "devices": entries,
         "totals": totals,

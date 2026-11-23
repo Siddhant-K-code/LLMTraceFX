@@ -9,7 +9,8 @@ merged or given the same name:
 ``sampled_power_integral``
     A trapezoid over the polled power readings. This is an estimate,
     labelled ``estimated``, and it only covers the span between the first
-    and last sample.
+    and last sample. With instant power the trapezoid runs over the
+    driver's own sample timestamps, not the host poll times.
 
 When a value cannot be computed honestly it is left ``null`` with a reason.
 """
@@ -26,12 +27,16 @@ from ..collectors._shared import atomic_write_text
 from ..instruments.commands import redact_argv
 from ..schema import MetricProvenance
 from .capability import DeviceCapability
+from .nvml import POWER_INSTANT_FIELD_ID, POWER_INSTANT_SCOPE_ID
 from .window import (
     ALLOWED,
     ANCESTRY_UNKNOWN,
     FOREIGN,
     NOT_VISIBLE,
+    POWER_INSTANT,
+    SEEN_BY_PROCESS_LIST,
     DeviceReadings,
+    ObservedProcess,
     WindowRecord,
 )
 
@@ -44,11 +49,20 @@ UNVERIFIABLE = "unverifiable"
 CONTAMINATED = "contaminated"
 ATTRIBUTABLE_STATUSES = frozenset({NO_FOREIGN_PROCESS_OBSERVED, OPERATOR_ASSERTED})
 
+UTILIZATION_SOURCE = "nvmlDeviceGetProcessUtilization"
+
 NOTES = (
     "Energy and power are device wide. They include idle power and the "
     "command's own start up and shut down, not only inference.",
-    "On Ampere (except GA100) and newer GPUs, NVML power usage is a one "
-    "second average, so sampled power smooths and lags short changes.",
+    "Power samples are NVML_FI_DEV_POWER_INSTANT field reads with the "
+    "driver's timestamp where the driver supports it. A device whose "
+    "power_samples.source is nvmlDeviceGetPowerUsage fell back to the "
+    "power usage call, which on Ampere (except GA100) and newer GPUs is a "
+    "one second average, so those samples smooth and lag short changes.",
+    "Each process check also reads per process utilization samples newer "
+    "than the last one seen, so a process that used the GPU and exited "
+    "between two checks is still classified. A process that never reaches "
+    "NVML's utilization sampling period can still be missed.",
     "The energy counter updates at a driver defined interval, so a very "
     "short window can read a coarse or zero delta.",
     "sampled_power_integral is estimated from the power samples and covers "
@@ -120,6 +134,48 @@ def _energy(
     return energy, power, None
 
 
+def _distinct_instant(device: DeviceReadings) -> list[tuple[int, int]]:
+    """``(timestamp_us, milliwatts)`` with re-reads of one driver sample dropped."""
+    distinct: list[tuple[int, int]] = []
+    for timestamp_us, (_, milliwatts) in zip(
+        device.sample_timestamps_us, device.samples, strict=True
+    ):
+        if distinct and distinct[-1] == (timestamp_us, milliwatts):
+            continue
+        distinct.append((timestamp_us, milliwatts))
+    return distinct
+
+
+def _sampled_instant(device: DeviceReadings, out: dict[str, Any]) -> dict[str, Any]:
+    distinct = _distinct_instant(device)
+    watts = [milliwatts / 1000.0 for _, milliwatts in distinct]
+    out["sampled_power_mean"] = _measurement(
+        sum(watts) / len(watts),
+        "W",
+        MetricProvenance.DERIVED,
+        "arithmetic_mean_of_distinct_instant_readings",
+    )
+    out["sampled_power_max"] = _measurement(
+        max(watts), "W", MetricProvenance.DERIVED, "max_of_distinct_instant_readings"
+    )
+    if len(distinct) < 2:
+        out["sampled_power_refused_reason"] = "fewer_than_two_samples"
+        return out
+    if any(t_b <= t_a for (t_a, _), (t_b, _) in pairwise(distinct)):
+        out["sampled_power_refused_reason"] = "driver_timestamps_not_increasing"
+        return out
+    joules = 0.0
+    for (t_a, p_a), (t_b, p_b) in pairwise(distinct):
+        joules += (p_a + p_b) / 2000.0 * (t_b - t_a) / 1_000_000.0
+    out["sampled_power_integral"] = _measurement(
+        joules,
+        "J",
+        MetricProvenance.ESTIMATED,
+        "trapezoid_over_instant_power_driver_timestamps",
+    )
+    return out
+
+
 def _sampled(device: DeviceReadings) -> dict[str, Any]:
     samples = device.samples
     out: dict[str, Any] = {
@@ -137,6 +193,8 @@ def _sampled(device: DeviceReadings) -> dict[str, Any]:
     if not samples:
         out["sampled_power_refused_reason"] = "no_samples"
         return out
+    if device.power_source == POWER_INSTANT:
+        return _sampled_instant(device, out)
     watts = [milliwatts / 1000.0 for _, milliwatts in samples]
     out["sampled_power_mean"] = _measurement(
         sum(watts) / len(watts),
@@ -178,15 +236,70 @@ def _device_entry(
         "energy_refused_reason": refused,
     }
     entry.update(_sampled(readings))
-    entry["power_samples"] = {
+    entry["power_samples"] = _power_samples(readings)
+    entry["process_utilization"] = _utilization(readings)
+    return entry
+
+
+def _power_samples(readings: DeviceReadings) -> dict[str, Any]:
+    instant = readings.power_source == POWER_INSTANT
+    out: dict[str, Any] = {
+        "source": readings.power_source,
+        "instant_fallback_reason": readings.instant_fallback_reason,
         "count": len(readings.samples),
         "capped": readings.capped,
         "errors": dict(sorted(readings.sample_errors.items())),
-        "columns": ["offset_ms", "power_mw"],
-        "provenance": MetricProvenance.MEASURED_NATIVE.value,
-        "values": [[_ms(t), mw] for t, mw in readings.samples],
     }
-    return entry
+    if instant:
+        out["field_id"] = POWER_INSTANT_FIELD_ID
+        out["scope_id"] = POWER_INSTANT_SCOPE_ID
+        out["distinct_driver_readings"] = len(_distinct_instant(readings))
+        out["columns"] = ["offset_ms", "power_mw", "nvml_timestamp_us"]
+        values: list[list[Any]] = [
+            [_ms(t), mw, timestamp_us]
+            for (t, mw), timestamp_us in zip(
+                readings.samples, readings.sample_timestamps_us, strict=True
+            )
+        ]
+    else:
+        out["columns"] = ["offset_ms", "power_mw"]
+        values = [[_ms(t), mw] for t, mw in readings.samples]
+    out["provenance"] = MetricProvenance.MEASURED_NATIVE.value
+    out["values"] = values
+    return out
+
+
+def _utilization(readings: DeviceReadings) -> dict[str, Any]:
+    return {
+        "source": UTILIZATION_SOURCE,
+        "checks": readings.utilization_checks,
+        "errors": dict(sorted(readings.utilization_errors.items())),
+        "unavailable_reason": readings.utilization_unavailable,
+        "count": len(readings.utilization),
+        "capped": readings.utilization_capped,
+        "columns": [
+            "poll_offset_ms",
+            "nvml_timestamp_us",
+            "pid",
+            "sm_util_pct",
+            "mem_util_pct",
+            "enc_util_pct",
+            "dec_util_pct",
+        ],
+        "provenance": MetricProvenance.MEASURED_NATIVE.value,
+        "values": [
+            [
+                _ms(offset),
+                sample.timestamp_us,
+                sample.pid,
+                sample.sm_pct,
+                sample.mem_pct,
+                sample.enc_pct,
+                sample.dec_pct,
+            ]
+            for offset, sample in readings.utilization
+        ],
+    }
 
 
 def _sum(
@@ -238,6 +351,26 @@ def _plural(count: int, word: str) -> str:
     return f"{count} {word}" if count == 1 else f"{count} {word}s"
 
 
+def _utilization_only(process: ObservedProcess) -> bool:
+    return SEEN_BY_PROCESS_LIST not in process.seen_by
+
+
+def _utilization_gap(record: WindowRecord) -> str | None:
+    """Why per process utilization did not cover every check, if it did not."""
+    gaps: list[str] = []
+    for readings in record.devices:
+        if readings.utilization_errors:
+            errors = ", ".join(sorted(readings.utilization_errors))
+            gaps.append(f"GPU {readings.index} ({errors})")
+    if not gaps:
+        return None
+    return (
+        "per process utilization was not read on "
+        f"{', '.join(gaps)}, so a process that used the GPU only between "
+        "process checks would be missed"
+    )
+
+
 def _attribution(
     record: WindowRecord,
     devices: Sequence[DeviceCapability],
@@ -250,6 +383,15 @@ def _attribution(
     by_class: dict[str, list[int]] = {}
     for process in observed:
         by_class.setdefault(process.classification, []).append(process.pid)
+    vanished = [
+        process.pid
+        for process in observed
+        if process.classification == NOT_VISIBLE and _utilization_only(process)
+    ]
+    listed_not_visible = [
+        pid for pid in by_class.get(NOT_VISIBLE, []) if pid not in vanished
+    ]
+    utilization_gap = _utilization_gap(record)
 
     status: str
     if by_class.get(FOREIGN):
@@ -259,15 +401,28 @@ def _attribution(
             f"{_plural(len(pids), 'process')} outside the command used a "
             f"selected GPU during the window (pid {', '.join(map(str, pids))})"
         )
+        between = [pid for pid in pids if _utilization_only(checks.processes[pid])]
+        if between:
+            reason += (
+                "; seen only in per process utilization, never in a process "
+                f"list (pid {', '.join(map(str, between))})"
+            )
     else:
         problems: list[str] = []
         if checks.listing_errors:
             errors = ", ".join(sorted(checks.listing_errors))
             problems.append(f"NVML process listing failed ({errors})")
-        if by_class.get(NOT_VISIBLE):
+        if listed_not_visible:
             problems.append(
-                f"{_plural(len(by_class[NOT_VISIBLE]), 'listed process')} "
+                f"{_plural(len(listed_not_visible), 'listed process')} "
                 "not visible here, for example from another PID namespace"
+            )
+        if vanished:
+            problems.append(
+                f"{_plural(len(vanished), 'process')} seen only in per "
+                "process utilization could not be traced here, for example "
+                "because it exited between process checks (pid "
+                f"{', '.join(map(str, vanished))})"
             )
         if by_class.get(ANCESTRY_UNKNOWN):
             problems.append("process ancestry cannot be read on this platform")
@@ -293,6 +448,8 @@ def _attribution(
                 f"{_plural(checks.checks, 'process check')} listed only the "
                 "command, its children or a --gpu-pid on the selected GPUs"
             )
+        if utilization_gap is not None:
+            reason = f"{reason}; {utilization_gap}"
     return {
         "status": status,
         "attributable": status in ATTRIBUTABLE_STATUSES,
@@ -308,9 +465,18 @@ def _attribution(
                 "classification": process.classification,
                 "devices": sorted(process.devices),
                 "first_seen_offset_ms": _ms(process.first_seen_ms),
+                "seen_by": sorted(process.seen_by),
             }
             for process in observed
         ],
+        "utilization": {
+            "source": UTILIZATION_SOURCE,
+            "complete": utilization_gap is None,
+            "gap": utilization_gap,
+            "seen_only_by_utilization": [
+                process.pid for process in observed if _utilization_only(process)
+            ],
+        },
     }
 
 
@@ -320,6 +486,14 @@ HIGHLIGHT_KEYS = (
     ("gpu_sampled_power_integral", "sampled_power_integral"),
     ("gpu_sampled_power_max", "sampled_power_max"),
 )
+
+
+def _power_source(record: WindowRecord) -> str | None:
+    """The one source every device used, ``per_device`` when they differ."""
+    sources = {readings.power_source for readings in record.devices}
+    if len(sources) > 1:
+        return "per_device"
+    return sources.pop() if sources else None
 
 
 def build_evidence(
@@ -371,7 +545,7 @@ def build_evidence(
             "exit_code": record.exit_code,
         },
         "power_sampling": {
-            "source": "nvmlDeviceGetPowerUsage",
+            "source": _power_source(record),
             "interval_ms": record.interval_ms,
             "max_samples_per_device": record.max_samples,
         },

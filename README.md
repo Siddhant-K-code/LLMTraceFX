@@ -1284,10 +1284,22 @@ energy figures apart:
 - `sampled_power_integral` is a trapezoid over the power samples, labelled
   `estimated`.
 
+Power is read from `NVML_FI_DEV_POWER_INSTANT`, which carries the driver's
+own timestamp, so the trapezoid uses driver time and repeated readings count
+once. When the driver or binding cannot give a timestamped instant reading,
+the GPU falls back to `nvmlDeviceGetPowerUsage` (a 1 s average on recent
+GPUs) for the whole window, and `power_samples.instant_fallback_reason` says
+why.
+
 Both are device wide, so they include idle power and anything else on the
 GPU. On every tick, `record` also asks NVML which processes use the selected
 GPUs. A process that is not the command or one of its children makes the
-window `contaminated`. When this cannot be checked, for example from inside a
+window `contaminated`. Each tick also reads
+`nvmlDeviceGetProcessUtilization` from the last sample seen, which reports
+processes that used the GPU between two process lists. Those samples are
+kept in `process_utilization`, and a PID seen only there is classified like a
+listed one. When utilization cannot be read, the attribution reason says so.
+When this cannot be checked, for example from inside a
 container's PID namespace or with MIG enabled, the window is `unverifiable`.
 Totals are only highlighted for an attributable window. To measure an
 inference server that the command calls, pass its PID with `--gpu-pid`, for
@@ -1316,7 +1328,13 @@ refreshes every `--collect-interval` (30 s by default), so the delta covers
 more than the command. The evidence records the shortest and longest span the
 delta can cover, and refuses `energy` with `bracket_too_wide` when the command
 is less than `--min-run-share` (0.9) of the longest span. Run the exporter
-with a short interval, for example `-c 1000`, and long commands. Power is
+with a short interval, for example `-c 1000`, and long commands. The exporter
+does not report its interval, so `power_sampling.collect_interval` records the
+value used and its `basis`: `--dcgm-collect-interval-ms`, the gap between
+counter changes the scrapes saw, both when they agree, or the 30 s default.
+Each bracket states `expected_max_overhead_ms` (one collect interval plus two
+scrapes) and `min_command_ms_for_required_share`, and a refusal prints how
+long the command would have to run. Power is
 listed per scrape but not integrated, and the window is `unverifiable`
 because the exporter has no process list. In a record, its evidence fills
 only `power.energy`, and only with `--assume-isolated`.

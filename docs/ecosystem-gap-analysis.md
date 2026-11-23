@@ -349,13 +349,19 @@ counter delta is `energy`, labelled `measured_native`. A trapezoid over the
 power samples is `sampled_power_integral`, labelled `estimated`, and is never
 called energy. A counter that went backwards, did not move or could not be
 read leaves `energy` null with a reason. Too few samples, a failed read or a
-full sample buffer does the same for the sampled values.
+full sample buffer does the same for the sampled values. Power comes from the
+timestamped `NVML_FI_DEV_POWER_INSTANT` field and is integrated over driver
+timestamps. A GPU that cannot give it falls back to `nvmlDeviceGetPowerUsage`
+for the whole window, with the reason recorded.
 
 NVML readings are device wide. On each poll the collector also lists the GPU
 processes and walks their parent PIDs. A process outside the command, its
 children and any `--gpu-pid` makes the window `contaminated`. A window that
 cannot be checked (PID namespaces, MIG, a failed listing, or the command never
 listed) is `unverifiable` unless the operator passes `--assume-isolated`.
+Each poll also reads `nvmlDeviceGetProcessUtilization` since the last sample,
+so a process that used the GPU between two lists is classified too, and the
+samples are kept in the evidence.
 Only attributable windows of a command that exited 0 produce highlights.
 `gpu-energy capability` reports what the machine supports and exits 3 when
 NVML is unavailable, including on macOS.
@@ -366,7 +372,10 @@ dcgm-exporter instead (pinned against v4.9.0, `4e663a5`, and v4.8.4,
 default, so `record` brackets the run with the first counter change seen
 before and after it and states the bracket. The energy delta is refused with
 `bracket_too_wide` when the command is under 90 % of the widest span the
-delta can cover. Power is listed per scrape but not integrated, and the
+delta can cover. The collect interval is recorded with its basis (operator
+stated, observed from counter changes, both, or the 30 s default), and the
+bracket states the overhead it implies and the shortest command that would
+pass. Power is listed per scrape but not integrated, and the
 window is `unverifiable` because the exporter has no process list. The DCGM
 Python bindings are not on PyPI and need `nv-hostengine`, and `dcgmi dmon`
 prints no timestamps, so neither is used.
@@ -767,19 +776,20 @@ and BurstGPT v2.0 added a `Session ID` column that `replay` ignores.
 #### GPU telemetry
 
 - NVML: `nvmlDeviceGetFieldValues` with `NVML_FI_DEV_POWER_INSTANT` returns
-  timestamped instantaneous power. `gpu-energy` uses
-  `nvmlDeviceGetPowerUsage`, which is a smoothed average on recent drivers.
-  `nvmlDeviceGetProcessesUtilizationInfo` reports per-PID SM use since a
-  timestamp, which would catch a process that started and finished between
-  two process-list polls. GPM (`nvmlGpmSampleGet`) gives SM occupancy and
+  timestamped instantaneous power. `gpu-energy` now uses it and falls back
+  to `nvmlDeviceGetPowerUsage`, a smoothed average on recent drivers.
+  `nvmlDeviceGetProcessUtilization` reports per-PID SM use since a
+  timestamp, which catches a process that started and finished between two
+  process-list polls. `gpu-energy` now reads it on every poll. GPM (`nvmlGpmSampleGet`) gives SM occupancy and
   tensor activity on Hopper and newer. All are in
   [nvidia-ml-py 13.615.71](https://pypi.org/project/nvidia-ml-py/13.615.71/).
 - dcgm-exporter 4.9.0 lists `DCGM_FI_DEV_GPU_ENERGY_JOULES_TOTAL` as its
   default energy counter, where older releases listed the millijoule
   `DCGM_FI_DEV_TOTAL_ENERGY_CONSUMPTION`
   ([`default-counters.csv`](https://github.com/NVIDIA/dcgm-exporter/blob/4e663a526c4624ad0e18ad816f09b7be2c5348a7/etc/default-counters.csv)),
-  which `gpu-energy` already reads. The collect interval in effect is not
-  recorded in the evidence.
+  which `gpu-energy` already reads. The exporter does not report the collect
+  interval in effect, so the evidence now records the interval used and its
+  basis.
 - AMD: `amdsmi_get_energy_count` returns the energy accumulator with its own
   timestamp, and `amdsmi_get_gpu_process_list` gives a process list
   ([`amdsmi_interface.py`](https://github.com/ROCm/amdsmi/blob/1e91f3c1527617066f50c22f9ec4368fe82e1a3c/py-interface/amdsmi_interface.py#L4269-L4288)).
@@ -842,6 +852,19 @@ and BurstGPT v2.0 added a `Session ID` column that `replay` ignores.
   `--server-metrics-runtime` help says so, and TGI evidence carries a note
   that the server is archived upstream, which `server-metrics diff` also
   prints to stderr. Parsing, attribution and exit codes are unchanged.
+- NVML instant power and per-process utilization: `gpu-energy record` samples
+  `NVML_FI_DEV_POWER_INSTANT` (field 186) with its driver timestamp and
+  integrates over those timestamps, falling back to `nvmlDeviceGetPowerUsage`
+  with `instant_fallback_reason` recorded. It reads
+  `nvmlDeviceGetProcessUtilization` on every poll, keeps the samples, and
+  classifies PIDs seen only there, so a process between polls contaminates
+  the window instead of being missed (follow up 4, checked against
+  [nvidia-ml-py 13.615.71](https://pypi.org/project/nvidia-ml-py/13.615.71/)).
+- dcgm-exporter collect interval: `power_sampling.collect_interval` records
+  the interval and its basis, and each bracket states
+  `expected_max_overhead_ms` and `min_command_ms_for_required_share`
+  (follow up 9, default from
+  [`defaults.go#L27`](https://github.com/NVIDIA/dcgm-exporter/blob/4e663a526c4624ad0e18ad816f09b7be2c5348a7/internal/pkg/appconfig/defaults.go#L27)).
 
 ## Follow ups not built here
 
@@ -858,9 +881,8 @@ Ranked by value to the evidence model against cost:
    second port.
 3. **Extend `import vllm-bench` to `server_ttfts` fields (S).** **Built**,
    see "Built from this refresh".
-4. **NVML instant power and per-process utilization (S, then M).** Timestamped
-   instant power is a better sample than the smoothed reading, and per-PID
-   utilization closes a contamination blind spot between polls.
+4. **NVML instant power and per-process utilization (S, then M).**
+   **Built**, see "Built from this refresh".
 5. **Confidence intervals and warmup exclusion in sweeps (M). Built.**
     Sweep percentiles now get a distribution-free 95% interval when there
     are enough requests, and
@@ -876,8 +898,8 @@ Ranked by value to the evidence model against cost:
     this refresh".
 8. **`hw.energy` alongside `llmtracefx.gpu.energy` (S).** Backends that know
     the hardware conventions could chart LLMTraceFX energy with no mapping.
-9. **Record the dcgm-exporter collect interval (S).** The bracket width
-    depends on it, and the evidence does not say what it was.
+9. **Record the dcgm-exporter collect interval (S).**
+    **Built**, see "Built from this refresh".
 10. **Importers for SGLang bench, GuideLLM, `trtllm-bench` and `llama-bench`
     (M each).** Each brings results users already have into `gate`.
     **GuideLLM built as `import guidellm`** (summary statistics; reading its

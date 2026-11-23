@@ -11,7 +11,12 @@ import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
-from llmtracefx.optimizer.gpu_energy.nvml import NvmlCallError, NvmlUnavailable
+from llmtracefx.optimizer.gpu_energy.nvml import (
+    InstantPower,
+    NvmlCallError,
+    NvmlUnavailable,
+    ProcessUtilization,
+)
 from llmtracefx.optimizer.gpu_energy.window import ALLOWED
 
 
@@ -46,7 +51,17 @@ class FakeDevice:
     power_error_calls: frozenset[int] = frozenset()
     pids: Callable[[float], tuple[int, ...]] = lambda _t: ()
     pids_error: str | None = None
+    #: Instant power in watts. ``None`` makes the field read not supported,
+    #: so the window falls back to ``power_mw``.
+    instant_power_w: float | None = None
+    instant_error: str | None = None
+    #: Driver timestamp (us) for successive instant reads, instead of the clock.
+    instant_timestamps_us: list[int] | None = None
+    #: Utilization samples at a clock time, filtered to ``> since_us`` like NVML.
+    utilization: Callable[[float], tuple[ProcessUtilization, ...]] = lambda _t: ()
+    utilization_error: str | None = None
     power_calls: int = field(default=0, init=False)
+    utilization_calls: int = field(default=0, init=False)
 
 
 class FakeNvml:
@@ -110,6 +125,31 @@ class FakeNvml:
         if device.power_error is not None or call in device.power_error_calls:
             raise NvmlCallError(device.power_error or "call_failed", "power failed")
         return round(device.power_w * 1000)
+
+    def power_instant(self, index: int) -> InstantPower:
+        device = self._device(index)
+        if device.instant_error is not None:
+            raise NvmlCallError(device.instant_error, "instant power failed")
+        if device.instant_power_w is None:
+            raise NvmlCallError("not_supported", "instant power not supported")
+        if device.instant_timestamps_us is not None:
+            timestamp_us = device.instant_timestamps_us.pop(0)
+        else:
+            timestamp_us = int(self.clock.now * 1_000_000)
+        return InstantPower(round(device.instant_power_w * 1000), timestamp_us)
+
+    def process_utilization(
+        self, index: int, since_us: int
+    ) -> tuple[ProcessUtilization, ...]:
+        device = self._device(index)
+        device.utilization_calls += 1
+        if device.utilization_error is not None:
+            raise NvmlCallError(device.utilization_error, "utilization failed")
+        return tuple(
+            sample
+            for sample in device.utilization(self.clock.now)
+            if sample.timestamp_us > since_us
+        )
 
     def enforced_power_limit_mw(self, index: int) -> int:
         return self._device(index).limit_mw

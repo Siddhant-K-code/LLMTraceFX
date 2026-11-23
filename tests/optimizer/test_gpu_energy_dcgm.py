@@ -23,7 +23,10 @@ from test_schema import make_record
 from llmtracefx.optimizer import cli as optimizer_cli
 from llmtracefx.optimizer.gpu_energy import cli as gpu_cli
 from llmtracefx.optimizer.gpu_energy.capability import uuid_sha256
-from llmtracefx.optimizer.gpu_energy.dcgm_evidence import build_dcgm_evidence
+from llmtracefx.optimizer.gpu_energy.dcgm_evidence import (
+    _collect_interval,
+    build_dcgm_evidence,
+)
 from llmtracefx.optimizer.gpu_energy.dcgm_exporter import (
     AMBIGUOUS_SERIES,
     ENERGY_METRICS,
@@ -319,6 +322,30 @@ def test_default_collect_interval_makes_a_short_bracket_too_wide() -> None:
     assert device["energy_counter"]["end"] > device["energy_counter"]["start"]
 
 
+def test_too_wide_bracket_states_the_collect_interval_and_the_run_needed() -> None:
+    clock = FakeClock(T0)
+    exporter = FakeExporter(clock, collect_s=30.0)
+    record = _record(clock, exporter, FakeLauncher(clock, runtime_s=10.0))
+    evidence = _evidence(record)
+    bracket = evidence["devices"][0]["bracket"]
+    interval = evidence["power_sampling"]["collect_interval"]
+
+    assert interval["basis"] == "observed"
+    assert abs(interval["value_ms"] - 30_000) <= 500
+    assert bracket["collect_interval_ms"] == interval["value_ms"]
+    assert bracket["collect_interval_basis"] == "observed"
+    overhead = interval["value_ms"] + 2 * 500
+    assert bracket["expected_max_overhead_ms"] == pytest.approx(overhead)
+    # The bracket never exceeds the overhead the collect interval predicts.
+    assert bracket["max_span_ms"] - bracket["command_ms"] <= overhead
+    needed = bracket["min_command_ms_for_required_share"]
+    assert needed == math.ceil(9 * overhead)
+    assert needed / (needed + overhead) >= 0.9
+    detail = evidence["devices"][0]["energy_refused_detail"]
+    assert "30.0 s collect interval (observed)" in detail
+    assert f"{needed / 1000:.1f} s" in detail
+
+
 def test_long_run_passes_with_default_collect_interval() -> None:
     clock = FakeClock(T0)
     exporter = FakeExporter(clock, collect_s=30.0)
@@ -326,7 +353,55 @@ def test_long_run_passes_with_default_collect_interval() -> None:
     device = _evidence(record)["devices"][0]
 
     assert device["energy_refused_reason"] is None
+    assert device["energy_refused_detail"] is None
     assert device["bracket"]["min_command_share"] >= 0.9
+    assert 600_000 >= device["bracket"]["min_command_ms_for_required_share"]
+
+
+def _observed(value: float, uncertainty: float = 500.0) -> dict[str, Any]:
+    return {"value": value, "unit": "ms", "uncertainty_ms": uncertainty}
+
+
+@pytest.mark.parametrize(
+    ("stated", "observed", "value", "basis", "consistent"),
+    [
+        (1000.0, _observed(1200.0), 1000.0, "operator_stated_and_observed", True),
+        (1000.0, None, 1000.0, "operator_stated", None),
+        (None, _observed(30_100.0), 30_100.0, "observed", None),
+        (
+            1000.0,
+            _observed(30_100.0),
+            30_100.0,
+            "observed_contradicts_operator_stated",
+            False,
+        ),
+        (None, None, 30_000.0, "exporter_default_assumed", None),
+    ],
+)
+def test_collect_interval_records_its_basis(
+    stated: float | None,
+    observed: dict[str, Any] | None,
+    value: float,
+    basis: str,
+    consistent: bool | None,
+) -> None:
+    interval = _collect_interval(stated, observed)
+    assert interval["value_ms"] == value
+    assert interval["basis"] == basis
+    assert interval["stated_consistent_with_observed"] is consistent
+    assert interval["stated_ms"] == stated
+    assert interval["exporter_default_ms"] == 30_000.0
+
+
+def test_required_share_of_one_has_no_finite_minimum_run() -> None:
+    clock = FakeClock(T0)
+    exporter = FakeExporter(clock, collect_s=1.0)
+    record = _record(clock, exporter, FakeLauncher(clock, runtime_s=5.0))
+    device = _evidence(record, min_run_share=1.0)["devices"][0]
+
+    assert device["energy_refused_reason"] == "bracket_too_wide"
+    assert device["bracket"]["min_command_ms_for_required_share"] is None
+    assert "needs about" not in device["energy_refused_detail"]
 
 
 def test_no_counter_change_before_the_command_runs_nothing() -> None:
@@ -496,6 +571,21 @@ def test_cli_record_writes_unverifiable_evidence_and_exits_2(
     assert evidence["devices"][0]["energy"]["provenance"] == "measured_native"
     assert evidence["power_sampling"]["interval_ms"] == 500
     assert "The energy delta covers" in capsys.readouterr().out
+
+
+def test_cli_record_prints_why_a_wide_bracket_was_refused(
+    fake_dcgm_cli: dict[str, Any], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake_dcgm_cli["exporter"].collect_s = 30.0
+    fake_dcgm_cli["launcher"].runtime_s = 10.0
+    output = tmp_path / "gpu.json"
+    argv = ["gpu-energy", "record", "--output", str(output), *URL]
+    assert _run_cli([*argv, "--dcgm-collect-interval-ms", "30000", "--", "x"]) == 2
+    interval = json.loads(output.read_text())["power_sampling"]["collect_interval"]
+    assert interval["basis"] == "operator_stated_and_observed"
+    out = capsys.readouterr().out
+    assert "Energy refused:" in out
+    assert "collect interval (operator_stated_and_observed)" in out
 
 
 def test_cli_record_with_assume_isolated_exits_0(
