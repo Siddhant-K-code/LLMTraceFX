@@ -153,8 +153,7 @@ def run_main(argv: list[str]) -> tuple[int, str, str]:
     code = 0
     try:
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            result = cli.main(argv)
-            code = int(result or 0)
+            cli.main(argv)
     except SystemExit as exit_error:
         code = int(exit_error.code or 0)
     return code, stdout.getvalue(), stderr.getvalue()

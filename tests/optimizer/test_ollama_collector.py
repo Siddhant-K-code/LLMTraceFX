@@ -246,8 +246,10 @@ def test_stream_stops_reading_after_the_done_chunk() -> None:
 
 def test_ndjson_decoder_refuses_oversized_lines() -> None:
     decoder = NDJSONDecoder(max_line_bytes=8)
-    assert decoder.feed(b"{}\n\n{}") == [b"{}"]
-    assert decoder.close() == [b"{}"]
+    fed = decoder.feed(b"{}\n\n{}")
+    assert fed == [b"{}"]
+    rest = decoder.close()
+    assert rest == [b"{}"]
     with pytest.raises(ValueError, match="size limit"):
         decoder.feed(b"x" * 9)
 
