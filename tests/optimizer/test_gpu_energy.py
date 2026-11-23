@@ -31,6 +31,7 @@ from llmtracefx.optimizer.gpu_energy.evidence import build_evidence
 from llmtracefx.optimizer.gpu_energy.nvml import (
     NvmlCallError,
     NvmlUnavailable,
+    ProcessUtilization,
     PynvmlBackend,
     load_backend,
 )
@@ -84,6 +85,7 @@ def _measure(
         max_samples=max_samples,
         gpu_pids=gpu_pids,
         clock=clock,
+        wall_clock=clock,
         sleep=clock.sleep,
         launcher=launcher,
         process_table=FakeProcessTable(classes),
@@ -224,6 +226,118 @@ def test_pynvml_backend_translates_values_and_errors() -> None:
         assert excinfo.value.reason == reason
 
 
+def _field_value(**fields: Any) -> types.SimpleNamespace:
+    defaults: dict[str, Any] = {
+        "nvmlReturn": 0,
+        "valueType": 1,
+        "timestamp": 1_767_225_600_123_456,
+        "value": types.SimpleNamespace(uiVal=61_250),
+    }
+    return types.SimpleNamespace(**{**defaults, **fields})
+
+
+def test_pynvml_backend_reads_timestamped_instant_power() -> None:
+    queries: list[Any] = []
+
+    def field_values(handle: Any, fields: Any) -> list[Any]:
+        queries.append((handle, fields))
+        return [_field_value()]
+
+    backend = PynvmlBackend(
+        _fake_pynvml(
+            NVML_FI_DEV_POWER_INSTANT=186, nvmlDeviceGetFieldValues=field_values
+        )
+    )
+    backend.init()
+    reading = backend.power_instant(0)
+    assert (reading.milliwatts, reading.timestamp_us) == (61_250, 1_767_225_600_123_456)
+    assert queries == [("handle-0", [(186, 0)])]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        (
+            {"nvmlDeviceGetFieldValues": lambda _h, _f: [_field_value()]},
+            "binding_unsupported",
+        ),
+        ({"NVML_FI_DEV_POWER_INSTANT": 186}, "binding_unsupported"),
+        (
+            {
+                "NVML_FI_DEV_POWER_INSTANT": 186,
+                "nvmlDeviceGetFieldValues": lambda _h, _f: [_field_value(nvmlReturn=3)],
+            },
+            "not_supported",
+        ),
+        (
+            {
+                "NVML_FI_DEV_POWER_INSTANT": 186,
+                "nvmlDeviceGetFieldValues": lambda _h, _f: [_field_value(timestamp=0)],
+            },
+            "no_timestamp",
+        ),
+        (
+            {
+                "NVML_FI_DEV_POWER_INSTANT": 186,
+                "nvmlDeviceGetFieldValues": lambda _h, _f: [_field_value(valueType=0)],
+            },
+            "call_failed",
+        ),
+    ],
+)
+def test_pynvml_backend_instant_power_failures(
+    overrides: dict[str, Any], reason: str
+) -> None:
+    backend = PynvmlBackend(_fake_pynvml(**overrides))
+    backend.init()
+    with pytest.raises(NvmlCallError) as excinfo:
+        backend.power_instant(0)
+    assert excinfo.value.reason == reason
+
+
+def test_pynvml_backend_reads_process_utilization() -> None:
+    calls: list[Any] = []
+
+    def utilization(handle: Any, since: int) -> list[Any]:
+        calls.append((handle, since))
+        return [
+            types.SimpleNamespace(
+                pid=777,
+                timeStamp=5_000_001,
+                smUtil=40,
+                memUtil=12,
+                encUtil=0,
+                decUtil=1,
+            )
+        ]
+
+    backend = PynvmlBackend(_fake_pynvml(nvmlDeviceGetProcessUtilization=utilization))
+    backend.init()
+    assert backend.process_utilization(0, 5_000_000) == (
+        ProcessUtilization(777, 5_000_001, 40, 12, 0, 1),
+    )
+    assert calls == [("handle-0", 5_000_000)]
+
+
+@pytest.mark.parametrize(
+    ("code", "reason"), [(6, None), (0, None), (3, "not_supported")]
+)
+def test_pynvml_backend_process_utilization_errors(
+    code: int, reason: str | None
+) -> None:
+    module = _fake_pynvml(NVML_ERROR_NOT_FOUND=6, NVML_SUCCESS=0)
+    module.nvmlDeviceGetProcessUtilization = module.raise_(code)
+    backend = PynvmlBackend(module)
+    backend.init()
+    if reason is None:
+        # No sample newer than the timestamp is reported as an error by NVML.
+        assert backend.process_utilization(0, 1) == ()
+        return
+    with pytest.raises(NvmlCallError) as excinfo:
+        backend.process_utilization(0, 1)
+    assert excinfo.value.reason == reason
+
+
 @pytest.mark.parametrize(
     ("code", "state"),
     [(12, "library_unavailable"), (9, "driver_unavailable"), (999, "nvml_error")],
@@ -269,6 +383,75 @@ def test_sampled_integral_is_an_estimate_over_the_sample_span() -> None:
     assert integral["value"] == pytest.approx(40.0 * span_s)
     assert device["sampled_power_mean"]["value"] == pytest.approx(40.0)
     assert device["sampled_power_max"]["provenance"] == "derived"
+
+
+def test_instant_power_is_sampled_with_driver_timestamps() -> None:
+    evidence = _measure([FakeDevice(instant_power_w=60.0, pids=_child_listed)])
+    [device] = evidence["devices"]
+    samples = device["power_samples"]
+    assert samples["source"] == "nvml_field_power_instant"
+    assert (samples["field_id"], samples["scope_id"]) == (186, 0)
+    assert samples["instant_fallback_reason"] is None
+    assert samples["columns"] == ["offset_ms", "power_mw", "nvml_timestamp_us"]
+    assert samples["values"][0][1:] == [60_000, 1_000_000_000]
+    stamps = {row[2] for row in samples["values"]}
+    assert samples["distinct_driver_readings"] == len(stamps) > 10
+    span_s = (samples["values"][-1][2] - samples["values"][0][2]) / 1e6
+    integral = device["sampled_power_integral"]
+    assert integral["method"] == "trapezoid_over_instant_power_driver_timestamps"
+    assert integral["provenance"] == "estimated"
+    assert integral["value"] == pytest.approx(60.0 * span_s)
+    assert device["sampled_power_mean"]["method"] == (
+        "arithmetic_mean_of_distinct_instant_readings"
+    )
+    assert evidence["power_sampling"]["source"] == "nvml_field_power_instant"
+
+
+def test_repeated_driver_readings_count_once() -> None:
+    stamps = [10, 10, 10, 20, 20, 30] + list(range(40, 10_000, 10))
+    device = FakeDevice(
+        instant_power_w=60.0, instant_timestamps_us=stamps, pids=_child_listed
+    )
+    [entry] = _measure([device])["devices"]
+    samples = entry["power_samples"]
+    assert samples["distinct_driver_readings"] == samples["count"] - 3
+    # 60 W over the driver's own span, not the host poll span.
+    span_s = (samples["values"][-1][2] - 10) / 1e6
+    assert entry["sampled_power_integral"]["value"] == pytest.approx(60.0 * span_s)
+
+
+def test_driver_timestamps_going_back_refuse_only_the_integral() -> None:
+    stamps = [30, 20] + list(range(40, 10_000, 10))
+    device = FakeDevice(
+        instant_power_w=60.0, instant_timestamps_us=stamps, pids=_child_listed
+    )
+    [entry] = _measure([device])["devices"]
+    assert entry["sampled_power_integral"] is None
+    assert entry["sampled_power_refused_reason"] == "driver_timestamps_not_increasing"
+    assert entry["sampled_power_mean"]["value"] == pytest.approx(60.0)
+
+
+def test_fallback_to_power_usage_is_recorded() -> None:
+    evidence = _measure(
+        [
+            FakeDevice(pids=_child_listed),
+            FakeDevice(uuid="GPU-2", instant_power_w=30.0),
+            FakeDevice(
+                uuid="GPU-3", instant_power_w=30.0, instant_error="no_timestamp"
+            ),
+        ]
+    )
+    first, second, third = (d["power_samples"] for d in evidence["devices"])
+    assert first["source"] == "nvmlDeviceGetPowerUsage"
+    assert first["instant_fallback_reason"] == "not_supported"
+    assert first["columns"] == ["offset_ms", "power_mw"]
+    assert "field_id" not in first
+    assert second["source"] == "nvml_field_power_instant"
+    assert third["instant_fallback_reason"] == "no_timestamp"
+    assert evidence["devices"][0]["sampled_power_integral"]["method"] == (
+        "trapezoid_over_sampled_power"
+    )
+    assert evidence["power_sampling"]["source"] == "per_device"
 
 
 @pytest.mark.parametrize(
@@ -368,6 +551,96 @@ def test_foreign_process_contaminates_even_when_isolation_is_assumed() -> None:
     assert "777" in attribution["reason"]
     assert evidence["highlights"] == {}
     assert evidence["highlights_withheld_reason"] == attribution["reason"]
+
+
+def _used_between_checks(pid: int) -> Any:
+    """Utilization for ``pid`` stamped between two 100 ms process checks."""
+
+    def samples(now: float) -> tuple[ProcessUtilization, ...]:
+        if now < 1000.3:
+            return ()
+        return (ProcessUtilization(pid, 1_000_250_000, 35, 10, 0, 0),)
+
+    return samples
+
+
+def test_foreign_process_seen_only_by_utilization_contaminates() -> None:
+    device = FakeDevice(pids=_child_listed, utilization=_used_between_checks(777))
+    evidence = _measure([device], classes={777: FOREIGN}, assume_isolated=True)
+    attribution = evidence["attribution"]
+    assert attribution["status"] == "contaminated"
+    assert "never in a process list (pid 777)" in attribution["reason"]
+    [foreign] = [p for p in attribution["processes"] if p["pid"] == 777]
+    assert foreign["seen_by"] == ["utilization"]
+    assert attribution["utilization"]["seen_only_by_utilization"] == [777]
+    rows = evidence["devices"][0]["process_utilization"]
+    assert rows["source"] == "nvmlDeviceGetProcessUtilization"
+    assert rows["provenance"] == "measured_native"
+    # NVML returns a sample once, then only newer ones.
+    assert [row[1:3] for row in rows["values"]] == [[1_000_250_000, 777]]
+    assert rows["values"][0][3:] == [35, 10, 0, 0]
+    assert evidence["highlights"] == {}
+
+
+def test_utilization_rows_past_the_cap_are_still_classified() -> None:
+    def samples(now: float) -> tuple[ProcessUtilization, ...]:
+        stamp = int(now * 1_000_000)
+        return (
+            ProcessUtilization(CHILD_PID, stamp, 50, 5, 0, 0),
+            ProcessUtilization(CHILD_PID + 1, stamp, 1, 0, 0, 0),
+        )
+
+    device = FakeDevice(pids=_child_listed, utilization=samples)
+    evidence = _measure([device], classes={CHILD_PID + 1: FOREIGN}, max_samples=1)
+    rows = evidence["devices"][0]["process_utilization"]
+    assert rows["capped"] is True
+    assert rows["count"] == 1
+    assert evidence["attribution"]["status"] == "contaminated"
+
+
+def test_vanished_process_seen_only_by_utilization_is_unverifiable() -> None:
+    device = FakeDevice(pids=_child_listed, utilization=_used_between_checks(31337))
+    evidence = _measure([device], classes={31337: NOT_VISIBLE})
+    attribution = evidence["attribution"]
+    assert attribution["status"] == "unverifiable"
+    assert "could not be traced here" in attribution["reason"]
+    assert "listed process" not in attribution["reason"]
+    asserted = _measure([device], classes={31337: NOT_VISIBLE}, assume_isolated=True)
+    assert asserted["attribution"]["status"] == "operator_asserted"
+
+
+def test_child_seen_by_both_sources_is_attributable() -> None:
+    def samples(now: float) -> tuple[ProcessUtilization, ...]:
+        return (ProcessUtilization(CHILD_PID, int(now * 1_000_000), 80, 20, 0, 0),)
+
+    device = FakeDevice(pids=_child_listed, utilization=samples)
+    attribution = _measure([device])["attribution"]
+    assert attribution["status"] == "no_foreign_process_observed"
+    assert attribution["processes"][0]["seen_by"] == ["process_list", "utilization"]
+    assert attribution["utilization"]["complete"] is True
+
+
+@pytest.mark.parametrize("error", ["not_supported", "no_permission"])
+def test_utilization_failure_keeps_the_status_and_says_what_is_missed(
+    error: str,
+) -> None:
+    device = FakeDevice(pids=_child_listed, utilization_error=error)
+    evidence = _measure([device])
+    attribution = evidence["attribution"]
+    assert attribution["status"] == "no_foreign_process_observed"
+    assert f"per process utilization was not read on GPU 0 ({error})" in (
+        attribution["reason"]
+    )
+    assert attribution["utilization"]["complete"] is False
+    rows = evidence["devices"][0]["process_utilization"]
+    if error == "not_supported":
+        # A permanent error stops polling after the first check.
+        assert rows["checks"] == 1
+        assert rows["unavailable_reason"] == "not_supported"
+        assert device.utilization_calls == 1
+    else:
+        assert rows["checks"] == attribution["process_checks"]
+        assert rows["errors"] == {"no_permission": rows["checks"]}
 
 
 @pytest.mark.parametrize(

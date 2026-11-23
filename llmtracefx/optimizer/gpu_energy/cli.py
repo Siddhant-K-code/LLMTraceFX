@@ -143,6 +143,8 @@ def _summary(evidence: dict[str, Any]) -> list[str]:
                 f"to {bracket['max_span_ms'] / 1000:.1f} s around a "
                 f"{bracket['command_ms'] / 1000:.1f} s command"
             )
+        if device.get("energy_refused_detail"):
+            lines.append(f"  Energy refused: {device['energy_refused_detail']}")
     attribution = evidence["attribution"]
     lines.append(f"Attribution: {attribution['status']}: {attribution['reason']}")
     if evidence["highlights_withheld_reason"]:
@@ -459,8 +461,11 @@ def add_gpu_energy_parser(subparsers: Any) -> None:
         type=float,
         default=None,
         help=(
-            "The exporter's --collect-interval, if known. Recorded as stated "
-            "by the operator. It is not used to compute anything."
+            "The exporter's --collect-interval for the energy field, if "
+            "known. Recorded as stated by the operator and checked against "
+            "the gap between counter changes the scrapes observe. The value "
+            "used for the bracket reasoning and its basis are recorded in "
+            "power_sampling.collect_interval."
         ),
     )
     record.add_argument(

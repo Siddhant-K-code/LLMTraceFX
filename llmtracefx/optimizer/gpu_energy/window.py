@@ -15,7 +15,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from .nvml import NvmlBackend, NvmlCallError
+from .nvml import (
+    BINDING_UNSUPPORTED,
+    NOT_SUPPORTED,
+    NvmlBackend,
+    NvmlCallError,
+    ProcessUtilization,
+)
 
 DEFAULT_INTERVAL_MS = 100
 DEFAULT_MAX_SAMPLES = 100_000
@@ -25,6 +31,17 @@ ALLOWED = "allowed"
 FOREIGN = "foreign"
 NOT_VISIBLE = "not_visible"
 ANCESTRY_UNKNOWN = "ancestry_unknown"
+
+#: Where a power sample came from.
+POWER_INSTANT = "nvml_field_power_instant"
+POWER_USAGE = "nvmlDeviceGetPowerUsage"
+
+#: How a GPU process was seen.
+SEEN_BY_PROCESS_LIST = "process_list"
+SEEN_BY_UTILIZATION = "utilization"
+
+#: Errors that will not go away by asking again, so the recorder stops asking.
+_PERMANENT_ERRORS = frozenset({NOT_SUPPORTED, BINDING_UNSUPPORTED})
 
 _TERMINATE_GRACE_S = 5.0
 
@@ -120,6 +137,19 @@ class DeviceReadings:
     samples: list[tuple[float, int]] = field(default_factory=list)
     sample_errors: dict[str, int] = field(default_factory=dict)
     capped: bool = False
+    #: ``POWER_INSTANT`` or ``POWER_USAGE``, chosen at the first sample.
+    power_source: str | None = None
+    #: Why instant power was not used, when ``power_source`` is ``POWER_USAGE``.
+    instant_fallback_reason: str | None = None
+    #: NVML timestamp of each sample, parallel to ``samples``, instant only.
+    sample_timestamps_us: list[int] = field(default_factory=list)
+    #: ``(poll offset, sample)`` from ``nvmlDeviceGetProcessUtilization``.
+    utilization: list[tuple[float, ProcessUtilization]] = field(default_factory=list)
+    utilization_checks: int = 0
+    utilization_errors: dict[str, int] = field(default_factory=dict)
+    utilization_capped: bool = False
+    #: Set after an error that will repeat, after which polling stops.
+    utilization_unavailable: str | None = None
 
 
 @dataclass
@@ -128,6 +158,7 @@ class ObservedProcess:
     classification: str
     devices: set[int]
     first_seen_ms: float
+    seen_by: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -161,6 +192,7 @@ class _Recorder:
         interval_ms: float,
         max_samples: int,
         clock: Callable[[], float],
+        wall_clock: Callable[[], float],
         process_table: ProcessTable,
         gpu_pids: Sequence[int],
     ) -> None:
@@ -173,6 +205,9 @@ class _Recorder:
         self.process_table = process_table
         self.roots = frozenset(gpu_pids)
         self.t0 = clock()
+        # NVML utilization timestamps are CPU microseconds since 1970.
+        start_us = int(wall_clock() * 1_000_000)
+        self.utilization_since = dict.fromkeys(devices, start_us)
 
     def offset_ms(self) -> float:
         return (self.clock() - self.t0) * 1000.0
@@ -193,13 +228,72 @@ class _Recorder:
                 device.capped = True
                 continue
             try:
-                milliwatts = self.backend.power_mw(device.index)
+                self._sample(device)
             except NvmlCallError as exc:
                 device.sample_errors[exc.reason] = (
                     device.sample_errors.get(exc.reason, 0) + 1
                 )
-                continue
-            device.samples.append((self.offset_ms(), milliwatts))
+
+    def _sample(self, device: DeviceReadings) -> None:
+        if device.power_source is None:
+            # The first sample decides the source for the whole window, so
+            # instant and averaged readings are never mixed in one series.
+            try:
+                instant = self.backend.power_instant(device.index)
+            except NvmlCallError as exc:
+                device.power_source = POWER_USAGE
+                device.instant_fallback_reason = exc.reason
+            else:
+                device.power_source = POWER_INSTANT
+                device.samples.append((self.offset_ms(), instant.milliwatts))
+                device.sample_timestamps_us.append(instant.timestamp_us)
+                return
+        if device.power_source == POWER_INSTANT:
+            instant = self.backend.power_instant(device.index)
+            device.samples.append((self.offset_ms(), instant.milliwatts))
+            device.sample_timestamps_us.append(instant.timestamp_us)
+            return
+        milliwatts = self.backend.power_mw(device.index)
+        device.samples.append((self.offset_ms(), milliwatts))
+
+    def _observe(self, pid: int, device: int, seen_by: str) -> None:
+        classification = self.process_table.classify(pid, self.roots)
+        seen = self.processes.processes.get(pid)
+        if seen is None:
+            self.processes.processes[pid] = ObservedProcess(
+                pid, classification, {device}, self.offset_ms(), {seen_by}
+            )
+            return
+        seen.devices.add(device)
+        seen.seen_by.add(seen_by)
+        # A process seen once as a descendant of the command stays
+        # attributed even if it is orphaned before a later check.
+        if _RANK[classification] > _RANK[seen.classification]:
+            seen.classification = classification
+
+    def _utilization(self, device: DeviceReadings) -> None:
+        if device.utilization_unavailable is not None:
+            return
+        device.utilization_checks += 1
+        since = self.utilization_since[device.index]
+        try:
+            samples = self.backend.process_utilization(device.index, since)
+        except NvmlCallError as exc:
+            errors = device.utilization_errors
+            errors[exc.reason] = errors.get(exc.reason, 0) + 1
+            if exc.reason in _PERMANENT_ERRORS:
+                device.utilization_unavailable = exc.reason
+            return
+        offset = self.offset_ms()
+        for sample in samples:
+            if len(device.utilization) < self.max_samples:
+                device.utilization.append((offset, sample))
+            else:
+                device.utilization_capped = True
+            # Classified even past the cap, so attribution still sees it.
+            self._observe(sample.pid, device.index, SEEN_BY_UTILIZATION)
+            since = max(since, sample.timestamp_us)
+        self.utilization_since[device.index] = since
 
     def check_processes(self) -> None:
         self.processes.checks += 1
@@ -209,20 +303,10 @@ class _Recorder:
             except NvmlCallError as exc:
                 errors = self.processes.listing_errors
                 errors[exc.reason] = errors.get(exc.reason, 0) + 1
-                continue
-            for pid in pids:
-                classification = self.process_table.classify(pid, self.roots)
-                seen = self.processes.processes.get(pid)
-                if seen is None:
-                    self.processes.processes[pid] = ObservedProcess(
-                        pid, classification, {device.index}, self.offset_ms()
-                    )
-                    continue
-                seen.devices.add(device.index)
-                # A process seen once as a descendant of the command stays
-                # attributed even if it is orphaned before a later check.
-                if _RANK[classification] > _RANK[seen.classification]:
-                    seen.classification = classification
+            else:
+                for pid in pids:
+                    self._observe(pid, device.index, SEEN_BY_PROCESS_LIST)
+            self._utilization(device)
 
 
 def _stop(child: ChildProcess) -> None:
@@ -248,6 +332,7 @@ def record_window(
     max_samples: int = DEFAULT_MAX_SAMPLES,
     gpu_pids: Sequence[int] = (),
     clock: Callable[[], float] = time.monotonic,
+    wall_clock: Callable[[], float] = time.time,
     sleep: Callable[[float], None] = time.sleep,
     launcher: Callable[[Sequence[str]], ChildProcess] = default_launcher,
     process_table: ProcessTable | None = None,
@@ -257,6 +342,10 @@ def record_window(
     Order: start counters, a process check and a power sample, then the
     child starts. Each tick samples power and checks processes until the
     child exits, then a final sample, a final check and the end counters.
+    Each process check also asks NVML for per process utilization samples
+    newer than the last one seen, which catches a process that used the
+    GPU and exited between two checks. ``wall_clock`` must be the clock
+    NVML stamps those samples with (seconds since 1970).
     ``OSError`` from the launcher and ``KeyboardInterrupt`` propagate; on
     an interrupt the child is stopped first.
     """
@@ -266,6 +355,7 @@ def record_window(
         interval_ms=interval_ms,
         max_samples=max_samples,
         clock=clock,
+        wall_clock=wall_clock,
         process_table=process_table or default_process_table(),
         gpu_pids=gpu_pids,
     )
