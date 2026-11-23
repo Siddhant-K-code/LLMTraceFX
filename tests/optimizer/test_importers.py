@@ -14,6 +14,7 @@ from llmtracefx.optimizer.importers import (
     GUIDELLM_TOOL,
     IMPORTED_DERIVED,
     IMPORTED_REPORTED,
+    SERVER_REPORTED,
     VLLM_BENCH_TOOL,
     BenchmarkImportError,
     ImportedArtifactError,
@@ -125,6 +126,7 @@ def test_aiperf_v1_7_layout_and_no_secrets():
     [
         ("vllm_default.json", VLLM_BENCH_TOOL),
         ("vllm_full.json", VLLM_BENCH_TOOL),
+        ("vllm_server_metrics.json", VLLM_BENCH_TOOL),
         ("aiperf_legacy.json", AIPERF_TOOL),
         ("aiperf_v1_7.json", AIPERF_TOOL),
         ("guidellm_v2.json", GUIDELLM_TOOL),
@@ -162,6 +164,12 @@ def vllm(**changes):
             del data[key]
         else:
             data[key] = value
+    return data
+
+
+def server(**changes):
+    data = load("vllm_server_metrics.json")
+    data.update(changes)
     return data
 
 
@@ -244,6 +252,18 @@ def two_phase_profiling():
         (VLLM_BENCH_TOOL, vllm(p99_ttft_ms=10**400), "p99_ttft_ms must be"),
         (VLLM_BENCH_TOOL, vllm(model_id=...), "missing model_id"),
         (VLLM_BENCH_TOOL, load("aiperf_v1_7.json"), "looks like an AIPerf"),
+        (VLLM_BENCH_TOOL, server(server_ttfts=0.2), "server_ttfts must be a list"),
+        (VLLM_BENCH_TOOL, server(server_ttfts=[0.2] * 7), "7 entries.*sent \\(8\\)"),
+        (
+            VLLM_BENCH_TOOL,
+            server(server_queue_times=[0.0] * 7 + [-0.1]),
+            r"server_queue_times\[7\] must be",
+        ),
+        (
+            VLLM_BENCH_TOOL,
+            server(server_ttfts=["0.2"] * 8),
+            r"server_ttfts\[0\] must be",
+        ),
         (AIPERF_TOOL, load("vllm_default.json"), "looks like a `vllm bench"),
         (AIPERF_TOOL, aiperf(was_cancelled=True), "cancelled"),
         (
@@ -942,3 +962,66 @@ def test_cli_import_guidellm_benchmark(tmp_path, capsys):
         cli.main(["import", "guidellm", str(FIXTURES / "guidellm_v2.json")])
     assert exc.value.code == 2
     assert "--benchmark INDEX" in capsys.readouterr().err
+
+
+SERVER_TTFTS = [0.18342, 0.21197, 0.19026, 0.17951, 0.20088, 0.18873, 0.19745, 0.18419]
+
+
+def test_vllm_server_timings_keep_server_provenance():
+    path = FIXTURES / "vllm_server_metrics.json"
+    imported = import_benchmark_file(path, VLLM_BENCH_TOOL)
+    default = import_benchmark_file(FIXTURES / "vllm_default.json", VLLM_BENCH_TOOL)
+
+    server_ttft = imported.metrics["server_ttft_ms"]
+    assert (server_ttft.unit, server_ttft.direction) == ("ms", "lower_is_better")
+    assert server_ttft.provenance == DERIVED
+    assert server_ttft.sample_provenance == SERVER_REPORTED
+    assert server_ttft.sample_count == 8
+    assert server_ttft.stats["mean"].value == pytest.approx(
+        sum(SERVER_TTFTS) / 8 * 1000
+    )
+    assert server_ttft.stats["p50"].value == pytest.approx(188.73)
+    assert server_ttft.stats["max"].value == pytest.approx(211.97)
+    assert server_ttft.stats["p99"].source_key == "server_ttfts"
+    assert any("not comparable to the client" in n for n in server_ttft.notes)
+    queue = imported.metrics["server_queue_time_ms"]
+    assert queue.stats["max"].value == pytest.approx(0.41)
+    assert queue.sample_provenance == SERVER_REPORTED
+    # The client TTFT keeps vLLM's own statistics and label.
+    assert imported.metrics["ttft_ms"] == default.metrics["ttft_ms"]
+    assert {"server_ttfts", "server_queue_times"}.isdisjoint(imported.unmapped_keys)
+    assert "ttfts" in imported.unmapped_keys
+
+
+def test_vllm_server_timings_partial_or_absent(tmp_path):
+    partial = [None, *SERVER_TTFTS[1:]]
+    source = write(
+        tmp_path, server(server_ttfts=partial, server_queue_times=[None] * 8)
+    )
+    imported = import_benchmark_file(source, VLLM_BENCH_TOOL)
+
+    server_ttft = imported.metrics["server_ttft_ms"]
+    assert server_ttft.sample_count == 7
+    assert server_ttft.stats["min"].value == pytest.approx(179.51)
+    assert any("7 of 8 entries" in note for note in server_ttft.notes)
+    # No request has a server queue time, so nothing is summarised.
+    assert "server_queue_time_ms" not in imported.metrics
+    assert "server_queue_times" in imported.unmapped_keys
+
+
+def test_artifact_reader_refuses_relabelled_server_metrics():
+    good = import_benchmark_file(
+        FIXTURES / "vllm_server_metrics.json", VLLM_BENCH_TOOL
+    ).to_dict()
+    for field, value in (
+        ("sample_provenance", IMPORTED_REPORTED),
+        ("provenance", IMPORTED_DERIVED),
+        ("sample_count", ...),
+    ):
+        bad = json.loads(json.dumps(good))
+        if value is ...:
+            del bad["metrics"]["server_ttft_ms"][field]
+        else:
+            bad["metrics"]["server_ttft_ms"][field] = value
+        with pytest.raises(ImportedArtifactError, match="server_ttft_ms"):
+            ImportedBenchmark.from_dict(bad)

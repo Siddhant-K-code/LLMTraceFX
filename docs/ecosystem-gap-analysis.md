@@ -817,6 +817,12 @@ and BurstGPT v2.0 added a `Session ID` column that `replay` ignores.
   where all three are at development stability.
 - AIPerf per-request import: `import aiperf --records profile_export.jsonl`
   computes LLMTraceFX's own percentiles, intervals and goodput (#190).
+- vLLM bench server timings: `import vllm-bench` reads the per-request
+  `server_ttfts` and `server_queue_times` lists that `--save-detailed` writes
+  when the server runs with `--enable-per-request-metrics`, and summarises
+  them into `server_ttft_ms` and `server_queue_time_ms` (`derived`, sample
+  provenance `server_reported`) that `gate` accepts (follow up 3). vLLM
+  writes no summary keys for them.
 - Native Ollama collection: `collect-ollama` and `sweep-ollama` stream
   `/api/chat` or `/api/generate` and record `load_duration`,
   `prompt_eval_duration`, `eval_duration`, `total_duration` and the token
@@ -836,8 +842,8 @@ Ranked by value to the evidence model against cost:
 2. **Dynamo frontend profile with a worker scrape (M).** Its frontend has a
    request counter and KV router hit rates, and engine metrics sit on a
    second port.
-3. **Extend `import vllm-bench` to `server_ttfts` fields (S).** The
-   fields are already in the files users have, and the importer drops them.
+3. **Extend `import vllm-bench` to `server_ttfts` fields (S).** **Built**,
+   see "Built from this refresh".
 4. **NVML instant power and per-process utilization (S, then M).** Timestamped
    instant power is a better sample than the smoothed reading, and per-PID
    utilization closes a contamination blind spot between polls.

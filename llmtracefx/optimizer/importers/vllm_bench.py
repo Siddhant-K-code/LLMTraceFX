@@ -12,6 +12,13 @@ server's ``vllm:spec_decode_*`` counters before and after the run and writes
 ``spec_decode_acceptance_length`` is ``1 + accepted / drafts`` and the
 per-position rates are fractions of drafts. These go to the artifact's
 ``speculative`` section, never to ``metrics``.
+
+When the server runs with ``--enable-per-request-metrics`` and the benchmark
+with ``--save-detailed``, vLLM also writes ``server_ttfts`` and
+``server_queue_times``: one entry per request sent, in seconds, ``null`` where
+the server returned no timing. LLMTraceFX converts them to milliseconds and
+summarises them into ``server_ttft_ms`` and ``server_queue_time_ms``. vLLM
+writes no summary statistics for them.
 """
 
 from __future__ import annotations
@@ -19,9 +26,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ._distribution import nearest_rank_metric
 from .artifact import (
     IMPORTED_REPORTED,
     METRIC_DIRECTIONS,
+    SERVER_REPORTED,
     SPECULATIVE_NOT_REPORTED,
     SPECULATIVE_REPORTED,
     SPECULATIVE_VALUES,
@@ -91,6 +100,31 @@ _METRIC_NOTES = {
         "over requests.",
     ),
     "itl": ("Gaps between streamed chunks, pooled over all requests.",),
+}
+
+# Per-request lists of server timings in seconds -> metric name.
+_SERVER_LISTS = {
+    "server_ttfts": "server_ttft_ms",
+    "server_queue_times": "server_queue_time_ms",
+}
+_SERVER_COMMON_NOTES = (
+    "Per-request timings the vLLM server returned (vllm serve "
+    "--enable-per-request-metrics), saved in seconds by vllm bench serve "
+    "--save-detailed and converted to ms.",
+    "LLMTraceFX computed these statistics over the requests that carry a "
+    "server value; percentiles are nearest rank.",
+)
+_SERVER_NOTES = {
+    "server_ttft_ms": (
+        "The server's time_to_first_token_ms runs from when the scheduler "
+        "scheduled the request to its first output token. It excludes queue "
+        "time, HTTP handling, detokenization and the network, so it is not "
+        "comparable to the client ttft_ms.",
+    ),
+    "server_queue_time_ms": (
+        "The server's queue_time_ms is the time the request waited in the "
+        "scheduler queue before it was scheduled.",
+    ),
 }
 
 
@@ -205,6 +239,50 @@ def _metrics(data: dict[str, Any], consumed: set[str]) -> dict[str, ImportedMetr
             direction=directions[key],
             stats={"value": ImportedValue(_non_negative(data[key], key), key)},
             notes=("Computed by vllm bench serve over the benchmark duration.",),
+        )
+    return metrics
+
+
+def _server_metrics(
+    data: dict[str, Any], consumed: set[str], completed: int
+) -> dict[str, ImportedMetric]:
+    directions = METRIC_DIRECTIONS[VLLM_BENCH_TOOL]
+    sent = completed + _count(data, "failed") if "failed" in data else None
+    metrics: dict[str, ImportedMetric] = {}
+    for key, name in _SERVER_LISTS.items():
+        if key not in data:
+            continue
+        raw = data[key]
+        if not isinstance(raw, list):
+            raise BenchmarkImportError(f"{key} must be a list")
+        if sent is not None and len(raw) != sent:
+            raise BenchmarkImportError(
+                f"{key} has {len(raw)} entries; vllm bench serve writes one per "
+                f"request sent ({sent})"
+            )
+        values = [
+            _non_negative(value, f"{key}[{index}]") * 1000.0
+            for index, value in enumerate(raw)
+            if value is not None
+        ]
+        if not values:
+            continue  # Left in unmapped_keys: the server timed no request.
+        consumed.add(key)
+        notes: tuple[str, ...] = _SERVER_COMMON_NOTES + _SERVER_NOTES[name]
+        if len(values) != completed:
+            notes += (
+                f"{len(values)} of {len(raw)} entries carry a server value and "
+                f"{completed} requests completed, so the statistics do not "
+                "cover every completed request.",
+            )
+        metrics[name] = nearest_rank_metric(
+            values,
+            source_key=key,
+            unit="ms",
+            direction=directions[name],
+            sample_provenance=SERVER_REPORTED,
+            mean_stat="mean",
+            notes=notes,
         )
     return metrics
 
@@ -337,6 +415,7 @@ def import_vllm_bench(
         *_ENDPOINT_KEYS,
     }
     metrics = _metrics(data, consumed)
+    metrics.update(_server_metrics(data, consumed, completed))
     speculative = _speculative(data, consumed)
     endpoint = {key: _optional_str(data, key) for key in _ENDPOINT_KEYS}
     run = {

@@ -30,16 +30,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from .._artifact_io import reject_non_finite_json_constant
+from ._distribution import nearest_rank_metric
 from .artifact import (
     AIPERF_RECORDS_TOOL,
     DERIVED,
     IMPORTED_REPORTED,
     METRIC_DIRECTIONS,
-    NEAREST_RANK,
     SLO_TARGETS,
     BenchmarkImportError,
     ImportedBenchmark,
-    ImportedInterval,
     ImportedMetric,
     ImportedSource,
     ImportedTotal,
@@ -68,7 +67,6 @@ _REQUIRED_METADATA: dict[str, type] = {
     "benchmark_phase": str,
 }
 _PHASES = ("warmup", "profiling")
-_PERCENTILES = (50, 90, 95, 99)
 _SLO_METRICS = {
     "ttft_ms": "time_to_first_token",
     "tpot_ms": "inter_token_latency",
@@ -276,49 +274,15 @@ def _check_summary(
         )
 
 
-def _interval(found: Mapping[str, Any]) -> ImportedInterval:
-    if found["withheld_reason"] is not None:
-        return ImportedInterval(None, None, withheld_reason=found["withheld_reason"])
-    return ImportedInterval(
-        lower=found["lower"],
-        upper=found["upper"],
-        lower_rank=found["lower_rank"],
-        upper_rank=found["upper_rank"],
-        coverage=found["coverage"],
-    )
-
-
 def _distribution(tag: str, values: list[float]) -> ImportedMetric:
-    # Imported here so reading artifacts (the gate) does not load the sweep code.
-    from ..load.sweep import CONFIDENCE_LEVEL, INTERVAL_METHOD, percentile_interval
-
-    ordered = sorted(values)
-    key = f"metrics.{tag}.value"
-    stats = {
-        "avg": ImportedValue(math.fsum(ordered) / len(ordered), key),
-        "min": ImportedValue(ordered[0], key),
-        **{
-            f"p{p}": ImportedValue(
-                ordered[max(1, math.ceil(p / 100.0 * len(ordered))) - 1], key
-            )
-            for p in _PERCENTILES
-        },
-        "max": ImportedValue(ordered[-1], key),
-    }
-    return ImportedMetric(
+    return nearest_rank_metric(
+        values,
+        source_key=f"metrics.{tag}.value",
         unit=_DISTRIBUTIONS[tag],
         direction=METRIC_DIRECTIONS[AIPERF_RECORDS_TOOL][tag],
-        stats=stats,
-        provenance=DERIVED,
-        notes=_COMMON_NOTES + _METRIC_NOTES.get(tag, ()),
-        sample_count=len(ordered),
         sample_provenance=IMPORTED_REPORTED,
-        statistic=NEAREST_RANK,
-        intervals={
-            f"p{p}": _interval(percentile_interval(ordered, p)) for p in _PERCENTILES
-        },
-        interval_level=CONFIDENCE_LEVEL,
-        interval_method=INTERVAL_METHOD,
+        mean_stat="avg",
+        notes=_COMMON_NOTES + _METRIC_NOTES.get(tag, ()),
     )
 
 
