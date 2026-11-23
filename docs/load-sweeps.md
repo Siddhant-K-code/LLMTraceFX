@@ -171,7 +171,8 @@ template on both of its APIs.
 ### `sweep-llama-cpp`
 
 Sends each request to `llama-server`'s native `/completion` endpoint
-(ggml-org/llama.cpp at `f8caa5ea30b5775512906ae3b7ee53b21a7a6e1d`, release b12535).
+(ggml-org/llama.cpp at `f8caa5ea30b5775512906ae3b7ee53b21a7a6e1d`,
+release b12535).
 
 ```bash
 llmtracefx-optimizer sweep-llama-cpp \
@@ -216,7 +217,7 @@ time, so they are not the client's TTFT and decode time. Token counts
 `server_accepted_draft_tokens` hold `timings.draft_n` and
 `timings.draft_n_accepted`, also `provider_reported`. The server sends them
 only when it drafted at least one token
-([`server_slot_stats::to_json`](https://github.com/ggml-org/llama.cpp/blob/f8caa5ea30b5775512906ae3b7ee53b21a7a6e1d/tools/server/server-common.cpp#L146-L168)),
+([`server_slot_stats::to_json`](https://github.com/ggml-org/llama.cpp/blob/f8caa5ea30b5775512906ae3b7ee53b21a7a6e1d/tools/server/server-common.cpp#L146-L167)),
 so without a draft model they stay null. No acceptance rate is derived from
 them. `finish_reason` holds the raw `stop_type`: `eos` and
 `word` count as `stop`, `limit` counts as `length`, and anything else fails

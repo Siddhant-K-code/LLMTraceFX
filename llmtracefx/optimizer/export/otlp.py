@@ -2,8 +2,9 @@
 
 The output is one ``TracesData`` object per line, the format of the
 OpenTelemetry file exporter. The Collector's ``otlp_json_file`` receiver
-(``start_at: beginning``) reads it directly, and the same object can be POSTed to any OTLP/HTTP
-``/v1/traces`` endpoint with ``Content-Type: application/json``.
+(``start_at: beginning``) reads it directly, and the same object can be
+POSTed to any OTLP/HTTP ``/v1/traces`` endpoint with
+``Content-Type: application/json``.
 
 OTLP/JSON differs from the protobuf JSON mapping in two ways that matter
 here: trace and span IDs are lowercase hex, not base64, and 64-bit

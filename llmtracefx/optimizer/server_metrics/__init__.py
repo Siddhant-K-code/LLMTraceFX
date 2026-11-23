@@ -4,9 +4,10 @@ Client timing includes the network and cannot split queueing from
 prefill. vLLM, SGLang, llama.cpp, TGI (legacy, archived upstream) and
 TensorRT-LLM record those phases themselves and expose them on a Prometheus
 endpoint (``/metrics``, or ``/prometheus/metrics`` for ``trtllm-serve``).
-Scraping before and after a measured request and differencing the two scrapes recovers the server's own view,
-provided nothing else touched the server in between. :func:`diff_snapshots`
-checks that and refuses to attribute a window it cannot vouch for.
+Scraping before and after a measured request and differencing the two
+scrapes recovers the server's own view, provided nothing else touched the
+server in between. :func:`diff_snapshots` checks that and refuses to
+attribute a window it cannot vouch for.
 """
 
 from .diff import (

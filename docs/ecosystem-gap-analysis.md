@@ -163,8 +163,9 @@ scrape window does not bracket the run.
 
 `export otlp` turns a record, and optionally its API evidence and server
 metrics evidence, into one OTLP/JSON `TracesData` line. The output follows the
-file exporter format, so the OpenTelemetry Collector `otlp_json_file` receiver
-can read it with `start_at: beginning` (see the README for a full config). Spans use the GenAI semantic conventions (`gen_ai.operation.name`,
+file exporter format, so the OpenTelemetry Collector `otlp_json_file`
+receiver can read it with `start_at: beginning` (the README has a full
+config). Spans use the GenAI semantic conventions (`gen_ai.operation.name`,
 `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.usage.*`,
 `gen_ai.response.time_to_first_chunk`). Every timing keeps its provenance as
 `llmtracefx.*` attributes.
@@ -214,10 +215,10 @@ Where it departs from the conventions on purpose:
   were, so every value would be `unknown`.
 
 The output was checked with OpenTelemetry Collector contrib 0.165.0: the
-`otlp_json_file` receiver (`start_at: beginning`) parsed it with no errors, the `prometheus` exporter
-produced the expected `_bucket`, `_sum` and `_count` series, and the `file`
-exporter wrote it back unchanged apart from the receiver's own file name
-metadata.
+`otlp_json_file` receiver (`start_at: beginning`) parsed it with no errors,
+the `prometheus` exporter produced the expected `_bucket`, `_sum` and
+`_count` series, and the `file` exporter wrote it back unchanged apart from
+the receiver's own file name metadata.
 
 ### `gate` and the perf gate Action
 
@@ -834,8 +835,7 @@ and BurstGPT v2.0 added a `Session ID` column that `replay` ignores.
 - TGI is a legacy profile (follow up 17): the `--runtime` and
   `--server-metrics-runtime` help says so, and TGI evidence carries a note
   that the server is archived upstream, which `server-metrics diff` also
-  prints to stderr. Parsing, attribution and exit codes
-  are unchanged.
+  prints to stderr. Parsing, attribution and exit codes are unchanged.
 
 ## Follow ups not built here
 
@@ -864,10 +864,10 @@ Ranked by value to the evidence model against cost:
     `import aiperf --records` lets `gate` use LLMTraceFX's own percentiles,
     intervals and goodput instead of `imported_derived` ones. See
     [`import vllm-bench` and `import aiperf`](#import-vllm-bench-and-import-aiperf).
-7. **Re-pins and the Collector receiver rename (S). Built.** Re-pin vLLM, SGLang,
-    llama.cpp and the GenAI conventions to the commits above, and document
-    `otlp_json_file` with `start_at: beginning`. See "Built from this
-    refresh".
+7. **Re-pins and the Collector receiver rename (S). Built.** Re-pin vLLM,
+    SGLang, llama.cpp and the GenAI conventions to the commits above, and
+    document `otlp_json_file` with `start_at: beginning`. See "Built from
+    this refresh".
 8. **`hw.energy` alongside `llmtracefx.gpu.energy` (S).** Backends that know
     the hardware conventions could chart LLMTraceFX energy with no mapping.
 9. **Record the dcgm-exporter collect interval (S).** The bracket width

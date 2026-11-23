@@ -107,7 +107,7 @@ labels ``measured_native``. ``server_draft_tokens`` and
 ``server_accepted_draft_tokens`` are ``timings.draft_n`` and
 ``timings.draft_n_accepted``, which the server sends only when speculative
 decoding drafted at least one token (``server_slot_stats::to_json`` in
-``tools/server/server-common.cpp`` L146-168 at ``LLAMA_CPP_COMMIT``). The
+``tools/server/server-common.cpp`` L146-167 at ``LLAMA_CPP_COMMIT``). The
 other ``server_*`` fields of the HTTP worker are never filled here and
 carry no label."""
 
