@@ -25,6 +25,7 @@ from llmtracefx.optimizer.server_metrics import (
     ExpositionParseError,
     ServerMetricsError,
     ServerMetricsSnapshot,
+    attach_worker_evidence,
     capture_settled_after,
     capture_snapshot,
     detect_runtime,
@@ -1368,3 +1369,493 @@ def test_collect_api_dry_run_validates_the_metrics_url(
     )
     assert code == 1
     assert "query" in err
+
+
+# --- NVIDIA Dynamo -----------------------------------------------------------
+
+# Names, types and label sets follow ai-dynamo/dynamo 8c7ca7b (v1.6.2):
+# lib/llm/src/http/service/metrics.rs registers the frontend families and
+# lib/llm/src/kv_router/metrics.rs the router ones. The Rust client sorts
+# label names, and a labelled family has no series until its first use.
+DYNAMO_URL = "http://127.0.0.1:8000/metrics"
+WORKER_URL = "http://127.0.0.1:8081/metrics"
+DYNAMO_MODEL = 'model="Qwen/Qwen3-0.6B"'
+ROUTER_LABELS = (
+    'dynamo_component="backend",dynamo_namespace="dynamo",'
+    'router_id="7587890123456789",worker_id="694d98a1b2c3d4e5"'
+)
+
+
+def dynamo_histogram(name: str, labels: str, count: int, total: float) -> list[str]:
+    return [
+        f"# TYPE {name} histogram",
+        f'{name}_bucket{{{labels},le="+Inf"}} {count}',
+        f"{name}_sum{{{labels}}} {total}",
+        f"{name}_count{{{labels}}} {count}",
+    ]
+
+
+def dynamo_body(
+    *,
+    finished: int | None,
+    started: int | None = None,
+    errors: int = 0,
+    active: int = 0,
+    start_time: float = 1.7e9,
+    prefix: str = "dynamo_frontend_",
+    funnel: dict[str, tuple[int, int, int, int]] | None = None,
+) -> bytes:
+    """A frontend scrape after ``finished`` requests, each with a 100 token
+    prompt, 20 output tokens, 50 ms TTFT, 400 ms duration and 64 cached
+    tokens. ``funnel`` maps a phase to cumulative F0, F2, F3 and F4."""
+    lines = [
+        "# TYPE dynamo_frontend_metrics_start_time_seconds gauge",
+        f"dynamo_frontend_metrics_start_time_seconds {start_time}",
+    ]
+    if finished is None:
+        return ("\n".join(lines) + "\n").encode()
+    started = finished if started is None else started
+    ok = finished - errors
+    route = 'endpoint="chat_completions",'
+    lines += [
+        f"# TYPE {prefix}requests_total counter",
+        f'{prefix}requests_total{{{route}error_type="",{DYNAMO_MODEL},'
+        f'request_type="stream",status="success"}} {ok}',
+    ]
+    if errors:
+        lines.append(
+            f'{prefix}requests_total{{{route}error_type="overload",{DYNAMO_MODEL},'
+            f'request_type="stream",status="error"}} {errors}'
+        )
+    lines += [
+        f"# TYPE {prefix}requests_started_total counter",
+        f"{prefix}requests_started_total{{{route}{DYNAMO_MODEL},"
+        f'request_type="stream"}} {started}',
+        f"# TYPE {prefix}active_requests gauge",
+        f"{prefix}active_requests{{{DYNAMO_MODEL}}} {active}",
+        f"# TYPE {prefix}inflight_requests gauge",
+        f"{prefix}inflight_requests{{{DYNAMO_MODEL}}} {active}",
+        f"# TYPE {prefix}input_tokens_total counter",
+        f"{prefix}input_tokens_total{{{DYNAMO_MODEL}}} {started * 100}",
+        f"# TYPE {prefix}output_tokens_total counter",
+        f"{prefix}output_tokens_total{{{DYNAMO_MODEL}}} {ok * 20}",
+        *dynamo_histogram(
+            f"{prefix}request_duration_seconds", DYNAMO_MODEL, finished, finished * 0.4
+        ),
+        *dynamo_histogram(
+            f"{prefix}time_to_first_token_seconds", DYNAMO_MODEL, ok, ok * 0.05
+        ),
+        *dynamo_histogram(
+            f"{prefix}inter_token_latency_seconds", DYNAMO_MODEL, ok * 19, ok * 0.19
+        ),
+        *dynamo_histogram(f"{prefix}input_sequence_tokens", DYNAMO_MODEL, ok, ok * 100),
+        *dynamo_histogram(f"{prefix}output_sequence_tokens", DYNAMO_MODEL, ok, ok * 20),
+        *dynamo_histogram(f"{prefix}cached_tokens", DYNAMO_MODEL, ok, ok * 64),
+        *dynamo_histogram(
+            "dynamo_component_router_kv_hit_rate", ROUTER_LABELS, ok, ok * 0.64
+        ),
+        *dynamo_histogram(
+            "dynamo_router_overhead_total_ms",
+            'router_id="7587890123456789"',
+            ok,
+            ok * 1.5,
+        ),
+        "# TYPE dynamo_component_router_requests_total counter",
+        f"dynamo_component_router_requests_total{{{ROUTER_LABELS}}} {ok}",
+    ]
+    funnel = (
+        {"aggregated": (ok * 100, ok * 80, ok * 64, ok * 63)}
+        if funnel is None
+        else funnel
+    )
+    names = (
+        "best_eligible_cached_prefix_tokens",
+        "selected_cached_prefix_tokens",
+        "worker_reused_tokens",
+    )
+    lines.append("# TYPE dynamo_component_router_input_sequence_tokens histogram")
+    for phase, (f0, *_rest) in funnel.items():
+        labels = f'{ROUTER_LABELS},{DYNAMO_MODEL},phase="{phase}"'
+        lines += dynamo_histogram(
+            "dynamo_component_router_input_sequence_tokens", labels, ok, f0
+        )[1:]
+    for index, name in enumerate(names, start=1):
+        family = f"dynamo_component_router_kv_{name}_total"
+        lines.append(f"# TYPE {family} counter")
+        for phase, steps in funnel.items():
+            labels = f'{ROUTER_LABELS},{DYNAMO_MODEL},phase="{phase}"'
+            lines.append(f"{family}{{{labels}}} {steps[index]}")
+    return ("\n".join(lines) + "\n").encode()
+
+
+def dynamo_snap(
+    body: bytes, captured_at: str = "2026-01-01T00:00:00Z", url: str = DYNAMO_URL
+) -> Any:
+    return snapshot_from_body(
+        url, body, "text/plain", captured_at=captured_at, scrape_duration_ms=1.0
+    )
+
+
+def dynamo_worker_body(*, requests: int, running: int = 0) -> bytes:
+    """A vLLM worker's DYN_SYSTEM_PORT scrape: the engine's own families
+    with Dynamo's hierarchy labels added, beside dynamo_component_*."""
+    body = vllm_body(
+        requests=requests,
+        ttft_sum=requests * 0.03,
+        generated=requests * 20,
+        running=running,
+    ).decode()
+    body = body.replace(
+        'engine="0",',
+        'dynamo_component="backend",dynamo_namespace="dynamo",engine="0",',
+    )
+    return (
+        body
+        + "# TYPE dynamo_component_requests_total counter\n"
+        + 'dynamo_component_requests_total{dynamo_component="backend",'
+        + f'dynamo_endpoint="generate",dynamo_namespace="dynamo"}} {requests}\n'
+    ).encode()
+
+
+def dynamo_window(before: bytes, after: bytes, **kwargs: Any) -> dict[str, Any]:
+    return diff_snapshots(
+        dynamo_snap(before),
+        dynamo_snap(after, "2026-01-01T00:00:01Z"),
+        expected_requests=1,
+        **kwargs,
+    )
+
+
+def test_dynamo_frontend_window_is_attributed_with_router_funnel() -> None:
+    evidence = dynamo_window(dynamo_body(finished=2), dynamo_body(finished=3))
+
+    assert evidence["runtime"] == "dynamo"
+    attribution = evidence["attribution"]
+    assert attribution["status"] == "attributed"
+    assert attribution["request_counter"] == "dynamo_frontend_requests"
+    assert [c["family"] for c in attribution["request_checks"]] == [
+        "dynamo_frontend_requests",
+        "dynamo_frontend_requests_started",
+        "dynamo_frontend_request_duration_seconds",
+    ]
+    h = evidence["highlights"]
+    assert h["time_to_first_token"]["value"] == pytest.approx(50.0)
+    assert h["time_to_first_token"]["provenance"] == "measured_native"
+    assert h["e2e_latency"]["value"] == pytest.approx(400.0)
+    assert h["inter_token_latency"]["value"] == pytest.approx(10.0)
+    assert h["inter_token_latency"]["statistic"] == "mean"
+    assert h["prompt_tokens"]["value"] == 100
+    assert h["generation_tokens"]["value"] == 20
+    assert h["cached_prompt_tokens_per_request"]["value"] == 64
+    assert h["kv_router_predicted_hit_rate"]["value"] == pytest.approx(0.64)
+    assert h["kv_router_predicted_hit_rate"]["unit"] == "ratio"
+    assert h["kv_router_overhead"] == {
+        **h["kv_router_overhead"],
+        "value": 1.5,
+        "unit": "ms",
+    }
+    assert h["failed_requests"]["value"] == 0
+    assert h["failed_requests"]["breakdown"] == {"error_type": {}}
+    funnel_input = h["kv_router_input_tokens"]
+    assert funnel_input["value"] == 100
+    assert funnel_input["source"] == "dynamo_component_router_input_sequence_tokens_sum"
+    assert h["kv_router_worker_reused_tokens"]["breakdown"] == {
+        "phase": {"aggregated": 63}
+    }
+    reused = h["kv_router_worker_reused_token_ratio"]
+    assert reused["value"] == pytest.approx(0.63)
+    assert reused["provenance"] == "derived"
+    assert reused["statistic"] == "ratio_of_deltas"
+    assert reused["source"] == (
+        "dynamo_component_router_kv_worker_reused_tokens / "
+        "dynamo_component_router_input_sequence_tokens_sum"
+    )
+    assert reused["match"] == {"phase": ["aggregated", "prefill"]}
+    assert h["kv_router_best_eligible_cached_prefix_ratio"]["value"] == pytest.approx(
+        0.8
+    )
+    assert h["kv_router_selected_cached_prefix_ratio"]["value"] == pytest.approx(0.64)
+    # A router estimate is never reported as the engine's measured hit rate.
+    assert "prefix_cache_hit_rate" not in h
+    assert "cached_prompt_token_ratio" not in h
+    assert "router_id" not in json.dumps(evidence["counters"])
+
+
+def test_dynamo_funnel_ratios_skip_the_disaggregated_decode_hop() -> None:
+    def body(scale: int) -> bytes:
+        return dynamo_body(
+            finished=scale,
+            funnel={
+                "prefill": (scale * 100, scale * 90, scale * 70, scale * 60),
+                "decode": (scale * 100, 0, 0, 0),
+            },
+        )
+
+    h = dynamo_window(body(1), body(2))["highlights"]
+
+    assert h["kv_router_input_tokens"]["breakdown"] == {
+        "phase": {"decode": 100, "prefill": 100}
+    }
+    assert h["kv_router_worker_reused_token_ratio"]["value"] == pytest.approx(0.6)
+    assert h["kv_router_selected_cached_prefix_ratio"]["value"] == pytest.approx(0.7)
+
+
+def test_dynamo_without_kv_routing_reports_no_funnel_ratios() -> None:
+    evidence = dynamo_window(
+        dynamo_body(finished=2, funnel={}), dynamo_body(finished=3, funnel={})
+    )
+    h = evidence["highlights"]
+    assert evidence["attribution"]["status"] == "attributed"
+    assert not [k for k in h if k.endswith("_ratio")]
+
+
+def test_dynamo_failed_requests_are_split_by_error_type() -> None:
+    evidence = dynamo_window(dynamo_body(finished=2), dynamo_body(finished=3, errors=1))
+    failed = evidence["highlights"]["failed_requests"]
+    assert evidence["attribution"]["status"] == "attributed"
+    assert failed["value"] == 1
+    assert failed["match"] == {"status": "error"}
+    assert failed["breakdown"] == {"error_type": {"overload": 1}}
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "status"),
+    [
+        # A request already running at the before scrape finished inside it.
+        (
+            dynamo_body(finished=2, started=3, active=1),
+            dynamo_body(finished=4),
+            "contaminated",
+        ),
+        # The request started but the frontend had not counted its finish.
+        (
+            dynamo_body(finished=2),
+            dynamo_body(finished=2, started=3, active=1),
+            "incomplete",
+        ),
+        # The exporter's start time moved: the frontend restarted.
+        (
+            dynamo_body(finished=2),
+            dynamo_body(finished=3, start_time=1.8e9),
+            "counter_reset",
+        ),
+        # No request has ever finished, so the labelled families are absent.
+        (dynamo_body(finished=None), dynamo_body(finished=None), "stats_not_enabled"),
+    ],
+)
+def test_dynamo_unattributable_windows(
+    before: bytes, after: bytes, status: str
+) -> None:
+    evidence = dynamo_window(before, after)
+    assert evidence["attribution"]["status"] == status
+    assert evidence["highlights"] == {}
+
+
+def test_dynamo_custom_metric_prefix_is_detected_and_refused() -> None:
+    evidence = dynamo_window(
+        dynamo_body(finished=2, prefix="nim_"), dynamo_body(finished=3, prefix="nim_")
+    )
+    attribution = evidence["attribution"]
+    assert evidence["runtime"] == "dynamo"
+    assert attribution["status"] == "stats_not_enabled"
+    assert "DYN_METRICS_PREFIX" in attribution["reason"]
+
+
+def test_dynamo_worker_window_is_nested_with_its_own_attribution() -> None:
+    frontend = dynamo_window(dynamo_body(finished=2), dynamo_body(finished=3))
+    worker = diff_snapshots(
+        dynamo_snap(dynamo_worker_body(requests=2), url=WORKER_URL),
+        dynamo_snap(
+            dynamo_worker_body(requests=3), "2026-01-01T00:00:01Z", url=WORKER_URL
+        ),
+        expected_requests=1,
+    )
+
+    combined = attach_worker_evidence(frontend, worker)
+
+    assert combined["attribution"] == frontend["attribution"]
+    assert combined["worker"]["runtime"] == "vllm"
+    assert combined["worker"]["endpoint"] == WORKER_URL
+    assert combined["worker"]["attribution"]["status"] == "attributed"
+    assert combined["worker"]["highlights"]["time_to_first_token"]["value"] == (
+        pytest.approx(30.0)
+    )
+    assert "dynamo_namespace" not in json.dumps(combined["worker"]["counters"])
+    assert combined["notes"][-1].startswith("worker holds the vllm engine window")
+    assert "worker" not in frontend
+
+
+def test_attach_worker_evidence_refuses_mismatched_pairs() -> None:
+    frontend = dynamo_window(dynamo_body(finished=2), dynamo_body(finished=3))
+    worker = diff_snapshots(
+        dynamo_snap(dynamo_worker_body(requests=2), url=WORKER_URL),
+        dynamo_snap(
+            dynamo_worker_body(requests=3), "2026-01-01T00:00:01Z", url=WORKER_URL
+        ),
+        expected_requests=1,
+    )
+    with pytest.raises(ServerMetricsError, match="Dynamo frontend window"):
+        attach_worker_evidence(worker, worker)
+    with pytest.raises(ServerMetricsError, match="DYN_SYSTEM_PORT"):
+        attach_worker_evidence(frontend, frontend)
+    with pytest.raises(ServerMetricsError, match="share one endpoint"):
+        attach_worker_evidence(frontend, {**worker, "endpoint": DYNAMO_URL})
+    late = {**worker, "before": {"captured_at": "2026-01-01T00:00:05Z"}}
+    late["after"] = {"captured_at": "2026-01-01T00:00:06Z"}
+    with pytest.raises(ServerMetricsError, match="does not overlap"):
+        attach_worker_evidence(frontend, late)
+
+
+def test_dynamo_frontend_and_worker_scrapes_detect_differently() -> None:
+    frontend = parse_exposition(dynamo_body(finished=None).decode())
+    worker = parse_exposition(dynamo_worker_body(requests=1).decode())
+    assert detect_runtime(frontend) == "dynamo"
+    assert detect_runtime(worker) == "vllm"
+
+
+def _write_dynamo_pair(tmp_path: Path, worker_running_after: int = 0) -> list[str]:
+    paths = {name: tmp_path / f"{name}.json" for name in ("b", "a", "wb", "wa")}
+    dynamo_snap(dynamo_body(finished=2)).write_json(paths["b"])
+    dynamo_snap(dynamo_body(finished=3), "2026-01-01T00:00:01Z").write_json(paths["a"])
+    dynamo_snap(dynamo_worker_body(requests=2), url=WORKER_URL).write_json(paths["wb"])
+    dynamo_snap(
+        dynamo_worker_body(requests=3, running=worker_running_after),
+        "2026-01-01T00:00:01Z",
+        url=WORKER_URL,
+    ).write_json(paths["wa"])
+    return [
+        "server-metrics",
+        "diff",
+        "--before",
+        str(paths["b"]),
+        "--after",
+        str(paths["a"]),
+        "--worker-before",
+        str(paths["wb"]),
+        "--worker-after",
+        str(paths["wa"]),
+        "--expected-requests",
+        "1",
+        "--output",
+        str(tmp_path / "evidence.json"),
+    ]
+
+
+def test_diff_cli_nests_a_dynamo_worker_window(tmp_path: Path) -> None:
+    code, out, err = run_cli(_write_dynamo_pair(tmp_path))
+    assert code == 0, err
+    assert "Server runtime: dynamo (auto)" in out
+    assert f"Worker window ({WORKER_URL}):" in out
+    assert "  Server runtime: vllm (auto)" in out
+    evidence = json.loads((tmp_path / "evidence.json").read_text())
+    assert evidence["worker"]["attribution"]["status"] == "attributed"
+
+
+def test_diff_cli_exits_two_when_the_worker_window_is_not_attributed(
+    tmp_path: Path,
+) -> None:
+    code, out, _ = run_cli(_write_dynamo_pair(tmp_path, worker_running_after=1))
+    assert code == 2
+    assert "Attribution: attributed" in out
+    assert "  Attribution: incomplete" in out
+
+
+def test_diff_cli_needs_both_worker_snapshots(tmp_path: Path) -> None:
+    argv = _write_dynamo_pair(tmp_path)
+    index = argv.index("--worker-after")
+    code, _, err = run_cli(argv[:index] + argv[index + 2 :])
+    assert code == 1
+    assert "--worker-before and --worker-after go together" in err
+
+
+def test_collect_api_scrapes_a_dynamo_frontend_and_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SM_TEST_KEY", "not-a-real-key")
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", _Transport)
+    scrapes = _patch_scrapes(
+        monkeypatch,
+        [
+            dynamo_body(finished=2),
+            dynamo_worker_body(requests=2),
+            dynamo_body(finished=3),
+            dynamo_worker_body(requests=3),
+        ],
+    )
+
+    code, out, err = run_cli(
+        _collect_argv(
+            tmp_path,
+            "--server-metrics-url",
+            DYNAMO_URL,
+            "--server-metrics-worker-url",
+            WORKER_URL,
+        )
+    )
+
+    assert code == 0, err
+    assert scrapes() == 4
+    assert f"Worker window ({WORKER_URL}):" in out
+    evidence = json.loads(
+        (tmp_path / "artifacts" / "server_metrics_evidence.json").read_text()
+    )
+    assert evidence["runtime"] == "dynamo"
+    assert evidence["attribution"]["status"] == "attributed"
+    assert evidence["worker"]["runtime"] == "vllm"
+    assert evidence["worker"]["attribution"]["status"] == "attributed"
+
+
+@pytest.mark.parametrize(
+    ("bodies", "message"),
+    [
+        ([vllm_body(requests=1, ttft_sum=0.1, generated=1)], "read as 'vllm'"),
+        ([dynamo_body(finished=1), dynamo_body(finished=1)], "DYN_SYSTEM_PORT"),
+    ],
+)
+def test_collect_api_refuses_a_bad_dynamo_pair_before_the_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bodies: list[bytes], message: str
+) -> None:
+    monkeypatch.setenv("SM_TEST_KEY", "not-a-real-key")
+
+    class Exploding:
+        def open_stream(self, request: Any) -> Any:
+            raise AssertionError("no request should be sent")
+
+    monkeypatch.setattr(cli, "UrllibStreamingTransport", Exploding)
+    _patch_scrapes(monkeypatch, bodies)
+
+    code, _, err = run_cli(
+        _collect_argv(
+            tmp_path,
+            "--server-metrics-url",
+            DYNAMO_URL,
+            "--server-metrics-worker-url",
+            WORKER_URL,
+        )
+    )
+
+    assert code == 1
+    assert message in err
+
+
+def test_collect_api_worker_url_needs_a_frontend_url(tmp_path: Path) -> None:
+    code, _, err = run_cli(
+        _collect_argv(tmp_path, "--server-metrics-worker-url", WORKER_URL, "--dry-run")
+    )
+    assert code == 1
+    assert "needs --server-metrics-url" in err
+
+
+def test_collect_api_dry_run_records_the_worker_url(tmp_path: Path) -> None:
+    code, out, err = run_cli(
+        _collect_argv(
+            tmp_path,
+            "--server-metrics-url",
+            DYNAMO_URL,
+            "--server-metrics-worker-url",
+            WORKER_URL,
+            "--dry-run",
+        )
+    )
+    assert code == 0, err
+    assert json.loads(out)["server_metrics_worker_url"] == WORKER_URL

@@ -159,6 +159,13 @@ the request, and it deletes any `server_metrics_evidence.json` left by an
 earlier run in the same directory. `export` also refuses server evidence whose
 scrape window does not bracket the run.
 
+An NVIDIA Dynamo frontend has its own profile. `--server-metrics-worker-url`
+(or `server-metrics diff --worker-before --worker-after`) adds one worker's
+`DYN_SYSTEM_PORT` scrape, diffed with the engine's profile and nested under
+`worker` with its own attribution. The top-level attribution is the
+frontend's alone. `export otlp-metrics` has no checked mapping for Dynamo
+yet, so it notes the runtime and maps nothing.
+
 ### `export otlp` and `export perfetto`
 
 `export otlp` turns a record, and optionally its API evidence and server
@@ -688,9 +695,11 @@ values, not diffed.
   so a profile needs a "stats not enabled" result.
 - Dynamo's frontend exposes `dynamo_frontend_requests_total`,
   `time_to_first_token_seconds`, `inter_token_latency_seconds`,
-  `queued_requests` and KV router metrics such as `kv_hit_rate`
+  `queued_requests` and KV router metrics such as
+  `dynamo_component_router_kv_hit_rate`
   ([`prometheus_names.rs`](https://github.com/ai-dynamo/dynamo/blob/8c7ca7b348c26c2d012c5767972690588dea7f52/lib/runtime/src/metrics/prometheus_names.rs#L173-L290)).
   Engine metrics stay on a separate worker port, so a run needs two scrapes.
+  Now built, see "Built from this refresh".
 
 #### Benchmark harnesses and result formats
 
@@ -865,6 +874,39 @@ and BurstGPT v2.0 added a `Session ID` column that `replay` ignores.
   `expected_max_overhead_ms` and `min_command_ms_for_required_share`
   (follow up 9, default from
   [`defaults.go#L27`](https://github.com/NVIDIA/dcgm-exporter/blob/4e663a526c4624ad0e18ad816f09b7be2c5348a7/internal/pkg/appconfig/defaults.go#L27)).
+- NVIDIA Dynamo profile with a worker scrape (follow up 2), checked against
+  `ai-dynamo/dynamo` at
+  [`8c7ca7b`](https://github.com/ai-dynamo/dynamo/tree/8c7ca7b348c26c2d012c5767972690588dea7f52).
+  The frontend counts `requests_started_total` and raises `active_requests`
+  when a request is admitted, and counts `requests_total` (with `status` and
+  `error_type`) and observes `request_duration_seconds` when it ends
+  ([`metrics.rs`](https://github.com/ai-dynamo/dynamo/blob/8c7ca7b348c26c2d012c5767972690588dea7f52/lib/llm/src/http/service/metrics.rs#L2293-L2304),
+  [Drop](https://github.com/ai-dynamo/dynamo/blob/8c7ca7b348c26c2d012c5767972690588dea7f52/lib/llm/src/http/service/metrics.rs#L2377-L2392)), so all three
+  are request checks. TTFT and the prompt length are observed once per
+  request and ITL once per output token
+  ([`observe_response`](https://github.com/ai-dynamo/dynamo/blob/8c7ca7b348c26c2d012c5767972690588dea7f52/lib/llm/src/http/service/metrics.rs#L2748-L2843)).
+  `dynamo_frontend_metrics_start_time_seconds` is fixed per exporter and
+  detects restarts
+  ([L161-L183](https://github.com/ai-dynamo/dynamo/blob/8c7ca7b348c26c2d012c5767972690588dea7f52/lib/llm/src/http/service/metrics.rs#L161-L183)). The KV
+  reuse funnel counters and `router_input_sequence_tokens` carry `phase` and
+  `model`, and `router_kv_hit_rate` is a prediction at routing time
+  ([`kv_router/metrics.rs`](https://github.com/ai-dynamo/dynamo/blob/8c7ca7b348c26c2d012c5767972690588dea7f52/lib/llm/src/kv_router/metrics.rs#L1128-L1218)).
+  The funnel ratios read the `aggregated` and `prefill` phases, because
+  disaggregated decode attempts route the prompt again but do not report
+  reuse, and missing reports count as zero
+  ([catalog](https://github.com/ai-dynamo/dynamo/blob/8c7ca7b348c26c2d012c5767972690588dea7f52/docs/fern/pages/reference/observability/metrics-catalog.mdx#L462-L481)). A
+  decode attempt that prefills locally under conditional disaggregation is
+  left out of the ratios, and multimodal ratios can exceed 1. The router's
+  own request counters count once per hop
+  ([catalog](https://github.com/ai-dynamo/dynamo/blob/8c7ca7b348c26c2d012c5767972690588dea7f52/docs/fern/pages/reference/observability/metrics-catalog.mdx#L445-L460)), so they
+  are not request checks. `--metrics-prefix` and `DYN_METRICS_PREFIX` rename
+  the request families but not the start time gauge
+  ([catalog](https://github.com/ai-dynamo/dynamo/blob/8c7ca7b348c26c2d012c5767972690588dea7f52/docs/fern/pages/reference/observability/metrics-catalog.mdx#L58-L69)), so such a
+  scrape is detected and reported as `stats_not_enabled`. A
+  `dynamo.mocker` worker serves imitation `vllm:`, `sglang:` and `trtllm_`
+  metrics
+  ([catalog](https://github.com/ai-dynamo/dynamo/blob/8c7ca7b348c26c2d012c5767972690588dea7f52/docs/fern/pages/reference/observability/metrics-catalog.mdx#L37-L56)), which the
+  worker window diffs as if an engine had produced them.
 
 ## Follow ups not built here
 
@@ -876,9 +918,8 @@ Ranked by value to the evidence model against cost:
 
 1. **GenAI cache and reasoning token attributes in `export otlp` (S).**
    **Built**, see "Built from this refresh".
-2. **Dynamo frontend profile with a worker scrape (M).** Its frontend has a
-   request counter and KV router hit rates, and engine metrics sit on a
-   second port.
+2. **Dynamo frontend profile with a worker scrape (M).**
+   **Built**, see "Built from this refresh".
 3. **Extend `import vllm-bench` to `server_ttfts` fields (S).** **Built**,
    see "Built from this refresh".
 4. **NVML instant power and per-process utilization (S, then M).**

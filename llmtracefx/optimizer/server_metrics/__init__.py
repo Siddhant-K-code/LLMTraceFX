@@ -3,11 +3,13 @@
 Client timing includes the network and cannot split queueing from
 prefill. vLLM, SGLang, llama.cpp, TGI (legacy, archived upstream) and
 TensorRT-LLM record those phases themselves and expose them on a Prometheus
-endpoint (``/metrics``, or ``/prometheus/metrics`` for ``trtllm-serve``).
-Scraping before and after a measured request and differencing the two
-scrapes recovers the server's own view, provided nothing else touched the
-server in between. :func:`diff_snapshots` checks that and refuses to
-attribute a window it cannot vouch for.
+endpoint (``/metrics``, or ``/prometheus/metrics`` for ``trtllm-serve``). An NVIDIA Dynamo frontend
+exposes request counters and KV router metrics on its own port and the
+engine metrics on each worker's, so :func:`attach_worker_evidence` nests a
+worker window under the frontend one. Scraping before and after a measured
+request and differencing the two scrapes recovers the server's own view,
+provided nothing else touched the server in between. :func:`diff_snapshots`
+checks that and refuses to attribute a window it cannot vouch for.
 """
 
 from .diff import (
@@ -16,6 +18,7 @@ from .diff import (
     RUNTIME_CHOICES,
     RUNTIME_HELP,
     TGI_LEGACY_NOTE,
+    attach_worker_evidence,
     capture_settled_after,
     detect_runtime,
     diff_snapshots,
@@ -41,6 +44,7 @@ __all__ = [
     "Sample",
     "ServerMetricsError",
     "ServerMetricsSnapshot",
+    "attach_worker_evidence",
     "capture_settled_after",
     "capture_snapshot",
     "detect_runtime",

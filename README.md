@@ -263,7 +263,8 @@ relabelled as measurements.
 - **Native Qwen MTP:** emit a capability report and an explicit unsupported
   record when the installed stack cannot produce trustworthy native-MTP
   evidence.
-- **Server-side metrics (vLLM, SGLang, llama.cpp, TensorRT-LLM, legacy TGI):**
+- **Server-side metrics (vLLM, SGLang, llama.cpp, TensorRT-LLM, NVIDIA
+  Dynamo, legacy TGI):**
   snapshot a Prometheus endpoint before and after a run and diff the two.
   Server numbers such as queue time, server TTFT and cached prompt tokens by
   cache tier are only reported when the window provably contains exactly the
@@ -1028,6 +1029,41 @@ gauges. Without the request counter the window is `stats_not_enabled`, and
 without the gauges it is `unverifiable` unless you pass
 `--server-metrics-assume-isolated`. Both are listed under
 `attribution.missing_stats`.
+
+An NVIDIA Dynamo frontend (`python -m dynamo.frontend`) serves its request
+counters and KV router metrics on `/metrics` of its HTTP port, and each
+worker serves the engine's own metrics on `/metrics` of `DYN_SYSTEM_PORT`.
+Pass both:
+
+```bash
+uv run llmtracefx-optimizer collect-api ... \
+  --server-metrics-url http://127.0.0.1:8000/metrics \
+  --server-metrics-worker-url http://127.0.0.1:8081/metrics
+```
+
+The frontend window is judged on `dynamo_frontend_requests_total`,
+`requests_started_total` and `request_duration_seconds`, with
+`active_requests` as the in-flight gauge. A changed
+`dynamo_frontend_metrics_start_time_seconds` is a restart. The worker window
+is diffed with the engine's own profile (vLLM, SGLang or TensorRT-LLM) and
+nested under `worker` with its own attribution; `server-metrics diff` takes
+the same pair as `--worker-before` and `--worker-after` and exits 2 unless
+both windows are attributed. Frontend highlights are TTFT, request duration,
+inter-token latency, prompt, output and cached tokens per request, failed
+requests by `error_type`, and migrations. With `--router-mode kv` they also
+include the router's predicted hit rate, its routing overhead in ms, and the
+KV reuse funnel in tokens by `phase`: routed prompt tokens (F0), best
+eligible and selected cached prefix (F2, F3) and worker reused tokens (F4).
+The three funnel ratios to F0 are `derived` from the `aggregated` and
+`prefill` phases, because a disaggregated decode hop routes the prompt again
+but reports no reuse. Dynamo counts a missing reuse report as zero, so the F4
+ratio is a lower bound and is not reported as the engine's prefix cache hit
+rate; that comes from the worker window. A frontend started with
+`--metrics-prefix` or `DYN_METRICS_PREFIX` is detected and reported as
+`stats_not_enabled`. The worker URL is only taken by `collect-api` and
+`server-metrics diff`; sweeps and replay scrape the frontend alone. See
+[`docs/ecosystem-gap-analysis.md`](docs/ecosystem-gap-analysis.md#server-metrics)
+for the pinned upstream sources.
 
 #### Server numbers in the response
 

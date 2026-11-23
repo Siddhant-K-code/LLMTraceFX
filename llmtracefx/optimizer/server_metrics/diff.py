@@ -76,6 +76,9 @@ class HistogramHighlight:
 
 @dataclass(frozen=True)
 class CounterHighlight:
+    """The delta of one or more counters. A histogram family contributes
+    the delta of its ``_sum`` series."""
+
     key: str
     family: str
     unit: str
@@ -85,6 +88,8 @@ class CounterHighlight:
     """Also report the delta for each value of this label."""
     match: tuple[tuple[str, str], ...] = ()
     """Only series carrying all of these label values count."""
+    match_any: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    """Only series whose label takes one of the listed values count."""
     one_rank_labels: tuple[str, ...] = ()
     """Rank labels whose series each report the same logical count. The
     lowest rank's delta is used instead of the sum over those ranks."""
@@ -99,6 +104,9 @@ class RatioHighlight:
     denominator: str | tuple[str, ...]
     """A tuple is the sum of its families, all of which must be exposed."""
     unit: str
+    match: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    """Only series whose label takes one of the listed values count, on
+    both sides. A histogram family contributes its ``_sum`` delta."""
 
 
 @dataclass(frozen=True)
@@ -142,6 +150,8 @@ class RuntimeProfile:
     stats_requirements: tuple[StatsRequirement, ...] = ()
     stats_hint: str = ""
     """Appended to a ``stats_not_enabled`` reason."""
+    start_time_gauges: tuple[str, ...] = ()
+    """Gauges holding a fixed start time; a change means a restart."""
     notes: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -609,6 +619,182 @@ PROFILES: dict[str, RuntimeProfile] = {
             "not /metrics, and only with return_perf_metrics: true.",
         ),
     ),
+    # NVIDIA Dynamo frontend (python -m dynamo.frontend) on its HTTP port,
+    # at ai-dynamo/dynamo 8c7ca7b3 (v1.6.2). Engine metrics are on each
+    # worker's DYN_SYSTEM_PORT and are diffed with the engine's own profile
+    # (see attach_worker_evidence). Names are composed in
+    # lib/runtime/src/metrics/prometheus_names.rs L173-L490 and L645-L654.
+    "dynamo": RuntimeProfile(
+        name="dynamo",
+        family_prefix="dynamo_frontend_",
+        # lib/llm/src/http/service/metrics.rs: InflightGuard::new counts
+        # requests_started and raises active_requests at handler entry
+        # (L2293-L2304, L1901-L1904); its Drop counts requests_total, with
+        # status and error_type, and observes request_duration (L2377-L2392).
+        request_counters=(
+            ("dynamo_frontend_requests", "counter"),
+            ("dynamo_frontend_requests_started", "counter"),
+            ("dynamo_frontend_request_duration_seconds", "histogram"),
+        ),
+        # dynamo_frontend_inflight_requests is a deprecated copy (L1901-L1909)
+        # and queued_requests a subset, so neither is added.
+        in_flight_gauges=("dynamo_frontend_active_requests",),
+        histograms=(
+            # observe_response (L2748-L2843): TTFT and the prompt length once
+            # per request at the first token, ITL once per output token.
+            HistogramHighlight(
+                "time_to_first_token", "dynamo_frontend_time_to_first_token_seconds"
+            ),
+            HistogramHighlight(
+                "e2e_latency", "dynamo_frontend_request_duration_seconds"
+            ),
+            HistogramHighlight(
+                "inter_token_latency", "dynamo_frontend_inter_token_latency_seconds"
+            ),
+            HistogramHighlight(
+                "prompt_tokens_per_request",
+                "dynamo_frontend_input_sequence_tokens",
+                "tokens",
+            ),
+            HistogramHighlight(
+                "generation_tokens_per_request",
+                "dynamo_frontend_output_sequence_tokens",
+                "tokens",
+            ),
+            # Observed once per request, only when the worker reports a
+            # count (L1591-L1598, L2677-L2683).
+            HistogramHighlight(
+                "cached_prompt_tokens_per_request",
+                "dynamo_frontend_cached_tokens",
+                "tokens",
+            ),
+            # lib/llm/src/kv_router/metrics.rs L1145-L1152: the router's
+            # prediction at routing time, not a measured hit.
+            HistogramHighlight(
+                "kv_router_predicted_hit_rate",
+                "dynamo_component_router_kv_hit_rate",
+                "ratio",
+            ),
+            # Milliseconds, recorded only for KV routing decisions
+            # (kv_router/metrics.rs L877-L928).
+            HistogramHighlight(
+                "kv_router_overhead", "dynamo_router_overhead_total_ms", "ms"
+            ),
+        ),
+        counters=(
+            # Counted at tokenization for every admitted request (L1355-L1362).
+            CounterHighlight("prompt_tokens", "dynamo_frontend_input_tokens", "tokens"),
+            CounterHighlight(
+                "generation_tokens", "dynamo_frontend_output_tokens", "tokens"
+            ),
+            CounterHighlight(
+                "failed_requests",
+                "dynamo_frontend_requests",
+                "count",
+                match=(("status", "error"),),
+                split_label="error_type",
+            ),
+            # A retry on another worker after a failure (L1671).
+            CounterHighlight(
+                "request_migrations",
+                "dynamo_frontend_model_migration",
+                "count",
+                split_label="migration_type",
+            ),
+            # The KV reuse funnel, in tokens, by phase (kv_router/metrics.rs
+            # L1128-L1137 and L1196-L1218). F0 is the routed prompt length.
+            CounterHighlight(
+                "kv_router_input_tokens",
+                "dynamo_component_router_input_sequence_tokens",
+                "tokens",
+                split_label="phase",
+            ),
+            CounterHighlight(
+                "kv_router_best_eligible_cached_prefix_tokens",
+                "dynamo_component_router_kv_best_eligible_cached_prefix_tokens",
+                "tokens",
+                split_label="phase",
+            ),
+            CounterHighlight(
+                "kv_router_selected_cached_prefix_tokens",
+                "dynamo_component_router_kv_selected_cached_prefix_tokens",
+                "tokens",
+                split_label="phase",
+            ),
+            CounterHighlight(
+                "kv_router_worker_reused_tokens",
+                "dynamo_component_router_kv_worker_reused_tokens",
+                "tokens",
+                split_label="phase",
+            ),
+        ),
+        # A disaggregated decode hop records its prompt again in F0 but
+        # reports no reuse, so the ratios read the first hop only.
+        ratios=(
+            RatioHighlight(
+                "kv_router_best_eligible_cached_prefix_ratio",
+                "dynamo_component_router_kv_best_eligible_cached_prefix_tokens",
+                "dynamo_component_router_input_sequence_tokens",
+                "ratio",
+                match=(("phase", ("aggregated", "prefill")),),
+            ),
+            RatioHighlight(
+                "kv_router_selected_cached_prefix_ratio",
+                "dynamo_component_router_kv_selected_cached_prefix_tokens",
+                "dynamo_component_router_input_sequence_tokens",
+                "ratio",
+                match=(("phase", ("aggregated", "prefill")),),
+            ),
+            RatioHighlight(
+                "kv_router_worker_reused_token_ratio",
+                "dynamo_component_router_kv_worker_reused_tokens",
+                "dynamo_component_router_input_sequence_tokens",
+                "ratio",
+                match=(("phase", ("aggregated", "prefill")),),
+            ),
+        ),
+        # --metrics-prefix and DYN_METRICS_PREFIX rename these families but
+        # not dynamo_frontend_metrics_start_time_seconds or the stage
+        # families, so such a scrape is still detected and then refused.
+        stats_requirements=(
+            StatsRequirement(
+                families=(
+                    "dynamo_frontend_requests",
+                    "dynamo_frontend_requests_started",
+                    "dynamo_frontend_request_duration_seconds",
+                ),
+                setting="the default dynamo_frontend metric prefix",
+                consequence="no request counter, so the window cannot be checked",
+            ),
+            StatsRequirement(
+                families=("dynamo_frontend_active_requests",),
+                setting="the default dynamo_frontend metric prefix",
+                consequence="no in-flight gauge, so overlapping traffic "
+                "cannot be ruled out",
+                required=False,
+            ),
+        ),
+        stats_hint=(
+            "Unset --metrics-prefix and DYN_METRICS_PREFIX, and scrape /metrics "
+            "on the frontend HTTP port (DYN_GRPC_METRICS_PORT with "
+            "--kserve-grpc-server)."
+        ),
+        # Fixed per exporter lifetime (metrics.rs L161-L183).
+        start_time_gauges=("dynamo_frontend_metrics_start_time_seconds",),
+        notes=(
+            "dynamo_component_router_requests and "
+            "dynamo_component_router_requests_started count each routing "
+            "attempt, so a disaggregated request counts once per hop; they "
+            "are not used as request counters.",
+            "kv_router_predicted_hit_rate is the router's prediction at "
+            "routing time, not a measured cache hit.",
+            "The kv_router funnel counters exist only with --router-mode kv. "
+            "Upstream counts a missing worker reuse report as zero, so "
+            "kv_router_worker_reused_tokens is a lower bound.",
+            "Engine metrics are on the worker's DYN_SYSTEM_PORT; pass a "
+            "worker scrape to diff them with the engine's own profile.",
+        ),
+    ),
     "generic": RuntimeProfile(name="generic", family_prefix=None),
 }
 RUNTIME_CHOICES = ("auto", *PROFILES)
@@ -627,6 +813,12 @@ def _is_value_sample(family: MetricFamily, sample: Sample) -> bool:
     return not sample.name.endswith("_created") and not (
         family.type == "summary" and any(k == "quantile" for k, _ in sample.labels)
     )
+
+
+def _is_delta_sample(family: MetricFamily, sample: Sample) -> bool:
+    if family.type in ("histogram", "summary"):
+        return sample.name.endswith("_sum")
+    return _is_value_sample(family, sample)
 
 
 def _collapse(
@@ -892,8 +1084,9 @@ def _counter_series_deltas(
     """Per series deltas for one highlight, before any label is summed away.
 
     Series are keyed by their full label set, so ``one_rank_labels`` can be
-    told apart. The result is still only ever summed or split by a kept
-    label, so no other label value reaches the evidence."""
+    told apart. The result is still only ever summed or split by a chosen
+    label, so no other label value reaches the evidence. A histogram or
+    summary family contributes only its ``_sum`` series."""
     deltas: dict[SeriesKey, float] = {}
     for name in (spec.family, *spec.plus):
         family = after.families[name]
@@ -904,13 +1097,15 @@ def _counter_series_deltas(
             else {
                 s.labels: s.value
                 for s in previous.samples
-                if _is_value_sample(previous, s)
+                if _is_delta_sample(previous, s)
             }
         )
         for sample in family.samples:
-            if not _is_value_sample(family, sample):
+            if not _is_delta_sample(family, sample):
                 continue
             if any(dict(sample.labels).get(k) != v for k, v in spec.match):
+                continue
+            if any(dict(sample.labels).get(k) not in v for k, v in spec.match_any):
                 continue
             delta = sample.value - start.get(sample.labels, 0.0)
             if not math.isfinite(delta) or delta < 0:
@@ -954,10 +1149,13 @@ def _counter_highlight(
     entry = _measurement(value, MetricProvenance.MEASURED_NATIVE, unit)
     entry.update(
         statistic="delta" if ranks_agree is None else "delta_one_rank",
-        source=" + ".join((spec.family, *spec.plus)),
+        source=" + ".join(_delta_source(n, after) for n in (spec.family, *spec.plus)),
     )
-    if spec.match:
-        entry["match"] = dict(spec.match)
+    if spec.match or spec.match_any:
+        entry["match"] = {
+            **dict(spec.match),
+            **{k: list(v) for k, v in spec.match_any},
+        }
     if ranks_agree is not None:
         entry["ranks_agree"] = ranks_agree
     if spec.split_label is not None:
@@ -971,6 +1169,36 @@ def _counter_highlight(
             }
         }
     return entry
+
+
+def _delta_source(name: str, after: ServerMetricsSnapshot) -> str:
+    family = after.families.get(name)
+    if family is not None and family.type in ("histogram", "summary"):
+        return f"{name}_sum"
+    return name
+
+
+def _ratio_side(
+    names: str | tuple[str, ...],
+    ratio: RatioHighlight,
+    before: ServerMetricsSnapshot,
+    after: ServerMetricsSnapshot,
+    notes: list[str],
+) -> tuple[float, str] | None:
+    """One side of a ratio from per series deltas, filtered by ``match``."""
+    names = (names,) if isinstance(names, str) else names
+    if any(name not in after.families for name in names):
+        return None
+    spec = CounterHighlight(
+        ratio.key, names[0], ratio.unit, plus=names[1:], match_any=ratio.match
+    )
+    computed = _counter_series_deltas(spec, before, after, notes)
+    if computed is None:
+        return None
+    return (
+        math.fsum(computed[0].values()),
+        " + ".join(_delta_source(name, after) for name in names),
+    )
 
 
 def _family_sum(
@@ -1055,14 +1283,15 @@ def diff_snapshots(
             family_name not in after.families
         ):
             state.resets.append(f"{family_name} disappeared")
-    start_before = _family_total(before.families.get(_PROCESS_START), None)
-    start_after = _family_total(after.families.get(_PROCESS_START), None)
-    if (
-        start_before is not None
-        and start_after is not None
-        and (start_before != start_after)
-    ):
-        state.resets.append(f"{_PROCESS_START} changed; the server restarted")
+    for start_gauge in (_PROCESS_START, *profile.start_time_gauges):
+        start_before = _family_total(before.families.get(start_gauge), None)
+        start_after = _family_total(after.families.get(start_gauge), None)
+        if (
+            start_before is not None
+            and start_after is not None
+            and (start_before != start_after)
+        ):
+            state.resets.append(f"{start_gauge} changed; the server restarted")
 
     counters: list[dict[str, Any]] = []
     histograms: list[dict[str, Any]] = []
@@ -1217,8 +1446,32 @@ def diff_snapshots(
             if entry is not None:
                 highlights[counter_spec.key] = entry
         for ratio in profile.ratios:
-            numerator = _family_sum(ratio.numerator, after, deltas)
-            denominator = _family_sum(ratio.denominator, after, deltas)
+            names = (
+                *(
+                    (ratio.numerator,)
+                    if isinstance(ratio.numerator, str)
+                    else ratio.numerator
+                ),
+                *(
+                    (ratio.denominator,)
+                    if isinstance(ratio.denominator, str)
+                    else ratio.denominator
+                ),
+            )
+            if ratio.match or any(
+                after.families[n].type in ("histogram", "summary")
+                for n in names
+                if n in after.families
+            ):
+                numerator = _ratio_side(
+                    ratio.numerator, ratio, before, after, state.notes
+                )
+                denominator = _ratio_side(
+                    ratio.denominator, ratio, before, after, state.notes
+                )
+            else:
+                numerator = _family_sum(ratio.numerator, after, deltas)
+                denominator = _family_sum(ratio.denominator, after, deltas)
             if numerator is None or denominator is None or denominator[0] <= 0:
                 continue
             entry = _measurement(
@@ -1232,6 +1485,8 @@ def diff_snapshots(
                     else f"{numerator[1]} / {denominator[1]}"
                 ),
             )
+            if ratio.match:
+                entry["match"] = {k: list(v) for k, v in ratio.match}
             highlights[ratio.key] = entry
 
     notes = list(profile.notes) + state.notes
@@ -1309,6 +1564,46 @@ def diff_snapshots(
         "gauges": gauges,
         "notes": notes,
     }
+
+
+def attach_worker_evidence(
+    frontend: Mapping[str, Any], worker: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Nest a Dynamo worker's engine window under a frontend window.
+
+    The frontend scrape holds the request counters and router metrics; the
+    engine's own timers and cache counters are on each worker's system
+    port and are diffed there with the engine's profile. Each window keeps
+    its own attribution: the top level is judged on the frontend alone, and
+    ``worker.attribution`` on the engine's counters."""
+    if frontend.get("runtime") != "dynamo":
+        raise ServerMetricsError(
+            "a worker scrape pairs only with a Dynamo frontend window; the "
+            f"frontend scrape was read as {frontend.get('runtime')!r}"
+        )
+    if worker.get("runtime") == "dynamo":
+        raise ServerMetricsError(
+            "the worker scrape is a Dynamo frontend; scrape /metrics on the "
+            "worker's DYN_SYSTEM_PORT instead"
+        )
+    if worker.get("endpoint") == frontend.get("endpoint"):
+        raise ServerMetricsError("the frontend and worker scrapes share one endpoint")
+    frontend_start = _parse_iso(frontend["before"]["captured_at"])
+    frontend_end = _parse_iso(frontend["after"]["captured_at"])
+    worker_start = _parse_iso(worker["before"]["captured_at"])
+    worker_end = _parse_iso(worker["after"]["captured_at"])
+    if worker_start > frontend_end or worker_end < frontend_start:
+        raise ServerMetricsError(
+            "the worker window does not overlap the frontend window"
+        )
+    combined = dict(frontend)
+    combined["worker"] = dict(worker)
+    combined["notes"] = [
+        *frontend.get("notes", ()),
+        f"worker holds the {worker.get('runtime')} engine window from "
+        f"{worker.get('endpoint')}, with its own attribution",
+    ]
+    return combined
 
 
 def capture_settled_after(

@@ -175,8 +175,10 @@ from .server_metrics import (
     TGI_LEGACY_NOTE,
     ServerMetricsError,
     ServerMetricsSnapshot,
+    attach_worker_evidence,
     capture_settled_after,
     capture_snapshot,
+    detect_runtime,
     diff_snapshots,
     validate_metrics_url,
     write_evidence,
@@ -484,17 +486,30 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
         )
         return 1
 
-    if args.server_metrics_url is not None:
-        try:
-            metrics_url = validate_metrics_url(args.server_metrics_url)
-        except ServerMetricsError as exc:
-            print(
-                f"Failed to configure API collection: {_api_detail(args, exc)}",
-                file=sys.stderr,
-            )
-            return 1
-    else:
-        metrics_url = None
+    if args.server_metrics_worker_url is not None and args.server_metrics_url is None:
+        print(
+            "Failed to configure API collection: --server-metrics-worker-url "
+            "needs --server-metrics-url for the Dynamo frontend",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        metrics_url = (
+            None
+            if args.server_metrics_url is None
+            else validate_metrics_url(args.server_metrics_url)
+        )
+        worker_url = (
+            None
+            if args.server_metrics_worker_url is None
+            else validate_metrics_url(args.server_metrics_worker_url)
+        )
+    except ServerMetricsError as exc:
+        print(
+            f"Failed to configure API collection: {_api_detail(args, exc)}",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.dry_run:
         credential = os.environ.get(config.credential_env_var, "")
@@ -520,6 +535,8 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
         }
         if metrics_url is not None:
             payload["server_metrics_url"] = metrics_url
+        if worker_url is not None:
+            payload["server_metrics_worker_url"] = worker_url
         text = json.dumps(payload, indent=2, allow_nan=False)
         # Defence in depth behind the check above: the rendered document is
         # scrubbed rather than trusting every field to have been sanitized
@@ -549,9 +566,16 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
         )
         return 1
     before = None
+    worker_before = None
     if metrics_url is not None:
         try:
             before = capture_snapshot(metrics_url)
+            if worker_url is not None:
+                _check_dynamo_pair(before, args.server_metrics_runtime, frontend=True)
+                worker_before = capture_snapshot(worker_url)
+                _check_dynamo_pair(
+                    worker_before, args.server_metrics_worker_runtime, frontend=False
+                )
         except ServerMetricsError as exc:
             print(
                 "Failed to capture server metrics before the request: "
@@ -571,7 +595,15 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
     metrics_status = 0
     if before is not None and metrics_url is not None:
         metrics_status = _record_server_metrics_window(
-            args, before, metrics_url, evidence_path
+            args,
+            before,
+            metrics_url,
+            evidence_path,
+            worker=(
+                None
+                if worker_before is None or worker_url is None
+                else (worker_before, worker_url)
+            ),
         )
 
     if result.record.outcome.success:
@@ -588,6 +620,33 @@ def _cmd_collect_api(args: argparse.Namespace) -> int:
 
 
 SERVER_METRICS_EVIDENCE_NAME = "server_metrics_evidence.json"
+WORKER_RUNTIME_CHOICES = tuple(c for c in RUNTIME_CHOICES if c != "dynamo")
+
+
+def _check_dynamo_pair(
+    snapshot: ServerMetricsSnapshot, runtime: str, *, frontend: bool
+) -> None:
+    """Refuse a frontend and worker pair before any request is sent."""
+    resolved = detect_runtime(snapshot.families) if runtime == "auto" else runtime
+    if frontend and resolved != "dynamo":
+        raise ServerMetricsError(
+            "--server-metrics-worker-url needs a Dynamo frontend at "
+            f"--server-metrics-url, which was read as {resolved!r}"
+        )
+    if not frontend and resolved == "dynamo":
+        raise ServerMetricsError(
+            "--server-metrics-worker-url serves Dynamo frontend metrics; use "
+            "the worker's DYN_SYSTEM_PORT /metrics"
+        )
+
+
+def _worker_summary(evidence: dict[str, object]) -> list[str]:
+    worker = cast(dict[str, object] | None, evidence.get("worker"))
+    if worker is None:
+        return []
+    return [f"Worker window ({worker['endpoint']}):"] + [
+        f"  {line}" for line in _server_metrics_summary(worker)
+    ]
 
 
 def _server_metrics_summary(evidence: dict[str, object]) -> list[str]:
@@ -606,6 +665,8 @@ def _server_metrics_summary(evidence: dict[str, object]) -> list[str]:
         )
         breakdown = cast(dict[str, dict[str, float]], entry.get("breakdown") or {})
         for label, split in breakdown.items():
+            if not split:
+                continue
             parts = ", ".join(f"{k or '(none)'}={v:.6g}" for k, v in split.items())
             lines.append(f"    by {label}: {parts}")
     if not highlights and evidence.get("highlights_withheld_reason"):
@@ -649,6 +710,8 @@ def _record_server_metrics_window(
     before: ServerMetricsSnapshot,
     metrics_url: str,
     evidence_path: Path,
+    *,
+    worker: tuple[ServerMetricsSnapshot, str] | None = None,
 ) -> int:
     """Close the scrape window opened before an API request; 0 on success."""
     try:
@@ -666,6 +729,25 @@ def _record_server_metrics_window(
             runtime=args.server_metrics_runtime,
             assume_isolated=args.server_metrics_assume_isolated,
         )
+        if worker is not None:
+            worker_before, worker_url = worker
+            worker_after = capture_settled_after(
+                worker_before,
+                worker_url,
+                expected_requests=1,
+                runtime=args.server_metrics_worker_runtime,
+                settle_timeout_seconds=args.server_metrics_settle_timeout,
+            )
+            evidence = attach_worker_evidence(
+                evidence,
+                diff_snapshots(
+                    worker_before,
+                    worker_after,
+                    expected_requests=1,
+                    runtime=args.server_metrics_worker_runtime,
+                    assume_isolated=args.server_metrics_assume_isolated,
+                ),
+            )
         write_evidence(evidence, evidence_path)
     except (OSError, ServerMetricsError, ValueError) as exc:
         print(
@@ -674,7 +756,7 @@ def _record_server_metrics_window(
             file=sys.stderr,
         )
         return 1
-    for line in _server_metrics_summary(evidence):
+    for line in [*_server_metrics_summary(evidence), *_worker_summary(evidence)]:
         print(line)
     print(f"Server metrics evidence written to {evidence_path}")
     return 0
@@ -700,6 +782,9 @@ def _cmd_server_metrics_diff(args: argparse.Namespace) -> int:
     if args.expected_requests < 1:
         print("--expected-requests must be at least 1", file=sys.stderr)
         return 1
+    if (args.worker_before is None) != (args.worker_after is None):
+        print("--worker-before and --worker-after go together", file=sys.stderr)
+        return 1
     try:
         before = ServerMetricsSnapshot.read_json(Path(args.before))
         after = ServerMetricsSnapshot.read_json(Path(args.after))
@@ -710,19 +795,34 @@ def _cmd_server_metrics_diff(args: argparse.Namespace) -> int:
             runtime=args.runtime,
             assume_isolated=args.assume_isolated,
         )
+        if args.worker_before is not None:
+            evidence = attach_worker_evidence(
+                evidence,
+                diff_snapshots(
+                    ServerMetricsSnapshot.read_json(Path(args.worker_before)),
+                    ServerMetricsSnapshot.read_json(Path(args.worker_after)),
+                    expected_requests=args.expected_requests,
+                    runtime=args.worker_runtime,
+                    assume_isolated=args.assume_isolated,
+                ),
+            )
         if args.output is not None:
             write_evidence(evidence, Path(args.output))
     except (OSError, ServerMetricsError, ValueError) as exc:
         print(f"Failed to diff server metrics: {exc}", file=sys.stderr)
         return 1
-    for line in _server_metrics_summary(evidence):
+    for line in [*_server_metrics_summary(evidence), *_worker_summary(evidence)]:
         print(line)
     if args.output is not None:
         print(f"Server metrics evidence written to {args.output}")
     if evidence["runtime"] == "tgi":
         print(f"Note: {TGI_LEGACY_NOTE}", file=sys.stderr)
-    attribution = cast(dict[str, object], evidence["attribution"])
-    return 0 if attribution["attributable"] else 2
+    windows = [evidence, *([evidence["worker"]] if "worker" in evidence else [])]
+    attributable = all(
+        cast(dict[str, object], window["attribution"])["attributable"]
+        for window in windows
+    )
+    return 0 if attributable else 2
 
 
 def _cmd_export(args: argparse.Namespace) -> int:
@@ -3204,8 +3304,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Optional Prometheus /metrics URL of the serving engine (vLLM, "
-            "SGLang, llama.cpp --metrics, legacy TGI). It is scraped before "
-            "and after the request and the window is written to "
+            "SGLang, llama.cpp --metrics, TensorRT-LLM /prometheus/metrics, "
+            "a Dynamo frontend, legacy TGI). It is scraped before and after "
+            "the request and the window is written to "
             f"{SERVER_METRICS_EVIDENCE_NAME}. Server-side numbers are only "
             "reported when the window provably contains this one request."
         ),
@@ -3215,6 +3316,22 @@ def build_parser() -> argparse.ArgumentParser:
         choices=RUNTIME_CHOICES,
         default="auto",
         help=f"For --server-metrics-url. {RUNTIME_HELP}",
+    )
+    collect_api_parser.add_argument(
+        "--server-metrics-worker-url",
+        default=None,
+        help=(
+            "With a Dynamo frontend at --server-metrics-url, also scrape one "
+            "worker's DYN_SYSTEM_PORT /metrics for the engine's own metrics. "
+            "The worker window is nested under 'worker' with its own "
+            "attribution."
+        ),
+    )
+    collect_api_parser.add_argument(
+        "--server-metrics-worker-runtime",
+        choices=WORKER_RUNTIME_CHOICES,
+        default="auto",
+        help="Engine profile for --server-metrics-worker-url (default: detect)",
     )
     collect_api_parser.add_argument(
         "--server-metrics-assume-isolated",
@@ -3289,6 +3406,23 @@ def build_parser() -> argparse.ArgumentParser:
             "Assert the window had no other traffic when the server exposes "
             "no request counter; recorded as operator_asserted"
         ),
+    )
+    sm_diff_parser.add_argument(
+        "--worker-before",
+        default=None,
+        help=(
+            "Dynamo worker snapshot taken with --before; the engine window is "
+            "nested under 'worker'. Exits 2 unless both windows are attributed."
+        ),
+    )
+    sm_diff_parser.add_argument(
+        "--worker-after", default=None, help="Worker snapshot taken with --after"
+    )
+    sm_diff_parser.add_argument(
+        "--worker-runtime",
+        choices=WORKER_RUNTIME_CHOICES,
+        default="auto",
+        help="Engine profile for the worker snapshots (default: detect)",
     )
     sm_diff_parser.add_argument("--output", default=None)
     sm_diff_parser.set_defaults(func=_cmd_server_metrics_diff)
