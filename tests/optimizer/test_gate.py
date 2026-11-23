@@ -369,6 +369,17 @@ def test_imported_server_ttft_needs_every_completed_request(tmp_path):
     )
     assert report.verdict is GateVerdict.INCONCLUSIVE
     assert any("7 of 8 completed" in reason for reason in report.excluded)
+
+    def failed(index, data):
+        if index == 0:
+            data["totals"]["failed_requests"]["value"] = 1
+
+    report = evaluate_gate(
+        server_imported("b", [210.0, 212.0, 214.0]),
+        server_imported("c", [211.0, 213.0, 215.0], failed),
+        metric="server_ttft_ms.p99",
+    )
+    assert any("1 request(s) failed" in reason for reason in report.excluded)
     # Files from vLLM runs without per-request metrics have no server values.
     missing = evaluate_gate(
         imported("b", IMPORTED_BASE),
