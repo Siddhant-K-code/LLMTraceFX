@@ -132,11 +132,32 @@ def test_refuses_a_missing_or_unexpected_wheel(data: dict) -> None:
 
 
 def test_unreachable_pypi_is_a_wheel_error() -> None:
+    calls: list[str] = []
+
     def fetch(url: str) -> dict:
+        calls.append(url)
         raise OSError("404 Not Found")
 
     with pytest.raises(deploy_space.WheelError, match="404 Not Found"):
-        deploy_space.release_wheel("1.10.0", fetch)
+        deploy_space.release_wheel("1.10.0", fetch, sleep=lambda seconds: None)
+    assert len(calls) == deploy_space.FETCH_ATTEMPTS
+
+
+def test_retries_a_stale_404_until_the_release_is_listed() -> None:
+    responses: list[object] = [OSError("404 Not Found"), OSError("404"), _pypi()]
+    waits: list[float] = []
+
+    def fetch(url: str) -> dict:
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    assert (
+        deploy_space.release_wheel("1.10.0", fetch, sleep=waits.append)
+        == f"{WHEEL}#sha256={SHA}"
+    )
+    assert waits == [deploy_space.FETCH_RETRY_SECONDS] * 2
 
 
 def test_pins_the_requirement_to_a_wheel_url() -> None:

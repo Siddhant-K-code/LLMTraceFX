@@ -20,6 +20,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -36,6 +37,10 @@ DELETE_PATTERNS = ["*.py", "*.txt", "*.md", "examples/*"]
 PYPI_JSON = "https://pypi.org/pypi/{package}/{version}/json"
 FILE_HOST = "https://files.pythonhosted.org/"
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+# The workflow waits until the wheel is listed, but a second read can still hit
+# a CDN edge that has not seen the release yet and return 404.
+FETCH_ATTEMPTS = 6
+FETCH_RETRY_SECONDS = 10.0
 
 
 class WheelError(Exception):
@@ -52,15 +57,23 @@ def _fetch_json(url: str) -> dict:
         return json.load(response)
 
 
-def release_wheel(version: str, fetch: Callable[[str], dict] = _fetch_json) -> str:
+def release_wheel(
+    version: str,
+    fetch: Callable[[str], dict] = _fetch_json,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str:
     """Return the release wheel's file host URL with its sha256 fragment."""
     if not VERSION_RE.fullmatch(version):
         raise ValueError(f"version must be X.Y.Z, got {version!r}")
     url = PYPI_JSON.format(package=PACKAGE, version=version)
-    try:
-        data = fetch(url)
-    except Exception as exc:
-        raise WheelError(f"could not read {url}: {exc}") from exc
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            data = fetch(url)
+            break
+        except Exception as exc:
+            if attempt == FETCH_ATTEMPTS:
+                raise WheelError(f"could not read {url}: {exc}") from exc
+            sleep(FETCH_RETRY_SECONDS)
     filename = f"{PACKAGE}-{version}-py3-none-any.whl"
     wheels = [
         entry
