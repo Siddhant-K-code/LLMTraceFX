@@ -3325,8 +3325,8 @@ def build_parser() -> argparse.ArgumentParser:
             "a gpu_energy_evidence.json next to each record (lower is better; "
             "any run without a usable value makes the gate inconclusive); "
             "default total. For imported artifacts: "
-            "<metric>.<statistic>, for example ttft_ms.p99 (vLLM bench) or "
-            "time_to_first_token.p99 (AIPerf)"
+            "<metric>.<statistic>, for example ttft_ms.p99 or "
+            "server_ttft_ms.p99 (vLLM bench) or time_to_first_token.p99 (AIPerf)"
         ),
     )
     gate_parser.add_argument(

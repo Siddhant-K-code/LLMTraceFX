@@ -23,6 +23,13 @@ totals are ``derived``, each distribution states its ``sample_count`` and
 wrote) and carries order statistic confidence intervals. ``source.companion``
 names the AIPerf summary file that supplied the model, endpoint and load.
 
+A ``vllm bench serve --save-detailed`` file can also hold per-request
+timings the vLLM server returned about itself (``server_ttfts`` and
+``server_queue_times``). LLMTraceFX summarises those into ``server_ttft_ms``
+and ``server_queue_time_ms``: the statistics are ``derived``, and the
+per-request values are ``server_reported`` rather than ``imported_reported``,
+because the server, not the benchmark client, timed them.
+
 The optional ``speculative`` section holds the speculative decoding
 acceptance a tool read from the server's own counters (``vllm bench serve``
 does this). Those values are server side and cover every request the server
@@ -55,6 +62,7 @@ MAX_IMPORTED_ARTIFACT_BYTES = 4 * 1024 * 1024
 
 IMPORTED_DERIVED = "imported_derived"
 IMPORTED_REPORTED = "imported_reported"
+SERVER_REPORTED = "server_reported"
 DERIVED = "derived"
 NEAREST_RANK = "nearest_rank"
 LOWER_IS_BETTER = "lower_is_better"
@@ -103,6 +111,8 @@ METRIC_DIRECTIONS: dict[str, dict[str, str]] = {
         "e2el_ms": LOWER_IS_BETTER,
         "client_queue_time_ms": LOWER_IS_BETTER,
         "e2el_including_client_queue_ms": LOWER_IS_BETTER,
+        "server_ttft_ms": LOWER_IS_BETTER,
+        "server_queue_time_ms": LOWER_IS_BETTER,
         "request_throughput": HIGHER_IS_BETTER,
         "request_goodput": HIGHER_IS_BETTER,
         "output_throughput": HIGHER_IS_BETTER,
@@ -150,10 +160,25 @@ METRIC_DIRECTIONS: dict[str, dict[str, str]] = {
 # an imported artifact was computed or reported by the source tool.
 _METRIC_PROVENANCE = {AIPERF_RECORDS_TOOL: DERIVED}
 _TOTAL_PROVENANCE = {AIPERF_RECORDS_TOOL: DERIVED}
+# Metrics LLMTraceFX summarises from per-request values the server reported.
+SERVER_METRICS: dict[str, frozenset[str]] = {
+    VLLM_BENCH_TOOL: frozenset({"server_ttft_ms", "server_queue_time_ms"}),
+}
 
 
-def metric_provenance(tool: str) -> str:
+def metric_provenance(tool: str, name: str | None = None) -> str:
+    if name in SERVER_METRICS.get(tool, ()):
+        return DERIVED
     return _METRIC_PROVENANCE.get(tool, IMPORTED_DERIVED)
+
+
+def sample_provenance(tool: str, name: str) -> str | None:
+    """Where a metric's per-request values came from; ``None`` if it has none."""
+    if name in SERVER_METRICS.get(tool, ()):
+        return SERVER_REPORTED
+    if tool == AIPERF_RECORDS_TOOL:
+        return IMPORTED_REPORTED
+    return None
 
 
 def total_provenance(tool: str) -> str:
@@ -577,22 +602,25 @@ def _parse_interval(data: Any, name: str, count: int) -> ImportedInterval:
 def _parse_samples(
     tool: str, name: str, entry: dict[str, Any], stats: Mapping[str, ImportedValue]
 ) -> dict[str, Any]:
-    """The optional sample count and intervals; only ``aiperf-records`` has them."""
+    """The sample count and intervals of metrics LLMTraceFX computed itself."""
     has_samples = "sample_count" in entry or "confidence_intervals" in entry
+    expected = sample_provenance(tool, name)
+    if name in SERVER_METRICS.get(tool, ()) and not has_samples:
+        raise _fail(f"metrics.{name} needs its sample_count")
     if not has_samples:
         return {}
-    if tool != AIPERF_RECORDS_TOOL:
+    if expected is None:
         raise _fail(f"metrics.{name} holds sample fields that {tool} imports lack")
     count = entry.get("sample_count")
     if isinstance(count, bool) or not isinstance(count, int) or count < 1:
         raise _fail(f"metrics.{name}.sample_count must be an integer >= 1")
-    if entry.get("sample_provenance") != IMPORTED_REPORTED:
-        raise _fail(f"metrics.{name}.sample_provenance must be {IMPORTED_REPORTED!r}")
+    if entry.get("sample_provenance") != expected:
+        raise _fail(f"metrics.{name}.sample_provenance must be {expected!r}")
     if entry.get("statistic") != NEAREST_RANK:
         raise _fail(f"metrics.{name}.statistic must be {NEAREST_RANK!r}")
     result: dict[str, Any] = {
         "sample_count": count,
-        "sample_provenance": IMPORTED_REPORTED,
+        "sample_provenance": expected,
         "statistic": NEAREST_RANK,
     }
     if "confidence_intervals" not in entry:
@@ -622,11 +650,11 @@ def _parse_samples(
 
 def _parse_metrics(tool: str, data: Any) -> dict[str, ImportedMetric]:
     directions = METRIC_DIRECTIONS[tool]
-    provenance = metric_provenance(tool)
     metrics: dict[str, ImportedMetric] = {}
     for name, item in _mapping(data, "metrics").items():
         if name not in directions:
             raise _fail(f"unknown {tool} metric {name!r}")
+        provenance = metric_provenance(tool, name)
         entry = _mapping(item, f"metrics.{name}")
         if entry.get("direction") != directions[name]:
             raise _fail(f"metrics.{name}.direction must be {directions[name]!r}")

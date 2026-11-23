@@ -334,7 +334,17 @@ units (`acceptance_rate` stays a percent, per-position rates are fractions of
 drafts). vLLM scraped those from the server's counters, so they cover every
 request the server handled during the run, and `gate` does not compare them.
 Without the keys the section says `not_reported`. See
-[`vllm/benchmarks/serve.py`](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/benchmarks/serve.py#L1136-L1181). Missing fields are omitted and listed,
+[`vllm/benchmarks/serve.py`](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/benchmarks/serve.py#L1136-L1181).
+When the server ran with `--enable-per-request-metrics` and the benchmark with
+`--save-detailed`, the file also holds `server_ttfts` and `server_queue_times`,
+one value per request in seconds
+([`serve.py`](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/benchmarks/serve.py#L396-L408)).
+LLMTraceFX converts them to `server_ttft_ms` and `server_queue_time_ms` with
+mean, min, nearest-rank p50 to p99 and max, labelled `derived` with
+`sample_provenance: server_reported`. Server TTFT runs from scheduling to the
+first token, so it leaves out queue time and the network and is not the
+client `ttft_ms`. `gate --metric server_ttft_ms.p99` uses a run only when every
+completed request has a server value. Missing fields are omitted and listed,
 never guessed. Malformed files, unsupported AIPerf schemas, cancelled or
 incomplete runs, runs mixing models or phases, and multi-document
 `--append-result` files are refused with exit code 2. Without `--output` the

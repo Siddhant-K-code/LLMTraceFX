@@ -316,6 +316,80 @@ def test_imported_throughput_is_higher_is_better():
     assert report.verdict is GateVerdict.REGRESSION
 
 
+def server_imported(prefix, p99s, edit=None):
+    source = FIXTURES.parent / "importers" / "vllm_server_metrics.json"
+    template = import_benchmark_file(source, VLLM_BENCH_TOOL).to_dict()
+    items = []
+    for index, p99 in enumerate(p99s):
+        data = json.loads(json.dumps(template))
+        data["source"]["filename"] = f"{prefix}-{index}.json"
+        data["source"]["sha256"] = f"{prefix}{index}".encode().hex().ljust(64, "0")
+        data["metrics"]["server_ttft_ms"]["stats"]["p99"]["value"] = p99
+        if edit is not None:
+            edit(index, data)
+        items.append(ImportedBenchmark.from_dict(data))
+    return items
+
+
+def test_imported_server_ttft_gates_with_its_own_provenance():
+    ok = evaluate_gate(
+        server_imported("b", [210.0, 212.0, 214.0]),
+        server_imported("c", [211.0, 213.0, 215.0]),
+        metric="server_ttft_ms.p99",
+    )
+    assert ok.verdict is GateVerdict.PASS
+    assert ok.provenance == "derived"
+    assert "timings the server reported" in ok.to_markdown()
+
+    bad = evaluate_gate(
+        server_imported("b", [210.0, 212.0, 214.0]),
+        server_imported("c", [250.0, 252.0, 254.0]),
+        metric="server_ttft_ms.p99",
+    )
+    assert bad.verdict is GateVerdict.REGRESSION
+
+
+def test_imported_server_ttft_needs_every_completed_request(tmp_path):
+    source = FIXTURES.parent / "importers" / "vllm_server_metrics.json"
+    raw = json.loads(source.read_text())
+    raw["server_ttfts"][0] = None
+    (tmp_path / "partial.json").write_text(json.dumps(raw))
+    seven = import_benchmark_file(tmp_path / "partial.json", VLLM_BENCH_TOOL)
+
+    def partial(index, data):
+        if index == 0:
+            data["metrics"]["server_ttft_ms"] = seven.to_dict()["metrics"][
+                "server_ttft_ms"
+            ]
+
+    report = evaluate_gate(
+        server_imported("b", [210.0, 212.0, 214.0]),
+        server_imported("c", [211.0, 213.0, 215.0], partial),
+        metric="server_ttft_ms.p99",
+    )
+    assert report.verdict is GateVerdict.INCONCLUSIVE
+    assert any("7 of 8 completed" in reason for reason in report.excluded)
+
+    def failed(index, data):
+        if index == 0:
+            data["totals"]["failed_requests"]["value"] = 1
+
+    report = evaluate_gate(
+        server_imported("b", [210.0, 212.0, 214.0]),
+        server_imported("c", [211.0, 213.0, 215.0], failed),
+        metric="server_ttft_ms.p99",
+    )
+    assert any("1 request(s) failed" in reason for reason in report.excluded)
+    # Files from vLLM runs without per-request metrics have no server values.
+    missing = evaluate_gate(
+        imported("b", IMPORTED_BASE),
+        imported("c", IMPORTED_BASE),
+        metric="server_ttft_ms.p99",
+    )
+    assert missing.verdict is GateVerdict.INCONCLUSIVE
+    assert any("no server_ttft_ms" in reason for reason in missing.excluded)
+
+
 def test_imported_refuses_mixing_with_records():
     with pytest.raises(GateInputError, match="cannot be mixed"):
         evaluate_gate(runs("b", BASE), imported("c", IMPORTED_BASE))

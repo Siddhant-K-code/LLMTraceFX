@@ -53,6 +53,7 @@ from .importers.artifact import (
     IMPORTED_BENCHMARK_KIND,
     MAX_IMPORTED_ARTIFACT_BYTES,
     METRIC_DIRECTIONS,
+    SERVER_METRICS,
     BenchmarkImportError,
     ImportedArtifactError,
     ImportedBenchmark,
@@ -212,8 +213,15 @@ class GateReport:
                     "Values were computed by LLMTraceFX from AIPerf's per-request "
                     "records; LLMTraceFX did not send the requests."
                     if self.source_tool == AIPERF_RECORDS_TOOL
-                    else f"Values were computed by `{self.source_tool}` and "
-                    "imported; LLMTraceFX did not measure them."
+                    else (
+                        "Values were computed by LLMTraceFX from per-request "
+                        f"timings the server reported to `{self.source_tool}`; "
+                        "LLMTraceFX did not measure them."
+                        if self.metric.partition(".")[0]
+                        in SERVER_METRICS.get(self.source_tool or "", ())
+                        else f"Values were computed by `{self.source_tool}` and "
+                        "imported; LLMTraceFX did not measure them."
+                    )
                 )
                 + " Each imported file counts as one run.",
             ]
@@ -485,12 +493,15 @@ def _imported_metric(tool: str, metric: str) -> tuple[str, str]:
 
 
 def _imported_sample(item: ImportedBenchmark, name: str, stat: str) -> _Sample | str:
+    server = name in SERVER_METRICS.get(item.source.tool, ())
     failed = item.totals.get("failed_requests")
     if failed is None:
         return "the source does not state how many requests failed"
     if failed.value > 0 and not (
         item.source.tool == AIPERF_RECORDS_TOOL and name in _COUNTS_FAILURES
     ):
+        if server:
+            return f"{failed.value:g} request(s) failed, so the run is not used"
         summarised_by = (
             "this value covers"
             if item.source.tool == AIPERF_RECORDS_TOOL
@@ -505,6 +516,14 @@ def _imported_sample(item: ImportedBenchmark, name: str, stat: str) -> _Sample |
     metric = item.metrics.get(name)
     if metric is None:
         return f"no {name} in the source file"
+    if server:
+        completed = item.totals.get("completed_requests")
+        if completed is None or metric.sample_count != completed.value:
+            return (
+                f"the server reported {name} for {metric.sample_count} of "
+                f"{'?' if completed is None else f'{completed.value:g}'} completed "
+                "requests, so it does not cover the run"
+            )
     value = metric.stats.get(stat)
     if value is None:
         return f"no {name}.{stat} in the source file (has {', '.join(metric.stats)})"
