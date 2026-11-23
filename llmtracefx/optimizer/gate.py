@@ -524,12 +524,17 @@ def _imported_key(
         item.model_id,
         tuple(sorted(item.endpoint.items())),
         tuple(sorted(item.load.items())),
-        total("total_input_tokens"),
     )
+    if name in _COUNTS_FAILURES:
+        # Token totals cover successful requests only, so they change with
+        # which requests failed. Goodput counts failures as misses, so runs
+        # match on the requests sent instead.
+        completed, failed = total("completed_requests"), total("failed_requests")
+        sent = None if completed is None or failed is None else completed + failed
+        return key + (sent, tuple(sorted(item.slo.items())))
+    key += (total("total_input_tokens"),)
     if not higher_is_better:
         key += (total("total_output_tokens"),)
-    if name in _COUNTS_FAILURES:
-        key += (tuple(sorted(item.slo.items())),)
     return key
 
 
@@ -556,7 +561,7 @@ def _imported_adapter(items: Sequence[ImportedBenchmark], metric: str) -> _Adapt
         key=lambda item: _imported_key(item, name, higher),
         run_id=lambda item: item.run_id,
         differs=(
-            "tool version, model, endpoint, load settings, token totals or SLO "
+            "tool version, model, endpoint, load settings, requests sent or SLO "
             "targets differ"
             if name in _COUNTS_FAILURES
             else "tool version, model, endpoint, load settings or token totals differ"

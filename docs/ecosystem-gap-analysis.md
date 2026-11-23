@@ -304,7 +304,9 @@ totals, when the records span more than one profiling phase or repeat an
 `x_request_id`, when a used field has the wrong type or unit or a duplicate
 key, and when goodput would need a value a record lacks. `gate` keeps
 `aiperf-records` artifacts apart from summary imports, uses runs with failures
-for goodput only, and compares goodput only across runs with the same targets.
+for goodput only, and compares goodput only across runs with the same targets
+and number of requests sent (token totals leave failed requests out, so they
+are not used for goodput).
 
 ### `gpu-energy`
 

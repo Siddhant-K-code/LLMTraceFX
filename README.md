@@ -372,7 +372,9 @@ metrics their total output tokens too. Use a fixed dataset and seed, and for
 vLLM pass `--ignore-eos` so every run generates the same number of tokens.
 Otherwise the gate reports inconclusive. Runs with failed requests are not
 used, except for `goodput` and `goodput_fraction` from `--records` imports,
-which count failures as misses. Goodput runs must also share SLO targets.
+which count failures as misses. Goodput runs are matched on SLO targets and
+the number of requests sent instead of token totals, because token totals
+leave failed requests out.
 
 They cannot be used with `compare` (no per-prompt hashes or correctness
 results), mixed with LLMTraceFX records, or gated across tools. AIPerf summary

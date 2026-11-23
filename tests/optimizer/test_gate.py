@@ -481,18 +481,6 @@ def test_aiperf_records_gate_goodput_and_refusals(tmp_path):
     assert report.provenance == "derived"
     assert "computed by LLMTraceFX from AIPerf's per-request" in report.to_markdown()
 
-    def failures(index, data):
-        data["totals"]["failed_requests"]["value"] = 2
-
-    # Failures count as missed SLOs in goodput, so the runs stay usable there.
-    flaky = records_imported("c", [3.0, 3.02, 3.04], edit=failures)
-    assert (
-        evaluate_gate(base, flaky, metric="goodput.value").verdict is GateVerdict.PASS
-    )
-    latency = evaluate_gate(base, flaky, metric="time_to_first_token.p99")
-    assert latency.verdict is GateVerdict.INCONCLUSIVE
-    assert any("this value covers successful" in e for e in latency.excluded)
-
     stricter = records_imported("c", [3.0, 3.02, 3.04], slo={"ttft_ms": 50.0})
     other_slo = evaluate_gate(base, stricter, metric="goodput.value")
     assert other_slo.verdict is GateVerdict.INCONCLUSIVE
@@ -510,3 +498,57 @@ def test_aiperf_records_gate_goodput_and_refusals(tmp_path):
     raw.write_text((summary.parent / "aiperf_records.jsonl").read_text())
     with pytest.raises(GateInputError, match="--records"):
         load_gate_inputs([raw])
+
+
+def test_aiperf_records_goodput_gate_counts_real_failures(tmp_path):
+    importers = Path(__file__).parent / "fixtures" / "importers"
+    rows = [
+        json.loads(line)
+        for line in (importers / "aiperf_records.jsonl").read_text().splitlines()
+    ]
+    profiling = [r for r in rows if r["metadata"]["benchmark_phase"] == "profiling"]
+    for row in profiling[:4]:
+        row["error"] = {"code": 500, "type": "HTTPError", "message": "boom"}
+        row["metrics"] = {"error_isl": row["metrics"]["input_sequence_length"]}
+    summary = json.loads((importers / "aiperf_records_summary.json").read_text())
+    summary["request_count"]["avg"] = 16
+    summary["error_request_count"] = {"unit": "requests", "avg": 4}
+    summary["error_summary"] = [{"count": 4}]
+    summary["total_isl"]["avg"] -= 4 * 512
+    summary["total_osl"]["avg"] -= 4 * 128
+    (tmp_path / "summary.json").write_text(json.dumps(summary))
+    (tmp_path / "records.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows)
+    )
+    slo = {"ttft_ms": 100.0}
+    failed = import_aiperf_records_file(
+        tmp_path / "summary.json", tmp_path / "records.jsonl", slo=slo
+    ).to_dict()
+    assert failed["metrics"]["goodput_fraction"]["stats"]["value"]["value"] == 0.8
+
+    def runs(prefix, data, values):
+        items = []
+        for index, value in enumerate(values):
+            copy = json.loads(json.dumps(data))
+            copy["source"]["sha256"] = f"{prefix}{index}".encode().hex().ljust(64, "0")
+            copy["metrics"]["goodput_fraction"]["stats"]["value"]["value"] = value
+            items.append(ImportedBenchmark.from_dict(copy))
+        return items
+
+    healthy = import_aiperf_records_file(
+        importers / "aiperf_records_summary.json",
+        importers / "aiperf_records.jsonl",
+        slo=slo,
+    ).to_dict()
+    base = runs("b", healthy, [1.0, 0.99, 0.98])
+    report = evaluate_gate(
+        base, runs("c", failed, [0.8, 0.79, 0.78]), metric="goodput_fraction.value"
+    )
+    assert report.verdict is GateVerdict.REGRESSION
+    assert not report.excluded
+
+    latency = evaluate_gate(
+        base, runs("c", failed, [0.8, 0.79, 0.78]), metric="time_to_first_token.p99"
+    )
+    assert latency.verdict is GateVerdict.INCONCLUSIVE
+    assert any("this value covers successful" in e for e in latency.excluded)
