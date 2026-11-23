@@ -289,10 +289,10 @@ and a single run with the same limit match. The endpoint is the backend, API
 route and streaming mode. Version 2 reports state them; version 1 reports
 state only what the user passed, so GuideLLM's defaults
 (`/v1/chat/completions`, streaming on) fill the rest. A setting that still
-cannot be resolved marks the run unresolved and the gate refuses it. The per-request `requests` lists are not read in this
-version: they hold prompt and output text, and reading them is a follow-up
-once the AIPerf per-request import design lands. Endpoint URLs and API keys
-are never copied.
+cannot be resolved marks the run unresolved and the gate refuses it. The
+per-request `requests` lists are not read in this version: they hold prompt
+and output text, and reading them the way `import aiperf --records` reads
+AIPerf's records is a follow-up. Endpoint URLs and API keys are never copied.
 
 Imported artifacts go to `gate`, not `compare`. `compare` reads sealed
 `workloads run` directories and only compares systems that ran the identical
