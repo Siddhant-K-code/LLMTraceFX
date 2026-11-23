@@ -62,13 +62,15 @@ HIGHER_IS_BETTER = "higher_is_better"
 
 VLLM_BENCH_TOOL = "vllm-bench-serve"
 AIPERF_TOOL = "aiperf"
+GUIDELLM_TOOL = "guidellm"
 AIPERF_RECORDS_TOOL = "aiperf-records"
-SUPPORTED_TOOLS = (VLLM_BENCH_TOOL, AIPERF_TOOL, AIPERF_RECORDS_TOOL)
+SUPPORTED_TOOLS = (VLLM_BENCH_TOOL, AIPERF_TOOL, AIPERF_RECORDS_TOOL, GUIDELLM_TOOL)
 SLO_TARGETS = ("ttft_ms", "tpot_ms", "e2e_ms")
 
 TOTAL_NAMES = (
     "completed_requests",
     "failed_requests",
+    "incomplete_requests",
     "total_input_tokens",
     "total_output_tokens",
     "duration",
@@ -130,6 +132,17 @@ METRIC_DIRECTIONS: dict[str, dict[str, str]] = {
         "output_token_throughput": HIGHER_IS_BETTER,
         "goodput": HIGHER_IS_BETTER,
         "goodput_fraction": HIGHER_IS_BETTER,
+    },
+    GUIDELLM_TOOL: {
+        "time_to_first_token_ms": LOWER_IS_BETTER,
+        "time_to_first_output_token_ms": LOWER_IS_BETTER,
+        "time_per_output_token_ms": LOWER_IS_BETTER,
+        "inter_token_latency_ms": LOWER_IS_BETTER,
+        "request_latency": LOWER_IS_BETTER,
+        "requests_per_second": HIGHER_IS_BETTER,
+        "output_tokens_per_second": HIGHER_IS_BETTER,
+        "prompt_tokens_per_second": HIGHER_IS_BETTER,
+        "tokens_per_second": HIGHER_IS_BETTER,
     },
 }
 

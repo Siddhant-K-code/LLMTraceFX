@@ -14,10 +14,10 @@ the groups, because they are usually what the pull request changed.
 
 The gate also accepts imported benchmark artifacts written by
 ``llmtracefx-optimizer import``. Their values are summary statistics that
-vLLM bench or AIPerf computed, or that LLMTraceFX computed from AIPerf's
-per-request records, so the metric names one statistic (``ttft_ms.p99``),
-each imported file counts as one run, and imported artifacts are never
-mixed with records or with another tool's imports.
+vLLM bench, AIPerf or GuideLLM computed, or that LLMTraceFX computed from
+AIPerf's per-request records, so the metric names one statistic
+(``ttft_ms.p99``), each imported file counts as one run, and imported
+artifacts are never mixed with records or with another tool's imports.
 """
 
 from __future__ import annotations
@@ -59,6 +59,7 @@ from .importers.artifact import (
     is_imported_benchmark,
     parse_json_document,
 )
+from .importers.guidellm import looks_like_guidellm_report
 from .importers.vllm_bench import looks_like_vllm_bench
 from .load.artifact import find_sweep_artifact, sweep_refusal
 from .schema import ExperimentRecord, Measurement, SchemaValidationError
@@ -275,6 +276,7 @@ def _read_input(file: Path) -> GateInput:
     for looks_like, command in (
         (looks_like_vllm_bench, "vllm-bench"),
         (looks_like_aiperf_profile, "aiperf"),
+        (looks_like_guidellm_report, "guidellm"),
     ):
         if looks_like(data):
             raise GateInputError(
@@ -285,8 +287,8 @@ def _read_input(file: Path) -> GateInput:
         record = ExperimentRecord.from_json(text)
     except SchemaValidationError as exc:
         raise GateInputError(
-            f"{file}: {exc} (raw vllm bench or AIPerf results must be converted "
-            "with `llmtracefx-optimizer import` first)"
+            f"{file}: {exc} (raw vllm bench, AIPerf or GuideLLM results must be "
+            "converted with `llmtracefx-optimizer import` first)"
         ) from exc
     try:
         return apply_sidecar(record, file)
@@ -463,6 +465,7 @@ _EXAMPLE_METRIC = {
     "vllm-bench-serve": "ttft_ms.p99 or request_throughput.value",
     "aiperf": "time_to_first_token.p99 or request_throughput.avg",
     AIPERF_RECORDS_TOOL: "time_to_first_token.p99 or goodput.value",
+    "guidellm": "time_to_first_token_ms.p99 or requests_per_second.mean",
 }
 # Failed requests count as missed SLOs in goodput, so a run with failures
 # still has a faithful goodput value.

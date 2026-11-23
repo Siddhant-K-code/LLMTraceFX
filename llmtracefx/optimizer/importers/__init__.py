@@ -1,11 +1,12 @@
 """Import benchmark results saved by other tools.
 
-``import_benchmark_file`` reads a ``vllm bench serve --save-result`` JSON file
-or an AIPerf ``profile_export_aiperf.json`` file and returns an
-:class:`ImportedBenchmark`. ``import_aiperf_records_file`` reads AIPerf's
-per-request ``profile_export.jsonl`` with its summary and computes the
-statistics itself. The perf gate accepts the written artifact. Only the
-standard library is imported here.
+``import_benchmark_file`` reads a ``vllm bench serve --save-result`` JSON file,
+an AIPerf ``profile_export_aiperf.json`` file or one benchmark from a GuideLLM
+``benchmarks.json`` report and returns an :class:`ImportedBenchmark`.
+``import_aiperf_records_file`` reads AIPerf's per-request
+``profile_export.jsonl`` with its summary and computes the statistics itself.
+The perf gate accepts the written artifact. Only the standard library is
+imported here.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from .artifact import (
     AIPERF_RECORDS_TOOL,
     AIPERF_TOOL,
     DERIVED,
+    GUIDELLM_TOOL,
     IMPORTED_BENCHMARK_KIND,
     IMPORTED_DERIVED,
     IMPORTED_REPORTED,
@@ -46,12 +48,14 @@ from .artifact import (
     parse_json_document,
     read_imported_benchmark,
 )
+from .guidellm import import_guidellm, looks_like_guidellm_report
 from .vllm_bench import import_vllm_bench, looks_like_vllm_bench
 
 __all__ = [
     "AIPERF_RECORDS_TOOL",
     "AIPERF_TOOL",
     "DERIVED",
+    "GUIDELLM_TOOL",
     "IMPORTED_BENCHMARK_KIND",
     "IMPORTED_DERIVED",
     "IMPORTED_REPORTED",
@@ -78,6 +82,12 @@ __all__ = [
 _TOOL_LABELS = {
     VLLM_BENCH_TOOL: "a `vllm bench serve --save-result` file",
     AIPERF_TOOL: "an AIPerf profile_export_aiperf.json file",
+    GUIDELLM_TOOL: "a GuideLLM benchmarks.json report",
+}
+_COMMANDS = {
+    VLLM_BENCH_TOOL: "vllm-bench",
+    AIPERF_TOOL: "aiperf",
+    GUIDELLM_TOOL: "guidellm",
 }
 
 
@@ -95,6 +105,8 @@ def _detected_tool(data: object) -> str | None:
         return VLLM_BENCH_TOOL
     if looks_like_aiperf_profile(data):
         return AIPERF_TOOL
+    if looks_like_guidellm_report(data):
+        return GUIDELLM_TOOL
     return None
 
 
@@ -116,14 +128,21 @@ def _records_hint(path: Path) -> str:
     )
 
 
-def import_benchmark_file(path: str | Path, tool: str) -> ImportedBenchmark:
+def import_benchmark_file(
+    path: str | Path, tool: str, *, benchmark: int | None = None
+) -> ImportedBenchmark:
     """Read one source file written by ``tool`` and map it.
+
+    ``benchmark`` picks one benchmark from a GuideLLM report that holds
+    several; other tools write one run per file and refuse it.
 
     Raises :class:`BenchmarkImportError` when the file is unreadable,
     malformed, from another tool, of an unsupported schema, or mixes runs.
     """
-    if tool not in (VLLM_BENCH_TOOL, AIPERF_TOOL):
+    if tool not in (VLLM_BENCH_TOOL, AIPERF_TOOL, GUIDELLM_TOOL):
         raise BenchmarkImportError(f"unsupported tool {tool!r}")
+    if benchmark is not None and tool != GUIDELLM_TOOL:
+        raise BenchmarkImportError("--benchmark applies only to GuideLLM reports")
     path = Path(path)
     raw, text = _read_source(path)
     if looks_like_aiperf_records(text):
@@ -139,13 +158,20 @@ def import_benchmark_file(path: str | Path, tool: str) -> ImportedBenchmark:
             f"{path} looks like {_TOOL_LABELS[detected]}, not "
             f"{_TOOL_LABELS[tool]}; use `import {detected_command(detected)}`"
         )
-    importer = import_vllm_bench if tool == VLLM_BENCH_TOOL else import_aiperf
+    sha256 = hashlib.sha256(raw).hexdigest()
+    version_ = importer_version()
     try:
+        if tool == GUIDELLM_TOOL:
+            return import_guidellm(
+                data,
+                sha256=sha256,
+                filename=path.name,
+                importer_version=version_,
+                benchmark=benchmark,
+            )
+        importer = import_vllm_bench if tool == VLLM_BENCH_TOOL else import_aiperf
         return importer(
-            data,
-            sha256=hashlib.sha256(raw).hexdigest(),
-            filename=path.name,
-            importer_version=importer_version(),
+            data, sha256=sha256, filename=path.name, importer_version=version_
         )
     except BenchmarkImportError as exc:
         raise BenchmarkImportError(f"{path}: {exc}") from exc
@@ -195,4 +221,4 @@ def import_aiperf_records_file(
 
 
 def detected_command(tool: str) -> str:
-    return "vllm-bench" if tool == VLLM_BENCH_TOOL else "aiperf"
+    return _COMMANDS[tool]

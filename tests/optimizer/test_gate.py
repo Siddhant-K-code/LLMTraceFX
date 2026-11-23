@@ -17,6 +17,7 @@ from llmtracefx.optimizer.gate import (
 )
 from llmtracefx.optimizer.importers import (
     AIPERF_TOOL,
+    GUIDELLM_TOOL,
     VLLM_BENCH_TOOL,
     ImportedBenchmark,
     import_aiperf_records_file,
@@ -410,6 +411,51 @@ def test_load_gate_inputs_finds_imported_artifacts(tmp_path):
     with pytest.raises(GateInputError, match="recursion"):
         load_gate_inputs([tmp_path / "deep.json"])
     assert len(load_gate_inputs([FIXTURES / "baseline"])) == 3
+
+
+def guidellm_runs(prefix: str, p99s: list[float], benchmark: int = 0):
+    source = Path(__file__).parent / "fixtures" / "importers" / "guidellm_v2.json"
+    template = import_benchmark_file(source, GUIDELLM_TOOL, benchmark=benchmark)
+    items = []
+    for index, p99 in enumerate(p99s):
+        data = template.to_dict()
+        data["source"]["filename"] = f"{prefix}-{index}.json"
+        data["source"]["sha256"] = f"{prefix}{index}".encode().hex().ljust(64, "0")
+        stats = data["metrics"]["time_to_first_token_ms"]["stats"]
+        stats["p99"]["value"] = p99
+        items.append(ImportedBenchmark.from_dict(data))
+    return items
+
+
+def test_guidellm_imports_gate_and_exclude_errored_runs():
+    report = evaluate_gate(
+        guidellm_runs("b", [71.0, 72.0, 73.0]),
+        guidellm_runs("c", [90.0, 91.0, 92.0]),
+        metric="time_to_first_token_ms.p99",
+    )
+    assert report.verdict is GateVerdict.REGRESSION
+    assert report.source_tool == GUIDELLM_TOOL
+    assert report.unit == "ms"
+
+    # Benchmark 1 had one errored request, so every run is excluded.
+    errored = evaluate_gate(
+        guidellm_runs("b", [71.0, 72.0, 73.0], benchmark=1),
+        guidellm_runs("c", [71.0, 72.0, 73.0], benchmark=1),
+        metric="time_to_first_token_ms.p99",
+    )
+    assert errored.verdict is GateVerdict.INCONCLUSIVE
+    assert any("failed" in reason for reason in errored.excluded)
+
+    with pytest.raises(GateInputError, match="different tools"):
+        evaluate_gate(
+            guidellm_runs("b", [71.0, 72.0, 73.0]),
+            imported("c", IMPORTED_BASE),
+            metric="time_to_first_token_ms.p99",
+        )
+
+    raw = Path(__file__).parent / "fixtures" / "importers" / "guidellm_v2.json"
+    with pytest.raises(GateInputError, match="import guidellm"):
+        load_gate_inputs([raw])
 
 
 def test_committed_imported_fixtures_match_their_sources():

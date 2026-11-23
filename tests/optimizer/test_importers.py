@@ -11,6 +11,7 @@ from llmtracefx.optimizer.importers import (
     AIPERF_RECORDS_TOOL,
     AIPERF_TOOL,
     DERIVED,
+    GUIDELLM_TOOL,
     IMPORTED_DERIVED,
     IMPORTED_REPORTED,
     VLLM_BENCH_TOOL,
@@ -126,10 +127,12 @@ def test_aiperf_v1_7_layout_and_no_secrets():
         ("vllm_full.json", VLLM_BENCH_TOOL),
         ("aiperf_legacy.json", AIPERF_TOOL),
         ("aiperf_v1_7.json", AIPERF_TOOL),
+        ("guidellm_v2.json", GUIDELLM_TOOL),
     ],
 )
 def test_artifact_round_trips(tmp_path, fixture, tool):
-    imported = import_benchmark_file(FIXTURES / fixture, tool)
+    benchmark = 0 if tool == GUIDELLM_TOOL else None
+    imported = import_benchmark_file(FIXTURES / fixture, tool, benchmark=benchmark)
     out = write(tmp_path, imported.to_json(), "artifact.json")
     assert read_imported_benchmark(out).to_dict() == imported.to_dict()
 
@@ -166,6 +169,54 @@ def aiperf(**changes):
     data = load("aiperf_v1_7.json")
     data.update(changes)
     return data
+
+
+def guidellm(edit=None):
+    data = load("guidellm_v2.json")
+    if edit is not None:
+        edit(data)
+    return data
+
+
+def one_benchmark(**changes):
+    def edit(data):
+        del data["benchmarks"][1]
+        item = data["benchmarks"][0]
+        for key, value in changes.items():
+            if key == "model":
+                item["config"]["backend"]["model"] = value
+            elif key == "request_totals":
+                item["metrics"]["request_totals"] = value
+            else:
+                item[key] = value
+
+    return edit
+
+
+def guidellm_v1(data):
+    """Reshape the v2 fixture the way GuideLLM 0.5 and 0.6 wrote reports."""
+    data["metadata"].update(version=1, guidellm_version="0.6.0")
+    data["args"] = data.pop("config")
+    data["args"]["backend"] = "openai_http"
+    data["args"]["backend_kwargs"] = {
+        "target": "http://localhost:8000",
+        "model": "Qwen/Qwen3-0.6B",
+        "request_format": None,
+    }
+    del data["conclusions"]
+    for item in data["benchmarks"]:
+        config = item["config"]
+        config["sample_requests"] = config.pop("sample_size")
+        config["backend"] = {
+            "target": "http://localhost:8000",
+            "model": "Qwen/Qwen3-0.6B",
+            "timeout": 60.0,
+            "http2": True,
+        }
+        config["constraints"] = {
+            "max_number": {"type_": "max_number", "max_num": 64, "current_index": 0}
+        }
+        del item["metrics"]["time_to_first_output_token_ms"]
 
 
 def two_phase_profiling():
@@ -213,6 +264,32 @@ def two_phase_profiling():
             "no successful requests",
         ),
         (AIPERF_TOOL, two_phase_profiling(), "2 phases"),
+        (GUIDELLM_TOOL, guidellm(), r"2 benchmarks.*0: concurrent streams=4; 1: "),
+        (
+            GUIDELLM_TOOL,
+            guidellm(lambda d: d["metadata"].update(version=3)),
+            "version 3 is not supported",
+        ),
+        (
+            GUIDELLM_TOOL,
+            guidellm(lambda d: d["metadata"].update(version=True)),
+            "not supported",
+        ),
+        (GUIDELLM_TOOL, guidellm(lambda d: d.pop("metadata")), "0.4 and earlier"),
+        (GUIDELLM_TOOL, guidellm(lambda d: d.update(benchmarks=[])), "no benchmarks"),
+        (GUIDELLM_TOOL, guidellm(one_benchmark(model=None)), "names no model"),
+        (
+            GUIDELLM_TOOL,
+            guidellm(one_benchmark(type_="generative_embeddings")),
+            "only generative",
+        ),
+        (
+            GUIDELLM_TOOL,
+            guidellm(one_benchmark(request_totals={"successful": 0})),
+            "errored must be",
+        ),
+        (VLLM_BENCH_TOOL, load("guidellm_v2.json"), "use `import guidellm`"),
+        (GUIDELLM_TOOL, load("aiperf_v1_7.json"), "looks like an AIPerf"),
     ],
 )
 def test_refuses_bad_inputs(tmp_path, tool, source, message):
@@ -630,3 +707,238 @@ def test_cli_import_aiperf_records(tmp_path, capsys):
             cli.main(["import", "aiperf", *argv])
         assert exc.value.code == 2
         assert message in capsys.readouterr().err
+
+
+def test_guidellm_v2_maps_one_benchmark():
+    path = FIXTURES / "guidellm_v2.json"
+    imported = import_benchmark_file(path, GUIDELLM_TOOL, benchmark=0)
+
+    assert imported.source.tool == GUIDELLM_TOOL
+    assert (imported.source.tool_version, imported.source.schema_version) == (
+        "0.8.1",
+        "2",
+    )
+    assert imported.model_id == "Qwen/Qwen3-0.6B"
+    assert dict(imported.endpoint) == {
+        "backend": "openai_http",
+        "request_format": "/v1/chat/completions",
+        "stream": True,
+    }
+    assert imported.load["strategy"] == "concurrent"
+    assert imported.load["strategy.streams"] == 4
+    assert "strategy.worker_count" not in imported.load
+    # current_index is the sweep position, so it is dropped for a plain limit.
+    assert imported.load["constraint.max_requests"] == json.dumps(
+        {
+            "args": {"count": 64, "kind": "max_requests", "stopping_scope": "current"},
+            "type_": "max_requests",
+        },
+        sort_keys=True,
+    )
+    assert imported.load_unresolved == ()
+    assert dict(imported.run)["benchmark_index"] == "0"
+    totals = {name: total.value for name, total in imported.totals.items()}
+    assert totals == {
+        "completed_requests": 64,
+        "failed_requests": 0,
+        "incomplete_requests": 0,
+        "total_input_tokens": 16384,
+        "total_output_tokens": 8192,
+        "duration": 16.4213,
+    }
+    ttft = imported.metrics["time_to_first_token_ms"]
+    assert (ttft.unit, ttft.direction, ttft.provenance) == (
+        "ms",
+        "lower_is_better",
+        IMPORTED_DERIVED,
+    )
+    assert ttft.stats["p99"].value == 71.64
+    assert ttft.stats["p99"].source_key == (
+        "benchmarks[0].metrics.time_to_first_token_ms.successful.percentiles.p99"
+    )
+    assert ttft.stats["std"].source_key.endswith(".successful.std_dev")
+    assert {"p0.1", "p99.9", "min", "max"} <= set(ttft.stats)
+    assert imported.metrics["request_latency"].unit == "s"
+    rps = imported.metrics["requests_per_second"]
+    assert list(rps.stats) == ["mean"]
+    assert rps.direction == "higher_is_better"
+    assert any(
+        "weighted" in n for n in imported.metrics["inter_token_latency_ms"].notes
+    )
+    assert "metrics.request_concurrency" in imported.unmapped_keys
+    assert "metrics.request_goodput" in imported.unmapped_keys
+
+
+def test_guidellm_reads_errored_counts_and_skips_empty_statuses():
+    imported = import_benchmark_file(
+        FIXTURES / "guidellm_v2.json", GUIDELLM_TOOL, benchmark=1
+    )
+
+    assert imported.totals["failed_requests"].value == 1
+    assert imported.load["strategy.rate"] == 8.0
+    # Only the successful distribution is read; the errored request's
+    # latency never reaches the imported statistics.
+    latency = imported.metrics["request_latency"].stats
+    assert latency["max"].value == 1.62
+    assert all(".successful." in value.source_key for value in latency.values())
+
+
+def test_guidellm_v1_report(tmp_path):
+    source = write(tmp_path, guidellm(guidellm_v1))
+    imported = import_benchmark_file(source, GUIDELLM_TOOL, benchmark=0)
+
+    assert (imported.source.tool_version, imported.source.schema_version) == (
+        "0.6.0",
+        "1",
+    )
+    # 0.6 records only what the user passed, so GuideLLM's defaults apply.
+    assert dict(imported.endpoint) == {
+        "backend": "openai_http",
+        "request_format": "/v1/chat/completions",
+        "stream": True,
+    }
+    assert imported.load_unresolved == ()
+    assert imported.load["constraint.max_number"] == (
+        '{"max_num": 64, "type_": "max_number"}'
+    )
+    assert "time_to_first_output_token_ms" not in imported.metrics
+    assert "time_to_first_token_ms" in imported.metrics
+
+
+@pytest.mark.parametrize(
+    ("args", "endpoint", "unresolved"),
+    [
+        (
+            {"backend_kwargs": {"request_format": "text_completions", "stream": False}},
+            ("/v1/completions", False),
+            (),
+        ),
+        ({"data_request_formatter": "text_completions"}, ("/v1/completions", True), ()),
+        (
+            {
+                "data_request_formatter": {
+                    "request_type": "chat_completions",
+                    "stream": False,
+                }
+            },
+            ("/v1/chat/completions", False),
+            (),
+        ),
+        (
+            {"data_request_formatter": {"stream": False}},
+            (None, False),
+            ("endpoint.request_format",),
+        ),
+    ],
+)
+def test_guidellm_v1_endpoint_settings(tmp_path, args, endpoint, unresolved):
+    def edit(data):
+        guidellm_v1(data)
+        data["args"].pop("backend_kwargs")
+        data["args"].update(args)
+
+    source = write(tmp_path, guidellm(edit))
+    imported = import_benchmark_file(source, GUIDELLM_TOOL, benchmark=0)
+    assert (imported.endpoint["request_format"], imported.endpoint["stream"]) == (
+        endpoint
+    )
+    assert imported.load_unresolved == unresolved
+
+
+def test_guidellm_v2_endpoint_without_stream_is_unresolved(tmp_path):
+    def edit(data):
+        del data["benchmarks"][0]["config"]["backend"]["stream"]
+
+    source = write(tmp_path, guidellm(edit))
+    imported = import_benchmark_file(source, GUIDELLM_TOOL, benchmark=0)
+    assert imported.load_unresolved == ("endpoint.stream",)
+
+
+def test_guidellm_sweep_limits_key_like_a_single_run(tmp_path):
+    def sweep(data):
+        data["benchmarks"][1]["config"]["constraints"]["max_requests"].update(
+            args={
+                "kind": "max_requests",
+                "stopping_scope": "current",
+                "count": [32, 64],
+            },
+            current_index=1,
+        )
+
+    def empty(data):
+        data["benchmarks"][1]["config"]["constraints"]["max_requests"]["args"][
+            "count"
+        ] = []
+
+    single = import_benchmark_file(
+        write(tmp_path, guidellm()), GUIDELLM_TOOL, benchmark=1
+    )
+    swept = import_benchmark_file(
+        write(tmp_path, guidellm(sweep), "sweep.json"), GUIDELLM_TOOL, benchmark=1
+    )
+    assert swept.load == single.load
+    assert '"count": 64' in swept.load["constraint.max_requests"]
+    assert "current_index" not in swept.load["constraint.max_requests"]
+
+    broken = import_benchmark_file(
+        write(tmp_path, guidellm(empty), "empty.json"), GUIDELLM_TOOL, benchmark=1
+    )
+    assert broken.load_unresolved == ("constraint.max_requests",)
+
+
+def test_guidellm_never_copies_text_targets_or_keys(tmp_path):
+    def edit(data):
+        item = data["benchmarks"][0]
+        item["config"]["backend"].update(
+            target="http://inference.internal:8000", api_key="sk-secret"
+        )
+        item["requests"]["successful"].append(
+            {"request_args": "SECRET PROMPT", "output": "SECRET OUTPUT"}
+        )
+
+    imported = import_benchmark_file(
+        write(tmp_path, guidellm(edit)), GUIDELLM_TOOL, benchmark=0
+    )
+    text = imported.to_json()
+    for secret in ("inference.internal", "sk-secret", "SECRET"):
+        assert secret not in text
+
+
+def test_guidellm_unresolved_load_and_bad_index(tmp_path):
+    def edit(data):
+        del data["benchmarks"][0]["config"]["strategy"]["streams"]
+
+    imported = import_benchmark_file(
+        write(tmp_path, guidellm(edit)), GUIDELLM_TOOL, benchmark=0
+    )
+    assert imported.load_unresolved == ("strategy.streams",)
+
+    with pytest.raises(BenchmarkImportError, match="out of range"):
+        import_benchmark_file(FIXTURES / "guidellm_v2.json", GUIDELLM_TOOL, benchmark=2)
+    with pytest.raises(BenchmarkImportError, match="only to GuideLLM"):
+        import_benchmark_file(
+            FIXTURES / "vllm_default.json", VLLM_BENCH_TOOL, benchmark=0
+        )
+
+
+def test_cli_import_guidellm_benchmark(tmp_path, capsys):
+    out = tmp_path / "artifact.json"
+    with pytest.raises(SystemExit) as exc:
+        cli.main(
+            [
+                "import",
+                "guidellm",
+                str(FIXTURES / "guidellm_v2.json"),
+                "--benchmark",
+                "1",
+                "--output",
+                str(out),
+            ]
+        )
+    assert exc.value.code == 0
+    assert read_imported_benchmark(out).run["benchmark_index"] == "1"
+    assert "time_to_first_token_ms [ms]" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["import", "guidellm", str(FIXTURES / "guidellm_v2.json")])
+    assert exc.value.code == 2
+    assert "--benchmark INDEX" in capsys.readouterr().err

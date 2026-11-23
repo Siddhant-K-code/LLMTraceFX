@@ -76,12 +76,13 @@ research pass and are less thoroughly verified.
     relevant once item 1 exists. **Built in this branch as part of
     `sweep-api`.**
 
-Importers for `vllm bench serve --save-result` JSON and AIPerf
-`profile_export_aiperf.json` let users bring existing results into
-LLMTraceFX without rerunning. Both formats carry percentile fields
-(`p99_ttft_ms`, per metric `avg`, `p50`, `p99`). These are statistics another
-tool computed, so they feed the perf gate rather than `compare`, and they carry
-their own provenance labels. See "`import vllm-bench` and `import aiperf`"
+Importers for `vllm bench serve --save-result` JSON, AIPerf
+`profile_export_aiperf.json` and GuideLLM `benchmarks.json` let users bring
+existing results into LLMTraceFX without rerunning. All three formats carry
+percentile fields (`p99_ttft_ms`, per metric `avg`, `p50`, `p99`, or
+`percentiles.p99`). These are statistics another tool computed, so they feed
+the perf gate rather than `compare`, and they carry their own provenance
+labels. See "`import vllm-bench`, `import aiperf` and `import guidellm`"
 below.
 
 ## What LLMTraceFX already does that others do not
@@ -236,7 +237,7 @@ beyond Python. It writes a Markdown table to the job summary and exposes
 `verdict` and `report` outputs. The `perf gate action self-test` CI job runs
 the action against committed fixtures and checks all three verdicts.
 
-### `import vllm-bench` and `import aiperf`
+### `import vllm-bench`, `import aiperf` and `import guidellm`
 
 `llmtracefx-optimizer import vllm-bench <file>` reads a
 `vllm bench serve --save-result` JSON file, and
@@ -265,6 +266,34 @@ cancelled or incomplete, used more than one model, counted more than one phase
 toward results, or are a timeslice, aggregate or collated export. Endpoint
 URLs, headers and API keys are never copied.
 
+`llmtracefx-optimizer import guidellm <file> [--benchmark INDEX]` reads one
+benchmark from a GuideLLM `benchmarks.json` report. Report version 1
+(GuideLLM 0.5 and 0.6) and version 2 (0.7 and later, including 0.8.1) are
+read; any other `metadata.version`, and reports from 0.4 or earlier that state
+none, are refused. A report with several benchmarks (a sweep, or several rates
+or stream counts) is refused unless `--benchmark` picks one, and the refusal
+lists them. Each GuideLLM metric is a distribution split by request status;
+only the `successful` part is read, and a zero filled placeholder for an
+empty status is skipped. Latency metrics keep mean, median, `std_dev` as
+`std`, min, max and the p0.1 to p99.9 percentiles. Rate metrics keep only the
+mean, which is the count over the measurement window, because GuideLLM's
+percentiles of a rate are instantaneous rates between events. GuideLLM weights
+`time_per_output_token_ms` by output tokens and `inter_token_latency_ms` by
+output tokens minus one, and counts a request with no value as 0; each metric
+carries these as notes. `request_totals` gives completed, failed (errored) and
+incomplete counts. The strategy fields, warmup and cooldown settings and each
+constraint (as canonical JSON) form the load, so only runs with the same
+settings compare. A sweep stores each limit as a list with a `current_index`;
+the entry that applied is picked the way GuideLLM does, so a sweep benchmark
+and a single run with the same limit match. The endpoint is the backend, API
+route and streaming mode. Version 2 reports state them; version 1 reports
+state only what the user passed, so GuideLLM's defaults
+(`/v1/chat/completions`, streaming on) fill the rest. A setting that still
+cannot be resolved marks the run unresolved and the gate refuses it. The
+per-request `requests` lists are not read in this version: they hold prompt
+and output text, and reading them the way `import aiperf --records` reads
+AIPerf's records is a follow-up. Endpoint URLs and API keys are never copied.
+
 Imported artifacts go to `gate`, not `compare`. `compare` reads sealed
 `workloads run` directories and only compares systems that ran the identical
 workload: same prompt hashes, evaluator, output cap and sampling, with a
@@ -277,14 +306,14 @@ and platform facts that these files do not have.
 With imported artifacts a user can archive a provenance-tagged summary of an
 existing run and gate a pull request on N baseline and N candidate runs of the
 same tool, model, endpoint, load and token totals, for example
-`--metric ttft_ms.p99` or `--metric time_to_first_token.p99`. Each imported
+`--metric ttft_ms.p99`, `--metric time_to_first_token.p99` or
+`--metric time_to_first_token_ms.p99`. Each imported
 file counts as one run, and the same file cannot be counted twice. A run with
 failed requests, an unstated failure count or unresolved load is excluded and
 listed. Imports cannot be used with `compare`, `tune` or the lab, cannot be
-mixed with LLMTraceFX records in one gate, and vLLM and AIPerf results cannot
-be gated against each other, because the two tools define their metrics
-differently. Neither summary has per-request data or correctness results, so
-neither is available from a summary import.
+mixed with LLMTraceFX records in one gate, and results from different tools
+cannot be gated against each other, because the tools define their metrics
+differently. No summary import holds per-request data or correctness results.
 
 `import aiperf <summary> --records profile_export.jsonl` reads AIPerf's
 per-request records (the `MetricRecordInfo` lines in
@@ -673,13 +702,14 @@ values, not diffed.
 - llm-d's Benchmark Report v0.2.1 is the closest thing to a shared result
   format, with converters from GuideLLM, inference-perf, vLLM bench and AIPerf
   ([`schema.py`](https://github.com/llm-d/llm-d-benchmark/blob/0fb187fbd34d571ee97c2383375a2e3b2491aa40/benchmark-report/llmd_benchmark_report/artifacts/benchmark_report/v0_2/schema.py)).
-- `import` covers vLLM bench and AIPerf only. SGLang's bench now lives in
+- `import` covers vLLM bench, AIPerf and GuideLLM (report versions 1 and 2).
+  SGLang's bench now lives in
   `sglang/benchmark/serving.py`, fetches `/server_info` into its result and
   has a `--cache-report` option
   ([`serving.py`](https://github.com/sgl-project/sglang/blob/b6d4389a77970e31817536c3e182256fae6a6f73/python/sglang/benchmark/serving.py)).
   GuideLLM `benchmarks.json` is version 2
-  ([`report.py`](https://github.com/vllm-project/guidellm/blob/c3204f37c5dbd51b5a4f3154c79894d5d2470d21/src/guidellm/benchmark/schemas/report.py#L35-L45)).
-  `trtllm-bench` and `llama-bench -o jsonl` have their own JSON reports.
+  ([`report.py`](https://github.com/vllm-project/guidellm/blob/c3204f37c5dbd51b5a4f3154c79894d5d2470d21/src/guidellm/benchmark/schemas/report.py#L35-L45))
+  and is now read by `import guidellm`. `trtllm-bench` and `llama-bench -o jsonl` have their own JSON reports.
 
 #### Trace replay formats
 
@@ -823,6 +853,8 @@ Ranked by value to the evidence model against cost:
     depends on it, and the evidence does not say what it was.
 10. **Importers for SGLang bench, GuideLLM, `trtllm-bench` and `llama-bench`
     (M each).** Each brings results users already have into `gate`.
+    **GuideLLM built as `import guidellm`** (summary statistics; reading its
+    per-request lists is a follow-up).
 11. **Native Ollama collector (M).** Its `/api/*` responses carry load,
     prompt and eval durations and the new cached count, which the OpenAI
     route drops.
