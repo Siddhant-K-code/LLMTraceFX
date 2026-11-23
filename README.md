@@ -263,13 +263,17 @@ relabelled as measurements.
 - **Native Qwen MTP:** emit a capability report and an explicit unsupported
   record when the installed stack cannot produce trustworthy native-MTP
   evidence.
-- **Server-side metrics (vLLM, SGLang, llama.cpp, TGI, TensorRT-LLM):**
+- **Server-side metrics (vLLM, SGLang, llama.cpp, TensorRT-LLM, legacy TGI):**
   snapshot a Prometheus endpoint before and after a run and diff the two.
   Server numbers such as queue time, server TTFT and cached prompt tokens by
   cache tier are only reported when the window provably contains exactly the
   requests you sent. Otherwise the window is marked `contaminated`,
   `incomplete`, `counter_reset`, `stats_not_enabled`, or `unverifiable`. KV
-  cache usage is recorded as a point sample at each scrape.
+  cache usage is recorded as a point sample at each scrape. The TGI profile
+  is legacy: Text Generation Inference is archived upstream, so the profile
+  still reads existing servers with the same exit codes, adds a note to the
+  evidence (`server-metrics diff` also prints it to stderr), and gets no new
+  metrics.
 - **Trace replay (Mooncake, BurstGPT, AIPerf `single_turn` and `multi_turn`,
   Weka agentic sessions, OpenTelemetry GenAI spans):** check a published
   arrival trace, plan its schedule offline, and replay it against an
@@ -280,7 +284,7 @@ relabelled as measurements.
 ### Export to observability tools
 
 `export otlp` writes a record as OpenTelemetry spans in OTLP/JSON, using the
-GenAI semantic conventions (`gen_ai.*`). The Collector `otlpjsonfile` receiver
+GenAI semantic conventions (`gen_ai.*`). The Collector `otlp_json_file` receiver
 can read it, and it can be POSTed to any OTLP/HTTP `/v1/traces` endpoint, so
 Jaeger, Tempo, Phoenix, or Langfuse can show it. `export perfetto` writes a
 Chrome trace for [ui.perfetto.dev](https://ui.perfetto.dev). Both outputs are
@@ -301,6 +305,31 @@ left out, never filled in. GPU energy and average power from `gpu-energy`
 evidence are exported as `llmtracefx.gpu.energy` and
 `llmtracefx.gpu.power.average`, since the GenAI conventions have no energy
 metric.
+
+A Collector config that reads both outputs. The receiver was renamed from
+`otlpjsonfile` to `otlp_json_file` in opentelemetry-collector-contrib
+v0.154.0; the old name still works as a deprecated alias and logs a warning.
+`start_at` defaults to `end`, which skips everything already in a file
+written before the Collector started, so set it to `beginning`:
+
+```yaml
+receivers:
+  otlp_json_file:
+    include:
+      - /path/to/exports/*.jsonl
+    start_at: beginning
+exporters:
+  debug:
+    verbosity: basic
+service:
+  pipelines:
+    traces:
+      receivers: [otlp_json_file]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp_json_file]
+      exporters: [debug]
+```
 
 ### Perf gate
 
@@ -964,7 +993,7 @@ acceptance rate is derived. It logs them from iteration stats, so they need
 `enable_iter_perf_stats: true`. Sources:
 [vLLM counters](https://github.com/vllm-project/vllm/blob/1ae1b64807ff6be2a0d3f942dbad0a59a663a02a/vllm/v1/spec_decode/metrics.py#L195-L292),
 [SGLang gauges and counters](https://github.com/sgl-project/sglang/blob/b6d4389a77970e31817536c3e182256fae6a6f73/python/sglang/srt/observability/metrics_collector.py#L548-L583),
-[llama.cpp counters](https://github.com/ggml-org/llama.cpp/blob/ebc9fb933e774bb4ac0ba497a67948e16b7e5656/tools/server/server-task.cpp#L1568-L1660),
+[llama.cpp counters](https://github.com/ggml-org/llama.cpp/blob/f8caa5ea30b5775512906ae3b7ee53b21a7a6e1d/tools/server/server-task.cpp#L1568-L1660),
 [TensorRT-LLM counters](https://github.com/NVIDIA/TensorRT-LLM/blob/e6ecd280fd1f77cad6496f81a7194afe29f8d5e8/tensorrt_llm/metrics/collector.py#L550-L567).
 
 `doctor speculative` reads `server_metrics_evidence.json` next to each

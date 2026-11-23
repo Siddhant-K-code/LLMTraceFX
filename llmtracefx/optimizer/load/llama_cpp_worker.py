@@ -67,7 +67,7 @@ from .dispatcher import DispatchContext
 from .sweep import ATTRIBUTION, SweepPoint
 
 LLAMA_CPP_REPOSITORY = "ggml-org/llama.cpp"
-LLAMA_CPP_COMMIT = "ebc9fb933e774bb4ac0ba497a67948e16b7e5656"
+LLAMA_CPP_COMMIT = "f8caa5ea30b5775512906ae3b7ee53b21a7a6e1d"
 COMPLETION_PATH = "/completion"
 PROPS_PATH = "/props"
 

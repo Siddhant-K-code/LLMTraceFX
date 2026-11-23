@@ -35,6 +35,7 @@ from ..collectors.server_reported import SGLANG_DETAILS_REQUEST_FIELDS
 from ..schema import utc_now_iso
 from ..server_metrics import (
     RUNTIME_CHOICES,
+    RUNTIME_HELP,
     ServerMetricsError,
     validate_metrics_url,
 )
@@ -201,7 +202,10 @@ def add_server_metrics_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
-        "--server-metrics-runtime", choices=RUNTIME_CHOICES, default="auto"
+        "--server-metrics-runtime",
+        choices=RUNTIME_CHOICES,
+        default="auto",
+        help=RUNTIME_HELP,
     )
     parser.add_argument("--server-metrics-assume-isolated", action="store_true")
     parser.add_argument("--server-metrics-settle-timeout", type=float, default=2.0)

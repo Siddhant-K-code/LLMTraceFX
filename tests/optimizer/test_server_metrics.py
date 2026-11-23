@@ -21,6 +21,7 @@ import pytest
 from llmtracefx.optimizer import cli
 from llmtracefx.optimizer.collectors.openai_api import artifact_set_is_complete
 from llmtracefx.optimizer.server_metrics import (
+    TGI_LEGACY_NOTE,
     ExpositionParseError,
     ServerMetricsError,
     ServerMetricsSnapshot,
@@ -367,6 +368,38 @@ def test_tgi_window_is_attributed_when_every_request_family_agrees() -> None:
     assert evidence["attribution"]["status"] == "attributed"
     assert evidence["highlights"]["e2e_latency"]["value"] == pytest.approx(500.0)
     assert evidence["highlights"]["successful_requests"]["value"] == 1
+
+
+def test_tgi_is_a_legacy_profile_that_still_attributes_and_exits_zero(
+    tmp_path: Path,
+) -> None:
+    before = snap(tgi_body(started=10, finished=10, succeeded=10))
+    after = snap(
+        tgi_body(started=11, finished=11, succeeded=11), "2026-01-01T00:00:01Z"
+    )
+    tgi = diff_snapshots(before, after, expected_requests=1)
+    vllm = diff_snapshots(BEFORE, ONE_MORE, expected_requests=1)
+    assert TGI_LEGACY_NOTE in tgi["notes"]
+    assert TGI_LEGACY_NOTE not in vllm["notes"]
+
+    before_path, after_path = tmp_path / "before.json", tmp_path / "after.json"
+    before.write_json(before_path)
+    after.write_json(after_path)
+    code, out, err = run_cli(
+        [
+            "server-metrics",
+            "diff",
+            "--before",
+            str(before_path),
+            "--after",
+            str(after_path),
+            "--expected-requests",
+            "1",
+        ]
+    )
+    assert code == 0
+    assert "Attribution: attributed" in out
+    assert f"Note: {TGI_LEGACY_NOTE}" in err
 
 
 def test_a_lagging_success_counter_downgrades_a_vllm_window() -> None:
